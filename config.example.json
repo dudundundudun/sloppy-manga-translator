@@ -1,0 +1,29 @@
+{
+  "unsloth_url": "https://moduleapi.pro/v1",
+  "unsloth_api_key": "",
+  "selected_model": "auto",
+  "auto_save_web_pages": true,
+  "web_save_dir": "Saved_Manga",
+  "text_filter_mode": "dialogue_only",
+  "skip_sighs": true,
+  "skip_sfx": true,
+  "detect_free_text": false,
+  "min_text_length": 2,
+  "min_font_size": 12,
+  "max_font_size": 32,
+  "uppercase": true,
+  "batch_pages": 12,
+  "ui_settings": {
+    "editor_dock_mode": "right",
+    "inline_bubble_popup": true,
+    "always_show_pins": true,
+    "auto_scroll_to_bubble": true,
+    "floating_auto_fade": true,
+    "auto_collapse_sidebar": false,
+    "compact_mascot": false,
+    "default_zoom_mode": "fit_width",
+    "right_panel_width": 460,
+    "bottom_panel_height": 340,
+    "left_sidebar_width": 360
+  }
+}

@@ -1,0 +1,38 @@
+{
+  "manifest_version": 3,
+  "name": "Local Manga / Manhwa / Manhua Translator",
+  "version": "1.0.0",
+  "description": "Локальный AI-переводчик манги, манхвы и маньхуа (YOLOv8 + FreeText + MangaOCR/EasyOCR + EN/RU/Romaji)",
+  "permissions": [
+    "activeTab",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "<all_urls>",
+    "http://127.0.0.1:5000/*",
+    "http://localhost:5000/*"
+  ],
+  "action": {
+    "default_title": "Открыть/скрыть Manga Translator"
+  },
+  "background": {
+    "service_worker": "background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "commands": {
+    "translate-page": {
+      "suggested_key": {
+        "default": "Alt+T"
+      },
+      "description": "Перевести все видимые страницы манги"
+    }
+  }
+}

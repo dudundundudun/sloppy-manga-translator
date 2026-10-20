@@ -1,0 +1,40 @@
+# =====================================================================
+# Miko-chan Manga Studio v1.0.0 - Git Ignore Rules
+# Защищает личные API-ключи, тяжелые ИИ-модели и папки с мангой от загрузки в облако
+# =====================================================================
+
+# 1. Личные настройки и секретные API-ключи (СТРОГО НЕ ЗАГРУЖАТЬ!)
+config.json
+gui_settings.json
+.env
+*.key
+
+# 2. Тяжелые веса нейросетей и локальные модели (ГБ данных)
+models/
+*.gguf
+*.pt
+*.pth
+*.onnx
+*.safetensors
+*.bin
+
+# 3. Сохраненная и переведенная манга, отладка и кэш глав
+Saved_Manga/
+temp_debug/
+*_EN/
+*_RU/
+*_ROMAJI/
+.translation_state.json
+
+# 4. Служебные файлы Python и ОС Windows
+__pycache__/
+*.py[cod]
+*$py.class
+.venv/
+venv/
+env/
+Thumbs.db
+Desktop.ini
+.DS_Store
+*.log
+*.tmp

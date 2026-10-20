@@ -1,0 +1,4377 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Miko-chan Manga Studio v1.0.0</title>
+  <style>
+    :root {
+      --bg-deep: #0f0d18;
+      --bg-bento: rgba(25, 22, 39, 0.90);
+      --bg-bento-inner: rgba(38, 33, 58, 0.78);
+      --bg-elevated: #1e1930;
+      --border-soft: rgba(244, 114, 182, 0.22);
+      --border-subtle: rgba(255, 255, 255, 0.08);
+      --text-primary: #fdf2f8;
+      --text-secondary: #d1cae8;
+      --text-muted: #9389b8;
+      --sakura: #f472b6;
+      --sakura-glow: rgba(244, 114, 182, 0.35);
+      --indigo: #818cf8;
+      --mint: #34d399;
+      --amber: #fbbf24;
+      --rose: #fb7185;
+      --left-sidebar-w: 360px;
+      --right-editor-w: 460px;
+      --bottom-editor-h: 340px;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(15, 13, 24, 0.45);
+      border-radius: 999px;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(147, 137, 184, 0.32);
+      border-radius: 999px;
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(244, 114, 182, 0.55);
+      border: 2px solid transparent;
+      background-clip: padding-box;
+    }
+
+    body {
+      margin: 0;
+      width: 100vw;
+      height: 100vh;
+      background:
+        radial-gradient(circle at 10% 15%, rgba(244, 114, 182, 0.13), transparent 35%),
+        radial-gradient(circle at 88% 85%, rgba(129, 140, 248, 0.15), transparent 38%),
+        var(--bg-deep);
+      color: var(--text-primary);
+      font-family: "Segoe UI", system-ui, -apple-system, sans-serif;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      user-select: none;
+    }
+
+    /* ==================== TOPBAR ==================== */
+    .topbar {
+      min-height: 56px;
+      padding: 6px 16px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(15, 13, 24, 0.85);
+      backdrop-filter: blur(18px);
+      z-index: 30;
+      flex-shrink: 0;
+    }
+
+    .topbar-left {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .sidebar-toggle-btn {
+      background: var(--bg-bento-inner);
+      color: var(--text-primary);
+      border: 1px solid var(--border-subtle);
+      border-radius: 10px;
+      padding: 6px 11px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.16s ease;
+    }
+    .sidebar-toggle-btn:hover {
+      border-color: var(--sakura);
+      background: rgba(244, 114, 182, 0.15);
+    }
+    .sidebar-toggle-btn.collapsed-active {
+      border-color: var(--indigo);
+      background: rgba(129, 140, 248, 0.22);
+      color: #e0e7ff;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-weight: 700;
+      font-size: 15.5px;
+      letter-spacing: 0.01em;
+      white-space: nowrap;
+    }
+
+    .brand-sparkle {
+      color: var(--sakura);
+      font-size: 18px;
+    }
+
+    .lang-bar {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      background: var(--bg-bento-inner);
+      padding: 3px 7px;
+      border-radius: 999px;
+      border: 1px solid var(--border-subtle);
+    }
+
+    .lang-select {
+      background: transparent;
+      color: var(--text-primary);
+      border: none;
+      font-size: 12.5px;
+      font-weight: 600;
+      padding: 4px 6px;
+      cursor: pointer;
+      outline: none;
+    }
+    .lang-select option {
+      background: #1b182a;
+      color: #fff;
+    }
+
+    .pill-group {
+      display: flex;
+      gap: 3px;
+      align-items: center;
+    }
+
+    .pill-btn {
+      background: transparent;
+      color: var(--text-secondary);
+      border: 1px solid transparent;
+      border-radius: 999px;
+      padding: 5px 11px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.16s ease;
+      white-space: nowrap;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+    }
+    .pill-btn:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .pill-btn.active {
+      background: linear-gradient(135deg, var(--sakura), var(--indigo));
+      color: #fff;
+      box-shadow: 0 3px 10px var(--sakura-glow);
+    }
+    .pill-btn.subtle-active {
+      background: rgba(129, 140, 248, 0.22);
+      color: #e0e7ff;
+      border-color: rgba(129, 140, 248, 0.45);
+    }
+
+    .topbar-right {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .summary-chip {
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      padding: 5px 11px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      max-width: 350px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .summary-chip:hover {
+      border-color: var(--sakura);
+      color: #fff;
+      background: rgba(244, 114, 182, 0.10);
+    }
+
+    .icon-action-btn {
+      background: var(--bg-bento-inner);
+      color: var(--text-primary);
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      padding: 6px 13px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      transition: all 0.16s ease;
+      white-space: nowrap;
+    }
+    .icon-action-btn:hover {
+      background: rgba(244, 114, 182, 0.18);
+      border-color: var(--sakura);
+    }
+
+    /* ==================== WORKSPACE & FLEXIBLE PANELS ==================== */
+    .bento-workspace {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
+      gap: 0;
+      padding: 10px 14px 14px 14px;
+      overflow: hidden;
+      min-height: 0;
+      min-width: 0;
+    }
+
+    .bento-left {
+      width: var(--left-sidebar-w);
+      min-width: 250px;
+      max-width: 540px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: hidden;
+      flex-shrink: 0;
+      transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.22s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, margin 0.22s ease;
+    }
+    .bento-left.collapsed {
+      width: 0 !important;
+      min-width: 0 !important;
+      opacity: 0;
+      pointer-events: none;
+      margin-right: 0;
+    }
+    body.resizing-panels .bento-left,
+    body.resizing-panels .text-drawer {
+      transition: none !important;
+    }
+
+    /* Draggable Splitters */
+    .panel-splitter {
+      flex-shrink: 0;
+      position: relative;
+      z-index: 18;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      transition: background 0.15s ease;
+    }
+    .panel-splitter.v-splitter {
+      width: 10px;
+      cursor: ew-resize;
+      margin: 0 2px;
+    }
+    .panel-splitter.h-splitter {
+      height: 10px;
+      cursor: ns-resize;
+      margin: 2px 0;
+    }
+    .panel-splitter::after {
+      content: "";
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.12);
+      transition: background 0.15s ease, transform 0.15s ease;
+    }
+    .panel-splitter.v-splitter::after {
+      width: 4px;
+      height: 44px;
+    }
+    .panel-splitter.h-splitter::after {
+      width: 54px;
+      height: 4px;
+    }
+    .panel-splitter:hover::after,
+    .panel-splitter.dragging::after {
+      background: var(--sakura);
+      box-shadow: 0 0 10px var(--sakura-glow);
+    }
+    .panel-splitter.hidden {
+      display: none !important;
+    }
+
+    .bento-card {
+      background: var(--bg-bento);
+      border: 1px solid var(--border-subtle);
+      border-radius: 18px;
+      padding: 14px;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.42);
+      backdrop-filter: blur(18px);
+    }
+
+    /* Mascot Card (supports compact mode) */
+    .mascot-card {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      border-color: var(--border-soft);
+      background: linear-gradient(145deg, rgba(40, 32, 66, 0.92), rgba(26, 22, 42, 0.92));
+      position: relative;
+      overflow: hidden;
+      flex-shrink: 0;
+      transition: padding 0.18s ease;
+    }
+    .mascot-card.compact-mascot {
+      padding: 8px 12px;
+    }
+    .mascot-avatar-wrap {
+      width: 82px;
+      height: 82px;
+      border-radius: 16px;
+      overflow: hidden;
+      flex-shrink: 0;
+      border: 2px solid var(--sakura);
+      box-shadow: 0 6px 18px var(--sakura-glow);
+      background: #1a162b;
+      transition: width 0.18s ease, height 0.18s ease;
+    }
+    .mascot-card.compact-mascot .mascot-avatar-wrap {
+      width: 42px;
+      height: 42px;
+      border-radius: 10px;
+    }
+    .mascot-avatar-wrap img {
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      transition: transform 0.3s ease;
+    }
+    .mascot-card:hover .mascot-avatar-wrap img {
+      transform: scale(1.06);
+    }
+
+    .mascot-dialog {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      min-width: 0;
+    }
+
+    .mascot-name {
+      font-size: 12px;
+      font-weight: 700;
+      color: var(--sakura);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .mascot-bubble {
+      font-size: 12.2px;
+      line-height: 1.38;
+      color: var(--text-primary);
+      background: rgba(17, 15, 26, 0.58);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 12px;
+      padding: 7px 10px;
+      max-height: 76px;
+      overflow-y: auto;
+    }
+    .mascot-card.compact-mascot .mascot-bubble {
+      font-size: 11.5px;
+      padding: 4px 8px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .chapter-card {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    .source-pickers {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      flex-shrink: 0;
+    }
+
+    .soft-btn {
+      background: var(--bg-bento-inner);
+      color: var(--text-primary);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 11px;
+      padding: 8px 11px;
+      font-size: 12.5px;
+      font-weight: 600;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      transition: all 0.16s ease;
+    }
+    .soft-btn:hover {
+      background: rgba(129, 140, 248, 0.18);
+      border-color: var(--indigo);
+    }
+
+    .progress-strip {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+
+    .progress-labels {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      gap: 6px;
+    }
+    .progress-labels span:first-child {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .progress-track {
+      height: 6px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+    }
+
+    .progress-bar-fill {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, var(--sakura), var(--indigo));
+      border-radius: 999px;
+      transition: width 0.3s ease;
+    }
+
+    .pages-filter-bar {
+      display: flex;
+      gap: 4px;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .pages-filter-btn {
+      flex: 1;
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-muted);
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 4px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .pages-filter-btn:hover {
+      color: var(--text-primary);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .pages-filter-btn.active {
+      color: var(--sakura);
+      background: rgba(244, 114, 182, 0.14);
+      border-color: rgba(244, 114, 182, 0.35);
+    }
+
+    .pages-scroll {
+      flex: 1;
+      background: rgba(12, 10, 19, 0.68);
+      border: 1px solid var(--border-subtle);
+      border-radius: 12px;
+      overflow-y: auto;
+      padding: 5px;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      min-height: 90px;
+    }
+
+    .page-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 7px 10px;
+      border-radius: 9px;
+      cursor: pointer;
+      font-size: 12.5px;
+      border: 1px solid transparent;
+      transition: background 0.14s ease, border-color 0.14s ease;
+      gap: 6px;
+    }
+    .page-row:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .page-row.selected {
+      background: rgba(244, 114, 182, 0.22);
+      border-color: rgba(244, 114, 182, 0.48);
+      font-weight: 600;
+    }
+
+    .page-badge-done {
+      font-size: 11px;
+      color: var(--mint);
+      background: rgba(52, 211, 153, 0.14);
+      padding: 2px 7px;
+      border-radius: 999px;
+      font-weight: 600;
+      flex-shrink: 0;
+    }
+    .page-badge-wait {
+      font-size: 11px;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.05);
+      padding: 2px 7px;
+      border-radius: 999px;
+      flex-shrink: 0;
+    }
+
+    .cta-stack {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      flex-shrink: 0;
+    }
+
+    .cta-main {
+      width: 100%;
+      border: none;
+      border-radius: 12px;
+      padding: 11px 14px;
+      font-size: 13.5px;
+      font-weight: 700;
+      color: #fff;
+      cursor: pointer;
+      background: linear-gradient(135deg, #ec4899, #6366f1);
+      box-shadow: 0 5px 18px rgba(236, 72, 153, 0.32);
+      transition: transform 0.12s ease, opacity 0.15s ease;
+    }
+    .cta-main:hover { opacity: 0.95; transform: translateY(-1px); }
+    .cta-main:active { transform: translateY(0); }
+    .cta-main.stopping {
+      background: linear-gradient(135deg, #f43f5e, #e11d48);
+    }
+
+    .cta-sub {
+      width: 100%;
+      background: var(--bg-bento-inner);
+      color: var(--text-primary);
+      border: 1px solid var(--border-soft);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .cta-sub:hover {
+      background: rgba(244, 114, 182, 0.16);
+      border-color: var(--sakura);
+    }
+
+    /* ==================== MAIN STAGE & DOCKABLE LAYOUTS ==================== */
+    .main-stage-wrap {
+      flex: 1;
+      display: flex;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+      position: relative;
+    }
+    .main-stage-wrap.dock-mode-right {
+      flex-direction: row;
+    }
+    .main-stage-wrap.dock-mode-bottom {
+      flex-direction: column;
+    }
+    .main-stage-wrap.dock-mode-floating {
+      flex-direction: column;
+    }
+
+    .viewer-card {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      position: relative;
+      overflow: hidden;
+      padding: 0;
+      min-width: 0;
+      min-height: 0;
+    }
+
+    /* Clean Non-Overlapping Top Viewer Toolbar */
+    .viewer-toolbar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 6px;
+      padding: 8px 14px;
+      background: rgba(18, 15, 30, 0.92);
+      border-bottom: 1px solid var(--border-subtle);
+      z-index: 12;
+      flex-shrink: 0;
+    }
+
+    .toolbar-section {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-wrap: wrap;
+    }
+
+    .toolbar-divider {
+      width: 1px;
+      height: 18px;
+      background: rgba(255, 255, 255, 0.12);
+      margin: 0 3px;
+    }
+
+    .page-nav-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      padding: 2px 4px;
+    }
+    .page-nav-btn {
+      background: transparent;
+      color: var(--text-primary);
+      border: none;
+      border-radius: 999px;
+      padding: 4px 9px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 0.15s ease;
+    }
+    .page-nav-btn:hover:not(:disabled) {
+      background: rgba(244, 114, 182, 0.22);
+      color: #fff;
+    }
+    .page-nav-btn:disabled {
+      opacity: 0.35;
+      cursor: default;
+    }
+    .page-nav-indicator {
+      font-size: 11.5px;
+      font-weight: 700;
+      color: var(--sakura);
+      padding: 0 6px;
+      white-space: nowrap;
+    }
+
+    .zoom-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 2px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      padding: 2px 4px;
+    }
+    .zoom-btn {
+      background: transparent;
+      color: var(--text-secondary);
+      border: none;
+      border-radius: 999px;
+      padding: 3px 7px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .zoom-btn:hover {
+      background: rgba(255, 255, 255, 0.1);
+      color: #fff;
+    }
+    .zoom-btn.active {
+      background: rgba(129, 140, 248, 0.25);
+      color: #e0e7ff;
+    }
+    .zoom-lbl {
+      font-size: 11px;
+      color: var(--text-muted);
+      min-width: 42px;
+      text-align: center;
+      font-weight: 600;
+    }
+
+    /* True Full-Page Scrollable Viewer Stage */
+    .viewer-stage {
+      flex: 1;
+      overflow: auto;
+      display: flex;
+      gap: 14px;
+      justify-content: center;
+      align-items: flex-start;
+      padding: 18px 20px 96px 20px;
+      position: relative;
+      min-height: 0;
+      scroll-behavior: smooth;
+    }
+
+    .img-pin-wrap {
+      position: relative;
+      display: inline-block;
+      transition: width 0.12s ease;
+      flex-shrink: 0;
+    }
+    .viewer-stage.zoom-fit-width:not(.split-mode) .img-pin-wrap {
+      width: 100%;
+      max-width: 980px;
+    }
+    .viewer-stage.zoom-fit-width.split-mode .img-pin-wrap {
+      width: calc(50% - 7px);
+      max-width: 780px;
+    }
+    .viewer-stage.zoom-fit-height .img-pin-wrap img {
+      max-height: calc(100vh - 165px);
+      width: auto;
+      max-width: 100%;
+    }
+
+    .img-pin-wrap img {
+      display: block;
+      width: 100%;
+      height: auto;
+      border-radius: 10px;
+      box-shadow: 0 10px 32px rgba(0, 0, 0, 0.65);
+    }
+
+    .empty-viewer {
+      margin: auto;
+      text-align: center;
+      color: var(--text-muted);
+      max-width: 390px;
+      line-height: 1.55;
+      padding: 28px;
+      background: rgba(255, 255, 255, 0.02);
+      border: 1px dashed rgba(255, 255, 255, 0.08);
+      border-radius: 18px;
+    }
+
+    /* ==================== EDITOR DRAWER (RIGHT / BOTTOM / FLOATING) ==================== */
+    .text-drawer {
+      background: rgba(18, 15, 30, 0.97);
+      border: 1px solid rgba(244, 114, 182, 0.38);
+      border-radius: 18px;
+      box-shadow: 0 14px 40px rgba(0, 0, 0, 0.72);
+      backdrop-filter: blur(22px);
+      padding: 12px 14px 14px 14px;
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+      z-index: 20;
+      min-width: 0;
+      min-height: 0;
+    }
+    .text-drawer.open {
+      display: flex;
+    }
+
+    /* Mode 1: Right Docked Sidebar (No overlap with manga page!) */
+    .main-stage-wrap.dock-mode-right .text-drawer {
+      width: var(--right-editor-w);
+      min-width: 310px;
+      max-width: 72vw;
+      height: 100%;
+      flex-shrink: 0;
+      border-left: 2px solid rgba(244, 114, 182, 0.45);
+    }
+    .main-stage-wrap.dock-mode-right .block-edit-card {
+      grid-template-columns: 1fr;
+      gap: 8px;
+    }
+
+    /* Mode 2: Bottom Docked Panel (Flex sibling with splitter — never blocks bottom of page!) */
+    .main-stage-wrap.dock-mode-bottom .text-drawer {
+      width: 100%;
+      height: var(--bottom-editor-h);
+      min-height: 190px;
+      max-height: 76vh;
+      flex-shrink: 0;
+      border-top: 2px solid rgba(244, 114, 182, 0.45);
+    }
+
+    /* Mode 3: Floating Draggable Mini-Window (with minimize & auto-opacity) */
+    .main-stage-wrap.dock-mode-floating .text-drawer {
+      position: fixed;
+      right: 26px;
+      bottom: 24px;
+      width: 520px;
+      height: 440px;
+      min-width: 320px;
+      min-height: 220px;
+      max-width: 92vw;
+      max-height: 86vh;
+      resize: both;
+      overflow: hidden;
+      border: 2px solid rgba(244, 114, 182, 0.55);
+      box-shadow: 0 22px 55px rgba(0, 0, 0, 0.85);
+      z-index: 40;
+      transition: opacity 0.25s ease, box-shadow 0.2s ease;
+    }
+    .main-stage-wrap.dock-mode-floating .text-drawer.floating-faded:not(:hover):not(:focus-within) {
+      opacity: 0.26;
+    }
+    .main-stage-wrap.dock-mode-floating .text-drawer.floating-minimized {
+      height: auto !important;
+      min-height: 0 !important;
+      resize: none;
+      padding-bottom: 10px;
+    }
+    .main-stage-wrap.dock-mode-floating .text-drawer.floating-minimized .blocks-scroll-area,
+    .main-stage-wrap.dock-mode-floating .text-drawer.floating-minimized .editor-sub-toolbar {
+      display: none !important;
+    }
+    .main-stage-wrap.dock-mode-floating .editor-header-row {
+      cursor: move;
+    }
+
+    .editor-header-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding-bottom: 7px;
+      border-bottom: 1px solid var(--border-subtle);
+      flex-shrink: 0;
+    }
+
+    .editor-sub-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      align-items: center;
+      gap: 6px;
+      padding-bottom: 6px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      flex-shrink: 0;
+    }
+
+    .dock-switch-group {
+      display: inline-flex;
+      align-items: center;
+      background: rgba(11, 9, 18, 0.65);
+      border: 1px solid var(--border-subtle);
+      border-radius: 999px;
+      padding: 2px;
+      gap: 2px;
+    }
+    .dock-switch-btn {
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      border-radius: 999px;
+      padding: 3px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .dock-switch-btn:hover {
+      color: #fff;
+    }
+    .dock-switch-btn.active {
+      background: rgba(244, 114, 182, 0.25);
+      color: var(--sakura);
+    }
+
+    .editor-actions {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: 5px;
+    }
+
+    .btn-save-edit {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      border: none;
+      border-radius: 999px;
+      padding: 6px 14px;
+      font-size: 12px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 4px 14px rgba(16, 185, 129, 0.35);
+      transition: transform 0.12s ease, opacity 0.15s ease;
+    }
+    .btn-save-edit:hover {
+      opacity: 0.94;
+      transform: translateY(-1px);
+    }
+    .btn-save-edit:disabled {
+      opacity: 0.5;
+      cursor: wait;
+    }
+
+    .btn-romaji-toggle {
+      background: rgba(129, 140, 248, 0.16);
+      color: #c7d2fe;
+      border: 1px solid rgba(129, 140, 248, 0.4);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-romaji-toggle.active {
+      background: linear-gradient(135deg, #6366f1, #ec4899);
+      color: #fff;
+      border-color: transparent;
+      box-shadow: 0 3px 10px rgba(99, 102, 241, 0.4);
+    }
+
+    .blocks-scroll-area {
+      flex: 1;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      padding-right: 4px;
+      user-select: text;
+      min-height: 0;
+    }
+
+    .block-edit-card {
+      background: rgba(32, 28, 50, 0.85);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 12px;
+      padding: 10px 12px;
+      display: grid;
+      grid-template-columns: 1.05fr 1.2fr;
+      gap: 10px;
+      align-items: stretch;
+      transition: border-color 0.16s ease, background 0.16s ease, box-shadow 0.16s ease;
+    }
+    .block-edit-card:hover,
+    .block-edit-card.active-block {
+      border-color: var(--sakura);
+      background: rgba(44, 36, 68, 0.96);
+      box-shadow: 0 4px 16px rgba(244, 114, 182, 0.15);
+    }
+    .block-edit-card.deleted-block {
+      background: rgba(24, 20, 36, 0.62);
+      border: 1px dashed rgba(251, 191, 36, 0.42);
+      opacity: 0.86;
+    }
+
+    .btn-delete-block {
+      background: rgba(244, 63, 94, 0.16);
+      color: #fda4af;
+      border: 1px solid rgba(244, 63, 94, 0.45);
+      border-radius: 8px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-delete-block:hover {
+      background: rgba(244, 63, 94, 0.35);
+      color: #fff;
+      border-color: #fb7185;
+    }
+
+    .btn-restore-block {
+      background: rgba(52, 211, 153, 0.16);
+      color: #6ee7b7;
+      border: 1px solid rgba(52, 211, 153, 0.45);
+      border-radius: 8px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-restore-block:hover {
+      background: rgba(52, 211, 153, 0.32);
+      color: #fff;
+    }
+
+    .deleted-status-badge {
+      font-size: 11px;
+      color: var(--amber);
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.35);
+      border-radius: 7px;
+      padding: 2px 7px;
+      font-weight: 600;
+    }
+
+    /* Interactive BBox Pins on Manga Page */
+    .bbox-pin {
+      position: absolute;
+      border: 2px solid rgba(244, 114, 182, 0.78);
+      background: rgba(244, 114, 182, 0.08);
+      border-radius: 6px;
+      cursor: pointer;
+      transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+      z-index: 5;
+    }
+    .bbox-pin:hover,
+    .bbox-pin.active-pin {
+      border-color: #34d399;
+      background: rgba(52, 211, 153, 0.20);
+      box-shadow: 0 0 16px rgba(52, 211, 153, 0.75);
+      z-index: 7;
+    }
+    @keyframes pinPulse {
+      0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.85); }
+      70% { box-shadow: 0 0 0 12px rgba(52, 211, 153, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0); }
+    }
+    .bbox-pin.pulse-pin {
+      animation: pinPulse 1.1s ease-out 2;
+    }
+    .bbox-pin.deleted-pin {
+      border: 2px dashed rgba(251, 191, 36, 0.72);
+      background: rgba(251, 191, 36, 0.06);
+    }
+    .bbox-pin-badge {
+      position: absolute;
+      top: -11px;
+      left: -8px;
+      background: linear-gradient(135deg, #ec4899, #6366f1);
+      color: #fff;
+      font-size: 10px;
+      font-weight: 800;
+      padding: 1px 6px;
+      border-radius: 999px;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.65);
+      pointer-events: none;
+      white-space: nowrap;
+    }
+    .bbox-pin-del {
+      position: absolute;
+      top: -11px;
+      right: -8px;
+      background: #e11d48;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.4);
+      font-size: 10px;
+      font-weight: 800;
+      padding: 1px 5px;
+      border-radius: 999px;
+      cursor: pointer;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
+      opacity: 0;
+      transition: opacity 0.15s ease, transform 0.12s ease;
+    }
+    .bbox-pin:hover .bbox-pin-del,
+    .bbox-pin.active-pin .bbox-pin-del {
+      opacity: 1;
+    }
+    .bbox-pin-del:hover {
+      transform: scale(1.12);
+      background: #be123c;
+    }
+
+    /* ==================== COMPACT INLINE BUBBLE POPUP (FEATURE 2) ==================== */
+    .inline-bubble-popup {
+      position: fixed;
+      width: 350px;
+      max-width: calc(100vw - 24px);
+      background: rgba(21, 18, 36, 0.98);
+      border: 1.5px solid var(--sakura);
+      border-radius: 15px;
+      padding: 11px 13px;
+      box-shadow: 0 18px 46px rgba(0, 0, 0, 0.85), 0 0 20px rgba(244, 114, 182, 0.25);
+      backdrop-filter: blur(20px);
+      z-index: 48;
+      display: none;
+      flex-direction: column;
+      gap: 7px;
+      user-select: text;
+    }
+    .inline-bubble-popup.open {
+      display: flex;
+    }
+    .inline-popup-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      cursor: move;
+      user-select: none;
+      padding-bottom: 5px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+    }
+    .inline-popup-orig {
+      font-size: 12px;
+      color: var(--text-primary);
+      background: rgba(11, 9, 18, 0.65);
+      border-radius: 8px;
+      padding: 5px 8px;
+      line-height: 1.38;
+      max-height: 60px;
+      overflow-y: auto;
+    }
+    .inline-popup-romaji {
+      font-size: 11.5px;
+      color: #c7d2fe;
+      background: rgba(99, 102, 241, 0.14);
+      border: 1px solid rgba(129, 140, 248, 0.3);
+      border-radius: 7px;
+      padding: 4px 8px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+    .inline-popup-textarea {
+      width: 100%;
+      min-height: 64px;
+      max-height: 150px;
+      resize: vertical;
+      background: #0f0c1b;
+      color: #fff;
+      border: 1px solid rgba(244, 114, 182, 0.4);
+      border-radius: 9px;
+      padding: 7px 9px;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.38;
+      outline: none;
+    }
+    .inline-popup-textarea:focus {
+      border-color: var(--mint);
+      box-shadow: 0 0 0 2px rgba(52, 211, 153, 0.25);
+    }
+    .inline-popup-footer {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 5px;
+      flex-wrap: wrap;
+    }
+
+    .img-pin-wrap.draw-mode-active,
+    .img-pin-wrap.draw-mode-active img {
+      cursor: crosshair !important;
+      user-select: none !important;
+    }
+    .manual-draw-rect {
+      position: absolute;
+      border: 2.5px dashed #34d399;
+      background: rgba(52, 211, 153, 0.22);
+      box-shadow: 0 0 16px rgba(52, 211, 153, 0.65);
+      border-radius: 6px;
+      pointer-events: none;
+      z-index: 25;
+    }
+
+    .btn-retranslate-block {
+      background: rgba(99, 102, 241, 0.18);
+      color: #c7d2fe;
+      border: 1px solid rgba(129, 140, 248, 0.45);
+      border-radius: 8px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-retranslate-block:hover {
+      background: rgba(99, 102, 241, 0.38);
+      color: #fff;
+      border-color: #818cf8;
+    }
+
+    .pill-btn.draw-active {
+      background: linear-gradient(135deg, #10b981, #059669) !important;
+      color: #fff !important;
+      box-shadow: 0 0 14px rgba(16, 185, 129, 0.6) !important;
+    }
+
+    .block-meta-col {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+      min-width: 0;
+    }
+
+    .block-header-line {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .block-id-badge {
+      background: rgba(244, 114, 182, 0.2);
+      color: var(--sakura);
+      border: 1px solid rgba(244, 114, 182, 0.4);
+      border-radius: 7px;
+      padding: 2px 8px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .block-id-badge:hover {
+      background: rgba(244, 114, 182, 0.35);
+      color: #fff;
+    }
+
+    .block-orig-text {
+      font-size: 12.5px;
+      color: var(--text-primary);
+      background: rgba(12, 10, 20, 0.55);
+      border-radius: 8px;
+      padding: 5px 8px;
+      line-height: 1.42;
+      word-break: break-word;
+      user-select: text;
+    }
+
+    .block-romaji-box {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      background: rgba(99, 102, 241, 0.14);
+      border: 1px solid rgba(129, 140, 248, 0.35);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 12px;
+      color: #e0e7ff;
+      line-height: 1.35;
+      user-select: text;
+    }
+
+    .romaji-copy-btn {
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--text-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-size: 10.5px;
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+    .romaji-copy-btn:hover {
+      background: rgba(244, 114, 182, 0.25);
+      color: #fff;
+    }
+
+    .block-input-col {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .block-textarea {
+      width: 100%;
+      flex: 1;
+      min-height: 54px;
+      resize: vertical;
+      background: #110e1c;
+      color: #ffffff;
+      border: 1px solid rgba(244, 114, 182, 0.32);
+      border-radius: 9px;
+      padding: 7px 10px;
+      font-family: "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+      font-weight: 600;
+      line-height: 1.38;
+      outline: none;
+      transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    }
+    .block-textarea:focus {
+      border-color: var(--sakura);
+      box-shadow: 0 0 0 2px rgba(244, 114, 182, 0.25);
+    }
+
+    .font-override-select {
+      background: #120f1d;
+      color: var(--text-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 11px;
+      outline: none;
+      cursor: pointer;
+    }
+
+    /* ==================== REDESIGNED TABBED SETTINGS MODAL ==================== */
+    .modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(8, 7, 14, 0.76);
+      backdrop-filter: blur(10px);
+      z-index: 60;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 16px;
+    }
+    .modal-backdrop.open {
+      display: flex;
+    }
+
+    .settings-modal {
+      width: 100%;
+      max-width: 780px;
+      max-height: 92vh;
+      background: #191528;
+      border: 1px solid rgba(244, 114, 182, 0.32);
+      border-radius: 22px;
+      box-shadow: 0 26px 70px rgba(0, 0, 0, 0.85);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .modal-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 16px 22px 12px 22px;
+      border-bottom: 1px solid var(--border-subtle);
+      background: rgba(15, 13, 24, 0.65);
+    }
+    .modal-header-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .settings-tabs-nav {
+      display: flex;
+      gap: 6px;
+      padding: 10px 22px;
+      background: rgba(13, 11, 21, 0.75);
+      border-bottom: 1px solid var(--border-subtle);
+      overflow-x: auto;
+      flex-shrink: 0;
+    }
+
+    .settings-tab-btn {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-secondary);
+      border: 1px solid transparent;
+      border-radius: 11px;
+      padding: 8px 14px;
+      font-size: 12.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      white-space: nowrap;
+      transition: all 0.16s ease;
+    }
+    .settings-tab-btn:hover {
+      background: rgba(255, 255, 255, 0.08);
+      color: #fff;
+    }
+    .settings-tab-btn.active {
+      background: linear-gradient(135deg, rgba(244, 114, 182, 0.25), rgba(129, 140, 248, 0.25));
+      color: #fff;
+      border-color: var(--sakura);
+      box-shadow: 0 3px 12px rgba(244, 114, 182, 0.2);
+    }
+
+    .settings-body {
+      flex: 1;
+      overflow-y: auto;
+      padding: 18px 22px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+    }
+
+    .settings-tab-pane {
+      display: none;
+      flex-direction: column;
+      gap: 14px;
+    }
+    .settings-tab-pane.active {
+      display: flex;
+    }
+
+    .modal-footer {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 13px 22px;
+      border-top: 1px solid var(--border-subtle);
+      background: rgba(15, 13, 24, 0.8);
+      flex-shrink: 0;
+      flex-wrap: wrap;
+    }
+
+    .section-box {
+      background: rgba(15, 13, 24, 0.58);
+      border: 1px solid rgba(244, 114, 182, 0.18);
+      border-radius: 15px;
+      padding: 14px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .section-title {
+      font-size: 13.5px;
+      font-weight: 700;
+      color: var(--sakura);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .section-desc {
+      font-size: 11.8px;
+      color: var(--text-muted);
+      line-height: 1.4;
+      margin-top: -4px;
+    }
+
+    .form-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    .field-box {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .field-box label {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-secondary);
+    }
+    .field-box input, .field-box select {
+      background: #110e1c;
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 10px;
+      padding: 8px 11px;
+      font-size: 12.5px;
+      outline: none;
+      transition: border-color 0.15s ease;
+    }
+    .field-box input:focus, .field-box select:focus {
+      border-color: var(--sakura);
+    }
+
+    /* Visual Option Cards Grid (for Editor Layout & Presets) */
+    .choice-cards-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 10px;
+    }
+    .choice-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1.5px solid rgba(255, 255, 255, 0.1);
+      border-radius: 13px;
+      padding: 11px 12px;
+      cursor: pointer;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: all 0.16s ease;
+    }
+    .choice-card:hover {
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(244, 114, 182, 0.4);
+    }
+    .choice-card.selected {
+      background: rgba(244, 114, 182, 0.15);
+      border-color: var(--sakura);
+      box-shadow: 0 4px 14px rgba(244, 114, 182, 0.18);
+    }
+    .choice-card-title {
+      font-size: 12.5px;
+      font-weight: 700;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .choice-card-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.35;
+    }
+
+    /* User-friendly Switch Row with Title + Hint */
+    .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 9px 12px;
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 11px;
+      font-size: 12.5px;
+      cursor: pointer;
+      transition: background 0.15s ease, border-color 0.15s ease;
+    }
+    .toggle-row:hover {
+      background: rgba(255, 255, 255, 0.065);
+      border-color: rgba(244, 114, 182, 0.28);
+    }
+    .toggle-row-text {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+    }
+    .toggle-row-title {
+      font-weight: 600;
+      color: var(--text-primary);
+      font-size: 12.5px;
+    }
+    .toggle-row-sub {
+      font-size: 11px;
+      color: var(--text-muted);
+      line-height: 1.32;
+    }
+    .toggle-row input[type="checkbox"] {
+      width: 18px;
+      height: 18px;
+      accent-color: var(--sakura);
+      cursor: pointer;
+      flex-shrink: 0;
+    }
+
+    /* Responsive Media Queries */
+    @media (max-width: 1100px) {
+      :root {
+        --left-sidebar-w: 300px;
+        --right-editor-w: 380px;
+      }
+      .summary-chip {
+        display: none;
+      }
+    }
+    @media (max-width: 820px) {
+      .choice-cards-grid {
+        grid-template-columns: 1fr;
+      }
+      .form-grid {
+        grid-template-columns: 1fr;
+      }
+      .block-edit-card {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <!-- ==================== TOPBAR ==================== -->
+  <div class="topbar">
+    <div class="topbar-left">
+      <button class="sidebar-toggle-btn" id="btn-toggle-sidebar" onclick="toggleLeftSidebar()" title="Свернуть или развернуть левую панель со списком страниц и Мико-тян (Горячая клавиша: [ )">
+        <span id="sidebar-toggle-icon">◀</span>
+        <span id="sidebar-toggle-lbl">Панель</span>
+      </button>
+      <div class="brand">
+        <span class="brand-sparkle">🌸</span>
+        <span>Miko-chan Manga Studio</span>
+        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.0</span>
+      </div>
+    </div>
+
+    <div class="lang-bar">
+      <select id="sel-source-lang" class="lang-select" title="Язык оригинала">
+        <option value="auto">✨ Оригинал: Авто (JA/KO/ZH)</option>
+        <option value="ja">🇯🇵 Японский (Манга)</option>
+        <option value="ko">🇰🇷 Корейский (Манхва)</option>
+        <option value="zh">🇨🇳 Китайский (Маньхуа)</option>
+      </select>
+      <span style="color:var(--text-muted);">➔</span>
+      <div class="pill-group">
+        <button class="pill-btn active" id="pill-en" onclick="setTargetLang('en')">🇬🇧 English</button>
+        <button class="pill-btn" id="pill-ru" onclick="setTargetLang('ru')">🇷🇺 Русский</button>
+        <button class="pill-btn" id="pill-romaji" onclick="setTargetLang('romaji')">🔤 Ромадзи</button>
+      </div>
+    </div>
+
+    <div class="topbar-right">
+      <div class="summary-chip" id="summary-chip" onclick="openSettingsOnTab('tab-ai')" title="Нажмите для быстрой настройки ИИ, фильтрации текста и интерфейса">
+        Шрифт: 12–32px · Только диалоги · ИИ: Авто
+      </div>
+      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ui')" title="Настроить расположение редактора, всплывающий попап у бабблов и внешний вид">
+        <span>🎨</span>
+        <span>Вид / Редактор</span>
+      </button>
+      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ai')" title="Открыть все настройки моделей, API, фильтра вздохов и шрифта">
+        <span>⚙️</span>
+        <span>Настройки</span>
+      </button>
+      <button class="icon-action-btn" id="btn-fullscreen" onclick="toggleFullscreenMode()" title="Развернуть программу на полный экран (F11)">
+        <span id="fullscreen-icon">⛶</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- ==================== MAIN WORKSPACE ==================== -->
+  <div class="bento-workspace">
+    <!-- Left Sidebar (Mascot + Pages List) -->
+    <div class="bento-left" id="bento-left">
+      <div class="bento-card mascot-card" id="mascot-card">
+        <div class="mascot-avatar-wrap">
+          <img src="/mascot.png" alt="Miko-chan" onerror="this.style.display='none'" />
+        </div>
+        <div class="mascot-dialog">
+          <div class="mascot-name">
+            <span>✨ Мико-тян</span>
+            <div style="display:flex; align-items:center; gap:6px;">
+              <span id="gpu-badge" style="font-size:10.5px; color:var(--mint);">GPU Ready</span>
+              <button type="button" class="romaji-copy-btn" onclick="toggleCompactMascot()" id="btn-compact-mascot" title="Свернуть/развернуть карточку Мико-тян, чтобы освободить место для списка страниц">↕</button>
+            </div>
+          </div>
+          <div class="mascot-bubble" id="miko-speech">
+            Привет! Теперь редактор можно закрепить ➡ Сбоку, ⬇ Снизу или 🪟 Плавающим окном, а клик по кружку #N открывает быстрый попап прямо на странице! 🌸
+          </div>
+        </div>
+      </div>
+
+      <div class="bento-card chapter-card">
+        <div class="source-pickers">
+          <button class="soft-btn" onclick="pickFolderDialog()">
+            <span>📁</span>
+            <span>Выбрать папку</span>
+          </button>
+          <button class="soft-btn" onclick="pickSingleFileDialog()">
+            <span>📄</span>
+            <span>Одна страница</span>
+          </button>
+        </div>
+
+        <div class="progress-strip">
+          <div class="progress-labels">
+            <span id="folder-title-lbl">Глава не выбрана</span>
+            <span id="folder-count-lbl">0 / 0 стр.</span>
+          </div>
+          <div class="progress-track">
+            <div class="progress-bar-fill" id="progress-fill"></div>
+          </div>
+        </div>
+
+        <div class="pages-filter-bar" id="pages-filter-bar">
+          <button class="pages-filter-btn active" id="pfilt-all" onclick="setPagesListFilter('all')">Все</button>
+          <button class="pages-filter-btn" id="pfilt-wait" onclick="setPagesListFilter('wait')">⏳ Ждут</button>
+          <button class="pages-filter-btn" id="pfilt-done" onclick="setPagesListFilter('done')">✅ Готовы</button>
+        </div>
+
+        <div class="pages-scroll" id="pages-list">
+          <div style="margin:auto; text-align:center; color:var(--text-muted); font-size:12px; padding:18px;">
+            Список страниц появится здесь после выбора папки
+          </div>
+        </div>
+
+        <div class="cta-stack">
+          <button class="cta-main" id="btn-primary-folder" onclick="onPrimaryFolderButtonClick()">
+            ▶ Перевести папку
+          </button>
+          <button class="cta-sub" id="btn-contextual-page" onclick="translateSelectedPage()" style="display:none;">
+            🎯 Перевести выбранную страницу
+          </button>
+          <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none; border-color:rgba(52, 211, 153, 0.45); color:#a7f3d0;">
+            ✏️ Редактировать перевод и Ромадзи
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Draggable Splitter for Left Sidebar -->
+    <div class="panel-splitter v-splitter" id="left-sidebar-splitter" title="Потяните, чтобы изменить ширину левой панели"></div>
+
+    <!-- Center Viewer + Dockable Editor Area -->
+    <div class="main-stage-wrap dock-mode-right" id="main-stage-wrap">
+      <div class="bento-card viewer-card" id="viewer-card">
+        <!-- Non-overlapping Responsive Viewer Toolbar -->
+        <div class="viewer-toolbar">
+          <!-- Quick Page Prev/Next Navigation (Feature 5) -->
+          <div class="toolbar-section">
+            <div class="page-nav-pill">
+              <button class="page-nav-btn" id="btn-prev-page" onclick="stepFolderPage(-1)" disabled title="Предыдущая страница (Alt + ←)">◀ Пред.</button>
+              <span class="page-nav-indicator" id="nav-page-indicator">0 / 0</span>
+              <button class="page-nav-btn" id="btn-next-page" onclick="stepFolderPage(1)" disabled title="Следующая страница (Alt + →)">След. ▶</button>
+            </div>
+          </div>
+
+          <!-- View Modes -->
+          <div class="toolbar-section">
+            <button class="pill-btn active" id="vmode-split" onclick="setViewMode('split')">🔀 До и После</button>
+            <button class="pill-btn" id="vmode-trans" onclick="setViewMode('translated')">🈯 Перевод</button>
+            <button class="pill-btn" id="vmode-orig" onclick="setViewMode('original')">🇯🇵 Оригинал</button>
+          </div>
+
+          <!-- Zoom & Fit Controls -->
+          <div class="toolbar-section">
+            <div class="zoom-pill">
+              <button class="zoom-btn active" id="zmode-width" onclick="setZoomMode('fit_width')" title="Вписать страницу по ширине области просмотра">↔ Шир.</button>
+              <button class="zoom-btn" id="zmode-height" onclick="setZoomMode('fit_height')" title="Вписать страницу целиком по высоте экрана">↕ Выс.</button>
+              <button class="zoom-btn" onclick="adjustZoomPct(-15)" title="Уменьшить масштаб (Ctrl + колесико вниз)">➖</button>
+              <span class="zoom-lbl" id="zoom-pct-lbl">Авто</span>
+              <button class="zoom-btn" onclick="adjustZoomPct(15)" title="Увеличить масштаб (Ctrl + колесико вверх)">➕</button>
+            </div>
+          </div>
+
+          <!-- Interactive Tools -->
+          <div class="toolbar-section">
+            <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (клик по рамке открывает быстрый попап редактирования)">📌 Метки #N</button>
+            <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице, чтобы принудительно добавить его в перевод">➕ Обвести</button>
+            <button class="pill-btn" id="btn-toggle-drawer" onclick="openPageEditor()" title="Открыть или скрыть панель редактора текста">✏️ Редактор (0)</button>
+            <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
+            <button class="pill-btn" onclick="openOutputFolder()" title="Открыть папку с готовым переводом в Проводнике">📂 Папка</button>
+          </div>
+        </div>
+
+        <!-- True Full-Page Scrollable Stage -->
+        <div class="viewer-stage zoom-fit-width split-mode" id="viewer-stage">
+          <div class="empty-viewer">
+            <div style="font-size:38px; margin-bottom:10px;">📖</div>
+            <div style="font-weight:700; color:var(--text-primary); margin-bottom:6px; font-size:14.5px;">Добро пожаловать в Miko-chan Manga Studio!</div>
+            <div>Откройте папку с мангой слева или выберите отдельную страницу, чтобы увидеть сравнение оригинала и перевода, кликать прямо по облачкам <b>#N</b> для быстрого редактирования и смотреть чтение на <b>🔤 Ромадзи</b>.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Draggable Splitter between Viewer and Editor (Right or Bottom) -->
+      <div class="panel-splitter v-splitter hidden" id="editor-splitter" title="Потяните границу, чтобы изменить размер панели редактора"></div>
+
+      <!-- Dockable / Floating Editor Panel -->
+      <div class="text-drawer" id="text-drawer">
+        <div class="editor-header-row" id="editor-drag-handle">
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <b style="color:var(--sakura); font-size:13.5px;" id="editor-title-lbl">✏️ Редактор перевода</b>
+            <!-- Layout Switcher Pills (Feature 1 & 4) -->
+            <div class="dock-switch-group" title="Выберите удобное расположение панели редактора">
+              <button type="button" class="dock-switch-btn active" id="dock-btn-right" onclick="setEditorDockMode('right')" title="Боковая колонка справа (страница манги видна во всю высоту без перекрытий)">➡ Сбоку</button>
+              <button type="button" class="dock-switch-btn" id="dock-btn-bottom" onclick="setEditorDockMode('bottom')" title="Панель снизу с перетаскиваемой границей и честной прокруткой страницы до конца">⬇ Снизу</button>
+              <button type="button" class="dock-switch-btn" id="dock-btn-floating" onclick="setEditorDockMode('floating')" title="Плавающее перетаскиваемое мини-окно поверх страницы">🪟 Окно</button>
+            </div>
+          </div>
+
+          <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+            <button type="button" class="pill-btn" id="btn-wide-mode" onclick="toggleLeftSidebar()" title="Режим широкого экрана: скрыть/показать левую панель со списком страниц">↔ Широкий экран</button>
+            <button type="button" class="pill-btn subtle-active" id="btn-auto-center-pin" onclick="toggleAutoScrollBubble()" title="Авто-центровка: плавно прокручивать страницу манги к выбранному в редакторе кружку #N">🎯 Авто-фокус</button>
+            <button type="button" class="pill-btn" id="btn-floating-fade" onclick="toggleFloatingAutoFade()" style="display:none;" title="Авто-прозрачность плавающего окна при наведении курсора на страницу манги">👻 Прозрачн.</button>
+            <button type="button" class="pill-btn" id="btn-floating-min" onclick="toggleFloatingMinimize()" style="display:none;" title="Свернуть/развернуть плавающее окно в узкую полоску">— Свернуть</button>
+            <button type="button" class="btn-save-edit" id="btn-save-page-edits" onclick="saveEditedPageTranslation()" title="Перерисовать страницу с новым текстом и сохранить в файл (Ctrl+S)">💾 Сохранить (Ctrl+S)</button>
+            <button type="button" class="pill-btn" onclick="toggleTextDrawer(false)" title="Закрыть панель редактора">✕</button>
+          </div>
+        </div>
+
+        <div class="editor-sub-toolbar">
+          <div class="editor-actions">
+            <button class="btn-restore-block" id="btn-drawer-draw-region" onclick="toggleDrawRegionMode()" title="Выделить мышкой на картинке любой кружок или текст, который модель пропустила, и перевести его">
+              ➕ Обвести текст
+            </button>
+            <button class="btn-delete-block" onclick="deleteAllFreeTextBlocks()" title="Удалить перевод всех надписей вне бабблов (спецэффектов на фоне) и оставить оригинальный рисунок">
+              🗑 Убрать фон/SFX
+            </button>
+            <button class="btn-delete-block" onclick="deleteAllPageBlocks()" title="Удалить вообще весь перевод на этой странице и вернуть чистый оригинал">
+              🗑 Сбросить стр.
+            </button>
+          </div>
+          <div class="editor-actions">
+            <button class="btn-romaji-toggle active" id="btn-drawer-romaji" onclick="toggleRomajiDisplay()" title="Показывать транскрипцию японского текста латиницей (Ромадзи)">
+              🔤 Ромадзи: ВКЛ
+            </button>
+            <button class="pill-btn" id="btn-ai-romaji" onclick="requestAiRomajiForPage()" title="Точное чтение всех сложных кандзи на странице в Ромадзи через ИИ">
+              ✨ Ромадзи (ИИ)
+            </button>
+            <button class="pill-btn" id="btn-rescan-blocks" onclick="ensurePageBlocksLoaded(true)" title="Заново найти текстовые блоки на странице через OCR с текущим фильтром">
+              🔍 OCR заново
+            </button>
+          </div>
+        </div>
+
+        <div class="blocks-scroll-area" id="blocks-container">
+          Выберите страницу слева и нажмите «✏️ Редактор» или кликните по любому кружку #N на странице.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== COMPACT INLINE BUBBLE POPUP (FEATURE 2) ==================== -->
+  <div class="inline-bubble-popup" id="inline-bubble-popup">
+    <div class="inline-popup-header" id="inline-popup-drag-bar">
+      <div style="display:flex; align-items:center; gap:6px;">
+        <span class="block-id-badge" id="popup-block-badge">#1 · 💬 Баббл</span>
+        <button type="button" class="romaji-copy-btn" onclick="stepInlinePopupBlock(-1)" title="Предыдущий кружок на странице">◀</button>
+        <button type="button" class="romaji-copy-btn" onclick="stepInlinePopupBlock(1)" title="Следующий кружок на странице">▶</button>
+      </div>
+      <div style="display:flex; align-items:center; gap:5px;">
+        <select id="popup-fs-select" class="font-override-select" onchange="onPopupFontChange(this.value)" title="Индивидуальный размер шрифта для этого кружка">
+          <option value="">Шрифт: Авто</option>
+          <option value="10">10 px</option>
+          <option value="12">12 px</option>
+          <option value="14">14 px</option>
+          <option value="16">16 px</option>
+          <option value="18">18 px</option>
+          <option value="20">20 px</option>
+          <option value="22">22 px</option>
+          <option value="24">24 px</option>
+          <option value="28">28 px</option>
+          <option value="32">32 px</option>
+          <option value="36">36 px</option>
+          <option value="42">42 px</option>
+        </select>
+        <button type="button" class="romaji-copy-btn" onclick="closeInlineBubblePopup()" title="Закрыть попап (Esc)">✕</button>
+      </div>
+    </div>
+
+    <div class="inline-popup-orig" id="popup-orig-text">🇯🇵 —</div>
+
+    <div class="inline-popup-romaji" id="popup-romaji-row">
+      <span id="popup-romaji-text" style="overflow:hidden; text-overflow:ellipsis;">🔤 —</span>
+      <button type="button" class="romaji-copy-btn" onclick="copyPopupRomajiToInput()" title="Подставить Ромадзи в поле перевода">➔ В перевод</button>
+    </div>
+
+    <textarea id="popup-textarea" class="inline-popup-textarea" placeholder="Введите перевод для этого кружка (или оставьте пустым для сохранения оригинала)..." oninput="onPopupTextareaInput(this.value)" onkeydown="onPopupTextareaKeydown(event)"></textarea>
+
+    <div class="inline-popup-footer">
+      <div style="display:flex; align-items:center; gap:5px;">
+        <button type="button" class="btn-save-edit" style="padding:5px 11px; font-size:11.5px;" onclick="saveFromInlinePopup()" title="Сохранить и перерисовать страницу (Ctrl+Enter или Ctrl+S)">💾 Применить</button>
+        <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
+        <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Удалить перевод и оставить оригинальный рисунок">🗑 Удалить</button>
+        <button type="button" class="btn-restore-block" id="popup-restore-btn" onclick="restoreFromInlinePopup(event)" style="display:none;" title="Вернуть удаленный перевод">↩ Вернуть</button>
+      </div>
+      <button type="button" class="romaji-copy-btn" onclick="openFullEditorFromPopup()" title="Открыть этот блок в большой панели редактора">📋 В список</button>
+    </div>
+  </div>
+
+  <!-- ==================== REDESIGNED TABBED SETTINGS MODAL ==================== -->
+  <div class="modal-backdrop" id="settings-modal" onclick="if(event.target===this) toggleSettingsModal(false)">
+    <div class="settings-modal">
+      <div class="modal-header">
+        <div class="modal-header-title">
+          <span>⚙️ Настройки Miko-chan Manga Studio</span>
+          <span style="font-size:11.5px; color:var(--text-muted); font-weight:500;">Все изменения удобно разложены по вкладкам</span>
+        </div>
+        <button class="pill-btn" onclick="toggleSettingsModal(false)">✕ Закрыть</button>
+      </div>
+
+      <!-- Tab Bar -->
+      <div class="settings-tabs-nav">
+        <button type="button" class="settings-tab-btn active" id="stab-btn-ai" onclick="switchSettingsTab('tab-ai')">🤖 ИИ и Модели</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-ui" onclick="switchSettingsTab('tab-ui')">🎨 Интерфейс и Редактор</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-filter" onclick="switchSettingsTab('tab-filter')">📊 Фильтр текста и SFX</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-font" onclick="switchSettingsTab('tab-font')">🔤 Шрифт и Сохранение</button>
+      </div>
+
+      <div class="settings-body">
+        <!-- TAB 1: AI & MODELS -->
+        <div class="settings-tab-pane active" id="tab-ai">
+          <div class="section-box">
+            <div class="section-title">
+              <span>🤖 Активная модель перевода</span>
+              <button type="button" class="romaji-copy-btn" onclick="testAndRefreshApi()">🔄 Обновить список моделей</button>
+            </div>
+            <div class="section-desc">Выберите модель, которая будет переводить диалоги (облачный DeepSeek или локальная модель Ollama на вашей RTX 5070 Ti).</div>
+            <div class="field-box">
+              <select id="sel-model" onchange="onModelSelectChange()"></select>
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">🐋 Облачный API DeepSeek (ModuleAPI — Flash и Pro)</div>
+            <div class="section-desc">Быстрое переключение в 1 клик между скоростной моделью Flash и максимальным качеством Pro.</div>
+            <div class="field-box" style="display:none;">
+              <select id="sel-cloud-preset" onchange="onCloudPresetChange()">
+                <option value="https://moduleapi.pro/v1|deepseek-v4-flash">⚡ DeepSeek Flash</option>
+                <option value="https://moduleapi.pro/v1|deepseek-v4-pro">🧠 DeepSeek Pro</option>
+              </select>
+            </div>
+            <div class="choice-cards-grid" style="grid-template-columns: 1fr 1fr;">
+              <div class="choice-card" id="card-preset-flash" onclick="selectDeepSeekPreset('deepseek-v4-flash')">
+                <div class="choice-card-title">⚡ DeepSeek Flash</div>
+                <div class="choice-card-sub"><b>deepseek-v4-flash</b> — высокая скорость и минимальный расход токенов для больших глав.</div>
+              </div>
+              <div class="choice-card" id="card-preset-pro" onclick="selectDeepSeekPreset('deepseek-v4-pro')">
+                <div class="choice-card-title">🧠 DeepSeek Pro</div>
+                <div class="choice-card-sub"><b>deepseek-v4-pro</b> — глубокое понимание контекста, сленга и сложной литературной речи.</div>
+              </div>
+            </div>
+            <div class="form-grid">
+              <div class="field-box">
+                <label>Base URL шлюза DeepSeek:</label>
+                <input id="inp-unsloth-url" type="text" value="https://moduleapi.pro/v1" placeholder="https://moduleapi.pro/v1" />
+              </div>
+              <div class="field-box">
+                <label>API Ключ (sk-...):</label>
+                <div style="display:flex; gap:6px;">
+                  <input id="inp-api-key" type="password" placeholder="sk-..." style="flex:1;" />
+                  <button type="button" class="soft-btn" style="padding:6px 10px;" onclick="toggleApiKeyVisibility()" title="Показать или скрыть API ключ">👁</button>
+                </div>
+              </div>
+            </div>
+            <div class="field-box" style="display:none;">
+              <input id="inp-custom-model" type="text" />
+            </div>
+            <div id="api-status-banner" style="font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.25); border-radius:9px; padding:7px 10px; line-height:1.4;">
+              💡 Кликните по карточке <b>DeepSeek Flash</b> или <b>DeepSeek Pro</b> выше и нажмите «Сохранить настройки».
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">🌸 Скачать локальные модели Shisa V2.1 / Qwen / Gemma в 1 клик (Ollama)</div>
+            <div class="section-desc">Работают полностью бесплатно и без интернета на вашей видеокарте (с авто-обходом VPN Fake-IP).</div>
+            <div class="field-box">
+              <select id="sel-recommended-pull">
+                <option value="hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4) — Топ-1 для японской манги (~8.3 ГБ)</option>
+                <option value="hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M">🌸 Shisa V2.1 8B (Qwen3) — Быстрая для манги JA➔EN/RU (~5.0 ГБ)</option>
+                <option value="hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored — Без цензуры 18+ (~7.0 ГБ)</option>
+                <option value="gemma3:12b">💎 Gemma 3 12B — Живой литературный слог RU/EN (~7.3 ГБ)</option>
+                <option value="qwen2.5:14b">🐉 Qwen 2.5 14B — Универсал JA/KO/ZH + Ромадзи (~8.4 ГБ)</option>
+              </select>
+            </div>
+            <button class="cta-main" id="btn-pull-model" style="padding:9px 14px; font-size:12.5px;" onclick="pullRecommendedModel()">
+              📥 Скачать выбранную модель и сделать активной
+            </button>
+            <div id="pull-progress-wrap" style="display:none; flex-direction:column; gap:4px;">
+              <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--mint);">
+                <span id="pull-status-lbl">Скачивание...</span>
+                <span id="pull-pct-lbl">0%</span>
+              </div>
+              <div class="progress-track">
+                <div class="progress-bar-fill" id="pull-progress-fill"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 2: UI & EDITOR (ALL 5 NEW OPTIONS CONFIGURABLE!) -->
+        <div class="settings-tab-pane" id="tab-ui">
+          <div class="section-box">
+            <div class="section-title">📐 1. Расположение панели редактора (чтобы не перекрывать страницу)</div>
+            <div class="section-desc">Выберите, где должна открываться панель со списком всех текстовых блоков страницы. Вы также можете переключать это в 1 клик прямо в шапке редактора!</div>
+            <div class="choice-cards-grid">
+              <div class="choice-card selected" id="ui-card-dock-right" onclick="setEditorDockMode('right')">
+                <div class="choice-card-title">➡ Сбоку (Справа)</div>
+                <div class="choice-card-sub">Страница манги всегда видна во всю высоту без перекрытий. Ширина меняется мышкой.</div>
+              </div>
+              <div class="choice-card" id="ui-card-dock-bottom" onclick="setEditorDockMode('bottom')">
+                <div class="choice-card-title">⬇ Снизу (Сплиттер)</div>
+                <div class="choice-card-sub">Панель под страницей с перетаскиваемой границей и честной прокруткой страницы до самого низа.</div>
+              </div>
+              <div class="choice-card" id="ui-card-dock-floating" onclick="setEditorDockMode('floating')">
+                <div class="choice-card-title">🪟 Плавающее окно</div>
+                <div class="choice-card-sub">Перетаскиваемое мини-окно поверх манги. Сворачивается в полоску и становится прозрачным.</div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">✨ 2. Удобные функции редактора и просмотра (можно включать и отключать)</div>
+            <div class="section-desc">Настройте поведение редактора, всплывающих окошек и боковой панели под свой стиль работы:</div>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">💬 Компактный всплывающий попап у кружка #N по клику на картинке</span>
+                <span class="toggle-row-sub">Клик по рамке #N на странице манги открывает мини-окошко редактирования прямо рядом с бабблом без открытия большой панели</span>
+              </div>
+              <input id="chk-ui-inline-popup" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">📌 Всегда показывать интерактивные рамки #N на переведенной странице</span>
+                <span class="toggle-row-sub">Если включено — номера кружков #1, #2... видны сразу после перевода (даже при закрытой панели редактора)</span>
+              </div>
+              <input id="chk-ui-always-pins" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🎯 Авто-центровка страницы манги на выбранном в редакторе кружке #N</span>
+                <span class="toggle-row-sub">При клике на блок в списке редактора страница манги плавно прокручивается к этому кружку и подсвечивает его</span>
+              </div>
+              <input id="chk-ui-auto-scroll" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">👻 Авто-прозрачность плавающего окна редактора при наведении на мангу</span>
+                <span class="toggle-row-sub">В режиме «🪟 Плавающее окно» делает редактор полупрозрачным, когда курсор мыши находится на странице манги</span>
+              </div>
+              <input id="chk-ui-floating-fade" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🖥 «Режим широкого экрана» (авто-сворачивание левой панели при открытии редактора)</span>
+                <span class="toggle-row-sub">Автоматически скрывает левую колонку со списком страниц при открытии редактора, отдавая максимум экрана под мангу</span>
+              </div>
+              <input id="chk-ui-auto-collapse" type="checkbox" onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🐾 Компактная карточка ассистента Мико-тян</span>
+                <span class="toggle-row-sub">Уменьшает высоту карточки Мико-тян в левой панели, чтобы помещалось больше страниц в списке главы</span>
+              </div>
+              <input id="chk-ui-compact-mascot" type="checkbox" onchange="onUiSettingCheckboxChange()" />
+            </label>
+          </div>
+        </div>
+
+        <!-- TAB 3: TEXT FILTER & ARTWORK PROTECTION -->
+        <div class="settings-tab-pane" id="tab-filter">
+          <div class="section-box">
+            <div class="section-title">📊 Объем переводимого текста и защита рисунка от замазки</div>
+            <div class="section-desc">Настройте, какие надписи нужно переводить, а какие (вздохи, стоны, звуковые эффекты на фоне) оставлять в оригинале без замазки.</div>
+            <div class="field-box">
+              <label>Готовый профиль фильтрации:</label>
+              <select id="sel-text-filter-mode" onchange="onTextFilterModeChange()">
+                <option value="dialogue_only" selected>💬 Только диалоги (без спецэффектов и вздохов «а, о, ах, ох») — Рекомендуется</option>
+                <option value="bubbles_no_sighs">💭 Диалоги + важные надписи на фоне (без вздохов «а, о, ах, ох» и без SFX)</option>
+                <option value="long_only">🛡 Минимум замазки — только длинные фразы (от 4+ символов, без вздохов и фона)</option>
+                <option value="bubbles_only">🗨 Все облачка диалогов (без текста на фоне, но со вздохами)</option>
+                <option value="all">🔊 Переводить вообще всё (диалоги, фон, спецэффекты и вздохи)</option>
+              </select>
+            </div>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🚫 Не переводить короткие вздохи и охи («а», «о», «ах», «ох», «мм», «ха»)</span>
+                <span class="toggle-row-sub">Защищает мелкие эмоциональные облачка со вздохами от лишней замазки</span>
+              </div>
+              <input id="chk-skip-sighs" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🚫 Не переводить звуковые спецэффекты (SFX / ономатопею)</span>
+                <span class="toggle-row-sub">Пропускает звуки ударов, шорохов и спецэффектов катаканой/хангылем</span>
+              </div>
+              <input id="chk-skip-sfx" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🔍 Переводить текст ВНЕ бабблов (надписи прямо поверх рисунка/фона)</span>
+                <span class="toggle-row-sub">Если выключено — переводится только текст внутри рамок и облачков (рисунок фона никогда не трогается)</span>
+              </div>
+              <input id="chk-free-text" type="checkbox" onchange="onCustomFilterCheckboxChange()" />
+            </label>
+
+            <div class="form-grid">
+              <div class="field-box">
+                <label>📏 Минимальная длина фразы (символов):</label>
+                <input id="inp-min-text-len" type="number" min="1" max="15" value="2" onchange="updateSummaryChip()" />
+              </div>
+              <div class="field-box">
+                <label>📦 Пачка страниц за 1 запрос к ИИ:</label>
+                <input id="inp-batch-pages" type="number" min="1" max="25" value="12" onchange="updateSummaryChip()" />
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB 4: FONT & SAVING -->
+        <div class="settings-tab-pane" id="tab-font">
+          <div class="section-box">
+            <div class="section-title">🔤 Размер шрифта и стиль верстки</div>
+            <div class="section-desc">Движок автоматически подбирает оптимальный размер шрифта под каждое облачко в заданных пределах:</div>
+            <div class="form-grid">
+              <div class="field-box">
+                <label>Минимальный размер шрифта (px):</label>
+                <input id="inp-min-font" type="number" min="8" max="42" value="12" onchange="updateSummaryChip()" />
+              </div>
+              <div class="field-box">
+                <label>Максимальный размер шрифта (px):</label>
+                <input id="inp-max-font" type="number" min="12" max="72" value="32" onchange="updateSummaryChip()" />
+              </div>
+            </div>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🔠 Заглавные буквы (КОМИКС-СТИЛЬ)</span>
+                <span class="toggle-row-sub">Верстать переведенный текст заглавными буквами, как в классической манге и комиксах</span>
+              </div>
+              <input id="chk-uppercase" type="checkbox" checked />
+            </label>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">💾 Пакетный перевод и Автосохранение из браузера Chrome</div>
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">⏩ Продолжать перевод папки с места остановки</span>
+                <span class="toggle-row-sub">Автоматически пропускать уже переведенные страницы в выходной папке</span>
+              </div>
+              <input id="chk-skip-existing" type="checkbox" checked />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">💾 Автосохранение манги из расширения Chrome в папку на ПК</span>
+                <span class="toggle-row-sub">Сохраняет оригинал, перевод и .translation_state.json для последующего редактирования в Студии</span>
+              </div>
+              <input id="chk-autosave-web" type="checkbox" checked />
+            </label>
+
+            <div class="field-box">
+              <label>📂 Папка автосохранения манги из браузера Chrome:</label>
+              <div style="display:flex; gap:6px;">
+                <input id="inp-web-save-dir" type="text" placeholder="По умолчанию: Saved_Manga" style="flex:1;" />
+                <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="pickWebSaveDirInStudio()">📁 Выбрать</button>
+                <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="openWebSaveDirInStudio()">📂 Открыть</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="modal-footer">
+        <button type="button" class="soft-btn" onclick="resetUiSettingsToDefaults()" title="Вернуть рекомендуемые настройки интерфейса и фильтрации">
+          ↺ Сбросить по умолчанию
+        </button>
+        <div style="display:flex; gap:8px;">
+          <button type="button" class="soft-btn" onclick="testAndRefreshApi()">🔄 Проверить API</button>
+          <button type="button" class="cta-main" style="width:auto; padding:10px 24px;" onclick="saveSettingsAndClose()">✅ Сохранить настройки</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ==================== APPLICATION SCRIPT ==================== -->
+  <script>
+    let targetLang = "en";
+    let currentFolder = "";
+    let currentOutputDir = "";
+    let folderPages = [];
+    let pagesListFilter = "all";
+    let selectedPage = null;
+    let isJobRunning = false;
+    let viewMode = "split";
+    let zoomMode = "fit_width"; // 'fit_width' | 'fit_height' | 'custom'
+    let customZoomPct = 100;
+    let pollTimer = null;
+    let pullPollTimer = null;
+    let activeModelLabel = "Авто";
+
+    // UI & Editor Settings State (All 5 user-requested enhancements!)
+    const DEFAULT_UI_SETTINGS = {
+      editor_dock_mode: "right",      // 'right' | 'bottom' | 'floating'
+      inline_bubble_popup: true,      // Quick popup near #N bubble on click
+      always_show_pins: true,         // Show #N pins even when editor drawer is closed
+      auto_scroll_to_bubble: true,    // Smoothly scroll/center manga on active bubble #N
+      floating_auto_fade: true,       // Auto-opacity on floating window when hovering manga
+      auto_collapse_sidebar: false,   // Auto-collapse left sidebar when opening editor
+      compact_mascot: false,          // Compact Miko-chan card
+      right_panel_width: 460,
+      bottom_panel_height: 340,
+      left_sidebar_width: 360
+    };
+
+    let uiSettings = { ...DEFAULT_UI_SETTINGS };
+    let leftSidebarCollapsed = false;
+    let leftSidebarCollapsedByAuto = false;
+    let floatingMinimized = false;
+
+    let currentBlocks = [];
+    let showRomaji = true;
+    let activeBlockId = null;
+    let popupBlockId = null;
+    let isLoadingBlocks = false;
+    let isSavingEdits = false;
+
+    function loadLocalUiSettings() {
+      try {
+        const raw = localStorage.getItem("miko_ui_settings_v1");
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === "object") {
+            uiSettings = { ...DEFAULT_UI_SETTINGS, ...parsed };
+          }
+        }
+      } catch (e) {}
+      applyUiSettingsToDom();
+    }
+
+    function saveLocalUiSettings() {
+      try {
+        localStorage.setItem("miko_ui_settings_v1", JSON.stringify(uiSettings));
+      } catch (e) {}
+    }
+
+    function applyUiSettingsToDom() {
+      document.documentElement.style.setProperty("--left-sidebar-w", (uiSettings.left_sidebar_width || 360) + "px");
+      document.documentElement.style.setProperty("--right-editor-w", (uiSettings.right_editor_width || uiSettings.right_panel_width || 460) + "px");
+      document.documentElement.style.setProperty("--bottom-editor-h", (uiSettings.bottom_panel_height || 340) + "px");
+
+      const stageWrap = document.getElementById("main-stage-wrap");
+      const mode = ["right", "bottom", "floating"].includes(uiSettings.editor_dock_mode)
+        ? uiSettings.editor_dock_mode
+        : "right";
+      uiSettings.editor_dock_mode = mode;
+
+      stageWrap.classList.remove("dock-mode-right", "dock-mode-bottom", "dock-mode-floating");
+      stageWrap.classList.add("dock-mode-" + mode);
+
+      // Update dock switcher buttons in editor header & settings modal
+      ["right", "bottom", "floating"].forEach(m => {
+        const btn = document.getElementById("dock-btn-" + m);
+        if (btn) btn.classList.toggle("active", m === mode);
+        const card = document.getElementById("ui-card-dock-" + m);
+        if (card) card.classList.toggle("selected", m === mode);
+      });
+
+      const dr = document.getElementById("text-drawer");
+      const splitter = document.getElementById("editor-splitter");
+      const isDrawerOpen = dr.classList.contains("open");
+
+      if (mode !== "floating") {
+        // Clear inline floating coordinates when docked
+        dr.style.left = "";
+        dr.style.top = "";
+        dr.style.right = "";
+        dr.style.bottom = "";
+        dr.style.width = "";
+        dr.style.height = "";
+        dr.classList.remove("floating-minimized", "floating-faded");
+      } else {
+        dr.classList.toggle("floating-faded", Boolean(uiSettings.floating_auto_fade));
+        dr.classList.toggle("floating-minimized", Boolean(floatingMinimized));
+      }
+
+      if (splitter) {
+        if (!isDrawerOpen || mode === "floating") {
+          splitter.classList.add("hidden");
+        } else {
+          splitter.classList.remove("hidden", "v-splitter", "h-splitter");
+          splitter.classList.add(mode === "right" ? "v-splitter" : "h-splitter");
+        }
+      }
+
+      // Show/hide floating-specific toolbar buttons
+      const btnMin = document.getElementById("btn-floating-min");
+      const btnFade = document.getElementById("btn-floating-fade");
+      if (btnMin) {
+        btnMin.style.display = mode === "floating" ? "inline-flex" : "none";
+        btnMin.textContent = floatingMinimized ? "▢ Развернуть" : "— Свернуть";
+      }
+      if (btnFade) {
+        btnFade.style.display = mode === "floating" ? "inline-flex" : "none";
+        btnFade.classList.toggle("subtle-active", Boolean(uiSettings.floating_auto_fade));
+      }
+
+      // Update other toolbar buttons
+      const btnPins = document.getElementById("btn-pins-toggle");
+      if (btnPins) btnPins.classList.toggle("subtle-active", Boolean(uiSettings.always_show_pins));
+
+      const btnAutoCenter = document.getElementById("btn-auto-center-pin");
+      if (btnAutoCenter) btnAutoCenter.classList.toggle("subtle-active", Boolean(uiSettings.auto_scroll_to_bubble));
+
+      // Mascot compact state
+      const mascotCard = document.getElementById("mascot-card");
+      if (mascotCard) mascotCard.classList.toggle("compact-mascot", Boolean(uiSettings.compact_mascot));
+
+      // Sync checkboxes in Settings modal
+      const chkPopup = document.getElementById("chk-ui-inline-popup");
+      if (chkPopup) chkPopup.checked = Boolean(uiSettings.inline_bubble_popup);
+      const chkPins = document.getElementById("chk-ui-always-pins");
+      if (chkPins) chkPins.checked = Boolean(uiSettings.always_show_pins);
+      const chkScroll = document.getElementById("chk-ui-auto-scroll");
+      if (chkScroll) chkScroll.checked = Boolean(uiSettings.auto_scroll_to_bubble);
+      const chkFade = document.getElementById("chk-ui-floating-fade");
+      if (chkFade) chkFade.checked = Boolean(uiSettings.floating_auto_fade);
+      const chkCollapse = document.getElementById("chk-ui-auto-collapse");
+      if (chkCollapse) chkCollapse.checked = Boolean(uiSettings.auto_collapse_sidebar);
+      const chkMascot = document.getElementById("chk-ui-compact-mascot");
+      if (chkMascot) chkMascot.checked = Boolean(uiSettings.compact_mascot);
+
+      renderBboxPinsOnStage();
+    }
+
+    function setEditorDockMode(mode) {
+      uiSettings.editor_dock_mode = mode;
+      floatingMinimized = false;
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+      const modeNames = {
+        right: "➡ Сбоку справа (страница видна во всю высоту без перекрытий)",
+        bottom: "⬇ Снизу со сплиттером и честной прокруткой страницы до самого низа",
+        floating: "🪟 Плавающее перетаскиваемое мини-окно"
+      };
+      sayMiko(`Режим панели редактора переключен: ${modeNames[mode] || mode}~ 🌸`);
+    }
+
+    function onUiSettingCheckboxChange() {
+      uiSettings.inline_bubble_popup = document.getElementById("chk-ui-inline-popup").checked;
+      uiSettings.always_show_pins = document.getElementById("chk-ui-always-pins").checked;
+      uiSettings.auto_scroll_to_bubble = document.getElementById("chk-ui-auto-scroll").checked;
+      uiSettings.floating_auto_fade = document.getElementById("chk-ui-floating-fade").checked;
+      uiSettings.auto_collapse_sidebar = document.getElementById("chk-ui-auto-collapse").checked;
+      uiSettings.compact_mascot = document.getElementById("chk-ui-compact-mascot").checked;
+      if (!uiSettings.inline_bubble_popup) {
+        closeInlineBubblePopup();
+      }
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+    }
+
+    function resetUiSettingsToDefaults() {
+      uiSettings = { ...DEFAULT_UI_SETTINGS };
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+      document.getElementById("sel-text-filter-mode").value = "dialogue_only";
+      onTextFilterModeChange();
+      document.getElementById("inp-min-font").value = 12;
+      document.getElementById("inp-max-font").value = 32;
+      document.getElementById("inp-batch-pages").value = 12;
+      document.getElementById("chk-uppercase").checked = true;
+      document.getElementById("chk-skip-existing").checked = true;
+      updateSummaryChip();
+      sayMiko("Все настройки интерфейса, фильтрации и шрифта сброшены к рекомендуемым значениям по умолчанию! ✨");
+    }
+
+    function toggleLeftSidebar(forceCollapsed) {
+      const leftEl = document.getElementById("bento-left");
+      const leftSplit = document.getElementById("left-sidebar-splitter");
+      const btn = document.getElementById("btn-toggle-sidebar");
+      const wideBtn = document.getElementById("btn-wide-mode");
+      leftSidebarCollapsed = typeof forceCollapsed === "boolean" ? forceCollapsed : !leftSidebarCollapsed;
+      leftEl.classList.toggle("collapsed", leftSidebarCollapsed);
+      if (leftSplit) leftSplit.classList.toggle("hidden", leftSidebarCollapsed);
+      if (btn) {
+        btn.classList.toggle("collapsed-active", leftSidebarCollapsed);
+        document.getElementById("sidebar-toggle-icon").textContent = leftSidebarCollapsed ? "▶" : "◀";
+        document.getElementById("sidebar-toggle-lbl").textContent = leftSidebarCollapsed ? "Показать панель" : "Панель";
+      }
+      if (wideBtn) {
+        wideBtn.classList.toggle("subtle-active", leftSidebarCollapsed);
+      }
+      setTimeout(() => renderBboxPinsOnStage(), 240);
+    }
+
+    function toggleCompactMascot() {
+      uiSettings.compact_mascot = !uiSettings.compact_mascot;
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+    }
+
+    function toggleAlwaysShowPins() {
+      uiSettings.always_show_pins = !uiSettings.always_show_pins;
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+      if (uiSettings.always_show_pins && selectedPage && (!currentBlocks || currentBlocks.length === 0)) {
+        ensurePageBlocksLoaded(false);
+      }
+      sayMiko(uiSettings.always_show_pins
+        ? "Интерактивные рамки #N включены! Кликай по любому кружку на странице для быстрого редактирования~ 📌"
+        : "Рамки #N теперь показываются только при открытой панели редактора.");
+    }
+
+    function toggleAutoScrollBubble() {
+      uiSettings.auto_scroll_to_bubble = !uiSettings.auto_scroll_to_bubble;
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+      sayMiko(uiSettings.auto_scroll_to_bubble
+        ? "Авто-фокус включен: страница будет плавно центрироваться на выбранном кружке #N! 🎯"
+        : "Авто-центровка страницы на кружке отключена.");
+    }
+
+    function toggleFloatingAutoFade() {
+      uiSettings.floating_auto_fade = !uiSettings.floating_auto_fade;
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+      sayMiko(uiSettings.floating_auto_fade
+        ? "Авто-прозрачность плавающего окна включена! Наведи курсор на мангу, и окно станет полупрозрачным~ 👻"
+        : "Плавающее окно редактора теперь всегда непрозрачное.");
+    }
+
+    function toggleFloatingMinimize() {
+      floatingMinimized = !floatingMinimized;
+      applyUiSettingsToDom();
+    }
+
+    function toggleFullscreenMode() {
+      if (!document.fullscreenElement) {
+        document.documentElement.requestFullscreen?.().catch(() => {});
+      } else {
+        document.exitFullscreen?.().catch(() => {});
+      }
+    }
+    document.addEventListener("fullscreenchange", () => {
+      const icon = document.getElementById("fullscreen-icon");
+      if (icon) icon.textContent = document.fullscreenElement ? "🗗" : "⛶";
+      setTimeout(() => renderBboxPinsOnStage(), 150);
+    });
+
+    function sayMiko(text) {
+      const el = document.getElementById("miko-speech");
+      if (el) el.textContent = text;
+    }
+
+    function updateSummaryChip() {
+      const minF = document.getElementById("inp-min-font").value || 12;
+      const maxF = document.getElementById("inp-max-font").value || 32;
+      const mode = document.getElementById("sel-text-filter-mode")?.value || "dialogue_only";
+      const modeLabels = {
+        dialogue_only: "Только диалоги",
+        bubbles_no_sighs: "Без вздохов и SFX",
+        long_only: "Длинные фразы",
+        bubbles_only: "Только бабблы",
+        all: "Весь текст"
+      };
+      const filterLbl = modeLabels[mode] || "Только диалоги";
+      const shortMod = activeModelLabel.length > 24 ? activeModelLabel.slice(0, 22) + "…" : activeModelLabel;
+      document.getElementById("summary-chip").textContent =
+        `Шрифт: ${minF}–${maxF}px · ${filterLbl} · ИИ: ${shortMod}`;
+    }
+
+    function switchSettingsTab(tabId) {
+      ["tab-ai", "tab-ui", "tab-filter", "tab-font"].forEach(id => {
+        const pane = document.getElementById(id);
+        if (pane) pane.classList.toggle("active", id === tabId);
+      });
+      const btnMap = {
+        "tab-ai": "stab-btn-ai",
+        "tab-ui": "stab-btn-ui",
+        "tab-filter": "stab-btn-filter",
+        "tab-font": "stab-btn-font"
+      };
+      Object.entries(btnMap).forEach(([k, btnId]) => {
+        const b = document.getElementById(btnId);
+        if (b) b.classList.toggle("active", k === tabId);
+      });
+    }
+
+    function openSettingsOnTab(tabId) {
+      switchSettingsTab(tabId || "tab-ai");
+      toggleSettingsModal(true);
+    }
+
+    function toggleApiKeyVisibility() {
+      const inp = document.getElementById("inp-api-key");
+      if (inp) inp.type = inp.type === "password" ? "text" : "password";
+    }
+
+    function onTextFilterModeChange() {
+      const mode = document.getElementById("sel-text-filter-mode").value;
+      const chkSighs = document.getElementById("chk-skip-sighs");
+      const chkSfx = document.getElementById("chk-skip-sfx");
+      const chkFree = document.getElementById("chk-free-text");
+      const inpMinLen = document.getElementById("inp-min-text-len");
+
+      if (mode === "dialogue_only") {
+        chkSighs.checked = true;
+        chkSfx.checked = true;
+        chkFree.checked = false;
+        inpMinLen.value = 2;
+      } else if (mode === "bubbles_no_sighs") {
+        chkSighs.checked = true;
+        chkSfx.checked = true;
+        chkFree.checked = true;
+        inpMinLen.value = 2;
+      } else if (mode === "long_only") {
+        chkSighs.checked = true;
+        chkSfx.checked = true;
+        chkFree.checked = false;
+        inpMinLen.value = 4;
+      } else if (mode === "bubbles_only") {
+        chkSighs.checked = false;
+        chkSfx.checked = true;
+        chkFree.checked = false;
+        inpMinLen.value = 1;
+      } else if (mode === "all") {
+        chkSighs.checked = false;
+        chkSfx.checked = false;
+        chkFree.checked = true;
+        inpMinLen.value = 1;
+      }
+      updateSummaryChip();
+    }
+
+    function onCustomFilterCheckboxChange() {
+      const chkSighs = document.getElementById("chk-skip-sighs").checked;
+      const chkSfx = document.getElementById("chk-skip-sfx").checked;
+      const chkFree = document.getElementById("chk-free-text").checked;
+      const modeSel = document.getElementById("sel-text-filter-mode");
+      if (chkSighs && chkSfx && !chkFree) {
+        modeSel.value = "dialogue_only";
+      } else if (chkSighs && chkSfx && chkFree) {
+        modeSel.value = "bubbles_no_sighs";
+      } else if (!chkSighs && chkSfx && !chkFree) {
+        modeSel.value = "bubbles_only";
+      } else if (!chkSighs && !chkSfx && chkFree) {
+        modeSel.value = "all";
+      }
+      updateSummaryChip();
+    }
+
+    function setTargetLang(lang) {
+      targetLang = lang;
+      ["en", "ru", "romaji"].forEach(k => {
+        document.getElementById("pill-" + k).classList.toggle("active", k === lang);
+      });
+      if (currentFolder) inspectCurrentFolder();
+    }
+
+    function toggleSettingsModal(open) {
+      document.getElementById("settings-modal").classList.toggle("open", open);
+    }
+
+    function updateDeepSeekPresetCards(modelName) {
+      const cFlash = document.getElementById("card-preset-flash");
+      const cPro = document.getElementById("card-preset-pro");
+      if (cFlash) cFlash.classList.toggle("selected", modelName.includes("flash"));
+      if (cPro) cPro.classList.toggle("selected", modelName.includes("pro"));
+    }
+
+    function selectDeepSeekPreset(modelName) {
+      const urlInp = document.getElementById("inp-unsloth-url");
+      const curUrl = (urlInp.value || "").trim();
+      if (!curUrl || curUrl.includes("127.0.0.1") || curUrl.includes("localhost")) {
+        urlInp.value = "https://moduleapi.pro/v1";
+      }
+      const fullId = `unsloth::${modelName}`;
+      document.getElementById("inp-custom-model").value = fullId;
+      const selPreset = document.getElementById("sel-cloud-preset");
+      if (selPreset) {
+        selPreset.value = `https://moduleapi.pro/v1|${modelName}`;
+      }
+      updateDeepSeekPresetCards(modelName);
+      const selMod = document.getElementById("sel-model");
+      if (selMod) {
+        let found = false;
+        Array.from(selMod.options).forEach(opt => {
+          if (opt.value === fullId) {
+            opt.selected = true;
+            found = true;
+          }
+        });
+        if (!found) {
+          const opt = document.createElement("option");
+          opt.value = fullId;
+          opt.textContent = modelName === "deepseek-v4-pro"
+            ? "🧠 [DeepSeek API] deepseek-v4-pro (Pro)"
+            : "⚡ [DeepSeek API] deepseek-v4-flash (Flash)";
+          opt.selected = true;
+          selMod.appendChild(opt);
+        }
+      }
+      const banner = document.getElementById("api-status-banner");
+      if (banner) {
+        banner.style.color = "var(--mint)";
+        banner.innerHTML = `✅ Выбрана модель <b>${modelName}</b>. Нажмите «Сохранить настройки» внизу окна!`;
+      }
+    }
+
+    function onCloudPresetChange() {
+      const val = document.getElementById("sel-cloud-preset").value;
+      if (!val) return;
+      const [, defMod] = val.split("|");
+      if (defMod) {
+        selectDeepSeekPreset(defMod);
+      }
+    }
+
+    async function pullRecommendedModel() {
+      const tag = document.getElementById("sel-recommended-pull").value;
+      const btn = document.getElementById("btn-pull-model");
+      btn.disabled = true;
+      document.getElementById("pull-progress-wrap").style.display = "flex";
+      document.getElementById("pull-status-lbl").textContent = `Запуск скачивания ${tag}...`;
+      sayMiko(`Начинаю скачивать модель «${tag}» напрямую через Ollama! Никакой Unsloth запускать не нужно~ 🌸`);
+
+      await fetch("/pull_model", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ model: tag, set_as_default: true })
+      });
+
+      if (pullPollTimer) clearInterval(pullPollTimer);
+      pullPollTimer = setInterval(async () => {
+        const res = await fetch("/pull_status");
+        const st = await res.json();
+        const pct = st.progress_pct || 0;
+        document.getElementById("pull-progress-fill").style.width = pct + "%";
+        document.getElementById("pull-pct-lbl").textContent = pct + "%";
+        document.getElementById("pull-status-lbl").textContent = st.message || "Скачивание...";
+
+        if (st.status === "downloading") {
+          sayMiko(`📥 ${st.message || "Скачиваю модель..."}`);
+        } else if (st.status === "completed") {
+          clearInterval(pullPollTimer);
+          pullPollTimer = null;
+          btn.disabled = false;
+          await loadHealth(true);
+          sayMiko(`Ура! Модель «${st.model}» скачана и установлена как модель по умолчанию! Можешь переводить мангу~ 🌸✨`);
+        } else if (st.status === "error") {
+          clearInterval(pullPollTimer);
+          pullPollTimer = null;
+          btn.disabled = false;
+          sayMiko(`Ой, ошибка скачивания модели: ${st.error || st.message}`);
+        }
+      }, 1200);
+    }
+
+    async function loadHealth(force = false) {
+      try {
+        const res = await fetch("/health");
+        const data = await res.json();
+        const act = (data.active_model || "auto").replace(/^.*?::/, "");
+        activeModelLabel = act;
+        document.getElementById("gpu-badge").textContent = data.gpu?.device_name || "CPU";
+        document.getElementById("inp-unsloth-url").value = data.unsloth_url || "https://moduleapi.pro/v1";
+        if (data.unsloth_api_key) {
+          document.getElementById("inp-api-key").value = data.unsloth_api_key;
+        }
+        if (typeof data.auto_save_web_pages === "boolean") {
+          document.getElementById("chk-autosave-web").checked = data.auto_save_web_pages;
+        }
+        if (data.web_save_dir) {
+          document.getElementById("inp-web-save-dir").value = data.web_save_dir;
+        }
+        if (data.text_filter_mode) {
+          document.getElementById("sel-text-filter-mode").value = data.text_filter_mode;
+        }
+        if (typeof data.skip_sighs === "boolean") {
+          document.getElementById("chk-skip-sighs").checked = data.skip_sighs;
+        }
+        if (typeof data.skip_sfx === "boolean") {
+          document.getElementById("chk-skip-sfx").checked = data.skip_sfx;
+        }
+        if (typeof data.detect_free_text === "boolean") {
+          document.getElementById("chk-free-text").checked = data.detect_free_text;
+        }
+        if (data.min_text_length) {
+          document.getElementById("inp-min-text-len").value = data.min_text_length;
+        }
+        if (data.min_font_size) {
+          document.getElementById("inp-min-font").value = data.min_font_size;
+        }
+        if (data.max_font_size) {
+          document.getElementById("inp-max-font").value = data.max_font_size;
+        }
+        if (typeof data.uppercase === "boolean") {
+          document.getElementById("chk-uppercase").checked = data.uppercase;
+        }
+        if (data.batch_pages) {
+          document.getElementById("inp-batch-pages").value = data.batch_pages;
+        }
+        if (data.ui_settings && typeof data.ui_settings === "object") {
+          // Merge server ui_settings if local storage hasn't overridden it yet
+          if (!localStorage.getItem("miko_ui_settings_v1")) {
+            uiSettings = { ...DEFAULT_UI_SETTINGS, ...data.ui_settings };
+            applyUiSettingsToDom();
+          }
+        }
+        updateDeepSeekPresetCards(act);
+
+        let models = data.models || [];
+        if (force) {
+          const mRes = await fetch("/models?refresh=true");
+          const mData = await mRes.json();
+          models = mData.models || models;
+        }
+
+        const sel = document.getElementById("sel-model");
+        sel.innerHTML = "";
+        const optAuto = document.createElement("option");
+        optAuto.value = "auto";
+        optAuto.textContent = `✨ Автовыбор (${act})`;
+        sel.appendChild(optAuto);
+
+        models.forEach(m => {
+          const opt = document.createElement("option");
+          opt.value = m.id;
+          opt.textContent = m.name;
+          if (m.id === data.selected_model) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        updateSummaryChip();
+      } catch (e) {
+        sayMiko("Ой, нет связи с локальным сервером! Убедись, что сервер запущен~");
+      }
+    }
+
+    async function onModelSelectChange() {
+      document.getElementById("inp-custom-model").value = "";
+      const mod = document.getElementById("sel-model").value;
+      const uUrl = document.getElementById("inp-unsloth-url").value.trim();
+      const apiKey = document.getElementById("inp-api-key").value.trim();
+      updateDeepSeekPresetCards(mod);
+      await fetch("/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, unsloth_api_key: apiKey })
+      });
+      await loadHealth(false);
+    }
+
+    async function testAndRefreshApi() {
+      let customMod = document.getElementById("inp-custom-model").value.trim();
+      const uUrl = document.getElementById("inp-unsloth-url").value.trim();
+      const apiKey = document.getElementById("inp-api-key").value.trim();
+      if (customMod && !customMod.includes("::")) {
+        const isRemote = !uUrl.includes("127.0.0.1") && !uUrl.includes("localhost");
+        customMod = (isRemote || apiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
+      }
+      const mod = customMod || document.getElementById("sel-model").value;
+      const banner = document.getElementById("api-status-banner");
+      if (banner) banner.textContent = "⏳ Проверка соединения с API и обновление списка моделей...";
+
+      const res = await fetch("/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, unsloth_api_key: apiKey })
+      });
+      const data = await res.json();
+      await loadHealth(true);
+      const det = data.unsloth_status?.detected_models || [];
+      if (banner) {
+        if (det.length > 0) {
+          banner.style.color = "var(--mint)";
+          banner.textContent = `✅ API успешно подключен (${data.unsloth_url})! Доступно моделей: ${det.length}. Активная: ${(data.active_model || "").replace(/^.*?::/, "")}`;
+        } else if (apiKey) {
+          banner.style.color = "var(--amber)";
+          banner.textContent = `⚠️ Список моделей с ${data.unsloth_url} не получен (проверьте Base URL и ключ), установлены стандартные модели DeepSeek.`;
+        }
+      }
+      sayMiko(`Список моделей обновлен! Активная модель: ${(data.active_model || "auto").replace(/^.*?::/, "")} ✨`);
+    }
+
+    async function saveSettingsAndClose() {
+      let minF = parseInt(document.getElementById("inp-min-font").value, 10) || 12;
+      let maxF = parseInt(document.getElementById("inp-max-font").value, 10) || 32;
+      if (minF > maxF) {
+        maxF = minF;
+        document.getElementById("inp-max-font").value = minF;
+      }
+      let customMod = document.getElementById("inp-custom-model").value.trim();
+      const uUrl = document.getElementById("inp-unsloth-url").value.trim();
+      const apiKey = document.getElementById("inp-api-key").value.trim();
+
+      if (customMod && !customMod.includes("::")) {
+        const isRemote = !uUrl.includes("127.0.0.1") && !uUrl.includes("localhost");
+        customMod = (isRemote || apiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
+      }
+      const mod = customMod || document.getElementById("sel-model").value;
+
+      const autoSaveWeb = document.getElementById("chk-autosave-web").checked;
+      const webSaveDir = document.getElementById("inp-web-save-dir").value.trim();
+      const textFilterMode = document.getElementById("sel-text-filter-mode").value;
+      const skipSighs = document.getElementById("chk-skip-sighs").checked;
+      const skipSfx = document.getElementById("chk-skip-sfx").checked;
+      const detectFreeText = document.getElementById("chk-free-text").checked;
+      const minTextLen = parseInt(document.getElementById("inp-min-text-len").value, 10) || 2;
+      const uppercase = document.getElementById("chk-uppercase").checked;
+      const batchPages = parseInt(document.getElementById("inp-batch-pages").value, 10) || 12;
+
+      onUiSettingCheckboxChange();
+
+      await fetch("/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          selected_model: mod,
+          unsloth_url: uUrl,
+          unsloth_api_key: apiKey,
+          auto_save_web_pages: autoSaveWeb,
+          web_save_dir: webSaveDir || null,
+          text_filter_mode: textFilterMode,
+          skip_sighs: skipSighs,
+          skip_sfx: skipSfx,
+          detect_free_text: detectFreeText,
+          min_text_length: minTextLen,
+          min_font_size: minF,
+          max_font_size: maxF,
+          uppercase: uppercase,
+          batch_pages: batchPages,
+          ui_settings: uiSettings
+        })
+      });
+      document.getElementById("inp-custom-model").value = "";
+      await loadHealth(true);
+      toggleSettingsModal(false);
+      sayMiko("Все настройки перевода, моделей и интерфейса сохранены! ✨");
+    }
+
+    /* ==================== FOLDER & PAGE NAVIGATION ==================== */
+    async function pickFolderDialog() {
+      const res = await fetch("/pick_folder?target_lang=" + encodeURIComponent(targetLang), { method: "POST" });
+      const data = await res.json();
+      if (data.status === "cancelled") return;
+      currentFolder = data.source_dir;
+      renderFolderData(data);
+    }
+
+    async function inspectCurrentFolder() {
+      if (!currentFolder) return;
+      const res = await fetch("/folder_inspect", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ folder_path: currentFolder, target_lang: targetLang })
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      renderFolderData(data);
+    }
+
+    function setPagesListFilter(filt) {
+      pagesListFilter = filt;
+      ["all", "wait", "done"].forEach(k => {
+        const b = document.getElementById("pfilt-" + k);
+        if (b) b.classList.toggle("active", k === filt);
+      });
+      renderPagesListItems();
+    }
+
+    function renderPagesListItems() {
+      const listEl = document.getElementById("pages-list");
+      listEl.innerHTML = "";
+      const filtered = folderPages.filter(p => {
+        if (pagesListFilter === "done") return Boolean(p.is_translated);
+        if (pagesListFilter === "wait") return !p.is_translated;
+        return true;
+      });
+
+      if (filtered.length === 0) {
+        listEl.innerHTML = `<div style="margin:auto; text-align:center; color:var(--text-muted); font-size:12px; padding:16px;">Нет страниц в выбранном фильтре</div>`;
+        return;
+      }
+
+      filtered.forEach(p => {
+        const item = document.createElement("div");
+        const isSel = selectedPage && selectedPage.rel_path === p.rel_path;
+        item.className = "page-row" + (isSel ? " selected" : "");
+        item.dataset.relPath = p.rel_path;
+        const badge = p.is_translated
+          ? `<span class="page-badge-done">✅ Готово</span>`
+          : `<span class="page-badge-wait">⏳ Ждет</span>`;
+        item.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">#${p.index} &nbsp;${escapeHtml(p.rel_path)}</span>${badge}`;
+        item.onclick = () => selectPage(p);
+        listEl.appendChild(item);
+      });
+    }
+
+    function renderFolderData(data) {
+      currentOutputDir = data.output_dir || "";
+      folderPages = data.pages || [];
+      const total = data.total_pages || 0;
+      const done = data.translated_pages || 0;
+      const rem = data.remaining_pages || 0;
+      const folderName = (data.source_dir || "").split(/[\\/]/).pop() || "Папка";
+
+      document.getElementById("folder-title-lbl").textContent = `📁 ${folderName} ➔ _${targetLang.toUpperCase()}`;
+      document.getElementById("folder-count-lbl").textContent = `${done} / ${total} готово`;
+      const pct = total > 0 ? Math.round((done / total) * 100) : 0;
+      document.getElementById("progress-fill").style.width = pct + "%";
+
+      const mainBtn = document.getElementById("btn-primary-folder");
+      if (!isJobRunning) {
+        mainBtn.classList.remove("stopping");
+        if (done > 0 && rem > 0) {
+          mainBtn.textContent = `▶ Продолжить перевод папки (осталось ${rem} стр.)`;
+          sayMiko(`В папке «${folderName}» уже переведено ${done} из ${total} стр.! Нажми кнопку ниже, чтобы продолжить с места остановки~ 🌸`);
+        } else if (total > 0 && rem === 0) {
+          mainBtn.textContent = `✅ Вся папка переведена (${total} стр.)`;
+          sayMiko(`Ура! Все ${total} страниц в этой папке уже переведены! Можешь выбрать любую страницу или кликнуть по кружку #N ✨`);
+        } else {
+          mainBtn.textContent = `▶ Перевести всю папку (${total} стр.)`;
+          sayMiko(`Открыта папка «${folderName}» (${total} стр.). Нажми «Перевести всю папку» или выбери отдельную страницу в списке!`);
+        }
+      }
+
+      renderPagesListItems();
+
+      if (!selectedPage && folderPages.length > 0) {
+        selectPage(folderPages[0]);
+      } else if (selectedPage) {
+        const refreshed = folderPages.find(x => x.rel_path === selectedPage.rel_path);
+        if (refreshed) selectPage(refreshed);
+      }
+      updateTopPageNav();
+    }
+
+    function updateTopPageNav() {
+      const ind = document.getElementById("nav-page-indicator");
+      const prevBtn = document.getElementById("btn-prev-page");
+      const nextBtn = document.getElementById("btn-next-page");
+      if (!selectedPage) {
+        ind.textContent = "0 / 0";
+        prevBtn.disabled = true;
+        nextBtn.disabled = true;
+        return;
+      }
+      if (!folderPages || folderPages.length === 0) {
+        ind.textContent = "1 / 1";
+        prevBtn.disabled = true;
+        nextBtn.disabled = true;
+        return;
+      }
+      const idx = folderPages.findIndex(x => x.rel_path === selectedPage.rel_path);
+      const curNum = idx >= 0 ? idx + 1 : (selectedPage.index || 1);
+      ind.textContent = `Стр. ${curNum} / ${folderPages.length}`;
+      prevBtn.disabled = idx <= 0;
+      nextBtn.disabled = idx < 0 || idx >= folderPages.length - 1;
+    }
+
+    function stepFolderPage(delta) {
+      if (!folderPages || folderPages.length === 0 || !selectedPage) return;
+      const idx = folderPages.findIndex(x => x.rel_path === selectedPage.rel_path);
+      if (idx < 0) return;
+      const nextIdx = idx + delta;
+      if (nextIdx >= 0 && nextIdx < folderPages.length) {
+        selectPage(folderPages[nextIdx]);
+        const rowEl = document.querySelector(`.page-row[data-rel-path="${CSS.escape(folderPages[nextIdx].rel_path)}"]`);
+        if (rowEl) rowEl.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+    }
+
+    /* ==================== EDITOR DRAWER & INLINE POPUP ==================== */
+    function escapeHtml(str) {
+      return String(str || "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;");
+    }
+
+    function toggleTextDrawer(forceState) {
+      const dr = document.getElementById("text-drawer");
+      const openNow = typeof forceState === "boolean" ? forceState : !dr.classList.contains("open");
+      dr.classList.toggle("open", openNow);
+      document.getElementById("btn-toggle-drawer").classList.toggle("active", openNow);
+
+      // Feature 5: Auto-collapse left sidebar in Wide Screen Mode when opening editor
+      if (openNow && uiSettings.auto_collapse_sidebar && !leftSidebarCollapsed) {
+        leftSidebarCollapsedByAuto = true;
+        toggleLeftSidebar(true);
+      } else if (!openNow && leftSidebarCollapsedByAuto && leftSidebarCollapsed) {
+        leftSidebarCollapsedByAuto = false;
+        toggleLeftSidebar(false);
+      }
+
+      applyUiSettingsToDom();
+      setTimeout(() => renderBboxPinsOnStage(), 60);
+    }
+
+    async function openPageEditor() {
+      if (!selectedPage) {
+        sayMiko("Сначала выбери папку с мангой или открой страницу слева~ 🌸");
+        return;
+      }
+      const dr = document.getElementById("text-drawer");
+      const wasOpen = dr.classList.contains("open");
+      toggleTextDrawer(!wasOpen);
+      if (!wasOpen) {
+        if (!currentBlocks || currentBlocks.length === 0) {
+          await ensurePageBlocksLoaded(false);
+        } else {
+          renderBlocksEditor();
+        }
+      }
+    }
+
+    async function onFloatingRomajiClick() {
+      if (!selectedPage) {
+        sayMiko("Сначала выбери страницу манги слева, чтобы я показала чтение на Ромадзи~ 🔤🌸");
+        return;
+      }
+      const dr = document.getElementById("text-drawer");
+      if (!dr.classList.contains("open")) {
+        showRomaji = true;
+        updateRomajiButtonState();
+        toggleTextDrawer(true);
+        if (!currentBlocks || currentBlocks.length === 0) {
+          await ensurePageBlocksLoaded(false);
+        } else {
+          renderBlocksEditor();
+        }
+        sayMiko("Открыла редактор с подсветкой 🔤 Ромадзи! Теперь видно японское произношение каждой фразы латиницей~ 🌸");
+      } else {
+        toggleRomajiDisplay();
+      }
+    }
+
+    function updateRomajiButtonState() {
+      const btnDrawer = document.getElementById("btn-drawer-romaji");
+      const btnFloat = document.getElementById("btn-floating-romaji");
+      if (btnDrawer) {
+        btnDrawer.classList.toggle("active", showRomaji);
+        btnDrawer.textContent = showRomaji ? "🔤 Ромадзи: ВКЛ" : "🔤 Ромадзи: ВЫКЛ";
+      }
+      if (btnFloat) {
+        btnFloat.classList.toggle("active", showRomaji);
+      }
+    }
+
+    function toggleRomajiDisplay() {
+      showRomaji = !showRomaji;
+      updateRomajiButtonState();
+      renderBlocksEditor();
+      if (showRomaji) {
+        sayMiko("Режим 🔤 Ромадзи включен! Под каждой японской репликой показано её чтение латиницей~");
+      } else {
+        sayMiko("Подсказки Ромадзи скрыты.");
+      }
+    }
+
+    function selectPage(p) {
+      selectedPage = p;
+      activeBlockId = null;
+      closeInlineBubblePopup();
+
+      document.querySelectorAll(".page-row").forEach(el => {
+        el.classList.toggle("selected", el.dataset.relPath === p.rel_path);
+      });
+
+      const subBtn = document.getElementById("btn-contextual-page");
+      const editBtn = document.getElementById("btn-edit-page");
+      subBtn.style.display = "block";
+      editBtn.style.display = "block";
+
+      if (p.is_translated) {
+        subBtn.textContent = `🔁 Перевести стр. #${p.index} заново (ИИ)`;
+        editBtn.textContent = `✏️ Редактировать текст стр. #${p.index} (+ Ромадзи)`;
+      } else {
+        subBtn.textContent = `🎯 Перевести только стр. #${p.index} (${p.filename || p.rel_path})`;
+        editBtn.textContent = `✏️ Открыть блоки стр. #${p.index} (+ Ромадзи)`;
+      }
+
+      document.getElementById("editor-title-lbl").textContent =
+        `✏️ Редактор: стр. #${p.index} (${p.rel_path})`;
+
+      if (Array.isArray(p.blocks) && p.blocks.length > 0) {
+        currentBlocks = p.blocks.map(b => ({ ...b }));
+      } else {
+        currentBlocks = [];
+      }
+
+      updateTopPageNav();
+      updateDrawerBadgeCount();
+      renderViewer();
+      renderBlocksEditor();
+
+      const drawerOpen = document.getElementById("text-drawer").classList.contains("open");
+      if (currentBlocks.length === 0 && (drawerOpen || p.is_translated)) {
+        ensurePageBlocksLoaded(false);
+      }
+    }
+
+    function updateDrawerBadgeCount() {
+      const cnt = currentBlocks ? currentBlocks.length : 0;
+      document.getElementById("btn-toggle-drawer").textContent = `✏️ Редактор (${cnt})`;
+    }
+
+    async function ensurePageBlocksLoaded(forceRescan = false) {
+      if (!selectedPage || isLoadingBlocks) return;
+      isLoadingBlocks = true;
+      const targetRel = selectedPage.rel_path;
+      const container = document.getElementById("blocks-container");
+      if (forceRescan || currentBlocks.length === 0) {
+        container.innerHTML = `<div style="padding:14px; color:var(--sakura);">🔍 Читаю текстовые блоки и формирую Ромадзи для «${escapeHtml(selectedPage.rel_path)}»...</div>`;
+      }
+
+      try {
+        const res = await fetch("/page_blocks", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            source_path: selectedPage.source_path,
+            source_dir: currentFolder || null,
+            dest_path: selectedPage.dest_path || null,
+            lang: document.getElementById("sel-source-lang").value,
+            target_lang: targetLang,
+            detect_free_text: document.getElementById("chk-free-text").checked,
+            text_filter_mode: document.getElementById("sel-text-filter-mode").value,
+            skip_sighs: document.getElementById("chk-skip-sighs").checked,
+            skip_sfx: document.getElementById("chk-skip-sfx").checked,
+            min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
+            force_rescan: Boolean(forceRescan),
+            use_llm_romaji: false,
+            ollama_model: document.getElementById("sel-model").value
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          container.innerHTML = `<div style="padding:10px; color:var(--rose);">Ошибка чтения блоков: ${escapeHtml(data.detail || "неизвестная ошибка")}</div>`;
+          return;
+        }
+        if (selectedPage && selectedPage.rel_path === targetRel) {
+          currentBlocks = (data.blocks || []).map(b => ({ ...b }));
+          selectedPage.blocks = currentBlocks;
+          if (data.dest_path && !selectedPage.dest_path) {
+            selectedPage.dest_path = data.dest_path;
+          }
+          updateDrawerBadgeCount();
+          renderBlocksEditor();
+          renderBboxPinsOnStage();
+        }
+      } catch (e) {
+        container.innerHTML = `<div style="padding:10px; color:var(--rose);">Не удалось загрузить блоки страницы: ${escapeHtml(e.message)}</div>`;
+      } finally {
+        isLoadingBlocks = false;
+      }
+    }
+
+    async function requestAiRomajiForPage() {
+      if (!selectedPage) return;
+      if (!currentBlocks || currentBlocks.length === 0) {
+        await ensurePageBlocksLoaded(false);
+      }
+      if (!currentBlocks || currentBlocks.length === 0) {
+        sayMiko("На этой странице не найдено текстовых блоков~");
+        return;
+      }
+
+      syncInputsToCurrentBlocks();
+      const btn = document.getElementById("btn-ai-romaji");
+      btn.disabled = true;
+      btn.textContent = "⏳ Читаю...";
+      sayMiko("Запрашиваю у ИИ точное контекстное чтение всех японских кандзи в Ромадзи... 🔤✨");
+
+      try {
+        const res = await fetch("/page_romaji", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            source_path: selectedPage.source_path,
+            source_dir: currentFolder || null,
+            target_lang: targetLang,
+            use_llm: true,
+            ollama_model: document.getElementById("sel-model").value,
+            blocks: currentBlocks
+          })
+        });
+        const data = await res.json();
+        if (res.ok && Array.isArray(data.blocks)) {
+          const romMap = {};
+          data.blocks.forEach(b => { romMap[b.id] = b.romaji_text; });
+          currentBlocks.forEach(b => {
+            if (romMap[b.id]) b.romaji_text = romMap[b.id];
+          });
+          selectedPage.blocks = currentBlocks;
+          showRomaji = true;
+          updateRomajiButtonState();
+          renderBlocksEditor();
+          if (popupBlockId) populateInlinePopup(popupBlockId);
+          sayMiko("Готово! Ромадзи для всех японских фраз на странице обновлено с учетом контекста кандзи~ 🔤🌸");
+        } else {
+          sayMiko(`Не удалось уточнить Ромадзи через ИИ: ${data.detail || "используется встроенный словарь"}`);
+        }
+      } catch (e) {
+        sayMiko("ИИ сейчас недоступен, поэтому используется встроенный конвертер Ромадзи~");
+      } finally {
+        btn.disabled = false;
+        btn.textContent = "✨ Ромадзи (ИИ)";
+      }
+    }
+
+    function syncInputsToCurrentBlocks() {
+      if (!currentBlocks) return;
+      currentBlocks.forEach(b => {
+        const ta = document.getElementById(`edit-ta-${b.id}`);
+        if (ta) {
+          b.translated_text = ta.value;
+          b.is_deleted = !ta.value.trim();
+        }
+        const fsSel = document.getElementById(`edit-fs-${b.id}`);
+        if (fsSel) {
+          const val = parseInt(fsSel.value, 10);
+          b.font_size = (!isNaN(val) && val >= 8) ? val : null;
+        }
+      });
+    }
+
+    function copyRomajiToTranslation(blockId) {
+      syncInputsToCurrentBlocks();
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk || !blk.romaji_text) return;
+      blk.is_deleted = false;
+      blk.translated_text = blk.romaji_text;
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      if (popupBlockId === blockId) populateInlinePopup(blockId);
+      const ta = document.getElementById(`edit-ta-${blockId}`);
+      if (ta) ta.focus();
+    }
+
+    async function deleteBlockTranslation(blockId, ev) {
+      if (ev) ev.stopPropagation();
+      syncInputsToCurrentBlocks();
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      if (blk.translated_text && blk.translated_text.trim()) {
+        blk._backup_translation = blk.translated_text.trim();
+      }
+      blk.translated_text = "";
+      blk.is_deleted = true;
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      if (popupBlockId === blockId) populateInlinePopup(blockId);
+      sayMiko(`Удаляю перевод блока #${blockId} и восстанавливаю оригинальный текст/рисунок на странице... 🗑✨`);
+      await saveEditedPageTranslation();
+    }
+
+    async function restoreBlockTranslation(blockId, ev) {
+      if (ev) ev.stopPropagation();
+      syncInputsToCurrentBlocks();
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      const restored = blk._backup_translation || blk.romaji_text || blk.original_text || "";
+      blk.translated_text = restored;
+      blk.is_deleted = false;
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      if (popupBlockId === blockId) populateInlinePopup(blockId);
+      await saveEditedPageTranslation();
+    }
+
+    async function deleteAllFreeTextBlocks() {
+      if (!currentBlocks || currentBlocks.length === 0) return;
+      syncInputsToCurrentBlocks();
+      let removedCnt = 0;
+      currentBlocks.forEach(b => {
+        if (b.is_free_text && !b.is_deleted && (b.translated_text || "").trim()) {
+          b._backup_translation = b.translated_text.trim();
+          b.translated_text = "";
+          b.is_deleted = true;
+          removedCnt++;
+        }
+      });
+      if (removedCnt === 0) {
+        sayMiko("На этой странице нет активных переводов вне бабблов (на фоне)~ 🌸");
+        return;
+      }
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      sayMiko(`Удалено ${removedCnt} надписей вне бабблов! Восстанавливаю чистый рисунок... 🎨`);
+      await saveEditedPageTranslation();
+    }
+
+    async function deleteAllPageBlocks() {
+      if (!currentBlocks || currentBlocks.length === 0) return;
+      syncInputsToCurrentBlocks();
+      currentBlocks.forEach(b => {
+        if ((b.translated_text || "").trim()) {
+          b._backup_translation = b.translated_text.trim();
+        }
+        b.translated_text = "";
+        b.is_deleted = true;
+      });
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      sayMiko("Все переводы на этой странице удалены — возвращаю чистый оригинал! 🖼✨");
+      await saveEditedPageTranslation();
+    }
+
+    /* Feature 3: Auto-scroll & center manga page on selected bubble #N */
+    function scrollMangaStageToPin(blockId) {
+      if (!uiSettings.auto_scroll_to_bubble) return;
+      // Prefer pin on translated image if visible, otherwise original
+      const transWrap = document.getElementById("pin-wrap-trans");
+      const targetWrap = transWrap || document.getElementById("pin-wrap-orig");
+      if (!targetWrap) return;
+      const pin = targetWrap.querySelector(`.bbox-pin[data-block-id="${blockId}"]`);
+      if (!pin) return;
+      pin.classList.remove("pulse-pin");
+      void pin.offsetWidth; // trigger reflow for animation
+      pin.classList.add("pulse-pin");
+      pin.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
+    }
+
+    function highlightBlock(blockId, shouldScrollStage = false) {
+      activeBlockId = blockId;
+      document.querySelectorAll(".block-edit-card").forEach(el => {
+        el.classList.toggle("active-block", el.dataset.blockId === String(blockId));
+      });
+      document.querySelectorAll(".bbox-pin").forEach(el => {
+        el.classList.toggle("active-pin", el.dataset.blockId === String(blockId));
+      });
+      if (shouldScrollStage) {
+        scrollMangaStageToPin(blockId);
+      }
+    }
+
+    function focusBlockEditorCard(blockId) {
+      const dr = document.getElementById("text-drawer");
+      if (!dr.classList.contains("open")) {
+        toggleTextDrawer(true);
+      }
+      if (floatingMinimized) {
+        floatingMinimized = false;
+        applyUiSettingsToDom();
+      }
+      highlightBlock(blockId, false);
+      const card = document.getElementById(`block-card-${blockId}`);
+      if (card) {
+        card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      const ta = document.getElementById(`edit-ta-${blockId}`);
+      if (ta) {
+        ta.focus();
+      }
+    }
+
+    /* ==================== FEATURE 2: COMPACT INLINE BUBBLE POPUP ==================== */
+    function onPinClicked(blockId, pinEl, ev) {
+      if (ev) ev.stopPropagation();
+      highlightBlock(blockId, false);
+      // Scroll card in drawer if drawer is already open
+      const dr = document.getElementById("text-drawer");
+      if (dr && dr.classList.contains("open")) {
+        const card = document.getElementById(`block-card-${blockId}`);
+        if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      if (uiSettings.inline_bubble_popup) {
+        openInlineBubblePopup(blockId, pinEl);
+      } else {
+        focusBlockEditorCard(blockId);
+      }
+    }
+
+    function populateInlinePopup(blockId) {
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      popupBlockId = blockId;
+      const isFree = Boolean(blk.is_free_text);
+      const isDel = Boolean(blk.is_deleted) || !(blk.translated_text || "").trim();
+      document.getElementById("popup-block-badge").textContent =
+        `#${blk.id} · ${isFree ? "📝 Фон" : "💬 Баббл"}${isDel ? " (Ориг.)" : ""}`;
+      document.getElementById("popup-orig-text").textContent = `🇯🇵 ${blk.original_text || "—"}`;
+      document.getElementById("popup-romaji-text").textContent = `🔤 ${blk.romaji_text || "—"}`;
+      document.getElementById("popup-romaji-row").style.display = blk.romaji_text ? "flex" : "none";
+
+      const ta = document.getElementById("popup-textarea");
+      ta.value = blk.translated_text || "";
+      document.getElementById("popup-fs-select").value = blk.font_size ? String(blk.font_size) : "";
+
+      const delBtn = document.getElementById("popup-del-btn");
+      const resBtn = document.getElementById("popup-restore-btn");
+      if (delBtn) delBtn.style.display = !isDel ? "inline-flex" : "none";
+      if (resBtn) resBtn.style.display = (isDel && blk._backup_translation) ? "inline-flex" : "none";
+    }
+
+    function openInlineBubblePopup(blockId, anchorPinEl) {
+      syncInputsToCurrentBlocks();
+      populateInlinePopup(blockId);
+      const popup = document.getElementById("inline-bubble-popup");
+      popup.classList.add("open");
+
+      // Position popup smartly near the clicked bubble pin without going off-screen
+      if (anchorPinEl) {
+        const pRect = anchorPinEl.getBoundingClientRect();
+        const popW = 350;
+        const popH = 265;
+        let left = pRect.right + 12;
+        if (left + popW > window.innerWidth - 16) {
+          left = pRect.left - popW - 12;
+        }
+        if (left < 14) {
+          left = Math.max(14, Math.min(window.innerWidth - popW - 14, pRect.left));
+        }
+        let top = pRect.top - 10;
+        if (top + popH > window.innerHeight - 16) {
+          top = Math.max(16, window.innerHeight - popH - 16);
+        }
+        if (top < 62) top = 62;
+        popup.style.left = Math.round(left) + "px";
+        popup.style.top = Math.round(top) + "px";
+      }
+
+      setTimeout(() => {
+        const ta = document.getElementById("popup-textarea");
+        if (ta) {
+          ta.focus();
+          ta.setSelectionRange(ta.value.length, ta.value.length);
+        }
+      }, 30);
+    }
+
+    function closeInlineBubblePopup() {
+      const popup = document.getElementById("inline-bubble-popup");
+      if (popup) popup.classList.remove("open");
+      popupBlockId = null;
+    }
+
+    function stepInlinePopupBlock(delta) {
+      if (!currentBlocks || currentBlocks.length === 0 || !popupBlockId) return;
+      const idx = currentBlocks.findIndex(x => x.id === popupBlockId);
+      if (idx < 0) return;
+      const nextIdx = (idx + delta + currentBlocks.length) % currentBlocks.length;
+      const nextBlk = currentBlocks[nextIdx];
+      highlightBlock(nextBlk.id, true);
+      const pinEl = document.querySelector(`.bbox-pin[data-block-id="${nextBlk.id}"]`);
+      openInlineBubblePopup(nextBlk.id, pinEl);
+    }
+
+    function onPopupTextareaInput(val) {
+      if (!popupBlockId) return;
+      const blk = currentBlocks.find(x => x.id === popupBlockId);
+      if (blk) {
+        blk.translated_text = val;
+        blk.is_deleted = !val.trim();
+      }
+      const cardTa = document.getElementById(`edit-ta-${popupBlockId}`);
+      if (cardTa) cardTa.value = val;
+    }
+
+    function onPopupFontChange(val) {
+      if (!popupBlockId) return;
+      const blk = currentBlocks.find(x => x.id === popupBlockId);
+      if (blk) {
+        const parsed = parseInt(val, 10);
+        blk.font_size = (!isNaN(parsed) && parsed >= 8) ? parsed : null;
+      }
+      const cardFs = document.getElementById(`edit-fs-${popupBlockId}`);
+      if (cardFs) cardFs.value = val;
+    }
+
+    function copyPopupRomajiToInput() {
+      if (!popupBlockId) return;
+      copyRomajiToTranslation(popupBlockId);
+      const ta = document.getElementById("popup-textarea");
+      if (ta) ta.focus();
+    }
+
+    function onPopupTextareaKeydown(e) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeInlineBubblePopup();
+        return;
+      }
+      if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        saveFromInlinePopup();
+      }
+    }
+
+    async function saveFromInlinePopup() {
+      await saveEditedPageTranslation();
+      if (popupBlockId) populateInlinePopup(popupBlockId);
+    }
+
+    async function retranslateFromInlinePopup(ev) {
+      if (!popupBlockId) return;
+      await retranslateSingleBlockById(popupBlockId, ev);
+      if (popupBlockId) populateInlinePopup(popupBlockId);
+    }
+
+    async function deleteFromInlinePopup(ev) {
+      if (!popupBlockId) return;
+      await deleteBlockTranslation(popupBlockId, ev);
+    }
+
+    async function restoreFromInlinePopup(ev) {
+      if (!popupBlockId) return;
+      await restoreBlockTranslation(popupBlockId, ev);
+    }
+
+    function openFullEditorFromPopup() {
+      const id = popupBlockId;
+      closeInlineBubblePopup();
+      if (id) focusBlockEditorCard(id);
+    }
+
+    function renderBlocksEditor() {
+      const container = document.getElementById("blocks-container");
+      updateRomajiButtonState();
+      updateDrawerBadgeCount();
+
+      if (!selectedPage) {
+        container.innerHTML = `<div style="padding:12px; color:var(--text-muted);">Выберите любую страницу манги в списке слева, чтобы редактировать перевод.</div>`;
+        return;
+      }
+
+      if (!currentBlocks || currentBlocks.length === 0) {
+        container.innerHTML =
+          `<div style="padding:14px; color:var(--text-muted); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">` +
+          `<span>На этой странице пока нет загруженных текстовых блоков.</span>` +
+          `<button class="soft-btn" style="padding:6px 12px;" onclick="ensurePageBlocksLoaded(true)">🔍 Найти текст на странице (OCR)</button>` +
+          `</div>`;
+        return;
+      }
+
+      container.innerHTML = currentBlocks.map(b => {
+        const isFree = Boolean(b.is_free_text);
+        const isDel = Boolean(b.is_deleted) || !(b.translated_text || "").trim();
+        const typeLabel = isFree ? "📝 Надпись вне баббла" : "💬 Баббл";
+        const origHtml = escapeHtml(b.original_text || "");
+        const romHtml = escapeHtml(b.romaji_text || "—");
+        const transHtml = escapeHtml(b.translated_text || "");
+        const curFs = b.font_size ? String(b.font_size) : "";
+
+        const fsSelectHtml = `<select id="edit-fs-${b.id}" class="font-override-select" onchange="onBlockFontSelect(${b.id}, this.value)" title="Индивидуальный размер шрифта для этого облачка">` +
+          `<option value="" ${curFs === "" ? "selected" : ""}>Шрифт: Авто</option>` +
+          [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 42].map(
+            sz => `<option value="${sz}" ${curFs === String(sz) ? "selected" : ""}>${sz} px</option>`
+          ).join("") +
+          `</select>`;
+
+        const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>`;
+        const deleteActionHtml = !isDel
+          ? `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
+              retranslateBtnHtml +
+              `<button type="button" class="btn-delete-block" onclick="deleteBlockTranslation(${b.id}, event)" title="Удалить этот перевод и оставить оригинальный текст/рисунок на картинке без замазки">🗑 Удалить перевод</button>` +
+            `</div>`
+          : `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
+              `<span class="deleted-status-badge">🚫 Оригинал</span>` +
+              retranslateBtnHtml +
+              (b._backup_translation
+                ? `<button type="button" class="btn-restore-block" onclick="restoreBlockTranslation(${b.id}, event)">↩ Вернуть</button>`
+                : ``) +
+            `</div>`;
+
+        const romajiSection = showRomaji
+          ? `<div class="block-romaji-box">` +
+            `<div><b style="color:#a5b4fc;">🔤 Ромадзи:</b> ${romHtml}</div>` +
+            `<button class="romaji-copy-btn" onclick="copyRomajiToTranslation(${b.id})" title="Подставить этот Ромадзи в поле перевода">➔ В перевод</button>` +
+            `</div>`
+          : "";
+
+        return (
+          `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isDel ? "deleted-block" : ""}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="highlightBlock(${b.id}, true)">` +
+            `<div class="block-meta-col">` +
+              `<div class="block-header-line">` +
+                `<span class="block-id-badge" title="Нажмите, чтобы центрировать страницу манги на кружке #${b.id}">#${b.id} · ${typeLabel} 🎯</span>` +
+                fsSelectHtml +
+              `</div>` +
+              `<div class="block-orig-text" title="Распознанный оригинальный текст">🇯🇵 ${origHtml}</div>` +
+              romajiSection +
+            `</div>` +
+            `<div class="block-input-col">` +
+              `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px; margin-bottom:2px; flex-wrap:wrap;">` +
+                `<span style="font-size:11px; color:var(--text-secondary);">Перевод:</span>` +
+                deleteActionHtml +
+              `</div>` +
+              `<textarea id="edit-ta-${b.id}" class="block-textarea" placeholder="Перевод удален — на картинке оставлен чистый оригинал. Введите текст, чтобы вернуть перевод в блок #${b.id}..." ` +
+              `onfocus="highlightBlock(${b.id}, true)" ` +
+              `oninput="onBlockTextInput(${b.id}, this.value)" ` +
+              `onkeydown="onBlockTextareaKeydown(event)">${transHtml}</textarea>` +
+            `</div>` +
+          `</div>`
+        );
+      }).join("");
+    }
+
+    function onBlockFontSelect(blockId, val) {
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (blk) {
+        const parsed = parseInt(val, 10);
+        blk.font_size = (!isNaN(parsed) && parsed >= 8) ? parsed : null;
+      }
+    }
+
+    function onBlockTextInput(blockId, val) {
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (blk) {
+        blk.translated_text = val;
+        blk.is_deleted = !val.trim();
+      }
+      if (popupBlockId === blockId) {
+        const pTa = document.getElementById("popup-textarea");
+        if (pTa && pTa.value !== val) pTa.value = val;
+      }
+    }
+
+    function onBlockTextareaKeydown(e) {
+      if ((e.ctrlKey || e.metaKey) && (e.key === "Enter" || e.key === "s" || e.key === "S")) {
+        e.preventDefault();
+        saveEditedPageTranslation();
+      }
+    }
+
+    async function saveEditedPageTranslation() {
+      if (!selectedPage || isSavingEdits) return;
+      syncInputsToCurrentBlocks();
+      if (!currentBlocks || currentBlocks.length === 0) {
+        sayMiko("Нет текстовых блоков для сохранения~");
+        return;
+      }
+
+      isSavingEdits = true;
+      const saveBtn = document.getElementById("btn-save-page-edits");
+      saveBtn.disabled = true;
+      saveBtn.textContent = "⏳ Сохраняю...";
+      sayMiko(`Перерисовываю и сохраняю твой перевод на странице «${selectedPage.rel_path}»... 💾✨`);
+
+      const payload = {
+        source_path: selectedPage.source_path,
+        dest_path: selectedPage.dest_path || null,
+        source_dir: currentFolder || null,
+        target_lang: targetLang,
+        uppercase: document.getElementById("chk-uppercase").checked,
+        min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+        max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+        return_image: true,
+        image_format: "webp",
+        blocks: currentBlocks
+      };
+
+      try {
+        const res = await fetch("/save_edited_page", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ошибка при сохранении: ${data.detail || "не удалось перерисовать страницу"}`);
+          return;
+        }
+
+        selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
+        selectedPage.is_translated = true;
+        if (Array.isArray(data.blocks)) {
+          currentBlocks = data.blocks.map(b => ({ ...b }));
+          selectedPage.blocks = currentBlocks;
+        }
+
+        renderViewer(data.translated_image);
+        renderBlocksEditor();
+        sayMiko(`Готово за ${data.processing_time_sec}с! Твой ручной перевод страницы «${selectedPage.rel_path}» сохранен в файл! 💾🌸`);
+        if (currentFolder) inspectCurrentFolder();
+      } catch (e) {
+        sayMiko(`Ошибка связи при сохранении страницы: ${e.message}`);
+      } finally {
+        isSavingEdits = false;
+        saveBtn.disabled = false;
+        saveBtn.textContent = "💾 Сохранить (Ctrl+S)";
+      }
+    }
+
+    /* ==================== VIEW MODES, ZOOM & RESPONSIVE VIEWER ==================== */
+    function setViewMode(mode) {
+      viewMode = mode;
+      document.getElementById("vmode-split").classList.toggle("active", mode === "split");
+      document.getElementById("vmode-trans").classList.toggle("active", mode === "translated");
+      document.getElementById("vmode-orig").classList.toggle("active", mode === "original");
+      renderViewer();
+    }
+
+    function setZoomMode(mode) {
+      zoomMode = mode;
+      if (mode === "fit_width") customZoomPct = 100;
+      if (mode === "fit_height") customZoomPct = 100;
+      updateZoomControlsUi();
+      applyZoomToStage();
+    }
+
+    function adjustZoomPct(delta) {
+      if (zoomMode !== "custom") {
+        zoomMode = "custom";
+        customZoomPct = 100;
+      }
+      customZoomPct = Math.max(35, Math.min(260, customZoomPct + delta));
+      updateZoomControlsUi();
+      applyZoomToStage();
+    }
+
+    function updateZoomControlsUi() {
+      const bW = document.getElementById("zmode-width");
+      const bH = document.getElementById("zmode-height");
+      const lbl = document.getElementById("zoom-pct-lbl");
+      if (bW) bW.classList.toggle("active", zoomMode === "fit_width");
+      if (bH) bH.classList.toggle("active", zoomMode === "fit_height");
+      if (lbl) {
+        lbl.textContent = zoomMode === "custom" ? `${customZoomPct}%` : (zoomMode === "fit_height" ? "Выс." : "Шир.");
+      }
+    }
+
+    function applyZoomToStage() {
+      const stage = document.getElementById("viewer-stage");
+      if (!stage) return;
+      stage.classList.toggle("zoom-fit-width", zoomMode === "fit_width");
+      stage.classList.toggle("zoom-fit-height", zoomMode === "fit_height");
+
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        if (zoomMode === "custom") {
+          const basePct = viewMode === "split" ? (customZoomPct * 0.49) : customZoomPct;
+          wrap.style.width = `${basePct}%`;
+          wrap.style.maxWidth = "none";
+        } else {
+          wrap.style.width = "";
+          wrap.style.maxWidth = "";
+        }
+      });
+      renderBboxPinsOnStage();
+    }
+
+    // Ctrl + MouseWheel smooth zoom on viewer stage
+    document.addEventListener("DOMContentLoaded", () => {
+      const stage = document.getElementById("viewer-stage");
+      if (stage) {
+        stage.addEventListener("wheel", (e) => {
+          if (e.ctrlKey || e.metaKey) {
+            e.preventDefault();
+            adjustZoomPct(e.deltaY < 0 ? 12 : -12);
+          }
+        }, { passive: false });
+      }
+    });
+
+    /* ==================== MANUAL DRAW REGION ==================== */
+    let isDrawRegionMode = false;
+    let activeDrawState = null;
+
+    function toggleDrawRegionMode(forceState) {
+      if (!selectedPage) {
+        sayMiko("Сначала выбери страницу манги слева, чтобы обвести на ней кружок с текстом~ 🌸");
+        return;
+      }
+      isDrawRegionMode = typeof forceState === "boolean" ? forceState : !isDrawRegionMode;
+      if (isDrawRegionMode) closeInlineBubblePopup();
+      const topBtn = document.getElementById("btn-draw-region");
+      const drBtn = document.getElementById("btn-drawer-draw-region");
+      if (topBtn) {
+        topBtn.classList.toggle("draw-active", isDrawRegionMode);
+        topBtn.textContent = isDrawRegionMode ? "🎯 Выделите (Esc)" : "➕ Обвести";
+      }
+      if (drBtn) {
+        drBtn.classList.toggle("draw-active", isDrawRegionMode);
+        drBtn.textContent = isDrawRegionMode ? "🎯 Выделите кружок (Esc)" : "➕ Обвести текст";
+      }
+      document.querySelectorAll(".img-pin-wrap").forEach(w => {
+        w.classList.toggle("draw-mode-active", isDrawRegionMode);
+      });
+      if (isDrawRegionMode) {
+        sayMiko("Режим выделения включен! Зажми левую кнопку мыши и обведи рамкой любой кружок или текст прямо на картинке~ 🎯✨");
+      }
+    }
+
+    function attachManualDrawHandlers() {
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        wrap.classList.toggle("draw-mode-active", isDrawRegionMode);
+        const img = wrap.querySelector("img");
+        if (img) {
+          img.draggable = false;
+        }
+        wrap.onmousedown = (ev) => {
+          if (!isDrawRegionMode || ev.button !== 0) return;
+          ev.preventDefault();
+          ev.stopPropagation();
+          const rect = wrap.getBoundingClientRect();
+          const startX = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+          const startY = Math.max(0, Math.min(rect.height, ev.clientY - rect.top));
+          const boxEl = document.createElement("div");
+          boxEl.className = "manual-draw-rect";
+          boxEl.style.left = startX + "px";
+          boxEl.style.top = startY + "px";
+          boxEl.style.width = "0px";
+          boxEl.style.height = "0px";
+          wrap.appendChild(boxEl);
+          activeDrawState = { wrap, img, startX, startY, curX: startX, curY: startY, boxEl };
+        };
+      });
+    }
+
+    window.addEventListener("mousemove", (ev) => {
+      if (!activeDrawState) return;
+      const { wrap, startX, startY, boxEl } = activeDrawState;
+      const rect = wrap.getBoundingClientRect();
+      const curX = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+      const curY = Math.max(0, Math.min(rect.height, ev.clientY - rect.top));
+      activeDrawState.curX = curX;
+      activeDrawState.curY = curY;
+      const left = Math.min(startX, curX);
+      const top = Math.min(startY, curY);
+      const width = Math.abs(curX - startX);
+      const height = Math.abs(curY - startY);
+      boxEl.style.left = left + "px";
+      boxEl.style.top = top + "px";
+      boxEl.style.width = width + "px";
+      boxEl.style.height = height + "px";
+    });
+
+    window.addEventListener("mouseup", async () => {
+      if (!activeDrawState) return;
+      const { wrap, img, startX, startY, curX, curY, boxEl } = activeDrawState;
+      activeDrawState = null;
+      boxEl.remove();
+
+      if (!img || !img.naturalWidth || !img.naturalHeight) return;
+      const rect = wrap.getBoundingClientRect();
+      const scaleX = img.naturalWidth / Math.max(1, rect.width);
+      const scaleY = img.naturalHeight / Math.max(1, rect.height);
+
+      const x1 = Math.round(Math.min(startX, curX) * scaleX);
+      const y1 = Math.round(Math.min(startY, curY) * scaleY);
+      const x2 = Math.round(Math.max(startX, curX) * scaleX);
+      const y2 = Math.round(Math.max(startY, curY) * scaleY);
+
+      if ((x2 - x1) < 12 || (y2 - y1) < 12) {
+        sayMiko("Выделенная область слишком маленькая — протяни рамку вокруг всего текста внутри кружка~ 🎯");
+        return;
+      }
+
+      toggleDrawRegionMode(false);
+      await translateManualRegionOnPage([x1, y1, x2, y2]);
+    });
+
+    async function translateManualRegionOnPage(bbox) {
+      if (!selectedPage) return;
+      syncInputsToCurrentBlocks();
+      sayMiko(`🔍 Распознаю и принудительно перевожу обведенный тобой участок [${bbox.join(", ")}]... Секундочку~ ✨`);
+
+      try {
+        const res = await fetch("/translate_manual_region", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            source_path: selectedPage.source_path,
+            dest_path: selectedPage.dest_path || null,
+            source_dir: currentFolder || null,
+            bbox: bbox,
+            lang: document.getElementById("sel-source-lang").value,
+            target_lang: targetLang,
+            ollama_model: document.getElementById("sel-model").value,
+            uppercase: document.getElementById("chk-uppercase").checked,
+            min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            return_image: true,
+            image_format: "webp",
+            blocks: currentBlocks || []
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ой, не удалось перевести выделенную область: ${data.detail || "ошибка сервера"}`);
+          return;
+        }
+
+        selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
+        selectedPage.is_translated = true;
+        currentBlocks = (data.blocks || []).map(b => ({ ...b }));
+        selectedPage.blocks = currentBlocks;
+
+        renderViewer(data.translated_image);
+        renderBlocksEditor();
+
+        const newId = data.new_block?.id || (currentBlocks.length > 0 ? currentBlocks[currentBlocks.length - 1].id : null);
+        if (newId) {
+          if (uiSettings.inline_bubble_popup) {
+            setTimeout(() => {
+              const pinEl = document.querySelector(`.bbox-pin[data-block-id="${newId}"]`);
+              openInlineBubblePopup(newId, pinEl);
+            }, 80);
+          } else {
+            focusBlockEditorCard(newId);
+          }
+        }
+
+        const newTr = data.new_block?.translated_text || "";
+        if (newTr) {
+          sayMiko(`Готово! Добавлен блок #${newId}: «${data.new_block.original_text}» ➔ «${newTr}»! Страница сразу обновлена~ 🌸✨`);
+        } else {
+          sayMiko(`Область #${newId} добавлена! Введи нужный текст перевода для #${newId} и нажми «Сохранить»~ ✏️`);
+        }
+        if (currentFolder) inspectCurrentFolder();
+      } catch (e) {
+        sayMiko(`Ошибка при переводе выделенной области: ${e.message}`);
+      }
+    }
+
+    async function retranslateSingleBlockById(blockId, ev) {
+      if (ev) ev.stopPropagation();
+      if (!selectedPage) return;
+      syncInputsToCurrentBlocks();
+      sayMiko(`🔄 Принудительно перевожу блок #${blockId} через ИИ... ✍️✨`);
+
+      try {
+        const res = await fetch("/retranslate_single_block", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            source_path: selectedPage.source_path,
+            dest_path: selectedPage.dest_path || null,
+            source_dir: currentFolder || null,
+            block_id: blockId,
+            lang: document.getElementById("sel-source-lang").value,
+            target_lang: targetLang,
+            ollama_model: document.getElementById("sel-model").value,
+            uppercase: document.getElementById("chk-uppercase").checked,
+            min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            return_image: true,
+            image_format: "webp",
+            blocks: currentBlocks || []
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ошибка доперевода блока #${blockId}: ${data.detail || "ошибка"}`);
+          return;
+        }
+        selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
+        selectedPage.is_translated = true;
+        currentBlocks = (data.blocks || []).map(b => ({ ...b }));
+        selectedPage.blocks = currentBlocks;
+        renderViewer(data.translated_image);
+        renderBlocksEditor();
+        highlightBlock(blockId, false);
+        if (popupBlockId === blockId) populateInlinePopup(blockId);
+        sayMiko(`Блок #${blockId} успешно переведен заново: «${data.updated_block?.translated_text || ""}»! 🌸`);
+      } catch (e) {
+        sayMiko(`Ошибка связи при переводе блока #${blockId}: ${e.message}`);
+      }
+    }
+
+    function renderViewer(freshBase64 = null) {
+      const stage = document.getElementById("viewer-stage");
+      stage.classList.toggle("split-mode", viewMode === "split");
+      if (!selectedPage) return;
+
+      const ts = Date.now();
+      const origUrl = `/local_image?path=${encodeURIComponent(selectedPage.source_path)}&t=${ts}`;
+      const transUrl = freshBase64 || (selectedPage.is_translated && selectedPage.dest_path
+        ? `/local_image?path=${encodeURIComponent(selectedPage.dest_path)}&t=${ts}`
+        : null);
+
+      if (viewMode === "original" || (!transUrl && viewMode === "split")) {
+        stage.innerHTML =
+          `<div class="img-pin-wrap" id="pin-wrap-orig">` +
+          `<img src="${origUrl}" alt="Оригинал" onload="renderBboxPinsOnStage()" />` +
+          `</div>`;
+      } else if (viewMode === "translated") {
+        stage.innerHTML =
+          `<div class="img-pin-wrap" id="pin-wrap-trans">` +
+          `<img src="${transUrl || origUrl}" alt="Перевод" onload="renderBboxPinsOnStage()" />` +
+          `</div>`;
+      } else {
+        stage.innerHTML =
+          `<div class="img-pin-wrap" id="pin-wrap-orig"><img src="${origUrl}" title="Оригинал" onload="renderBboxPinsOnStage()" /></div>` +
+          `<div class="img-pin-wrap" id="pin-wrap-trans"><img src="${transUrl}" title="Перевод" onload="renderBboxPinsOnStage()" /></div>`;
+      }
+      applyZoomToStage();
+      attachManualDrawHandlers();
+    }
+
+    function renderBboxPinsOnStage() {
+      document.querySelectorAll(".bbox-pin").forEach(el => el.remove());
+      const drawerOpen = document.getElementById("text-drawer").classList.contains("open");
+      const shouldShowPins = drawerOpen || Boolean(uiSettings.always_show_pins);
+      if (!shouldShowPins || !currentBlocks || currentBlocks.length === 0) return;
+
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        const img = wrap.querySelector("img");
+        if (!img || !img.naturalWidth || !img.naturalHeight) return;
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+
+        currentBlocks.forEach(b => {
+          if (!Array.isArray(b.bbox) || b.bbox.length < 4) return;
+          const [x1, y1, x2, y2] = b.bbox;
+          const leftPct = Math.max(0, Math.min(98, (x1 / nw) * 100));
+          const topPct = Math.max(0, Math.min(98, (y1 / nh) * 100));
+          const widthPct = Math.max(2, Math.min(100 - leftPct, ((x2 - x1) / nw) * 100));
+          const heightPct = Math.max(2, Math.min(100 - topPct, ((y2 - y1) / nh) * 100));
+
+          const isDel = Boolean(b.is_deleted) || !(b.translated_text || "").trim();
+          const pin = document.createElement("div");
+          pin.className = "bbox-pin" + (activeBlockId === b.id ? " active-pin" : "") + (isDel ? " deleted-pin" : "");
+          pin.dataset.blockId = String(b.id);
+          pin.style.left = leftPct + "%";
+          pin.style.top = topPct + "%";
+          pin.style.width = widthPct + "%";
+          pin.style.height = heightPct + "%";
+          pin.title = isDel
+            ? `#${b.id} (Оригинал сохранен): ${b.original_text || ""} — Кликните для редактирования`
+            : `#${b.id}: ${b.original_text || ""} ${b.romaji_text ? "(" + b.romaji_text + ")" : ""} ➔ ${b.translated_text || ""} — Кликните для быстрого редактирования`;
+          pin.innerHTML = `<span class="bbox-pin-badge">#${b.id}${isDel ? " (ориг)" : ""}</span>` +
+            (!isDel ? `<button type="button" class="bbox-pin-del" title="Удалить перевод блока #${b.id} (оставить оригинал на картинке)">🗑</button>` : "");
+          const delBtn = pin.querySelector(".bbox-pin-del");
+          if (delBtn) {
+            delBtn.onclick = (ev) => {
+              ev.stopPropagation();
+              deleteBlockTranslation(b.id, ev);
+            };
+          }
+          pin.onclick = (ev) => {
+            onPinClicked(b.id, pin, ev);
+          };
+          wrap.appendChild(pin);
+        });
+      });
+    }
+
+    /* ==================== DRAGGABLE SPLITTERS & FLOATING WINDOW ==================== */
+    (function initSplittersAndFloatingDrag() {
+      let dragMode = null; // 'left-sidebar' | 'editor-right' | 'editor-bottom' | 'floating-editor' | 'inline-popup'
+      let startX = 0, startY = 0, startSize = 0, startLeft = 0, startTop = 0;
+
+      const leftSplitter = document.getElementById("left-sidebar-splitter");
+      const editorSplitter = document.getElementById("editor-splitter");
+      const editorDragHandle = document.getElementById("editor-drag-handle");
+      const popupDragBar = document.getElementById("inline-popup-drag-bar");
+
+      if (leftSplitter) {
+        leftSplitter.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          dragMode = "left-sidebar";
+          startX = e.clientX;
+          startSize = document.getElementById("bento-left").getBoundingClientRect().width;
+          document.body.classList.add("resizing-panels");
+          leftSplitter.classList.add("dragging");
+        });
+      }
+
+      if (editorSplitter) {
+        editorSplitter.addEventListener("mousedown", (e) => {
+          if (e.button !== 0) return;
+          e.preventDefault();
+          const dr = document.getElementById("text-drawer");
+          const rect = dr.getBoundingClientRect();
+          startX = e.clientX;
+          startY = e.clientY;
+          if (uiSettings.editor_dock_mode === "right") {
+            dragMode = "editor-right";
+            startSize = rect.width;
+          } else if (uiSettings.editor_dock_mode === "bottom") {
+            dragMode = "editor-bottom";
+            startSize = rect.height;
+          }
+          document.body.classList.add("resizing-panels");
+          editorSplitter.classList.add("dragging");
+        });
+      }
+
+      if (editorDragHandle) {
+        editorDragHandle.addEventListener("mousedown", (e) => {
+          if (uiSettings.editor_dock_mode !== "floating" || e.button !== 0) return;
+          if (e.target.closest("button, select, input")) return;
+          e.preventDefault();
+          const dr = document.getElementById("text-drawer");
+          const rect = dr.getBoundingClientRect();
+          dragMode = "floating-editor";
+          startX = e.clientX;
+          startY = e.clientY;
+          startLeft = rect.left;
+          startTop = rect.top;
+          dr.style.left = startLeft + "px";
+          dr.style.top = startTop + "px";
+          dr.style.right = "auto";
+          dr.style.bottom = "auto";
+        });
+      }
+
+      if (popupDragBar) {
+        popupDragBar.addEventListener("mousedown", (e) => {
+          if (e.button !== 0 || e.target.closest("button, select, input")) return;
+          e.preventDefault();
+          const pop = document.getElementById("inline-bubble-popup");
+          const rect = pop.getBoundingClientRect();
+          dragMode = "inline-popup";
+          startX = e.clientX;
+          startY = e.clientY;
+          startLeft = rect.left;
+          startTop = rect.top;
+        });
+      }
+
+      window.addEventListener("mousemove", (e) => {
+        if (!dragMode) return;
+        if (dragMode === "left-sidebar") {
+          const nw = Math.max(250, Math.min(540, startSize + (e.clientX - startX)));
+          uiSettings.left_sidebar_width = Math.round(nw);
+          document.documentElement.style.setProperty("--left-sidebar-w", uiSettings.left_sidebar_width + "px");
+          renderBboxPinsOnStage();
+        } else if (dragMode === "editor-right") {
+          const nw = Math.max(310, Math.min(window.innerWidth * 0.68, startSize - (e.clientX - startX)));
+          uiSettings.right_panel_width = Math.round(nw);
+          document.documentElement.style.setProperty("--right-editor-w", uiSettings.right_panel_width + "px");
+          renderBboxPinsOnStage();
+        } else if (dragMode === "editor-bottom") {
+          const nh = Math.max(190, Math.min(window.innerHeight * 0.76, startSize - (e.clientY - startY)));
+          uiSettings.bottom_panel_height = Math.round(nh);
+          document.documentElement.style.setProperty("--bottom-editor-h", uiSettings.bottom_panel_height + "px");
+          renderBboxPinsOnStage();
+        } else if (dragMode === "floating-editor") {
+          const dr = document.getElementById("text-drawer");
+          const nx = Math.max(8, Math.min(window.innerWidth - 180, startLeft + (e.clientX - startX)));
+          const ny = Math.max(58, Math.min(window.innerHeight - 60, startTop + (e.clientY - startY)));
+          dr.style.left = Math.round(nx) + "px";
+          dr.style.top = Math.round(ny) + "px";
+        } else if (dragMode === "inline-popup") {
+          const pop = document.getElementById("inline-bubble-popup");
+          const nx = Math.max(8, Math.min(window.innerWidth - 220, startLeft + (e.clientX - startX)));
+          const ny = Math.max(58, Math.min(window.innerHeight - 80, startTop + (e.clientY - startY)));
+          pop.style.left = Math.round(nx) + "px";
+          pop.style.top = Math.round(ny) + "px";
+        }
+      });
+
+      window.addEventListener("mouseup", () => {
+        if (!dragMode) return;
+        document.body.classList.remove("resizing-panels");
+        if (leftSplitter) leftSplitter.classList.remove("dragging");
+        if (editorSplitter) editorSplitter.classList.remove("dragging");
+        saveLocalUiSettings();
+        dragMode = null;
+      });
+
+      window.addEventListener("resize", () => {
+        renderBboxPinsOnStage();
+      });
+    })();
+
+    /* ==================== SINGLE FILE & FOLDER TRANSLATION ==================== */
+    async function pickSingleFileDialog() {
+      const res = await fetch("/pick_file", { method: "POST" });
+      const data = await res.json();
+      if (data.status === "cancelled") return;
+      selectedPage = {
+        index: 1,
+        rel_path: data.filename,
+        filename: data.filename,
+        source_path: data.file_path,
+        dest_path: "",
+        is_translated: false,
+        blocks: []
+      };
+      document.getElementById("btn-contextual-page").style.display = "block";
+      document.getElementById("btn-contextual-page").textContent = `🔁 Перевести «${data.filename}» заново`;
+      document.getElementById("btn-edit-page").style.display = "block";
+      document.getElementById("btn-edit-page").textContent = `✏️ Редактировать перевод и Ромадзи`;
+      updateTopPageNav();
+      renderViewer();
+      await translateSelectedPage();
+    }
+
+    async function translateSelectedPage() {
+      if (!selectedPage) return;
+      const subBtn = document.getElementById("btn-contextual-page");
+      subBtn.disabled = true;
+      sayMiko(`Перевожу страницу «${selectedPage.rel_path}»... Секундочку~ ✍️✨`);
+
+      const payload = {
+        file_path: selectedPage.source_path,
+        source_dir: currentFolder || null,
+        lang: document.getElementById("sel-source-lang").value,
+        target_lang: targetLang,
+        ollama_model: document.getElementById("sel-model").value,
+        uppercase: document.getElementById("chk-uppercase").checked,
+        min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+        max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+        detect_free_text: document.getElementById("chk-free-text").checked,
+        text_filter_mode: document.getElementById("sel-text-filter-mode").value,
+        skip_sighs: document.getElementById("chk-skip-sighs").checked,
+        skip_sfx: document.getElementById("chk-skip-sfx").checked,
+        min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
+        return_image: true,
+        image_format: "webp"
+      };
+
+      try {
+        const res = await fetch("/translate_page_file", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(payload)
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ой, ошибка при переводе: ${data.detail || "Проверь сервер ИИ"}`);
+          return;
+        }
+
+        selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
+        selectedPage.is_translated = true;
+        currentBlocks = (data.blocks || []).map(b => ({ ...b }));
+        selectedPage.blocks = currentBlocks;
+
+        renderViewer(data.translated_image);
+        renderBlocksEditor();
+
+        sayMiko(`Готово за ${data.processing_time_sec}с! Найдено блоков: ${data.blocks_count}. Кликни по любому кружку #N на картинке или открой «✏️ Редактор», чтобы подправить текст~ ✨`);
+        if (currentFolder) inspectCurrentFolder();
+      } finally {
+        subBtn.disabled = false;
+      }
+    }
+
+    async function onPrimaryFolderButtonClick() {
+      if (isJobRunning) {
+        await fetch("/folder_stop", { method: "POST" });
+        sayMiko("Останавливаю перевод после текущей странички... Все переведенные страницы сохранены! ⏸");
+        return;
+      }
+
+      if (!currentFolder) {
+        await pickFolderDialog();
+        if (!currentFolder) return;
+      }
+
+      const payload = {
+        folder_path: currentFolder,
+        lang: document.getElementById("sel-source-lang").value,
+        target_lang: targetLang,
+        ollama_model: document.getElementById("sel-model").value,
+        uppercase: document.getElementById("chk-uppercase").checked,
+        min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+        max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+        detect_free_text: document.getElementById("chk-free-text").checked,
+        text_filter_mode: document.getElementById("sel-text-filter-mode").value,
+        skip_sighs: document.getElementById("chk-skip-sighs").checked,
+        skip_sfx: document.getElementById("chk-skip-sfx").checked,
+        min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
+        skip_existing: document.getElementById("chk-skip-existing").checked,
+        batch_pages: parseInt(document.getElementById("inp-batch-pages")?.value, 10) || 12,
+        force_retranslate: false,
+        open_when_done: false
+      };
+
+      const res = await fetch("/translate_folder", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(payload)
+      });
+      if (!res.ok) return;
+
+      isJobRunning = true;
+      const mainBtn = document.getElementById("btn-primary-folder");
+      mainBtn.classList.add("stopping");
+      mainBtn.textContent = "⏸ Пауза (остановить и сохранить прогресс)";
+      startFolderPolling();
+    }
+
+    function startFolderPolling() {
+      if (pollTimer) clearInterval(pollTimer);
+      pollTimer = setInterval(async () => {
+        const res = await fetch("/folder_status");
+        const st = await res.json();
+        const total = st.total || 0;
+        const cur = st.current || 0;
+        const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
+
+        document.getElementById("progress-fill").style.width = pct + "%";
+        document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
+
+        if (st.status === "running" || st.status === "stopping") {
+          sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
+        } else {
+          clearInterval(pollTimer);
+          pollTimer = null;
+          isJobRunning = false;
+          await inspectCurrentFolder();
+        }
+      }, 1200);
+    }
+
+    async function pickWebSaveDirInStudio() {
+      const res = await fetch("/pick_web_save_folder", { method: "POST" });
+      const data = await res.json();
+      if (data.status === "ok" && data.web_save_dir) {
+        document.getElementById("inp-web-save-dir").value = data.web_save_dir;
+        sayMiko(`Папка автосохранения из браузера изменена на: ${data.web_save_dir} 💾🌸`);
+      }
+    }
+
+    async function openWebSaveDirInStudio() {
+      const dir = document.getElementById("inp-web-save-dir").value.trim();
+      const q = dir ? `?path=${encodeURIComponent(dir)}` : "";
+      await fetch(`/open_web_save_folder${q}`, { method: "POST" });
+    }
+
+    async function openOutputFolder() {
+      if (!currentOutputDir) {
+        sayMiko("Сначала выбери папку или переведи хотя бы одну страничку~");
+        return;
+      }
+      await fetch("/open_folder?path=" + encodeURIComponent(currentOutputDir), { method: "POST" });
+    }
+
+    /* ==================== GLOBAL KEYBOARD SHORTCUTS ==================== */
+    document.addEventListener("keydown", (e) => {
+      const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+
+      if (e.key === "Escape") {
+        if (isDrawRegionMode) {
+          toggleDrawRegionMode(false);
+          sayMiko("Режим выделения области отменен.");
+          return;
+        }
+        const pop = document.getElementById("inline-bubble-popup");
+        if (pop && pop.classList.contains("open")) {
+          closeInlineBubblePopup();
+          return;
+        }
+        const modal = document.getElementById("settings-modal");
+        if (modal && modal.classList.contains("open")) {
+          toggleSettingsModal(false);
+          return;
+        }
+      }
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+        if (selectedPage && currentBlocks && currentBlocks.length > 0) {
+          e.preventDefault();
+          saveEditedPageTranslation();
+        }
+        return;
+      }
+
+      if (e.key === "F11") {
+        e.preventDefault();
+        toggleFullscreenMode();
+        return;
+      }
+
+      if (!inInput) {
+        if (e.key === "[" || (e.altKey && (e.key === "b" || e.key === "B"))) {
+          e.preventDefault();
+          toggleLeftSidebar();
+        } else if (e.key === "ArrowLeft" || (e.altKey && e.key === "ArrowLeft")) {
+          e.preventDefault();
+          stepFolderPage(-1);
+        } else if (e.key === "ArrowRight" || (e.altKey && e.key === "ArrowRight")) {
+          e.preventDefault();
+          stepFolderPage(1);
+        }
+      }
+    });
+
+    // Close inline popup when clicking on empty stage background
+    document.getElementById("viewer-stage").addEventListener("mousedown", (e) => {
+      if (!e.target.closest(".bbox-pin") && !e.target.closest(".inline-bubble-popup")) {
+        closeInlineBubblePopup();
+      }
+    });
+
+    loadLocalUiSettings();
+    loadHealth(false);
+  </script>
+</body>
+</html>
