@@ -7,6 +7,8 @@ FastAPI-сервер для локального переводчика манг
    с отображением прогресса в процентах и гигабайтах и установкой по умолчанию в 1 клик (без запуска Unsloth Studio!).
 2. Полная поддержка внешних OpenAI-совместимых API-ключей (FunPay `positionapi.top/v1`, `list-api.listapi.workers.dev/v1`,
    TokenWave, DeepSeek Official API, OpenRouter) с сохранением `unsloth_api_key` и `unsloth_url` в `config.json`.
+3. Поддержка независимых координат `clean_bbox` (исходное место замазки текста) и `bbox` (интерактивно перемещаемая
+   и масштабируемая мышкой рамка перевода) + возврат `rendered_font_size`.
 """
 
 from __future__ import annotations
@@ -101,6 +103,22 @@ _folder_task: asyncio.Task[None] | None = None
 _pull_task: asyncio.Task[Any] | None = None
 _folder_stop_requested: bool = False
 _AUTO_OPEN_GUI: bool = False
+
+
+def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
+    """Гарантирует наличие исходного `clean_bbox` у блока, чтобы при сдвиге рамки инпейнтинг оставался на месте."""
+    bbox_raw = block.get("bbox") or [0, 0, 0, 0]
+    bbox = [int(round(float(x))) for x in bbox_raw[:4]] if len(bbox_raw) >= 4 else [0, 0, 0, 0]
+    block["bbox"] = bbox
+
+    clean_raw = block.get("clean_bbox") or block.get("original_bbox")
+    if isinstance(clean_raw, (list, tuple)) and len(clean_raw) >= 4:
+        clean_bbox = [int(round(float(x))) for x in clean_raw[:4]]
+    else:
+        clean_bbox = list(bbox)
+    block["clean_bbox"] = clean_bbox
+    block["bbox_modified"] = bool(block.get("bbox_modified", False)) or (clean_bbox != bbox)
+    return block
 
 
 def launch_studio_window(url: str = "http://127.0.0.1:5000/") -> None:
@@ -231,6 +249,14 @@ class TranslateRequest(BaseModel):
 class TextBlock(BaseModel):
     id: int
     bbox: list[int]
+    clean_bbox: list[int] | None = Field(
+        default=None,
+        description="Исходные координаты оригинального текста для инпейнтинга (не смещаются при перетаскивании рамки перевода)",
+    )
+    bbox_modified: bool = Field(
+        default=False,
+        description="Если True, пользователь вручную передвинул или изменил размер рамки перевода мышкой",
+    )
     confidence: float = 1.0
     original_text: str
     romaji_text: str = ""
@@ -241,6 +267,7 @@ class TextBlock(BaseModel):
         description="Если True, перевод этого блока удален пользователем — на картинке сохраняется оригинальный текст/рисунок",
     )
     font_size: int | None = Field(default=None, description="Индивидуальный размер шрифта для этого блока (px), если задан вручную")
+    rendered_font_size: int | None = Field(default=None, description="Фактический кегль шрифта (px), рассчитанный при верстке")
 
 
 class TranslateResponse(BaseModel):
@@ -495,7 +522,7 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
         for sb in saved_blocks_raw:
             if not isinstance(sb, dict):
                 continue
-            sb_copy = dict(sb)
+            sb_copy = _ensure_block_clean_bbox(dict(sb))
             orig_s = str(sb_copy.get("original_text") or "").strip()
             if orig_s and not str(sb_copy.get("romaji_text") or "").strip():
                 sb_copy["romaji_text"] = (
@@ -810,6 +837,7 @@ async def process_single_pil_image(
     for idx_b, blk in enumerate(blocks, start=1):
         blk["id"] = idx_b
         blk["is_deleted"] = False
+        _ensure_block_clean_bbox(blk)
 
     if not blocks:
         empty_mask = Image.new("L", pil_image.size, 0)
@@ -964,6 +992,7 @@ async def _run_folder_translation_job(
 
                     page_global_ids: list[int] = []
                     for b in p_blocks:
+                        _ensure_block_clean_bbox(b)
                         gid = global_block_id
                         global_block_id += 1
                         page_global_ids.append(gid)
@@ -1048,6 +1077,7 @@ async def _run_folder_translation_job(
                         for b, gid in zip(p_blocks, gids):
                             t_txt = translated_by_gid.get(gid, "")
                             b["translated_text"] = t_txt
+                            _ensure_block_clean_bbox(b)
                             orig_t = (b.get("original_text") or "").strip()
                             if orig_t:
                                 b["romaji_text"] = (
@@ -1500,6 +1530,7 @@ def _save_web_translated_page(
 
     t_lang = (target_lang or "en").lower().strip()
     for b in blocks:
+        _ensure_block_clean_bbox(b)
         orig_t = str(b.get("original_text") or "").strip()
         trans_t = str(b.get("translated_text") or "").strip()
         rom_t = str(b.get("romaji_text") or "").strip()
@@ -1796,7 +1827,7 @@ def _resolve_page_paths(
     source_dir_str: str | None,
     dest_path_str: str | None,
     target_lang: str,
-) -> tuple[Path, Path, Path, str]:
+) -> tuple[Path, Path, Path, Path, str]:
     src_file = Path(source_path_str).resolve()
     t_lang = (target_lang or "en").lower().strip()
     if t_lang not in VALID_TARGET_LANGS:
@@ -1869,7 +1900,7 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
         for b in saved_blocks:
             if not isinstance(b, dict):
                 continue
-            b_copy = dict(b)
+            b_copy = _ensure_block_clean_bbox(dict(b))
             if b_copy.get("is_deleted"):
                 b_copy["is_deleted"] = True
                 b_copy["translated_text"] = ""
@@ -1900,7 +1931,7 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
             )
         blocks = []
         for b in scanned_blocks:
-            b_copy = dict(b)
+            b_copy = _ensure_block_clean_bbox(dict(b))
             orig_t = str(b_copy.get("original_text") or "").strip()
             cached_trans = (
                 phrase_cache.get(f"{t_lang}||{orig_t}")
@@ -1917,8 +1948,9 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
             b_copy["romaji_text"] = cached_rom or japanese_to_romaji_local(orig_t)
             blocks.append(b_copy)
 
-    # Убеждаемся, что у каждого блока заполнен romaji_text
+    # Убеждаемся, что у каждого блока заполнен romaji_text и clean_bbox
     for b in blocks:
+        _ensure_block_clean_bbox(b)
         orig_t = str(b.get("original_text") or "").strip()
         if orig_t and not str(b.get("romaji_text") or "").strip():
             cached_rom = (
@@ -1969,7 +2001,7 @@ async def generate_page_romaji_endpoint(payload: PageRomajiRequest) -> dict[str,
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
-    blocks_dicts = [(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks]
+    blocks_dicts = [_ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks]
     phrase_cache: dict[str, str] = {}
     output_dir: Path | None = None
     rel_norm: str | None = None
@@ -2015,8 +2047,9 @@ async def generate_page_romaji_endpoint(payload: PageRomajiRequest) -> dict[str,
 @app.post("/save_edited_page")
 async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str, Any]:
     """
-    Принимает отредактированные пользователем текстовые блоки страницы, заново очищает бабблы на чистом
-    оригинале, верстает новый текст и сохраняет обновленную картинку в папку перевода и в `.translation_state.json`.
+    Принимает отредактированные пользователем текстовые блоки страницы (включая новые координаты/размер рамки `bbox`,
+    сохраняя очистку оригинала строго на `clean_bbox`), заново очищает бабблы на чистом оригинале,
+    верстает новый текст и сохраняет обновленную картинку в папку перевода и в `.translation_state.json`.
     Не требует повторного вызова OCR или LLM (0 токенов API!).
     """
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
@@ -2040,7 +2073,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     blocks_dicts: list[dict[str, Any]] = []
     active_blocks: list[dict[str, Any]] = []
     for b in payload.blocks:
-        bd = (b.model_dump() if hasattr(b, "model_dump") else b.dict())
+        bd = _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict())
         orig_t = str(bd.get("original_text") or "").strip()
         if orig_t and not str(bd.get("romaji_text") or "").strip():
             bd["romaji_text"] = japanese_to_romaji_local(orig_t)
@@ -2178,13 +2211,15 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
 
     orig_text = (payload.custom_original_text or recognized_text or "").strip()
     existing_blocks: list[dict[str, Any]] = [
-        (b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
+        _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
     ]
     next_id = max([int(b.get("id", 0)) for b in existing_blocks], default=0) + 1
 
     new_block: dict[str, Any] = {
         "id": next_id,
-        "bbox": clamped_bbox,
+        "bbox": list(clamped_bbox),
+        "clean_bbox": list(clamped_bbox),
+        "bbox_modified": False,
         "confidence": 1.0,
         "original_text": orig_text or "[Выделенная область]",
         "romaji_text": japanese_to_romaji_local(orig_text) if orig_text else "",
@@ -2217,7 +2252,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
             skip_sighs=False,
         )
         if translated_list:
-            new_block = dict(translated_list[0])
+            new_block = _ensure_block_clean_bbox(dict(translated_list[0]))
             new_block["is_deleted"] = False
 
     existing_blocks.append(new_block)
@@ -2322,7 +2357,7 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
         pil_image = _pil_to_rgb_clean(raw_im)
 
     blocks_dicts: list[dict[str, Any]] = [
-        (b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
+        _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
     ]
     target_blk = next((b for b in blocks_dicts if int(b.get("id", -1)) == int(payload.block_id)), None)
     if target_blk is None:
@@ -2331,11 +2366,12 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     orig_t = str(target_blk.get("original_text") or "").strip()
     det_lang = payload.lang if payload.lang in ("ja", "ko", "zh") else "ja"
     if not orig_t or orig_t == "[Выделенная область]":
+        ocr_coords = target_blk.get("clean_bbox") or target_blk["bbox"]
         async with gpu_lock:
             rec_t, det_lang, _ = await asyncio.to_thread(
                 ocr_engine.recognize_manual_region,
                 pil_image,
-                target_blk["bbox"],
+                ocr_coords,
                 payload.lang,
             )
         if rec_t:

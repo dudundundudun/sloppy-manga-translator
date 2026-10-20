@@ -129,6 +129,9 @@ class MikoMangaStudioGUI:
         self._draw_start_xy: tuple[int, int] | None = None
         self._draw_rect_id: int | None = None
         self._last_canvas_render_info: dict[str, Any] = {}
+        self.show_canvas_pins: tk.BooleanVar = tk.BooleanVar(value=True)
+        self._bbox_drag_state: dict[str, Any] | None = None
+        self._idle_autosave_job: str | None = None
 
         self.var_source_lang = tk.StringVar(value="✨ Авто (JA/KO/ZH)")
         self.target_lang: str = "en"
@@ -700,12 +703,26 @@ class MikoMangaStudioGUI:
         )
         self.btn_draw_region.pack(side=tk.RIGHT, padx=3)
 
+        tk.Checkbutton(
+            viewer_bar,
+            text="📌 Рамки #N",
+            variable=self.show_canvas_pins,
+            bg=BG_BENTO,
+            fg=FG_PRIMARY,
+            selectcolor=BG_INNER,
+            activebackground=BG_BENTO,
+            activeforeground=FG_PRIMARY,
+            font=("Segoe UI", 9, "bold"),
+            command=self._redraw_preview_canvas,
+        ).pack(side=tk.RIGHT, padx=4)
+
         self.preview_canvas = tk.Canvas(right_card, bg="#0d0b14", highlightthickness=0)
         self.preview_canvas.pack(fill=tk.BOTH, expand=True, padx=10, pady=(0, 10))
         self.preview_canvas.bind("<Configure>", self._on_canvas_configure_debounced)
         self.preview_canvas.bind("<ButtonPress-1>", self._on_canvas_mouse_down)
         self.preview_canvas.bind("<B1-Motion>", self._on_canvas_mouse_drag)
         self.preview_canvas.bind("<ButtonRelease-1>", self._on_canvas_mouse_up)
+        self.preview_canvas.bind("<MouseWheel>", self._on_canvas_mouse_wheel)
 
         self._set_target_lang(self.target_lang, refresh=False)
         self._set_view_mode("split")
@@ -1130,13 +1147,15 @@ class MikoMangaStudioGUI:
             updated: list[dict[str, Any]] = []
             for item in block_widgets:
                 b_copy = dict(item["block"])
+                if not b_copy.get("clean_bbox") and b_copy.get("bbox"):
+                    b_copy["clean_bbox"] = list(b_copy["bbox"])
                 txt_w: tk.Text = item["text_widget"]
                 fs_var: tk.StringVar = item["font_var"]
                 val_t = txt_w.get("1.0", tk.END).strip()
                 b_copy["translated_text"] = val_t
                 b_copy["is_deleted"] = not bool(val_t)
                 fs_str = fs_var.get().strip()
-                if fs_str.isdigit() and int(fs_str) >= 8:
+                if fs_str.isdigit() and int(fs_str) >= 6:
                     b_copy["font_size"] = int(fs_str)
                 else:
                     b_copy["font_size"] = None
@@ -1808,6 +1827,154 @@ class MikoMangaStudioGUI:
         resized = img_show.resize((nw, nh), Image.Resampling.LANCZOS)
         self.preview_photo_ref = ImageTk.PhotoImage(resized)
         self.preview_canvas.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self.preview_photo_ref)
+        self._draw_interactive_bbox_pins()
+
+    def _draw_interactive_bbox_pins(self) -> None:
+        if not self.show_canvas_pins.get() or not self.last_blocks:
+            return
+        info = self._last_canvas_render_info
+        if not info:
+            return
+        scale = float(info.get("scale") or 1.0)
+        img_x0 = int(info.get("img_x0") or 0)
+        img_y0 = int(info.get("img_y0") or 0)
+        orig_w = int(info.get("orig_w") or 1)
+        is_split = bool(info.get("is_split_both"))
+        gap = int(info.get("gap") or 0)
+        offset_x = (orig_w + gap) if is_split else 0
+
+        for b in self.last_blocks:
+            bbox = b.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) < 4:
+                continue
+            if not b.get("clean_bbox"):
+                b["clean_bbox"] = list(bbox)
+            x1, y1, x2, y2 = bbox[:4]
+            sx1 = img_x0 + int((x1 + offset_x) * scale)
+            sy1 = img_y0 + int(y1 * scale)
+            sx2 = img_x0 + int((x2 + offset_x) * scale)
+            sy2 = img_y0 + int(y2 * scale)
+            is_del = bool(b.get("is_deleted")) or not str(b.get("translated_text") or "").strip()
+            color = "#fbbf24" if is_del else ("#818cf8" if b.get("bbox_modified") else "#ec4899")
+            self.preview_canvas.create_rectangle(
+                sx1, sy1, sx2, sy2,
+                outline=color,
+                width=2,
+                dash=(4, 2) if is_del else (),
+            )
+            fs_lbl = f"{b['font_size']}px" if b.get("font_size") else "Авто"
+            self.preview_canvas.create_text(
+                sx1 + 4,
+                max(8, sy1 - 9),
+                text=f"#{b.get('id', 1)} ({fs_lbl})",
+                fill="#ffffff",
+                anchor="w",
+                font=("Segoe UI", 8, "bold"),
+            )
+            # Угловой маркер ресайза (правый нижний угол)
+            self.preview_canvas.create_rectangle(
+                sx2 - 5, sy2 - 5, sx2 + 5, sy2 + 5,
+                fill="#10b981", outline="#0f0d18", width=1
+            )
+
+    def _hit_test_bbox_pin(self, cx: int, cy: int) -> tuple[dict[str, Any] | None, str]:
+        if not self.show_canvas_pins.get() or not self.last_blocks:
+            return None, ""
+        info = self._last_canvas_render_info
+        if not info:
+            return None, ""
+        scale = float(info.get("scale") or 1.0)
+        img_x0 = int(info.get("img_x0") or 0)
+        img_y0 = int(info.get("img_y0") or 0)
+        orig_w = int(info.get("orig_w") or 1)
+        is_split = bool(info.get("is_split_both"))
+        gap = int(info.get("gap") or 0)
+        offset_x = (orig_w + gap) if is_split else 0
+
+        for b in reversed(self.last_blocks):
+            bbox = b.get("bbox")
+            if not isinstance(bbox, list) or len(bbox) < 4:
+                continue
+            x1, y1, x2, y2 = bbox[:4]
+            sx1 = img_x0 + int((x1 + offset_x) * scale)
+            sy1 = img_y0 + int(y1 * scale)
+            sx2 = img_x0 + int((x2 + offset_x) * scale)
+            sy2 = img_y0 + int(y2 * scale)
+            if abs(cx - sx2) <= 9 and abs(cy - sy2) <= 9:
+                return b, "resize_se"
+            if abs(cx - sx1) <= 8 and abs(cy - sy1) <= 8:
+                return b, "resize_nw"
+            if sx1 <= cx <= sx2 and sy1 <= cy <= sy2:
+                return b, "move"
+        return None, ""
+
+    def _schedule_idle_autosave(self, delay_ms: int = 2500) -> None:
+        if self._idle_autosave_job is not None:
+            try:
+                self.root.after_cancel(self._idle_autosave_job)
+            except Exception:
+                pass
+        self._idle_autosave_job = self.root.after(delay_ms, self._auto_save_edited_blocks_now)
+
+    def _auto_save_edited_blocks_now(self) -> None:
+        self._idle_autosave_job = None
+        if not self.selected_page or not self.last_blocks:
+            return
+        page = self.selected_page
+        payload = {
+            "source_path": page["source_path"],
+            "dest_path": page.get("dest_path") or None,
+            "source_dir": str(self.current_folder) if self.current_folder else None,
+            "target_lang": self.target_lang,
+            "uppercase": bool(self.var_uppercase.get()),
+            "min_font_size": int(self.var_min_font.get()),
+            "max_font_size": int(self.var_max_font.get()),
+            "return_image": True,
+            "image_format": "webp",
+            "blocks": self.last_blocks,
+        }
+
+        def _worker() -> None:
+            try:
+                with httpx.Client(trust_env=False, timeout=120.0) as client:
+                    resp = client.post(f"{SERVER_URL}/save_edited_page", json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+                b64_img = data.get("translated_image")
+                trans_pil: Image.Image | None = None
+                if b64_img:
+                    raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
+                    trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+
+                def _done() -> None:
+                    if trans_pil is not None:
+                        self.preview_trans_pil = trans_pil
+                    self.last_blocks = data.get("blocks", self.last_blocks)
+                    page["blocks"] = self.last_blocks
+                    page["is_translated"] = True
+                    if data.get("saved_output_path"):
+                        page["dest_path"] = data["saved_output_path"]
+                    self._redraw_preview_canvas()
+                    self._say_miko(f"Рамки и текст автоматически перерисованы и сохранены ({data.get('processing_time_sec')}с)! 💾🌸")
+
+                self.root.after(0, _done)
+            except Exception as exc:
+                self.root.after(0, lambda: self._say_miko(f"Ошибка авто-сохранения рамок: {exc}"))
+
+        threading.Thread(target=_worker, daemon=True).start()
+
+    def _on_canvas_mouse_wheel(self, event: tk.Event[Any]) -> None:
+        blk, _ = self._hit_test_bbox_pin(int(event.x), int(event.y))
+        if blk is None:
+            return
+        cur_fs = int(blk.get("font_size") or blk.get("rendered_font_size") or 20)
+        step = 2 if event.delta > 0 else -2
+        next_fs = max(8, min(140, cur_fs + step))
+        blk["font_size"] = next_fs
+        blk["is_deleted"] = False
+        self._redraw_preview_canvas()
+        self._say_miko(f"Шрифт блока #{blk.get('id')} изменен колесиком: {next_fs}px! Авто-обновление через 2.5 сек~ 🔤✨")
+        self._schedule_idle_autosave(2500)
 
     def _toggle_draw_region_mode(self) -> None:
         if not self.selected_page or self.preview_orig_pil is None:
@@ -1824,6 +1991,17 @@ class MikoMangaStudioGUI:
 
     def _on_canvas_mouse_down(self, event: tk.Event[Any]) -> None:
         if not self.is_draw_region_mode:
+            blk, mode = self._hit_test_bbox_pin(int(event.x), int(event.y))
+            if blk is not None:
+                if not blk.get("clean_bbox"):
+                    blk["clean_bbox"] = list(blk["bbox"])
+                self._bbox_drag_state = {
+                    "block": blk,
+                    "mode": mode,
+                    "start_xy": (int(event.x), int(event.y)),
+                    "orig_bbox": list(blk["bbox"]),
+                    "moved": False,
+                }
             return
         self._draw_start_xy = (int(event.x), int(event.y))
         if self._draw_rect_id is not None:
@@ -1834,13 +2012,56 @@ class MikoMangaStudioGUI:
         )
 
     def _on_canvas_mouse_drag(self, event: tk.Event[Any]) -> None:
-        if not self.is_draw_region_mode or self._draw_start_xy is None or self._draw_rect_id is None:
+        if not self.is_draw_region_mode:
+            if not self._bbox_drag_state:
+                return
+            info = self._last_canvas_render_info
+            scale = float(info.get("scale") or 1.0)
+            orig_w = int(info.get("orig_w") or 1000)
+            orig_h = int(info.get("orig_h") or 1000)
+            sx, sy = self._bbox_drag_state["start_xy"]
+            dx = int(round((int(event.x) - sx) / max(0.001, scale)))
+            dy = int(round((int(event.y) - sy) / max(0.001, scale)))
+            if abs(int(event.x) - sx) >= 3 or abs(int(event.y) - sy) >= 3:
+                self._bbox_drag_state["moved"] = True
+            blk = self._bbox_drag_state["block"]
+            ox1, oy1, ox2, oy2 = self._bbox_drag_state["orig_bbox"]
+            mode = self._bbox_drag_state["mode"]
+            if mode == "move":
+                bw, bh = ox2 - ox1, oy2 - oy1
+                nx1 = max(0, min(orig_w - bw, ox1 + dx))
+                ny1 = max(0, min(orig_h - bh, oy1 + dy))
+                blk["bbox"] = [nx1, ny1, nx1 + bw, ny1 + bh]
+                blk["bbox_modified"] = True
+            elif mode == "resize_se":
+                nx2 = max(ox1 + 18, min(orig_w, ox2 + dx))
+                ny2 = max(oy1 + 18, min(orig_h, oy2 + dy))
+                blk["bbox"] = [ox1, oy1, nx2, ny2]
+                blk["bbox_modified"] = True
+                blk["font_size"] = None
+            elif mode == "resize_nw":
+                nx1 = max(0, min(ox2 - 18, ox1 + dx))
+                ny1 = max(0, min(oy2 - 18, oy1 + dy))
+                blk["bbox"] = [nx1, ny1, ox2, oy2]
+                blk["bbox_modified"] = True
+                blk["font_size"] = None
+            self._redraw_preview_canvas()
+            return
+        if self._draw_start_xy is None or self._draw_rect_id is None:
             return
         sx, sy = self._draw_start_xy
         self.preview_canvas.coords(self._draw_rect_id, sx, sy, int(event.x), int(event.y))
 
     def _on_canvas_mouse_up(self, event: tk.Event[Any]) -> None:
-        if not self.is_draw_region_mode or self._draw_start_xy is None:
+        if not self.is_draw_region_mode:
+            if self._bbox_drag_state:
+                st = self._bbox_drag_state
+                self._bbox_drag_state = None
+                if st.get("moved"):
+                    self._say_miko(f"Рамка #{st['block'].get('id')} изменена мышкой! Перерисую страницу через 2.5 сек бездействия~ ✨")
+                    self._schedule_idle_autosave(2500)
+            return
+        if self._draw_start_xy is None:
             return
         sx, sy = self._draw_start_xy
         ex, ey = int(event.x), int(event.y)

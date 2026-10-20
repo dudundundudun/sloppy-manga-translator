@@ -1032,22 +1032,40 @@
       font-weight: 600;
     }
 
-    /* Interactive BBox Pins on Manga Page */
+    /* Interactive BBox Pins on Manga Page (Draggable, Resizable & Wheel Font Scaling) */
     .bbox-pin {
       position: absolute;
-      border: 2px solid rgba(244, 114, 182, 0.78);
-      background: rgba(244, 114, 182, 0.08);
+      border: 2px solid rgba(244, 114, 182, 0.82);
+      background: rgba(244, 114, 182, 0.07);
       border-radius: 6px;
-      cursor: pointer;
-      transition: border-color 0.15s ease, background 0.15s ease, box-shadow 0.15s ease, transform 0.15s ease;
+      cursor: grab;
+      transition: border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
       z-index: 5;
+      user-select: none;
+      touch-action: none;
+    }
+    .bbox-pin.modified-pin {
+      border-color: rgba(129, 140, 248, 0.92);
     }
     .bbox-pin:hover,
     .bbox-pin.active-pin {
       border-color: #34d399;
-      background: rgba(52, 211, 153, 0.20);
-      box-shadow: 0 0 16px rgba(52, 211, 153, 0.75);
-      z-index: 7;
+      background: rgba(52, 211, 153, 0.14);
+      box-shadow: 0 0 16px rgba(52, 211, 153, 0.68);
+      z-index: 9;
+    }
+    .bbox-pin.dragging-pin {
+      cursor: grabbing !important;
+      border-color: #fbbf24 !important;
+      background: rgba(255, 255, 255, 0.88) !important;
+      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.65), 0 0 0 2px rgba(251, 191, 36, 0.75) !important;
+      z-index: 15 !important;
+      transition: none !important;
+    }
+    .bbox-pin.dirty-preview-pin {
+      background: rgba(255, 255, 255, 0.86);
+      border-style: dashed;
+      border-color: #fbbf24;
     }
     @keyframes pinPulse {
       0% { box-shadow: 0 0 0 0 rgba(52, 211, 153, 0.85); }
@@ -1063,41 +1081,157 @@
     }
     .bbox-pin-badge {
       position: absolute;
-      top: -11px;
-      left: -8px;
+      top: -13px;
+      left: -6px;
       background: linear-gradient(135deg, #ec4899, #6366f1);
       color: #fff;
       font-size: 10px;
       font-weight: 800;
-      padding: 1px 6px;
+      padding: 1px 7px;
       border-radius: 999px;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.65);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.75);
       pointer-events: none;
       white-space: nowrap;
+      z-index: 12;
     }
-    .bbox-pin-del {
+    .bbox-pin-actions {
       position: absolute;
-      top: -11px;
-      right: -8px;
-      background: #e11d48;
+      top: -13px;
+      right: -6px;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      opacity: 0;
+      transition: opacity 0.14s ease;
+      z-index: 12;
+    }
+    .bbox-pin:hover .bbox-pin-actions,
+    .bbox-pin.active-pin .bbox-pin-actions {
+      opacity: 1;
+    }
+    .bbox-pin-btn {
+      background: #1e1b4b;
       color: #fff;
-      border: 1px solid rgba(255, 255, 255, 0.4);
+      border: 1px solid rgba(255, 255, 255, 0.45);
       font-size: 10px;
       font-weight: 800;
       padding: 1px 5px;
       border-radius: 999px;
       cursor: pointer;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.7);
-      opacity: 0;
-      transition: opacity 0.15s ease, transform 0.12s ease;
+      box-shadow: 0 2px 6px rgba(0, 0, 0, 0.75);
+      transition: transform 0.12s ease, background 0.12s ease;
+      line-height: 1.2;
     }
-    .bbox-pin:hover .bbox-pin-del,
-    .bbox-pin.active-pin .bbox-pin-del {
+    .bbox-pin-btn:hover {
+      transform: scale(1.12);
+      background: #4338ca;
+    }
+    .bbox-pin-btn.del-btn {
+      background: #e11d48;
+    }
+    .bbox-pin-btn.del-btn:hover {
+      background: #be123c;
+    }
+    /* 8 Resize Handles around .bbox-pin */
+    .bbox-resize-handle {
+      position: absolute;
+      width: 10px;
+      height: 10px;
+      background: #34d399;
+      border: 1.5px solid #0f0d18;
+      border-radius: 50%;
+      opacity: 0;
+      transition: opacity 0.12s ease, transform 0.12s ease, background 0.12s ease;
+      z-index: 11;
+    }
+    .bbox-pin:hover .bbox-resize-handle,
+    .bbox-pin.active-pin .bbox-resize-handle,
+    .bbox-pin.dragging-pin .bbox-resize-handle {
       opacity: 1;
     }
-    .bbox-pin-del:hover {
-      transform: scale(1.12);
-      background: #be123c;
+    .bbox-resize-handle:hover {
+      transform: scale(1.3);
+      background: #fbbf24;
+    }
+    .bbox-resize-handle.handle-nw { top: -5px; left: -5px; cursor: nwse-resize; }
+    .bbox-resize-handle.handle-n  { top: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+    .bbox-resize-handle.handle-ne { top: -5px; right: -5px; cursor: nesw-resize; }
+    .bbox-resize-handle.handle-e  { top: calc(50% - 5px); right: -5px; cursor: ew-resize; }
+    .bbox-resize-handle.handle-se { bottom: -5px; right: -5px; cursor: nwse-resize; }
+    .bbox-resize-handle.handle-s  { bottom: -5px; left: calc(50% - 5px); cursor: ns-resize; }
+    .bbox-resize-handle.handle-sw { bottom: -5px; left: -5px; cursor: nesw-resize; }
+    .bbox-resize-handle.handle-w  { top: calc(50% - 5px); left: -5px; cursor: ew-resize; }
+
+    /* Live Text Preview inside dragged/resized/wheeled bbox-pin */
+    .bbox-live-text {
+      position: absolute;
+      inset: 2px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+      font-family: "Comic Sans MS", "Segoe UI", system-ui, sans-serif;
+      font-weight: 800;
+      color: #0f0f0f;
+      text-shadow:
+        -1.5px -1.5px 0 #ffffff,
+         1.5px -1.5px 0 #ffffff,
+        -1.5px  1.5px 0 #ffffff,
+         1.5px  1.5px 0 #ffffff,
+         0px    0px   4px #ffffff;
+      line-height: 1.15;
+      overflow: hidden;
+      word-break: break-word;
+      pointer-events: none;
+      padding: 2px;
+      z-index: 8;
+    }
+    .bbox-pin.dragging-pin .bbox-live-text,
+    .bbox-pin.dirty-preview-pin .bbox-live-text {
+      display: flex;
+    }
+
+    /* Ghost outline of original clean_bbox when translation box is moved */
+    .clean-bbox-ghost {
+      position: absolute;
+      border: 1.5px dotted rgba(244, 114, 182, 0.55);
+      background: rgba(244, 114, 182, 0.04);
+      border-radius: 5px;
+      pointer-events: none;
+      z-index: 3;
+    }
+    .clean-bbox-ghost-lbl {
+      position: absolute;
+      bottom: -13px;
+      left: 0;
+      font-size: 9px;
+      color: rgba(244, 114, 182, 0.85);
+      background: rgba(15, 13, 24, 0.78);
+      padding: 0 4px;
+      border-radius: 4px;
+      white-space: nowrap;
+    }
+
+    .autosave-status-pill {
+      font-size: 11.5px;
+      font-weight: 700;
+      padding: 4px 10px;
+      border-radius: 999px;
+      background: rgba(251, 191, 36, 0.16);
+      color: var(--amber);
+      border: 1px solid rgba(251, 191, 36, 0.4);
+      display: none;
+      align-items: center;
+      gap: 5px;
+      white-space: nowrap;
+    }
+    .autosave-status-pill.active {
+      display: inline-flex;
+    }
+    .autosave-status-pill.saving {
+      background: rgba(52, 211, 153, 0.16);
+      color: var(--mint);
+      border-color: rgba(52, 211, 153, 0.45);
     }
 
     /* ==================== COMPACT INLINE BUBBLE POPUP (FEATURE 2) ==================== */
@@ -1753,7 +1887,8 @@
 
           <!-- Interactive Tools -->
           <div class="toolbar-section">
-            <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (клик по рамке открывает быстрый попап редактирования)">📌 Метки #N</button>
+            <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения рамок мышкой или колесиком">⏳ Авто-сохранение...</span>
+            <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (перетаскивайте рамки мышкой, тяните за края/углы для изменения размера текста или крутите колесико мыши)">📌 Рамки #N</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице, чтобы принудительно добавить его в перевод">➕ Обвести</button>
             <button class="pill-btn" id="btn-toggle-drawer" onclick="openPageEditor()" title="Открыть или скрыть панель редактора текста">✏️ Редактор (0)</button>
             <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
@@ -1853,6 +1988,7 @@
           <option value="36">36 px</option>
           <option value="42">42 px</option>
         </select>
+        <button type="button" class="romaji-copy-btn" id="popup-reset-bbox-btn" onclick="resetSingleBlockBbox(popupBlockId, event)" style="display:none;" title="Вернуть рамку и размер шрифта к исходному положению баббла">↺ Рамка</button>
         <button type="button" class="romaji-copy-btn" onclick="closeInlineBubblePopup()" title="Закрыть попап (Esc)">✕</button>
       </div>
     </div>
@@ -2044,6 +2180,14 @@
 
             <label class="toggle-row">
               <div class="toggle-row-text">
+                <span class="toggle-row-title">⏱ Авто-перерисовка страницы через 2.5 сек бездействия (после сдвига/ресайза рамки)</span>
+                <span class="toggle-row-sub">Автоматически вшивает новый размер и положение рамок в картинку через 2.5 секунды после того, как вы отпустили мышь или покрутили колесико</span>
+              </div>
+              <input id="chk-ui-auto-save-box" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
                 <span class="toggle-row-title">🐾 Компактная карточка ассистента Мико-тян</span>
                 <span class="toggle-row-sub">Уменьшает высоту карточки Мико-тян в левой панели, чтобы помещалось больше страниц в списке главы</span>
               </div>
@@ -2196,6 +2340,8 @@
       auto_scroll_to_bubble: true,    // Smoothly scroll/center manga on active bubble #N
       floating_auto_fade: true,       // Auto-opacity on floating window when hovering manga
       auto_collapse_sidebar: false,   // Auto-collapse left sidebar when opening editor
+      auto_save_after_idle: true,     // Auto-rerender page 2.5s after moving/resizing/wheeling bbox
+      auto_save_delay_ms: 2500,       // 2.5 seconds idle delay
       compact_mascot: false,          // Compact Miko-chan card
       right_panel_width: 460,
       bottom_panel_height: 340,
@@ -2316,6 +2462,8 @@
       if (chkFade) chkFade.checked = Boolean(uiSettings.floating_auto_fade);
       const chkCollapse = document.getElementById("chk-ui-auto-collapse");
       if (chkCollapse) chkCollapse.checked = Boolean(uiSettings.auto_collapse_sidebar);
+      const chkAutoSaveBox = document.getElementById("chk-ui-auto-save-box");
+      if (chkAutoSaveBox) chkAutoSaveBox.checked = uiSettings.auto_save_after_idle !== false;
       const chkMascot = document.getElementById("chk-ui-compact-mascot");
       if (chkMascot) chkMascot.checked = Boolean(uiSettings.compact_mascot);
 
@@ -2341,6 +2489,8 @@
       uiSettings.auto_scroll_to_bubble = document.getElementById("chk-ui-auto-scroll").checked;
       uiSettings.floating_auto_fade = document.getElementById("chk-ui-floating-fade").checked;
       uiSettings.auto_collapse_sidebar = document.getElementById("chk-ui-auto-collapse").checked;
+      const chkAutoSaveBox = document.getElementById("chk-ui-auto-save-box");
+      if (chkAutoSaveBox) uiSettings.auto_save_after_idle = chkAutoSaveBox.checked;
       uiSettings.compact_mascot = document.getElementById("chk-ui-compact-mascot").checked;
       if (!uiSettings.inline_bubble_popup) {
         closeInlineBubblePopup();
@@ -3377,7 +3527,14 @@
 
       const ta = document.getElementById("popup-textarea");
       ta.value = blk.translated_text || "";
-      document.getElementById("popup-fs-select").value = blk.font_size ? String(blk.font_size) : "";
+      const fsSelect = document.getElementById("popup-fs-select");
+      ensureFontSelectOption(fsSelect, blk.font_size);
+      fsSelect.value = blk.font_size ? String(blk.font_size) : "";
+
+      const resetBoxBtn = document.getElementById("popup-reset-bbox-btn");
+      if (resetBoxBtn) {
+        resetBoxBtn.style.display = (isBlockBboxModified(blk) || blk.font_size) ? "inline-flex" : "none";
+      }
 
       const delBtn = document.getElementById("popup-del-btn");
       const resBtn = document.getElementById("popup-restore-btn");
@@ -3444,9 +3601,12 @@
       if (blk) {
         blk.translated_text = val;
         blk.is_deleted = !val.trim();
+        blk._dirtyPreview = true;
       }
       const cardTa = document.getElementById(`edit-ta-${popupBlockId}`);
       if (cardTa) cardTa.value = val;
+      updatePinDomForBlock(popupBlockId);
+      scheduleIdleAutoSave();
     }
 
     function onPopupFontChange(val) {
@@ -3454,10 +3614,16 @@
       const blk = currentBlocks.find(x => x.id === popupBlockId);
       if (blk) {
         const parsed = parseInt(val, 10);
-        blk.font_size = (!isNaN(parsed) && parsed >= 8) ? parsed : null;
+        blk.font_size = (!isNaN(parsed) && parsed >= 6) ? parsed : null;
+        blk._dirtyPreview = true;
       }
       const cardFs = document.getElementById(`edit-fs-${popupBlockId}`);
-      if (cardFs) cardFs.value = val;
+      if (cardFs) {
+        ensureFontSelectOption(cardFs, blk ? blk.font_size : null);
+        cardFs.value = val;
+      }
+      updatePinDomForBlock(popupBlockId);
+      scheduleIdleAutoSave();
     }
 
     function copyPopupRomajiToInput() {
@@ -3534,12 +3700,24 @@
         const transHtml = escapeHtml(b.translated_text || "");
         const curFs = b.font_size ? String(b.font_size) : "";
 
-        const fsSelectHtml = `<select id="edit-fs-${b.id}" class="font-override-select" onchange="onBlockFontSelect(${b.id}, this.value)" title="Индивидуальный размер шрифта для этого облачка">` +
-          `<option value="" ${curFs === "" ? "selected" : ""}>Шрифт: Авто</option>` +
-          [10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 42].map(
+        const baseSizes = [8, 10, 12, 14, 16, 18, 20, 22, 24, 26, 28, 32, 36, 40, 44, 48, 56, 64, 72];
+        if (b.font_size && !baseSizes.includes(Number(b.font_size))) {
+          baseSizes.push(Number(b.font_size));
+          baseSizes.sort((a, c) => a - c);
+        }
+        const autoHint = b.rendered_font_size ? `Авто (${b.rendered_font_size}px)` : "Шрифт: Авто";
+        const isModBox = isBlockBboxModified(b);
+        const resetBoxBtnHtml = (isModBox || b.font_size)
+          ? `<button type="button" class="romaji-copy-btn" onclick="resetSingleBlockBbox(${b.id}, event)" title="Сбросить положение/размер рамки и кегль к исходному бабблу">↺ Сбросить рамку</button>`
+          : "";
+        const fsSelectHtml = `<div style="display:flex; align-items:center; gap:4px;">` +
+          resetBoxBtnHtml +
+          `<select id="edit-fs-${b.id}" class="font-override-select" onchange="onBlockFontSelect(${b.id}, this.value)" title="Индивидуальный размер шрифта (можно также крутить колесиком мыши прямо по рамке #${b.id} на странице)">` +
+          `<option value="" ${curFs === "" ? "selected" : ""}>${autoHint}</option>` +
+          baseSizes.map(
             sz => `<option value="${sz}" ${curFs === String(sz) ? "selected" : ""}>${sz} px</option>`
           ).join("") +
-          `</select>`;
+          `</select></div>`;
 
         const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>`;
         const deleteActionHtml = !isDel
@@ -3591,8 +3769,18 @@
       const blk = currentBlocks.find(x => x.id === blockId);
       if (blk) {
         const parsed = parseInt(val, 10);
-        blk.font_size = (!isNaN(parsed) && parsed >= 8) ? parsed : null;
+        blk.font_size = (!isNaN(parsed) && parsed >= 6) ? parsed : null;
+        blk._dirtyPreview = true;
       }
+      if (popupBlockId === blockId) {
+        const pFs = document.getElementById("popup-fs-select");
+        if (pFs) {
+          ensureFontSelectOption(pFs, blk ? blk.font_size : null);
+          pFs.value = val;
+        }
+      }
+      updatePinDomForBlock(blockId);
+      scheduleIdleAutoSave();
     }
 
     function onBlockTextInput(blockId, val) {
@@ -3600,11 +3788,14 @@
       if (blk) {
         blk.translated_text = val;
         blk.is_deleted = !val.trim();
+        blk._dirtyPreview = true;
       }
       if (popupBlockId === blockId) {
         const pTa = document.getElementById("popup-textarea");
         if (pTa && pTa.value !== val) pTa.value = val;
       }
+      updatePinDomForBlock(blockId);
+      scheduleIdleAutoSave();
     }
 
     function onBlockTextareaKeydown(e) {
@@ -3614,19 +3805,33 @@
       }
     }
 
-    async function saveEditedPageTranslation() {
-      if (!selectedPage || isSavingEdits) return;
+    async function saveEditedPageTranslation(opts = {}) {
+      cancelIdleAutoSaveTimer();
+      if (!selectedPage) return;
+      if (isSavingEdits) {
+        pendingAutoSaveAfterCurrent = true;
+        return;
+      }
       syncInputsToCurrentBlocks();
       if (!currentBlocks || currentBlocks.length === 0) {
-        sayMiko("Нет текстовых блоков для сохранения~");
+        if (!opts.isAuto) sayMiko("Нет текстовых блоков для сохранения~");
         return;
       }
 
       isSavingEdits = true;
+      const pill = document.getElementById("autosave-status-pill");
+      if (pill) {
+        pill.className = "autosave-status-pill active saving";
+        pill.textContent = "💾 Обновляю страницу...";
+      }
       const saveBtn = document.getElementById("btn-save-page-edits");
-      saveBtn.disabled = true;
-      saveBtn.textContent = "⏳ Сохраняю...";
-      sayMiko(`Перерисовываю и сохраняю твой перевод на странице «${selectedPage.rel_path}»... 💾✨`);
+      if (saveBtn) {
+        saveBtn.disabled = true;
+        saveBtn.textContent = "⏳ Сохраняю...";
+      }
+      if (!opts.isAuto) {
+        sayMiko(`Перерисовываю и сохраняю твой перевод на странице «${selectedPage.rel_path}»... 💾✨`);
+      }
 
       const payload = {
         source_path: selectedPage.source_path,
@@ -3660,16 +3865,28 @@
           selectedPage.blocks = currentBlocks;
         }
 
+        currentBlocks.forEach(b => { b._dirtyPreview = false; });
         renderViewer(data.translated_image);
         renderBlocksEditor();
-        sayMiko(`Готово за ${data.processing_time_sec}с! Твой ручной перевод страницы «${selectedPage.rel_path}» сохранен в файл! 💾🌸`);
+        if (popupBlockId) populateInlinePopup(popupBlockId);
+        sayMiko(`Готово за ${data.processing_time_sec}с! Изменения рамок и текста на странице «${selectedPage.rel_path}» вшиты в картинку и сохранены! 💾🌸`);
         if (currentFolder) inspectCurrentFolder();
       } catch (e) {
         sayMiko(`Ошибка связи при сохранении страницы: ${e.message}`);
       } finally {
         isSavingEdits = false;
-        saveBtn.disabled = false;
-        saveBtn.textContent = "💾 Сохранить (Ctrl+S)";
+        if (saveBtn) {
+          saveBtn.disabled = false;
+          saveBtn.textContent = "💾 Сохранить (Ctrl+S)";
+        }
+        const pill = document.getElementById("autosave-status-pill");
+        if (pill) {
+          pill.className = "autosave-status-pill";
+        }
+        if (pendingAutoSaveAfterCurrent) {
+          pendingAutoSaveAfterCurrent = false;
+          scheduleIdleAutoSave(600);
+        }
       }
     }
 
@@ -3979,8 +4196,217 @@
       attachManualDrawHandlers();
     }
 
+    /* ==================== INTERACTIVE BBOX MOVE, 8-WAY RESIZE, WHEEL FONT & 2.5s IDLE AUTO-SAVE ==================== */
+    let pinInteractState = null;
+    let idleAutoSaveTimer = null;
+    let idleCountdownInterval = null;
+    let idleAutoSaveDeadline = 0;
+    let pendingAutoSaveAfterCurrent = false;
+
+    function ensureBlockCleanBbox(b) {
+      if (!b || !Array.isArray(b.bbox) || b.bbox.length < 4) return;
+      b.bbox = b.bbox.slice(0, 4).map(v => Math.round(Number(v) || 0));
+      if (!Array.isArray(b.clean_bbox) || b.clean_bbox.length < 4) {
+        b.clean_bbox = [...b.bbox];
+      } else {
+        b.clean_bbox = b.clean_bbox.slice(0, 4).map(v => Math.round(Number(v) || 0));
+      }
+      b.bbox_modified = Boolean(b.bbox_modified) || isBlockBboxModified(b);
+    }
+
+    function isBlockBboxModified(b) {
+      if (!b || !Array.isArray(b.bbox) || !Array.isArray(b.clean_bbox)) return false;
+      return (
+        Math.abs(b.bbox[0] - b.clean_bbox[0]) >= 2 ||
+        Math.abs(b.bbox[1] - b.clean_bbox[1]) >= 2 ||
+        Math.abs(b.bbox[2] - b.clean_bbox[2]) >= 2 ||
+        Math.abs(b.bbox[3] - b.clean_bbox[3]) >= 2
+      );
+    }
+
+    function isBlockBboxResized(b) {
+      if (!b || !Array.isArray(b.bbox) || !Array.isArray(b.clean_bbox)) return false;
+      const cw = b.clean_bbox[2] - b.clean_bbox[0];
+      const ch = b.clean_bbox[3] - b.clean_bbox[1];
+      const nw = b.bbox[2] - b.bbox[0];
+      const nh = b.bbox[3] - b.bbox[1];
+      return Math.abs(nw - cw) >= 3 || Math.abs(nh - ch) >= 3;
+    }
+
+    function ensureFontSelectOption(selEl, fontSizeVal) {
+      if (!selEl || !fontSizeVal) return;
+      const strVal = String(Math.round(Number(fontSizeVal)));
+      const exists = Array.from(selEl.options).some(o => o.value === strVal);
+      if (!exists) {
+        const opt = document.createElement("option");
+        opt.value = strVal;
+        opt.textContent = `${strVal} px`;
+        selEl.appendChild(opt);
+      }
+    }
+
+    function estimateAutoFontSizeForBox(b) {
+      if (!b || !Array.isArray(b.bbox)) return 18;
+      if (b.font_size && Number(b.font_size) >= 6) return Math.round(Number(b.font_size));
+      const bw = Math.max(16, b.bbox[2] - b.bbox[0]);
+      const bh = Math.max(16, b.bbox[3] - b.bbox[1]);
+      const padRatio = isBlockBboxModified(b) ? 0.04 : (b.is_free_text ? 0.02 : 0.10);
+      const safeW = Math.max(12, bw * (1 - 2 * padRatio));
+      const safeH = Math.max(12, bh * (1 - 2 * padRatio));
+      const text = String(b.translated_text || b.original_text || "TEXT").trim();
+      const charCount = Math.max(1, text.length);
+      const areaPerChar = (safeW * safeH) / charCount;
+      let est = Math.sqrt(areaPerChar * 1.28);
+      est = Math.min(est, safeH * 0.82);
+      const words = text.split(/\s+/).filter(Boolean);
+      const longestWord = words.reduce((m, w) => Math.max(m, w.length), 1);
+      const maxByLongestWord = (safeW / Math.max(1, longestWord * 0.62));
+      if (words.length <= 2) {
+        est = Math.min(est, maxByLongestWord * 1.15);
+      }
+      if (isBlockBboxResized(b)) {
+        return Math.max(8, Math.min(130, Math.round(est)));
+      }
+      const minF = parseInt(document.getElementById("inp-min-font")?.value, 10) || 12;
+      const maxF = parseInt(document.getElementById("inp-max-font")?.value, 10) || 32;
+      return Math.max(minF, Math.min(maxF, Math.round(est)));
+    }
+
+    function formatPinBadgeText(b) {
+      const isDel = Boolean(b.is_deleted) || !(b.translated_text || "").trim();
+      if (isDel) return `#${b.id} (ориг)`;
+      const fs = b.font_size ? `${b.font_size}px` : `~${estimateAutoFontSizeForBox(b)}px`;
+      return `#${b.id} · ${fs}`;
+    }
+
+    function cancelIdleAutoSaveTimer() {
+      if (idleAutoSaveTimer) {
+        clearTimeout(idleAutoSaveTimer);
+        idleAutoSaveTimer = null;
+      }
+      if (idleCountdownInterval) {
+        clearInterval(idleCountdownInterval);
+        idleCountdownInterval = null;
+      }
+      const pill = document.getElementById("autosave-status-pill");
+      if (pill && !isSavingEdits) {
+        pill.className = "autosave-status-pill";
+      }
+    }
+
+    function scheduleIdleAutoSave(customDelayMs) {
+      if (uiSettings.auto_save_after_idle === false) return;
+      if (pinInteractState) return; // Wait until user releases the mouse button
+      cancelIdleAutoSaveTimer();
+      const delay = customDelayMs || uiSettings.auto_save_delay_ms || 2500;
+      idleAutoSaveDeadline = Date.now() + delay;
+
+      const pill = document.getElementById("autosave-status-pill");
+      const updateCountdownText = () => {
+        if (!pill) return;
+        const remSec = Math.max(0.1, (idleAutoSaveDeadline - Date.now()) / 1000).toFixed(1);
+        pill.className = "autosave-status-pill active";
+        pill.textContent = `⏳ Авто-применение через ${remSec}с...`;
+      };
+      updateCountdownText();
+      idleCountdownInterval = setInterval(updateCountdownText, 200);
+
+      idleAutoSaveTimer = setTimeout(() => {
+        cancelIdleAutoSaveTimer();
+        saveEditedPageTranslation({ isAuto: true });
+      }, delay);
+    }
+
+    async function resetSingleBlockBbox(blockId, ev) {
+      if (ev) ev.stopPropagation();
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      ensureBlockCleanBbox(blk);
+      blk.bbox = [...blk.clean_bbox];
+      blk.bbox_modified = false;
+      blk.font_size = null;
+      blk._dirtyPreview = true;
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      if (popupBlockId === blockId) populateInlinePopup(blockId);
+      sayMiko(`Рамка #${blockId} и её размер шрифта возвращены в исходное положение! ↺🌸`);
+      scheduleIdleAutoSave(1200);
+    }
+
+    function updatePinDomForBlock(blockId) {
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      ensureBlockCleanBbox(blk);
+      const isMod = isBlockBboxModified(blk);
+      const isDel = Boolean(blk.is_deleted) || !(blk.translated_text || "").trim();
+      const estFs = estimateAutoFontSizeForBox(blk);
+      const useUpper = document.getElementById("chk-uppercase")?.checked !== false;
+      const dispText = useUpper ? String(blk.translated_text || "").toUpperCase() : String(blk.translated_text || "");
+
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        const img = wrap.querySelector("img");
+        if (!img || !img.naturalWidth || !img.naturalHeight) return;
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        const rect = img.getBoundingClientRect();
+        const scale = rect.width / Math.max(1, nw);
+
+        const [x1, y1, x2, y2] = blk.bbox;
+        const leftPct = Math.max(0, Math.min(99, (x1 / nw) * 100));
+        const topPct = Math.max(0, Math.min(99, (y1 / nh) * 100));
+        const widthPct = Math.max(1.5, Math.min(100 - leftPct, ((x2 - x1) / nw) * 100));
+        const heightPct = Math.max(1.5, Math.min(100 - topPct, ((y2 - y1) / nh) * 100));
+
+        const pin = wrap.querySelector(`.bbox-pin[data-block-id="${blockId}"]`);
+        if (pin) {
+          pin.style.left = leftPct + "%";
+          pin.style.top = topPct + "%";
+          pin.style.width = widthPct + "%";
+          pin.style.height = heightPct + "%";
+          pin.classList.toggle("modified-pin", isMod);
+          pin.classList.toggle("deleted-pin", isDel);
+          pin.classList.toggle("dirty-preview-pin", Boolean(blk._dirtyPreview) && !isDel);
+
+          const badge = pin.querySelector(".bbox-pin-badge");
+          if (badge) badge.textContent = formatPinBadgeText(blk);
+
+          const liveEl = pin.querySelector(".bbox-live-text");
+          if (liveEl) {
+            liveEl.textContent = dispText;
+            const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
+            liveEl.style.fontSize = cssFs + "px";
+          }
+
+          const resetBtn = pin.querySelector(".bbox-pin-reset");
+          if (resetBtn) {
+            resetBtn.style.display = (isMod || blk.font_size) ? "inline-block" : "none";
+          }
+        }
+
+        // Update or create ghost outline for original clean_bbox when moved/resized
+        let ghost = wrap.querySelector(`.clean-bbox-ghost[data-block-id="${blockId}"]`);
+        if (isMod && !isDel) {
+          const [cx1, cy1, cx2, cy2] = blk.clean_bbox;
+          if (!ghost) {
+            ghost = document.createElement("div");
+            ghost.className = "clean-bbox-ghost";
+            ghost.dataset.blockId = String(blockId);
+            ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${blockId}</span>`;
+            wrap.appendChild(ghost);
+          }
+          ghost.style.left = ((cx1 / nw) * 100) + "%";
+          ghost.style.top = ((cy1 / nh) * 100) + "%";
+          ghost.style.width = (((cx2 - cx1) / nw) * 100) + "%";
+          ghost.style.height = (((cy2 - cy1) / nh) * 100) + "%";
+        } else if (ghost) {
+          ghost.remove();
+        }
+      });
+    }
+
     function renderBboxPinsOnStage() {
-      document.querySelectorAll(".bbox-pin").forEach(el => el.remove());
+      document.querySelectorAll(".bbox-pin, .clean-bbox-ghost").forEach(el => el.remove());
       const drawerOpen = document.getElementById("text-drawer").classList.contains("open");
       const shouldShowPins = drawerOpen || Boolean(uiSettings.always_show_pins);
       if (!shouldShowPins || !currentBlocks || currentBlocks.length === 0) return;
@@ -3990,18 +4416,43 @@
         if (!img || !img.naturalWidth || !img.naturalHeight) return;
         const nw = img.naturalWidth;
         const nh = img.naturalHeight;
+        const rect = img.getBoundingClientRect();
+        const scale = rect.width / Math.max(1, nw);
+        const useUpper = document.getElementById("chk-uppercase")?.checked !== false;
 
         currentBlocks.forEach(b => {
           if (!Array.isArray(b.bbox) || b.bbox.length < 4) return;
+          ensureBlockCleanBbox(b);
           const [x1, y1, x2, y2] = b.bbox;
-          const leftPct = Math.max(0, Math.min(98, (x1 / nw) * 100));
-          const topPct = Math.max(0, Math.min(98, (y1 / nh) * 100));
-          const widthPct = Math.max(2, Math.min(100 - leftPct, ((x2 - x1) / nw) * 100));
-          const heightPct = Math.max(2, Math.min(100 - topPct, ((y2 - y1) / nh) * 100));
+          const leftPct = Math.max(0, Math.min(99, (x1 / nw) * 100));
+          const topPct = Math.max(0, Math.min(99, (y1 / nh) * 100));
+          const widthPct = Math.max(1.5, Math.min(100 - leftPct, ((x2 - x1) / nw) * 100));
+          const heightPct = Math.max(1.5, Math.min(100 - topPct, ((y2 - y1) / nh) * 100));
 
           const isDel = Boolean(b.is_deleted) || !(b.translated_text || "").trim();
+          const isMod = isBlockBboxModified(b);
+          const estFs = estimateAutoFontSizeForBox(b);
+          const dispText = useUpper ? String(b.translated_text || "").toUpperCase() : String(b.translated_text || "");
+
+          if (isMod && !isDel) {
+            const [cx1, cy1, cx2, cy2] = b.clean_bbox;
+            const ghost = document.createElement("div");
+            ghost.className = "clean-bbox-ghost";
+            ghost.dataset.blockId = String(b.id);
+            ghost.style.left = ((cx1 / nw) * 100) + "%";
+            ghost.style.top = ((cy1 / nh) * 100) + "%";
+            ghost.style.width = (((cx2 - cx1) / nw) * 100) + "%";
+            ghost.style.height = (((cy2 - cy1) / nh) * 100) + "%";
+            ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${b.id}</span>`;
+            wrap.appendChild(ghost);
+          }
+
           const pin = document.createElement("div");
-          pin.className = "bbox-pin" + (activeBlockId === b.id ? " active-pin" : "") + (isDel ? " deleted-pin" : "");
+          pin.className = "bbox-pin" +
+            (activeBlockId === b.id ? " active-pin" : "") +
+            (isDel ? " deleted-pin" : "") +
+            (isMod ? " modified-pin" : "") +
+            (b._dirtyPreview && !isDel ? " dirty-preview-pin" : "");
           pin.dataset.blockId = String(b.id);
           pin.style.left = leftPct + "%";
           pin.style.top = topPct + "%";
@@ -4009,23 +4460,180 @@
           pin.style.height = heightPct + "%";
           pin.title = isDel
             ? `#${b.id} (Оригинал сохранен): ${b.original_text || ""} — Кликните для редактирования`
-            : `#${b.id}: ${b.original_text || ""} ${b.romaji_text ? "(" + b.romaji_text + ")" : ""} ➔ ${b.translated_text || ""} — Кликните для быстрого редактирования`;
-          pin.innerHTML = `<span class="bbox-pin-badge">#${b.id}${isDel ? " (ориг)" : ""}</span>` +
-            (!isDel ? `<button type="button" class="bbox-pin-del" title="Удалить перевод блока #${b.id} (оставить оригинал на картинке)">🗑</button>` : "");
+            : `#${b.id}: Перетащите мышкой для сдвига, потяните за края/уголки для изменения размера текста или покрутите колесико мыши для смены шрифта`;
+
+          const handlesHtml = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]
+            .map(dir => `<div class="bbox-resize-handle handle-${dir}" data-resize-dir="${dir}"></div>`)
+            .join("");
+
+          const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
+          pin.innerHTML =
+            `<span class="bbox-pin-badge">${formatPinBadgeText(b)}</span>` +
+            `<div class="bbox-pin-actions">` +
+              `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${b.id} к оригиналу">↺</button>` +
+              (!isDel ? `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Удалить перевод блока #${b.id} (оставить оригинал на картинке)">🗑</button>` : "") +
+            `</div>` +
+            `<div class="bbox-live-text" style="font-size:${cssFs}px;">${escapeHtml(dispText)}</div>` +
+            handlesHtml;
+
+          const resetBtn = pin.querySelector(".bbox-pin-reset");
+          if (resetBtn) {
+            resetBtn.onmousedown = (ev) => ev.stopPropagation();
+            resetBtn.onclick = (ev) => {
+              ev.stopPropagation();
+              resetSingleBlockBbox(b.id, ev);
+            };
+          }
+
           const delBtn = pin.querySelector(".bbox-pin-del");
           if (delBtn) {
+            delBtn.onmousedown = (ev) => ev.stopPropagation();
             delBtn.onclick = (ev) => {
               ev.stopPropagation();
               deleteBlockTranslation(b.id, ev);
             };
           }
-          pin.onclick = (ev) => {
-            onPinClicked(b.id, pin, ev);
-          };
+
+          // MouseDown on pin or its 8 resize handles
+          pin.addEventListener("mousedown", (ev) => {
+            if (isDrawRegionMode || ev.button !== 0) return;
+            if (ev.target.closest(".bbox-pin-btn")) return;
+            ev.preventDefault();
+            ev.stopPropagation();
+
+            const handleEl = ev.target.closest(".bbox-resize-handle");
+            const resizeDir = handleEl ? handleEl.dataset.resizeDir : null;
+            const imgRect = img.getBoundingClientRect();
+
+            ensureBlockCleanBbox(b);
+            pinInteractState = {
+              block: b,
+              blockId: b.id,
+              pinEl: pin,
+              imgEl: img,
+              imgRect,
+              nw,
+              nh,
+              mode: resizeDir ? "resize" : "move",
+              resizeDir,
+              startClientX: ev.clientX,
+              startClientY: ev.clientY,
+              origBbox: [...b.bbox],
+              hasMoved: false
+            };
+            cancelIdleAutoSaveTimer();
+          });
+
+          // MouseWheel on pin to quickly scale font size up/down
+          pin.addEventListener("wheel", (ev) => {
+            if (ev.ctrlKey || ev.metaKey) return; // Let Ctrl+Wheel zoom the stage
+            ev.preventDefault();
+            ev.stopPropagation();
+            ensureBlockCleanBbox(b);
+            const curEst = b.font_size ? Number(b.font_size) : (b.rendered_font_size || estimateAutoFontSizeForBox(b));
+            const step = ev.deltaY < 0 ? 2 : -2;
+            const nextFs = Math.max(8, Math.min(140, Math.round(curEst + step)));
+            b.font_size = nextFs;
+            b.is_deleted = false;
+            b._dirtyPreview = true;
+
+            highlightBlock(b.id, false);
+            updatePinDomForBlock(b.id);
+
+            const cardFs = document.getElementById(`edit-fs-${b.id}`);
+            if (cardFs) {
+              ensureFontSelectOption(cardFs, nextFs);
+              cardFs.value = String(nextFs);
+            }
+            if (popupBlockId === b.id) {
+              populateInlinePopup(b.id);
+            }
+            sayMiko(`Шрифт блока #${b.id} изменен колесиком: ${nextFs}px! Через 2.5 сек страница обновится автоматически~ 🔤✨`);
+            scheduleIdleAutoSave();
+          }, { passive: false });
+
           wrap.appendChild(pin);
         });
       });
     }
+
+    // Global mousemove / mouseup handlers for interactive pin move & 8-way resize
+    window.addEventListener("mousemove", (ev) => {
+      if (!pinInteractState) return;
+      const st = pinInteractState;
+      const dxScreen = ev.clientX - st.startClientX;
+      const dyScreen = ev.clientY - st.startClientY;
+
+      if (!st.hasMoved && Math.hypot(dxScreen, dyScreen) < 4) {
+        return;
+      }
+
+      if (!st.hasMoved) {
+        st.hasMoved = true;
+        closeInlineBubblePopup();
+        highlightBlock(st.blockId, false);
+        document.querySelectorAll(`.bbox-pin[data-block-id="${st.blockId}"]`).forEach(el => {
+          el.classList.add("dragging-pin");
+        });
+      }
+
+      const scaleX = st.nw / Math.max(1, st.imgRect.width);
+      const scaleY = st.nh / Math.max(1, st.imgRect.height);
+      const dxImg = Math.round(dxScreen * scaleX);
+      const dyImg = Math.round(dyScreen * scaleY);
+
+      let [x1, y1, x2, y2] = st.origBbox;
+      const minW = 18;
+      const minH = 18;
+
+      if (st.mode === "move") {
+        const w = x2 - x1;
+        const h = y2 - y1;
+        let nx1 = Math.max(0, Math.min(st.nw - w, x1 + dxImg));
+        let ny1 = Math.max(0, Math.min(st.nh - h, y1 + dyImg));
+        st.block.bbox = [nx1, ny1, nx1 + w, ny1 + h];
+        st.block.bbox_modified = true;
+      } else {
+        const dir = st.resizeDir || "se";
+        if (dir.includes("w")) x1 = Math.max(0, Math.min(x2 - minW, x1 + dxImg));
+        if (dir.includes("e")) x2 = Math.min(st.nw, Math.max(x1 + minW, x2 + dxImg));
+        if (dir.includes("n")) y1 = Math.max(0, Math.min(y2 - minH, y1 + dyImg));
+        if (dir.includes("s")) y2 = Math.min(st.nh, Math.max(y1 + minH, y2 + dyImg));
+        st.block.bbox = [x1, y1, x2, y2];
+        st.block.bbox_modified = true;
+        // When user resizes the box with mouse handles, auto-fit font to the new box dimensions!
+        st.block.font_size = null;
+        st.block.rendered_font_size = null;
+      }
+
+      st.block._dirtyPreview = true;
+      updatePinDomForBlock(st.blockId);
+    });
+
+    window.addEventListener("mouseup", (ev) => {
+      if (!pinInteractState) return;
+      const st = pinInteractState;
+      pinInteractState = null;
+
+      document.querySelectorAll(`.bbox-pin[data-block-id="${st.blockId}"]`).forEach(el => {
+        el.classList.remove("dragging-pin");
+      });
+
+      if (!st.hasMoved) {
+        // Simple click without dragging -> open popup / focus block
+        onPinClicked(st.blockId, st.pinEl, ev);
+        return;
+      }
+
+      renderBlocksEditor();
+      if (st.mode === "resize") {
+        const est = estimateAutoFontSizeForBox(st.block);
+        sayMiko(`Размер рамки #${st.blockId} изменен (авто-кегль ~${est}px, замазка осталась на старом месте)! Через 2.5 сек бездействия страница перерисуется~ 📐✨`);
+      } else {
+        sayMiko(`Рамка перевода #${st.blockId} передвинута (область замазки оригинала не сместилась)! Через 2.5 сек бездействия страница обновится~ ✋✨`);
+      }
+      scheduleIdleAutoSave();
+    });
 
     /* ==================== DRAGGABLE SPLITTERS & FLOATING WINDOW ==================== */
     (function initSplittersAndFloatingDrag() {

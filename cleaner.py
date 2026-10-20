@@ -6,6 +6,9 @@
    если у блока `is_deleted=True` или пустой `translated_text`, этот блок полностью исключается из маски
    очистки, и на странице сохраняется нетронутый оригинальный рисунок и оригинальный текст!
 2. Идеально чистая очистка белых и однотонных speech bubbles без серых разводов и «призраков» от букв.
+3. Фиксация области инпейнтинга по `clean_bbox` (`original_bbox`): если пользователь передвинул или
+   изменил размер рамки перевода (`bbox`) мышкой в редакторе, замазка оригинального японского/корейского
+   текста остается строго на исходном месте и не смещается.
 """
 
 from __future__ import annotations
@@ -81,7 +84,7 @@ class BubbleCleaner:
             if area < (rh * rw * 0.08):
                 continue
             center_hits = float(np.count_nonzero(center_slice == lbl))
-            dist = ((centroids[lbl][0] - cx_mid) ** 2 + (centroids[lbl][1] - cy_mid) ** 2) ** 0.5
+            dist = ((centroids[lbl][0] - cx_mid) ** 2 + ((centroids[lbl][1] - cy_mid) ** 2)) ** 0.5
             score = center_hits * 3.0 + area - dist * 4.0
             if score > best_score:
                 best_score = score
@@ -116,6 +119,17 @@ class BubbleCleaner:
             return True
         return False
 
+    @staticmethod
+    def _get_clean_bbox(block: dict[str, Any]) -> list[int]:
+        """
+        Возвращает исходные координаты распознанного текста (clean_bbox / original_bbox),
+        чтобы при перетаскивании или ресайзе рамки перевода в редакторе замазка оригинала не смещалась.
+        """
+        raw = block.get("clean_bbox") or block.get("original_bbox") or block.get("bbox") or [0, 0, 0, 0]
+        if isinstance(raw, (list, tuple)) and len(raw) >= 4:
+            return [int(round(float(c))) for c in raw[:4]]
+        return [0, 0, 0, 0]
+
     def build_text_mask(
         self,
         image_rgb: np.ndarray,
@@ -143,7 +157,11 @@ class BubbleCleaner:
         for block in blocks:
             if self._is_block_skipped(block):
                 continue
-            x1, y1, x2, y2 = block["bbox"]
+            x1, y1, x2, y2 = self._get_clean_bbox(block)
+            x1 = max(0, min(x1, img_w - 1))
+            y1 = max(0, min(y1, img_h - 1))
+            x2 = max(x1 + 1, min(x2, img_w))
+            y2 = max(y1 + 1, min(y2, img_h))
             bw = x2 - x1
             bh = y2 - y1
             if bw < 10 or bh < 10:
@@ -316,7 +334,8 @@ class BubbleCleaner:
         blocks: list[dict[str, Any]],
     ) -> tuple[Image.Image, Image.Image]:
         """
-        Удаляет оригинальный текст со страницы манги, обрабатывая кропы вокруг активных бабблов и надписей.
+        Удаляет оригинальный текст со страницы манги, обрабатывая кропы вокруг активных бабблов и надписей
+        строго по исходным координатам `clean_bbox`.
         """
         rgb_image = image.convert("RGB")
         orig_w, orig_h = rgb_image.size
@@ -334,7 +353,11 @@ class BubbleCleaner:
         for block in blocks:
             if self._is_block_skipped(block):
                 continue
-            x1, y1, x2, y2 = block["bbox"]
+            x1, y1, x2, y2 = self._get_clean_bbox(block)
+            x1 = max(0, min(x1, orig_w - 1))
+            y1 = max(0, min(y1, orig_h - 1))
+            x2 = max(x1 + 1, min(x2, orig_w))
+            y2 = max(y1 + 1, min(y2, orig_h))
             is_free_text = bool(block.get("is_free_text", False))
 
             cx1 = max(0, x1 - pad)

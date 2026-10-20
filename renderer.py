@@ -4,6 +4,9 @@
 Изменения v1.0.0:
 1. Пропуск блоков с `is_deleted=True` (когда пользователь удалил перевод в редакторе, чтобы оставить оригинал).
 2. Поддержка выбора минимального (`min_font_size`) и максимального (`max_font_size`) размера шрифта.
+3. Автоматическая подгонка размера текста под новую площадь рамки (`bbox_modified`), когда пользователь
+   растягивает или сжимает квадрат мышкой в редакторе (с обходом глобального потолка `max_font_size`),
+   а также поддержка быстрой прокрутки кегля колесиком мыши (`font_size`).
 """
 
 from __future__ import annotations
@@ -218,6 +221,41 @@ class MangaRenderer:
 
         return True
 
+    @staticmethod
+    def _is_bbox_modified(block: dict[str, Any]) -> bool:
+        if bool(block.get("bbox_modified", False)):
+            return True
+        clean_b = block.get("clean_bbox") or block.get("original_bbox")
+        cur_b = block.get("bbox")
+        if (
+            isinstance(clean_b, (list, tuple))
+            and isinstance(cur_b, (list, tuple))
+            and len(clean_b) >= 4
+            and len(cur_b) >= 4
+        ):
+            return [int(round(float(x))) for x in clean_b[:4]] != [int(round(float(x))) for x in cur_b[:4]]
+        return False
+
+    @staticmethod
+    def _is_bbox_resized(block: dict[str, Any]) -> bool:
+        if bool(block.get("bbox_resized", False)):
+            return True
+        clean_b = block.get("clean_bbox") or block.get("original_bbox")
+        cur_b = block.get("bbox")
+        if (
+            isinstance(clean_b, (list, tuple))
+            and isinstance(cur_b, (list, tuple))
+            and len(clean_b) >= 4
+            and len(cur_b) >= 4
+        ):
+            cw = int(round(float(clean_b[2]))) - int(round(float(clean_b[0])))
+            ch = int(round(float(clean_b[3]))) - int(round(float(clean_b[1])))
+            nw = int(round(float(cur_b[2]))) - int(round(float(cur_b[0])))
+            nh = int(round(float(cur_b[3]))) - int(round(float(cur_b[1])))
+            if abs(nw - cw) >= 3 or abs(nh - ch) >= 3:
+                return True
+        return bool(block.get("bbox_modified", False))
+
     def _fit_text_to_box(
         self,
         draw: ImageDraw.ImageDraw,
@@ -228,15 +266,23 @@ class MangaRenderer:
         max_font_limit: int,
         is_free_text: bool = False,
         stroke_width_override: int | None = None,
-    ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int]:
-        min_lim = max(8, int(min_font_limit))
+        force_rectangular: bool = False,
+        unconstrained_size: bool = False,
+    ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int]:
+        min_lim = max(6 if unconstrained_size else 8, int(min_font_limit))
         max_lim = max(min_lim, int(max_font_limit))
-        use_ellipse = not is_free_text
+        use_ellipse = not (is_free_text or force_rectangular)
 
-        start_size = min(
-            max_lim,
-            max(min_lim, int(min(target_w, target_h) * (0.45 if is_free_text else 0.38))),
-        )
+        if unconstrained_size:
+            start_size = min(
+                max_lim,
+                max(min_lim, int(min(target_w, target_h) * 0.88)),
+            )
+        else:
+            start_size = min(
+                max_lim,
+                max(min_lim, int(min(target_w, target_h) * (0.45 if is_free_text else 0.38))),
+            )
 
         for font_size in range(start_size, min_lim - 1, -1):
             font = self._get_font(font_size)
@@ -255,9 +301,9 @@ class MangaRenderer:
                 elliptical_shaping=use_ellipse,
             )
             if self._fits_in_box(draw, wrapped, font, spacing, stroke_w, target_w, target_h, elliptical=use_ellipse):
-                return wrapped, font, stroke_w, spacing
+                return wrapped, font, stroke_w, spacing, font_size
 
-        hyph_start = max(min_lim, min(start_size, max(22, min_lim)))
+        hyph_start = max(min_lim, min(start_size, max(28 if unconstrained_size else 22, min_lim)))
         for font_size in range(hyph_start, min_lim - 1, -1):
             font = self._get_font(font_size)
             stroke_w = (
@@ -275,7 +321,7 @@ class MangaRenderer:
                 elliptical_shaping=use_ellipse,
             )
             if self._fits_in_box(draw, wrapped, font, spacing, stroke_w, target_w, target_h, elliptical=use_ellipse):
-                return wrapped, font, stroke_w, spacing
+                return wrapped, font, stroke_w, spacing, font_size
 
         min_font = self._get_font(min_lim)
         min_spacing = self._get_line_spacing(min_lim)
@@ -284,15 +330,16 @@ class MangaRenderer:
             if stroke_width_override is not None
             else (max(3, min_lim // 8) if is_free_text else max(2, min_lim // 10))
         )
+        wrap_limit = max(target_w, int(min_lim * 2.5)) if min_lim == max_lim else target_w
         wrapped = self._wrap_text_pixel(
             draw,
             text,
             min_font,
-            target_w,
-            allow_hyphenation=True,
+            wrap_limit,
+            allow_hyphenation=(min_lim != max_lim),
             elliptical_shaping=False,
         )
-        return wrapped, min_font, min_stroke, min_spacing
+        return wrapped, min_font, min_stroke, min_spacing, min_lim
 
     @staticmethod
     def _compute_perceptual_luminance(roi: np.ndarray) -> float:
@@ -366,35 +413,48 @@ class MangaRenderer:
 
             text = raw_text.upper() if use_upper else raw_text
             is_free_text = bool(block.get("is_free_text", False))
+            is_modified = self._is_bbox_modified(block)
+            is_resized = self._is_bbox_resized(block)
 
-            x1, y1, x2, y2 = block["bbox"]
-            if is_free_text:
+            raw_bbox = block.get("bbox") or [0, 0, 0, 0]
+            x1, y1, x2, y2 = [int(round(float(c))) for c in raw_bbox[:4]]
+            x1 = max(0, min(x1, img_w - 4))
+            y1 = max(0, min(y1, img_h - 4))
+            x2 = max(x1 + 4, min(x2, img_w))
+            y2 = max(y1 + 4, min(y2, img_h))
+
+            if is_free_text and not is_modified:
                 rx1, rx2 = self._expand_free_text_width([x1, y1, x2, y2], blocks, img_w)
             else:
                 rx1, rx2 = x1, x2
 
             box_w = rx2 - rx1
             box_h = y2 - y1
-            if box_w < 14 or box_h < 14:
+            if box_w < 10 or box_h < 10:
                 continue
 
-            if is_free_text:
-                pad_x = 2
-                pad_y = 2
+            if is_free_text or is_modified:
+                pad_x = max(2, int(box_w * 0.04)) if is_modified else 2
+                pad_y = max(2, int(box_h * 0.04)) if is_modified else 2
             else:
                 pad_x = max(4, int(box_w * self.box_padding_ratio))
                 pad_y = max(4, int(box_h * self.box_padding_ratio))
 
-            safe_w = max(12, box_w - 2 * pad_x)
-            safe_h = max(12, box_h - 2 * pad_y)
+            safe_w = max(10, box_w - 2 * pad_x)
+            safe_h = max(10, box_h - 2 * pad_y)
 
             block_font_override = block.get("font_size")
+            unconstrained_size = False
             if isinstance(block_font_override, (int, float)) and int(block_font_override) >= 6:
-                b_min = b_max = max(6, min(96, int(block_font_override)))
+                b_min = b_max = max(6, min(160, int(block_font_override)))
+            elif is_resized:
+                # Если пользователь растянул/сжал рамку мышкой — кегль свободно подстраивается под новую площадь
+                b_min, b_max = 6, 140
+                unconstrained_size = True
             else:
                 b_min, b_max = font_min, font_cap
 
-            wrapped_text, font, stroke_w, dyn_spacing = self._fit_text_to_box(
+            wrapped_text, font, stroke_w, dyn_spacing, chosen_fs = self._fit_text_to_box(
                 draw=draw,
                 text=text,
                 target_w=safe_w,
@@ -403,7 +463,10 @@ class MangaRenderer:
                 max_font_limit=b_max,
                 is_free_text=is_free_text,
                 stroke_width_override=stroke_width_override,
+                force_rectangular=is_modified,
+                unconstrained_size=unconstrained_size,
             )
+            block["rendered_font_size"] = chosen_fs
 
             cx1 = max(0, min(x2 - 1, x1 + 2))
             cy1 = max(0, min(y2 - 1, y1 + 2))
