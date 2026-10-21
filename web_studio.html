@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Miko-chan Manga Studio v1.0.4</title>
+  <title>Miko-chan Manga Studio v1.0.5</title>
   <style>
     :root {
       --bg-deep: #0f0d18;
@@ -1762,7 +1762,7 @@
       <div class="brand">
         <span class="brand-sparkle">🌸</span>
         <span>Miko-chan Manga Studio</span>
-        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.4</span>
+        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.5</span>
       </div>
     </div>
 
@@ -2357,7 +2357,7 @@
         <div class="settings-tab-pane" id="tab-diag">
           <div class="section-box">
             <div class="section-title">
-              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.4)</span>
+              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.5)</span>
               <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер обмена!</span>
             </div>
             <div class="section-desc">
@@ -2417,7 +2417,8 @@
 
   <!-- ==================== APPLICATION SCRIPT ==================== -->
   <script>
-    let targetLang = "en";
+    let targetLang = localStorage.getItem("miko_target_lang_v1") || "en";
+    if (!["en", "ru", "romaji"].includes(targetLang)) targetLang = "en";
     let currentFolder = "";
     let currentOutputDir = "";
     let folderPages = [];
@@ -2777,7 +2778,7 @@
           cardsEl.innerHTML =
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--sakura);">🖥 Сервер и процесс:</b><br>` +
-              `Версия: <b>v${escapeHtml(srv.version || "1.0.4")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
+              `Версия: <b>v${escapeHtml(srv.version || "1.0.5")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
               `Лог: <b>${srv.log_file_size_kb || 0} КБ</b> (logs/miko_studio.log)` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
@@ -2917,8 +2918,10 @@
 
     function setTargetLang(lang) {
       targetLang = lang;
+      try { localStorage.setItem("miko_target_lang_v1", lang); } catch (e) {}
       ["en", "ru", "romaji"].forEach(k => {
-        document.getElementById("pill-" + k).classList.toggle("active", k === lang);
+        const el = document.getElementById("pill-" + k);
+        if (el) el.classList.toggle("active", k === lang);
       });
       if (currentFolder) inspectCurrentFolder();
     }
@@ -5625,6 +5628,7 @@
     });
 
     loadLocalUiSettings();
+    setTargetLang(targetLang);
     loadHealth(false);
   </script>
 </body>

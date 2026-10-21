@@ -1,5 +1,5 @@
 """
-Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.0).
+Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.5).
 
 Изменения v1.0.0:
 1. Автоматический обход ошибки `redirect target not allowed: us.aws.cdn.hf.co resolves to non-public 198.18.x.x`
@@ -166,7 +166,7 @@ SOURCE_LANG_NAMES_RU = {
     "zh": "китайской маньхуа",
 }
 
-MAX_BUBBLES_PER_BATCH_LOCAL = 24
+MAX_BUBBLES_PER_BATCH_LOCAL = 12
 MAX_BUBBLES_PER_BATCH_CLOUD = 260
 CLOUD_PARALLEL_CHUNK_SIZE = 42
 MAX_CONCURRENT_CLOUD_REQUESTS = 3
@@ -439,25 +439,184 @@ PURE_SIGH_KEYS_JA: set[str] = {
 }
 
 TRANSLATED_SIGH_REGEX = re.compile(
-    r"^(?:а+|о+|э+|у+|ы+|и+|м+|н+|"
-    r"а+х+|о+х+|у+х+|э+х+|ы+х+|и+х+|а+х*н+|м+х+|н+г*х*|"
-    r"ха+|фу+х*|уф+|ой+|ай+|кья+|хи+я*|хья+|хм+|пф+|тц+|"
-    r"a+|o+|e+|u+|m+|n+|ah+|aah+|ahn+|oh+|ooh+|uh+|eh+|ha+|haa+|mm+h*|hm+|"
-    r"phew+|ugh+|gah+|ngh+|kya+|hya+|eek+|huh+|wah+)$",
+    r"^(?:а+|о+|у+|м+|н+|"
+    r"а+х+|о+х+|у+х+|а+х*н+|м+х+|н+г*х*|"
+    r"ха+|фу+х*|"
+    r"a+|o+|u+|m+|n+|ah+|aah+|ahn+|ooh+|ha+|haa+|mm+h*|ngh+)$",
     flags=re.IGNORECASE,
 )
+
+# Частые японские слова на Ромадзи, которые модели иногда ошибочно выводят вместо английского/русского перевода
+ROMAJI_LEAK_WORDS_SET: set[str] = {
+    "yamete", "yamero", "dame", "kimochi", "kimochiii", "chotto", "matte", "matta",
+    "hontou", "honto", "daijoubu", "gomen", "gomennasai", "arigatou", "sumimasen",
+    "onegai", "onegaishimasu", "nani", "nande", "doushite", "kawaii", "sugoi", "sugee",
+    "uso", "usodesho", "iya", "yada", "muri", "baka", "aho", "urusai", "kuso",
+    "iku", "icchau", "itai", "oishii", "ureshii", "hazukashii", "abunai", "hentai",
+    "masaka", "naruhodo", "tashika", "tashikani", "wakatta", "iiyo", "souka", "soudane",
+    "doko", "dare", "koko", "soko", "asoko", "watashi", "atashi", "ore", "boku",
+    "kimi", "anata", "kanojo", "kareshi", "nakadashi", "oppai", "chinko", "manko",
+    "ecchi", "sukebe", "oniichan", "oneechan", "otousan", "okaasan", "ojisan", "obasan",
+    "tasukete", "hayaku", "yappari", "zenshin", "zutto", "motto", "kitto", "yatto",
+    "meccha", "totemo", "sugoku", "kowai", "atsui", "samui", "tsumetai", "warui",
+    "yokatta", "subarashii", "kirei", "suteki", "saikou", "saitei", "daisuki", "suki",
+    "kirai", "daikirai", "ohayou", "konnichiwa", "konbanwa", "oyasumi", "tadaima", "okaeri",
+    "itadakimasu", "gochisousama", "otsukaresama", "shitsurei", "naruhodo", "mochiron",
+}
+
+# Прямая замена типичных фраз на Ромадзи на настоящий перевод (если ИИ упорно вернул транслит)
+ROMAJI_PHRASE_FALLBACK_EN: dict[str, str] = {
+    "yamete": "Stop it!",
+    "yamete yo": "Stop it!",
+    "yamero": "Stop!",
+    "dame": "No, don't!",
+    "dame yo": "No, you can't!",
+    "dame da": "No way!",
+    "kimochiii": "Feels so good...",
+    "kimochi ii": "Feels so good...",
+    "chotto": "Wait a sec!",
+    "chotto matte": "Wait a second!",
+    "matte": "Hold on!",
+    "matte yo": "Wait up!",
+    "hontou": "Really?",
+    "hontou ni": "Really?",
+    "honto": "Really?",
+    "daijoubu": "Are you okay?",
+    "daijoubu desu ka": "Are you alright?",
+    "gomen": "Sorry!",
+    "gomen ne": "I'm sorry!",
+    "gomennasai": "I'm so sorry!",
+    "arigatou": "Thank you!",
+    "arigatou gozaimasu": "Thank you very much!",
+    "sumimasen": "Excuse me!",
+    "onegai": "Please!",
+    "onegaishimasu": "Please!",
+    "nani": "What?!",
+    "nani kore": "What is this?!",
+    "nani sore": "What's that?!",
+    "nande": "Why?!",
+    "doushite": "Why?!",
+    "kawaii": "So cute!",
+    "sugoi": "Amazing!",
+    "sugee": "Awesome!",
+    "uso": "No way!",
+    "uso desho": "You're kidding, right?!",
+    "iya": "No!",
+    "yada": "No way!",
+    "muri": "Impossible!",
+    "baka": "Idiot!",
+    "aho": "Moron!",
+    "urusai": "Shut up!",
+    "kuso": "Damn it!",
+    "iku": "I'm coming!",
+    "icchau": "I'm gonna cum!",
+    "itai": "Ouch, it hurts!",
+    "hazukashii": "So embarrassing...",
+    "abunai": "Look out!",
+    "hentai": "Pervert!",
+    "masaka": "No way?!",
+    "naruhodo": "I see...",
+    "tashika ni": "That's true!",
+    "wakatta": "Got it!",
+    "ii yo": "Sure!",
+    "iiyo": "Sure!",
+    "sou ka": "I see...",
+    "souka": "I see...",
+    "sou da ne": "That's right.",
+    "soudane": "That's right.",
+    "doko": "Where?!",
+    "dare": "Who?!",
+    "koko": "Right here!",
+    "tasukete": "Help me!",
+    "hayaku": "Hurry up!",
+    "yokatta": "Thank goodness!",
+    "motto": "More!",
+    "daisuki": "I love you!",
+    "suki": "I like you!",
+}
+
+ROMAJI_PHRASE_FALLBACK_RU: dict[str, str] = {
+    "yamete": "Прекрати!",
+    "yamete yo": "Перестань же!",
+    "yamero": "Остановись!",
+    "dame": "Нельзя!",
+    "dame yo": "Нет, не надо!",
+    "dame da": "Нельзя!",
+    "kimochiii": "Как хорошо...",
+    "kimochi ii": "Так приятно...",
+    "chotto": "Постой!",
+    "chotto matte": "Подожди секунду!",
+    "matte": "Подожди!",
+    "matte yo": "Постой же!",
+    "hontou": "Правда?",
+    "hontou ni": "Серьёзно?",
+    "honto": "Правда?",
+    "daijoubu": "Всё в порядке?",
+    "gomen": "Прости!",
+    "gomen ne": "Прости меня!",
+    "gomennasai": "Извини, пожалуйста!",
+    "arigatou": "Спасибо!",
+    "sumimasen": "Извините!",
+    "onegai": "Пожалуйста!",
+    "nani": "Что?!",
+    "nani kore": "Что это?!",
+    "nani sore": "Это ещё что?!",
+    "nande": "Почему?!",
+    "doushite": "Зачем?!",
+    "kawaii": "Как мило!",
+    "sugoi": "Невероятно!",
+    "sugee": "Круто!",
+    "uso": "Не может быть!",
+    "uso desho": "Да ладно?!",
+    "iya": "Нет!",
+    "yada": "Не хочу!",
+    "muri": "Невозможно!",
+    "baka": "Дурак!",
+    "aho": "Идиот!",
+    "urusai": "Заткнись!",
+    "kuso": "Чёрт!",
+    "iku": "Сейчас кончу!",
+    "icchau": "Сейчас кончу!",
+    "itai": "Больно!",
+    "hazukashii": "Как стыдно...",
+    "abunai": "Осторожно!",
+    "hentai": "Извращенец!",
+    "masaka": "Неужели?!",
+    "naruhodo": "Понятно...",
+    "tashika ni": "И то верно!",
+    "wakatta": "Понял!",
+    "ii yo": "Хорошо!",
+    "iiyo": "Хорошо!",
+    "sou ka": "Вот как...",
+    "souka": "Вот как...",
+    "sou da ne": "И правда.",
+    "soudane": "И правда.",
+    "doko": "Где?!",
+    "dare": "Кто?!",
+    "koko": "Здесь!",
+    "tasukete": "Помогите!",
+    "hayaku": "Скорее!",
+    "yokatta": "Слава богу!",
+    "motto": "Ещё!",
+    "daisuki": "Я люблю тебя!",
+    "suki": "Ты мне нравишься!",
+}
 
 
 def is_translated_sigh_text(translated_text: str, original_text: str = "") -> bool:
     """
-    Проверяет, является ли готовый перевод коротким вздохом/стоном/охом («А», «О», «Ах!», «Ох...», «Мм...», «Ха-а...»).
-    Используется при включенной опции `skip_sighs`, чтобы не замазывать такие облачка на картинке.
+    Проверяет, является ли готовый перевод коротким вздохом/стоном («Ах!», «Мм...», «Ха-а...»).
+    ВАЖНО: срабатывает ТОЛЬКО если исходный японский текст сам входит в узкий список чистых стонов `PURE_SIGH_KEYS_JA`!
+    Никогда не удаляет осмысленные короткие реплики, вопросы (`?`/`？`) или кандзи.
     """
     if not translated_text:
         return True
+    if "?" in (original_text or "") or "？" in (original_text or "") or "?" in translated_text:
+        return False
     orig_clean = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", original_text or "")
-    # Если оригинал длинный (полноценное предложение), не отбрасываем его
-    if len(orig_clean) > 6:
+    if len(orig_clean) > 4:
+        return False
+    if orig_clean and orig_clean not in PURE_SIGH_KEYS_JA:
         return False
 
     cleaned = re.sub(
@@ -2084,11 +2243,23 @@ class OllamaTranslator:
                 pass
 
         recovered: dict[str, str] = {}
+        # 1. Сначала пробуем построчный разбор (корректно обрабатывает неэкранированные кавычки внутри реплик!)
+        for raw_line in cleaned.splitlines():
+            line_s = raw_line.strip().rstrip(",")
+            m_line = re.match(r"""^['"]?#?(\d+)['"]?\s*:\s*['"](.*)['"]$""", line_s)
+            if m_line:
+                norm_k = cls._normalize_key(m_line.group(1))
+                val_s = m_line.group(2).replace('\"', '"').replace("\\n", " ").strip()
+                if norm_k and val_s:
+                    recovered[norm_k] = val_s
+
+        # 2. Дополняем регулярным выражением для однострочных/обрезанных JSON
         for k_match, v_match in KV_PAIR_REGEX.findall(cleaned):
             norm_k = cls._normalize_key(k_match)
-            unescaped_v = v_match.replace('\"', '"').replace("\\n", " ").strip()
-            if norm_k and unescaped_v:
-                recovered[norm_k] = unescaped_v
+            if norm_k not in recovered:
+                unescaped_v = v_match.replace('\"', '"').replace("\\n", " ").strip()
+                if norm_k and unescaped_v:
+                    recovered[norm_k] = unescaped_v
 
         if recovered:
             logger.warning(
@@ -2104,11 +2275,99 @@ class OllamaTranslator:
     def _contains_cjk(text: str) -> bool:
         return bool(CJK_REGEX.search(text))
 
+    @classmethod
+    def _is_romaji_leak(cls, candidate_text: str, orig_text: str = "", target_lang: str = "en") -> bool:
+        """
+        Определяет, выдала ли модель японский транслит (Ромадзи) вместо реального перевода на английский/русский язык.
+        """
+        t_lang = (target_lang or "en").lower().strip()
+        if t_lang == "romaji" or not candidate_text:
+            return False
+        if t_lang == "ru":
+            # Для русского языка отсутствие кириллицы при наличии латиницы — это 100% Ромадзи/английский
+            return not bool(re.search(r"[А-Яа-яЁё]", candidate_text))
+
+        # Для target_lang == "en":
+        norm_cand = re.sub(r"[^a-zA-Z\s']", " ", candidate_text.lower()).strip()
+        norm_cand = re.sub(r"\s+", " ", norm_cand)
+        if not norm_cand:
+            return False
+
+        if norm_cand in ROMAJI_PHRASE_FALLBACK_EN:
+            return True
+
+        # Проверяем прямое совпадение с автоматической транслитерацией японского оригинала в Ромадзи
+        if orig_text and CJK_REGEX.search(orig_text):
+            rom_local = re.sub(r"[^a-zA-Z\s']", " ", japanese_to_romaji_local(orig_text).lower()).strip()
+            rom_local = re.sub(r"\s+", " ", rom_local)
+            rom_kana = re.sub(r"[^a-zA-Z\s']", " ", kana_to_romaji(orig_text).lower()).strip()
+            rom_kana = re.sub(r"\s+", " ", rom_kana)
+            cand_compact = norm_cand.replace(" ", "")
+            if len(cand_compact) >= 3:
+                if rom_local and cand_compact == rom_local.replace(" ", ""):
+                    return True
+                if rom_kana and cand_compact == rom_kana.replace(" ", ""):
+                    return True
+
+        words = [w.strip("'") for w in norm_cand.split() if w.strip("'")]
+        if not words:
+            return False
+
+        # Игнорируем именные суффиксы (-san, -chan, -kun, -senpai, -sensei, -sama) при подсчете
+        stripped_words: list[str] = []
+        for w in words:
+            w_base = re.sub(r"(?:san|chan|kun|senpai|sensei|sama)$", "", w).strip("-")
+            if w_base:
+                stripped_words.append(w_base)
+        if not stripped_words:
+            return False
+
+        romaji_hits = sum(
+            1 for w in stripped_words if w in ROMAJI_LEAK_WORDS_SET or re.sub(r"(.)\1+", r"\1", w) in ROMAJI_LEAK_WORDS_SET
+        )
+        if romaji_hits > 0 and romaji_hits >= max(1, (len(stripped_words) + 1) // 2):
+            return True
+
+        return False
+
+    @classmethod
+    def _rescue_romaji_or_interjection(cls, candidate_text: str, orig_text: str, target_lang: str) -> str:
+        """
+        Если модель вернула Ромадзи или пустую строку, пытается перевести фразу через словарь частых реплик манги.
+        Никогда не возвращает Ромадзи для режимов 'en' и 'ru'!
+        """
+        t_lang = (target_lang or "en").lower().strip()
+        norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_text or "")
+        interj_dict = (
+            SHORT_INTERJECTIONS_RU
+            if t_lang == "ru"
+            else (SHORT_INTERJECTIONS_ROMAJI if t_lang == "romaji" else SHORT_INTERJECTIONS_EN)
+        )
+        if norm_orig in interj_dict:
+            return interj_dict[norm_orig]
+
+        if t_lang in ("en", "ru"):
+            fb_map = ROMAJI_PHRASE_FALLBACK_RU if t_lang == "ru" else ROMAJI_PHRASE_FALLBACK_EN
+            for probe in (candidate_text, japanese_to_romaji_local(orig_text), kana_to_romaji(orig_text)):
+                if not probe:
+                    continue
+                norm_p = re.sub(r"[^a-zA-Z\s]", " ", probe.lower()).strip()
+                norm_p = re.sub(r"\s+", " ", norm_p)
+                if norm_p in fb_map:
+                    return fb_map[norm_p]
+                compact_p = norm_p.replace(" ", "")
+                if compact_p in fb_map:
+                    return fb_map[compact_p]
+        return ""
+
     @staticmethod
     def _clean_translated_text(text: str, target_lang: str = "en") -> str:
         if not text:
             return ""
-        if KANA_ANY_REGEX.search(text) and target_lang.lower().strip() in ("romaji", "en"):
+        t_lang = (target_lang or "en").lower().strip()
+        # ВАЖНО: Конвертируем кану в Ромадзи ТОЛЬКО если целевой язык — 'romaji'!
+        # Раньше здесь было `in ("romaji", "en")`, из-за чего непереведенный японский текст превращался в Ромадзи!
+        if t_lang == "romaji" and KANA_ANY_REGEX.search(text):
             text = kana_to_romaji(text)
         normalized = text.translate(FULLWIDTH_PUNCT_MAP)
         no_cjk = CJK_REGEX.sub("", normalized)
@@ -2169,14 +2428,14 @@ class OllamaTranslator:
         sys_prompt = (
             f"You are a professional {src_en}-to-English localization translator.\n"
             "Rules:\n"
-            "1. Romanize personal names and nicknames phonetically (Hepburn) and NEVER translate name Kanji literally (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan, NEVER 'Seven-chan'; 一 -> Ichi/Kazu; 双葉 -> Futaba; 三玖 -> Miku; 四葉 -> Yotsuba; 五月 -> Itsuki). Keep honorifics (-san, -chan, -kun, -senpai, -sensei).\n"
-            "2. Translate every line and interjection into natural, concise, idiomatic English that fits speech bubbles.\n"
-            "3. Output zero Japanese/Korean/Chinese characters and never skip any JSON key.\n"
+            "1. Translate the MEANING of every dialogue line, exclamation, and interjection into natural, idiomatic English. NEVER transliterate sentences or words into Japanese Romaji (e.g., write 'Stop it!', NEVER 'Yamete!'; write 'Wait!', NEVER 'Chotto matte!'; write 'Feels so good...', NEVER 'Kimochiii').\n"
+            "2. Only personal character names should be romanized phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei).\n"
+            "3. Output zero Japanese/Korean/Chinese characters and NEVER skip any JSON key.\n"
             "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys."
             f"{context_block_en}"
         )
-        usr_prompt = f"Localize all JSON values from {src_en} into natural English (keep exact keys, no CJK):\n{source_map_json}"
-        retry_prefix = "Translate into natural English with zero CJK characters (return JSON with exact same keys):\n"
+        usr_prompt = f"Translate all JSON values from {src_en} into natural English (translate meaning, do NOT output Romaji, keep exact keys):\n{source_map_json}"
+        retry_prefix = "Translate meaning into natural English (NO Romaji, NO CJK, return JSON with exact same keys):\n"
         return sys_prompt, usr_prompt, retry_prefix
 
     @staticmethod
@@ -2234,11 +2493,11 @@ class OllamaTranslator:
 
     @staticmethod
     def _get_minimal_retry_prompts(target_lang: str, retry_json: str) -> tuple[str, str]:
-        """Сверхкомпактный промпт (~25 токенов) для доперевода 1-10 пропущенных кружков без повторной отправки огромного системного промпта."""
+        """Сверхкомпактный промпт для гарантированного доперевода пропущенных кружков."""
         t_lang = target_lang.lower().strip()
         if t_lang == "ru":
             return (
-                "Переведи значения JSON с японского/корейского/китайского на русский язык (кириллицей, имена фонетически). Верни ТОЛЬКО валидный JSON с теми же ключами.",
+                "Переведи смысл каждого значения JSON на русский язык (ТОЛЬКО кириллицей, без латиницы и без Ромадзи, имена фонетически). Не пропускай ни одного ключа. Верни ТОЛЬКО валидный JSON с теми же ключами.",
                 retry_json,
             )
         if t_lang == "romaji":
@@ -2247,7 +2506,7 @@ class OllamaTranslator:
                 retry_json,
             )
         return (
-            "Provide literal English translations for each JSON value (romanize names phonetically). Return ONLY valid JSON with the exact same keys.",
+            "Translate the meaning of every JSON value into natural English (NEVER output Japanese Romaji like 'Yamete' or 'Matte'; translate every word into English). Return ONLY valid JSON with the exact same keys.",
             retry_json,
         )
 
@@ -2265,7 +2524,8 @@ class OllamaTranslator:
         if clean_name.startswith("ollama/"):
             clean_name = clean_name.split("ollama/", 1)[1]
 
-        payload = {
+        _t0_ol = time.perf_counter()
+        payload: dict[str, Any] = {
             "model": clean_name,
             "system": system_prompt,
             "prompt": user_prompt,
@@ -2276,6 +2536,7 @@ class OllamaTranslator:
                 "temperature": 0.2,
                 "repeat_penalty": 1.15,
                 "num_ctx": self.num_ctx,
+                "num_predict": 2048,
             },
         }
         response = await client.post(f"{self.base_url}/api/generate", json=payload)
@@ -2290,7 +2551,9 @@ class OllamaTranslator:
                     if resp_loc.status_code == 200:
                         self.save_config(selected_model=f"ollama::{loc_tag}")
                         raw_output = resp_loc.json().get("response", "{}")
-                        return self._parse_json_response(raw_output)
+                        parsed_loc = self._parse_json_response(raw_output)
+                        if parsed_loc:
+                            return parsed_loc
 
             logger.info(
                 "Модель '%s' еще не скачана в Ollama — запускаю автоматическое скачивание...",
@@ -2305,12 +2568,30 @@ class OllamaTranslator:
         response.raise_for_status()
         raw_output = response.json().get("response", "{}")
         parsed = self._parse_json_response(raw_output)
+
+        # Если GBNF-грамматика "format": "json" в Ollama заставила модель сразу закрыть "{}" (пустой ответ),
+        # повторяем запрос без жесткого "format": "json"!
+        if not parsed and not self._is_refusal_response(raw_output):
+            payload_no_fmt = dict(payload)
+            payload_no_fmt.pop("format", None)
+            try:
+                resp2 = await client.post(f"{self.base_url}/api/generate", json=payload_no_fmt)
+                if resp2.status_code == 200:
+                    raw_output2 = resp2.json().get("response", "{}")
+                    parsed2 = self._parse_json_response(raw_output2)
+                    if parsed2:
+                        parsed = parsed2
+                        raw_output = raw_output2
+            except Exception:
+                pass
+
+        _el_ol = time.perf_counter() - _t0_ol
         if not parsed and self._is_refusal_response(raw_output):
             self._last_call_was_refusal = True
             self.last_refusal_message = raw_output.strip()[:240]
-            self._record_api_call("ollama", clean_name, 0.0, 0, "REFUSAL", self.last_refusal_message)
+            self._record_api_call("ollama", clean_name, _el_ol, 0, "REFUSAL", self.last_refusal_message)
             return {"__refusal__": self.last_refusal_message}
-        self._record_api_call("ollama", clean_name, 0.0, len(parsed), "OK")
+        self._record_api_call("ollama", clean_name, _el_ol, len(parsed), "OK")
         return parsed
 
     async def _call_llm_json(
@@ -2426,6 +2707,20 @@ class OllamaTranslator:
                         last_cloud_err = c_exc
                         break
                 if last_cloud_err is not None:
+                    self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", str(last_cloud_err))
+                    available = await self.list_available_models()
+                    ollama_candidates = [
+                        m["id"] for m in available if m["provider"] == "ollama" and m.get("installed") == "true"
+                    ]
+                    if ollama_candidates:
+                        fallback_ollama = ollama_candidates[0]
+                        logger.warning(
+                            "Облачный API (%s) недоступен (%s). Автоматический подхват пачки локальной моделью %s, чтобы не пропустить страницы!",
+                            self.unsloth_url,
+                            last_cloud_err,
+                            fallback_ollama,
+                        )
+                        return await self._call_ollama_direct(client, fallback_ollama, system_prompt, user_prompt)
                     raise last_cloud_err
 
             payload_full: dict[str, Any] = {
@@ -2532,32 +2827,40 @@ class OllamaTranslator:
         else:
             interj_dict = SHORT_INTERJECTIONS_EN
 
-        def _is_valid_target_translation(cand_str: str) -> bool:
+        def _is_valid_target_translation(cand_str: str, orig_val: str = "") -> bool:
+            if not cand_str or self._contains_cjk(cand_str):
+                return False
             c = self._clean_translated_text(cand_str, target_lang=t_lang)
             if not c:
                 return False
             if t_lang == "ru":
                 return bool(re.search(r"[А-Яа-яЁё]", c))
+            if t_lang == "en":
+                if not re.search(r"[A-Za-z]", c):
+                    return False
+                if self._is_romaji_leak(c, orig_val, "en"):
+                    return False
+                return True
             return bool(re.search(r"[A-Za-zА-Яа-яЁё]", c))
 
+        local_ollama = [
+            m["id"]
+            for m in (self._cached_models or [])
+            if m.get("provider") == "ollama" and m.get("installed") == "true"
+        ]
+
         # СЦЕНАРИЙ 1: Если облачный API вернул отказ цензуры (например, "I can't translate..."),
-        # КАТЕГОРИЧЕСКИ НЕ запускаем поштучный доперевод 85 кружков!
-        # Вместо этого пробуем 1 раз с нейтральным лингвистическим промптом БЕЗ context_lines (которые часто содержат триггер-слова с прошлых страниц).
+        # пробуем подгруппами с санитизацией триггеров родства и нейтральным лингвистическим промптом БЕЗ context_lines.
         if was_refusal and not translated_map and not self.stop_requested:
             items_list = list(source_map.items())
-            sub_size = max(15, (len(items_list) + 1) // 2) if len(items_list) <= 50 else max(15, (len(items_list) + 2) // 3)
+            sub_size = max(10, (len(items_list) + 1) // 2) if len(items_list) <= 30 else max(12, (len(items_list) + 2) // 3)
             sub_chunks = [dict(items_list[i : i + sub_size]) for i in range(0, len(items_list), sub_size)]
             logger.warning(
                 "Облачный API отклонил пакет (%d блоков) из-за фильтра цензуры провайдера. "
-                "Делю пакет на %d нейтральных подгруппы без контекста прошлых страниц (никаких поштучных запросов!)...",
+                "Делю пакет на %d нейтральные подгруппы с санитизацией триггеров...",
                 len(source_map),
                 len(sub_chunks),
             )
-            local_ollama = [
-                m["id"]
-                for m in (self._cached_models or [])
-                if m.get("provider") == "ollama" and m.get("installed") == "true"
-            ]
             for sc_idx, sub_map in enumerate(sub_chunks, start=1):
                 if self.stop_requested:
                     break
@@ -2576,85 +2879,100 @@ class OllamaTranslator:
                 sub_refused = bool(sub_res.pop("__refusal__", None))
                 if sub_res:
                     translated_map.update(sub_res)
-                elif sub_refused:
-                    if local_ollama and active_model.startswith("unsloth::"):
-                        logger.warning(
-                            "Подгруппа %d/%d отклонена облачной цензурой — перевожу её локально через %s (0 токенов)!",
-                            sc_idx,
-                            len(sub_chunks),
-                            local_ollama[0],
+                elif sub_refused and local_ollama and active_model.startswith("unsloth::"):
+                    logger.warning(
+                        "Подгруппа %d/%d отклонена облачной цензурой — перевожу её локально через %s!",
+                        sc_idx,
+                        len(sub_chunks),
+                        local_ollama[0],
+                    )
+                    try:
+                        loc_res = await self._call_ollama_direct(
+                            client=client,
+                            ollama_model_name=local_ollama[0],
+                            system_prompt=min_sys,
+                            user_prompt=min_usr,
                         )
-                        try:
-                            loc_res = await self._call_ollama_direct(
+                        loc_res.pop("__refusal__", None)
+                        if loc_res:
+                            translated_map.update(loc_res)
+                    except Exception:
+                        pass
+
+        # Сначала подставляем только точные короткие междометия по оригиналу (<= 5 символов),
+        # а все длинные фразы и фразы с ошибочным Ромадзи отправляем на полноценный доперевод через ИИ!
+        for k, orig_val in source_map.items():
+            cur_v = translated_map.get(k, "")
+            if not cur_v or not _is_valid_target_translation(cur_v, orig_val):
+                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
+                if norm_orig in interj_dict and len(norm_orig) <= 5:
+                    translated_map[k] = interj_dict[norm_orig]
+                elif t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
+                    translated_map[k] = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
+
+        # СЦЕНАРИЙ 2: Гарантированный доперевод ВСЕХ пропущенных или ошибочно транслитерированных (Ромадзи) блоков!
+        # Больше НЕТ искусственного порога `len(bad_keys) <= 15`, из-за которого раньше при сбое/обрыве JSON пропускались целые страницы!
+        if not self.stop_requested:
+            bad_keys = [
+                k
+                for k in source_map
+                if not _is_valid_target_translation(translated_map.get(k, ""), source_map[k])
+                and bool(CJK_REGEX.search(source_map[k]))
+            ]
+            if bad_keys:
+                retry_chunk_size = 8 if not active_model.startswith("unsloth::") else 14
+                bad_sublists = [
+                    bad_keys[i : i + retry_chunk_size]
+                    for i in range(0, len(bad_keys), retry_chunk_size)
+                ]
+                logger.info(
+                    "Доперевод %d пропущенных/невалидных блоков (%d подгрупп по <=%d шт., %s -> %s)...",
+                    len(bad_keys),
+                    len(bad_sublists),
+                    retry_chunk_size,
+                    source_lang,
+                    target_lang,
+                )
+                for b_sub in bad_sublists:
+                    if self.stop_requested:
+                        break
+                    self.diagnostics_stats["micro_retries_count"] += 1
+                    retry_source = {
+                        k: (
+                            self._sanitize_safety_triggers_for_cloud(source_map[k])
+                            if active_model.startswith("unsloth::")
+                            else source_map[k]
+                        )
+                        for k in b_sub
+                    }
+                    retry_json = json.dumps(retry_source, ensure_ascii=False, separators=(",", ":"))
+                    min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, retry_json)
+                    try:
+                        retry_map = await self._call_llm_json(
+                            client=client,
+                            full_model_id=active_model,
+                            system_prompt=min_sys,
+                            user_prompt=min_usr,
+                        )
+                        retry_refused = bool(retry_map.pop("__refusal__", None))
+                        if retry_refused and local_ollama and active_model.startswith("unsloth::"):
+                            retry_map = await self._call_ollama_direct(
                                 client=client,
                                 ollama_model_name=local_ollama[0],
                                 system_prompt=min_sys,
                                 user_prompt=min_usr,
                             )
-                            loc_res.pop("__refusal__", None)
-                            if loc_res:
-                                translated_map.update(loc_res)
-                        except Exception:
-                            pass
-                    else:
-                        logger.warning(
-                            "Подгруппа %d/%d (%d фраз) заблокирована цензурой облачного шлюза (%s). "
-                            "Повторные запросы для этой подгруппы остановлены для экономии ваших токенов!",
-                            sc_idx,
-                            len(sub_chunks),
-                            len(sub_map),
-                            active_model,
-                        )
-
-        # Сначала подставляем известные междометия из локального словаря для всех пустых ключей (0 токенов)
-        for k, orig_val in source_map.items():
-            cur_v = translated_map.get(k, "")
-            if not cur_v or not _is_valid_target_translation(cur_v) or self._contains_cjk(cur_v):
-                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
-                if norm_orig in interj_dict:
-                    translated_map[k] = interj_dict[norm_orig]
-                elif t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
-                    translated_map[k] = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
-
-        # СЦЕНАРИЙ 2: Если это НЕ отказ цензуры, но модель случайно пропустила несколько ключей (например, 1-15 шт. из 110),
-        # отправляем МАКСИМУМ 1 сверхлегкий микро-запрос (~25 токенов промпта) для пропущенных ключей.
-        # Никаких поштучных запросов в цикле!
-        if not was_refusal and not self.stop_requested:
-            bad_keys = [
-                k
-                for k in source_map
-                if (
-                    not translated_map.get(k)
-                    or self._contains_cjk(translated_map.get(k, ""))
-                    or not _is_valid_target_translation(translated_map.get(k, ""))
-                )
-                and bool(CJK_REGEX.search(source_map[k]))
-            ]
-            if bad_keys and len(bad_keys) <= max(15, len(source_map) // 2):
-                self.diagnostics_stats["micro_retries_count"] += 1
-                logger.info(
-                    "Доперевод %d пропущенных кружков %s одним легким микро-запросом (%s -> %s)...",
-                    len(bad_keys),
-                    bad_keys,
-                    source_lang,
-                    target_lang,
-                )
-                retry_source = {k: source_map[k] for k in bad_keys}
-                retry_json = json.dumps(retry_source, ensure_ascii=False, separators=(",", ":"))
-                min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, retry_json)
-                try:
-                    retry_map = await self._call_llm_json(
-                        client=client,
-                        full_model_id=active_model,
-                        system_prompt=min_sys,
-                        user_prompt=min_usr,
-                    )
-                    retry_map.pop("__refusal__", None)
-                    for k in bad_keys:
-                        if retry_map.get(k) and _is_valid_target_translation(retry_map.get(k, "")):
-                            translated_map[k] = retry_map[k]
-                except Exception as retry_exc:
-                    logger.warning("Микро-доперевод пропущенных блоков не удался: %s", retry_exc)
+                            retry_map.pop("__refusal__", None)
+                        for k in b_sub:
+                            cand_r = retry_map.get(k, "")
+                            if cand_r and _is_valid_target_translation(cand_r, source_map[k]):
+                                translated_map[k] = cand_r
+                            elif cand_r:
+                                rescued_r = self._rescue_romaji_or_interjection(cand_r, source_map[k], t_lang)
+                                if rescued_r:
+                                    translated_map[k] = rescued_r
+                    except Exception as retry_exc:
+                        logger.warning("Подгруппа доперевода (%d блоков) не удалась: %s", len(b_sub), retry_exc)
 
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
@@ -2662,11 +2980,13 @@ class OllamaTranslator:
             cleaned_val = self._clean_translated_text(raw_val, target_lang=t_lang)
             if t_lang == "ru" and cleaned_val and not re.search(r"[А-Яа-яЁё]", cleaned_val):
                 cleaned_val = ""
+            elif t_lang == "en" and cleaned_val and self._is_romaji_leak(cleaned_val, orig_val, "en"):
+                cleaned_val = ""
 
             if not cleaned_val:
-                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
-                if norm_orig in interj_dict:
-                    cleaned_val = interj_dict[norm_orig]
+                rescued_final = self._rescue_romaji_or_interjection(raw_val, orig_val, t_lang)
+                if rescued_final:
+                    cleaned_val = rescued_final
                 elif t_lang == "romaji":
                     cleaned_val = self._clean_translated_text(japanese_to_romaji_local(orig_val), target_lang="romaji")
 
@@ -2730,12 +3050,23 @@ class OllamaTranslator:
                 cached_hits += 1
                 continue
 
-            # 2. Проверка локального кэша уже переведенных фраз (0 токенов при перепереводе страниц и повторах!)
+            # 2. Проверка локального кэша уже переведенных фраз (с защитой от старых записей с Ромадзи вместо перевода!)
             cache_key = f"{t_lang}||{orig_raw}"
             if use_cache and cache_key in self.phrase_cache and self.phrase_cache[cache_key]:
-                translated_map[k] = self.phrase_cache[cache_key]
-                cached_hits += 1
-                continue
+                cached_cand = self.phrase_cache[cache_key]
+                is_bad_cached = (
+                    self._contains_cjk(cached_cand)
+                    or (t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", cached_cand))
+                    or (t_lang == "en" and self._is_romaji_leak(cached_cand, orig_raw, "en"))
+                )
+                if is_bad_cached:
+                    self.phrase_cache.pop(cache_key, None)
+                    if external_cache is not None:
+                        external_cache.pop(cache_key, None)
+                else:
+                    translated_map[k] = cached_cand
+                    cached_hits += 1
+                    continue
 
             # 3. Дедупликация одинаковых реплик внутри многостраничной пачки (отправляем в API только 1 раз!)
             if orig_raw in seen_orig_in_batch:
@@ -2764,10 +3095,17 @@ class OllamaTranslator:
             active_model,
         )
 
-        running_context: list[str] = list(self.recent_context_lines)
-        if context_lines:
-            for cl in context_lines:
-                if cl and cl not in running_context:
+        running_context: list[str] = []
+        if t_lang in ("en", "ru"):
+            for cl in list(self.recent_context_lines) + list(context_lines or []):
+                if not cl or "=>" not in cl:
+                    continue
+                lhs, rhs = [p.strip() for p in cl.split("=>", 1)]
+                if t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", rhs):
+                    continue
+                if t_lang == "en" and self._is_romaji_leak(rhs, lhs, "en"):
+                    continue
+                if cl not in running_context:
                     running_context.append(cl)
         running_context = running_context[-6:]
 
@@ -2874,7 +3212,8 @@ class OllamaTranslator:
         for dup_k, master_k in duplicate_links.items():
             translated_map[dup_k] = translated_map.get(master_k, "")
 
-        self.recent_context_lines = list(running_context[-6:])
+        if t_lang in ("en", "ru"):
+            self.recent_context_lines = list(running_context[-6:])
         if external_cache is not None:
             external_cache.update(self.phrase_cache)
 

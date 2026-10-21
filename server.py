@@ -237,7 +237,7 @@ async def lifespan(app: FastAPI):
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.4)", flush=True)
+    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.5)", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -260,7 +260,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.4",
+    version="1.0.5",
     lifespan=lifespan,
 )
 
@@ -576,11 +576,48 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
         logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
 
 
-def is_page_already_translated(dest_path: Path) -> bool:
+def is_page_already_translated(
+    dest_path: Path,
+    page_meta: dict[str, Any] | None = None,
+    target_lang: str = "en",
+) -> bool:
     try:
-        return dest_path.exists() and dest_path.is_file() and dest_path.stat().st_size > 128
+        if not (dest_path.exists() and dest_path.is_file() and dest_path.stat().st_size > 128):
+            return False
     except OSError:
         return False
+
+    if isinstance(page_meta, dict) and "blocks" in page_meta and isinstance(page_meta.get("blocks"), list):
+        saved_blocks = page_meta["blocks"]
+        if not saved_blocks:
+            return True
+        active_blocks = [
+            b for b in saved_blocks if isinstance(b, dict) and not bool(b.get("is_deleted", False))
+        ]
+        if not active_blocks:
+            return True
+
+        t_lang = (target_lang or "en").lower().strip()
+        valid_translated_count = 0
+        for b in active_blocks:
+            tr_txt = str(b.get("translated_text") or "").strip()
+            orig_txt = str(b.get("original_text") or "").strip()
+            if not tr_txt:
+                continue
+            if OllamaTranslator._contains_cjk(tr_txt):
+                continue
+            if t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", tr_txt):
+                continue
+            if t_lang == "en" and OllamaTranslator._is_romaji_leak(tr_txt, orig_txt, "en"):
+                continue
+            valid_translated_count += 1
+
+        # Если страница переведена лишь частично (есть пропущенные бабблы или Ромадзи вместо перевода) —
+        # считаем страницу НЕ завершенной, чтобы при переводе папки она автоматически доперевелась!
+        if valid_translated_count < len(active_blocks):
+            return False
+
+    return True
 
 
 def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str, Any]:
@@ -601,11 +638,10 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
         rel = img_path.relative_to(source_dir)
         rel_norm = _normalize_rel_path(rel)
         dest_path = output_dir / rel
-        done = is_page_already_translated(dest_path)
+        meta = pages_meta.get(rel_norm, {}) if isinstance(pages_meta.get(rel_norm), dict) else {}
+        done = is_page_already_translated(dest_path, page_meta=meta, target_lang=t_lang)
         if done:
             translated_count += 1
-
-        meta = pages_meta.get(rel_norm, {}) if isinstance(pages_meta.get(rel_norm), dict) else {}
         has_saved_blocks_key = "blocks" in meta and isinstance(meta.get("blocks"), list)
         saved_blocks_raw = meta.get("blocks") if has_saved_blocks_key else []
         phrase_cache_dict = manifest.get("phrase_cache") if isinstance(manifest.get("phrase_cache"), dict) else {}
@@ -929,8 +965,6 @@ async def process_single_pil_image(
     )
     _llm_sec = round(time.perf_counter() - _t0_llm, 2)
 
-    # Оставляем только блоки с непустым переводом, чтобы не замазывать пропущенные вздохи
-    blocks = [b for b in blocks if str(b.get("translated_text") or "").strip()]
     for idx_b, blk in enumerate(blocks, start=1):
         blk["id"] = idx_b
         blk["is_deleted"] = False
@@ -1022,17 +1056,41 @@ async def _run_folder_translation_job(
         manifest["pages"] = {}
     if not isinstance(manifest.get("phrase_cache"), dict):
         manifest["phrase_cache"] = {}
-    rolling_context: list[str] = list(manifest.get("rolling_context") or [])[-12:]
-    phrase_cache: dict[str, str] = dict(manifest.get("phrase_cache") or {})
+    t_lang_norm = (target_lang or "en").lower().strip()
+    raw_rolling = list(manifest.get("rolling_context") or [])[-12:]
+    rolling_context: list[str] = []
+    for rc_line in raw_rolling:
+        if isinstance(rc_line, str) and "=>" in rc_line:
+            lhs, rhs = [p.strip() for p in rc_line.split("=>", 1)]
+            if t_lang_norm == "ru" and not re.search(r"[А-Яа-яЁё]", rhs):
+                continue
+            if t_lang_norm == "en" and OllamaTranslator._is_romaji_leak(rhs, lhs, "en"):
+                continue
+            rolling_context.append(rc_line)
+
+    raw_phrase_cache: dict[str, str] = dict(manifest.get("phrase_cache") or {})
+    phrase_cache: dict[str, str] = {}
+    for ck, cv in raw_phrase_cache.items():
+        if not isinstance(ck, str) or not isinstance(cv, str) or not cv.strip():
+            continue
+        if ck.startswith("ru||") and not re.search(r"[А-Яа-яЁё]", cv):
+            continue
+        if ck.startswith("en||"):
+            orig_part = ck.split("||", 1)[1] if "||" in ck else ""
+            if OllamaTranslator._is_romaji_leak(cv, orig_part, "en"):
+                continue
+        phrase_cache[ck] = cv
 
     to_process: list[tuple[int, Path, Path, str]] = []
     skipped_count = 0
+    pages_meta_dict = manifest.get("pages", {}) if isinstance(manifest.get("pages"), dict) else {}
 
     for idx, img_path in enumerate(image_paths, start=1):
         rel = img_path.relative_to(source_dir)
         rel_norm = _normalize_rel_path(rel)
         dest_path = output_dir / rel
-        if skip_existing and not force_retranslate and is_page_already_translated(dest_path):
+        p_meta = pages_meta_dict.get(rel_norm) if isinstance(pages_meta_dict.get(rel_norm), dict) else None
+        if skip_existing and not force_retranslate and is_page_already_translated(dest_path, page_meta=p_meta, target_lang=t_lang_norm):
             skipped_count += 1
         else:
             to_process.append((idx, img_path, dest_path, rel_norm))
@@ -1202,6 +1260,38 @@ async def _run_folder_translation_job(
                 return
 
             _batch_llm_sec = round(time.perf_counter() - _llm_t0, 2)
+
+            # Проверяем, не остались ли на каких-то страницах пачки непереведенные бабблы (например, из-за сбоя/пропуска ключей)
+            missing_combined: list[dict[str, Any]] = []
+            for cb in combined_blocks:
+                gid_c = int(cb["id"])
+                cur_tr = translated_by_gid.get(gid_c, "").strip()
+                if not cur_tr and str(cb.get("original_text") or "").strip():
+                    missing_combined.append(cb)
+
+            if missing_combined and not _folder_stop_requested:
+                logger.info(
+                    "Доперевод %d оставшихся пустыми бабблов в пачке #%d (skip_sighs=False)...",
+                    len(missing_combined),
+                    _batch_num,
+                )
+                try:
+                    rescued_list = await translator_engine.translate_blocks(
+                        blocks=missing_combined,
+                        source_lang=batch_detected_lang,
+                        target_lang=target_lang,
+                        model=active_mod,
+                        context_lines=rolling_context if rolling_context else None,
+                        external_cache=phrase_cache,
+                        use_cache=False,
+                        skip_sighs=False,
+                    )
+                    for rb in rescued_list:
+                        r_txt = str(rb.get("translated_text") or "").strip()
+                        if r_txt:
+                            translated_by_gid[int(rb["id"])] = r_txt
+                except Exception as rescue_exc:
+                    logger.warning("Доперевод оставшихся блоков пачки не удался: %s", rescue_exc)
 
             # Шаг 3: Быстрая параллельная очистка бабблов, верстка и сохранение всех страниц пачки!
             _render_t0 = time.perf_counter()
@@ -1392,7 +1482,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.4 Server Running</h1>")
+    return HTMLResponse(content="<h1>Manga Translator v1.0.5 Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -1433,7 +1523,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.4",
+        "version": "1.0.5",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -2719,12 +2809,18 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
     output_dir = get_output_dir_for_folder(source_dir, target_lang)
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    manifest_preview = _load_folder_manifest(output_dir)
+    pages_meta_preview = manifest_preview.get("pages", {}) if isinstance(manifest_preview.get("pages"), dict) else {}
     already_done = sum(
         1
         for p in images
         if payload.skip_existing
         and not payload.force_retranslate
-        and is_page_already_translated(output_dir / p.relative_to(source_dir))
+        and is_page_already_translated(
+            output_dir / p.relative_to(source_dir),
+            page_meta=pages_meta_preview.get(_normalize_rel_path(p.relative_to(source_dir))),
+            target_lang=target_lang,
+        )
     )
 
     _folder_task = asyncio.create_task(
@@ -2808,7 +2904,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "1.0.4",
+            "version": "1.0.5",
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -2848,7 +2944,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
     fj = d["folder_job"]
 
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.4 ===",
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.5 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -2956,10 +3052,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.4":
+                if running_ver != "1.0.5":
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.4...",
+                        f"Останавливаю старый процесс для запуска v1.0.5...",
                         flush=True,
                     )
                     try:
@@ -2984,5 +3080,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.4 на 127.0.0.1:5000...", flush=True)
+    print("Запуск локального сервера Manga Translator v1.0.5 на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)
