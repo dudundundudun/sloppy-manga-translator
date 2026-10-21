@@ -1039,10 +1039,12 @@
       background: rgba(244, 114, 182, 0.07);
       border-radius: 6px;
       cursor: grab;
-      transition: border-color 0.14s ease, background 0.14s ease, box-shadow 0.14s ease;
+      transition: border-color 0.12s ease, background 0.12s ease;
       z-index: 5;
       user-select: none;
       touch-action: none;
+      contain: layout style;
+      backface-visibility: hidden;
     }
     .bbox-pin.modified-pin {
       border-color: rgba(129, 140, 248, 0.92);
@@ -1051,19 +1053,25 @@
     .bbox-pin.active-pin {
       border-color: #34d399;
       background: rgba(52, 211, 153, 0.14);
-      box-shadow: 0 0 16px rgba(52, 211, 153, 0.68);
+      box-shadow: 0 0 14px rgba(52, 211, 153, 0.62);
       z-index: 9;
     }
     .bbox-pin.dragging-pin {
       cursor: grabbing !important;
       border-color: #fbbf24 !important;
-      background: rgba(255, 255, 255, 0.88) !important;
-      box-shadow: 0 8px 26px rgba(0, 0, 0, 0.65), 0 0 0 2px rgba(251, 191, 36, 0.75) !important;
+      background: rgba(255, 255, 255, 0.90) !important;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.55), 0 0 0 2px rgba(251, 191, 36, 0.78) !important;
       z-index: 15 !important;
       transition: none !important;
+      will-change: left, top, width, height;
+    }
+    .bbox-pin.wheeling-pin {
+      transition: none !important;
+      will-change: contents;
+      z-index: 14 !important;
     }
     .bbox-pin.dirty-preview-pin {
-      background: rgba(255, 255, 255, 0.86);
+      background: rgba(255, 255, 255, 0.88);
       border-style: dashed;
       border-color: #fbbf24;
     }
@@ -1102,11 +1110,12 @@
       align-items: center;
       gap: 3px;
       opacity: 0;
-      transition: opacity 0.14s ease;
+      transition: opacity 0.12s ease;
       z-index: 12;
     }
     .bbox-pin:hover .bbox-pin-actions,
-    .bbox-pin.active-pin .bbox-pin-actions {
+    .bbox-pin.active-pin .bbox-pin-actions,
+    .bbox-pin.unsaved-pin .bbox-pin-actions {
       opacity: 1;
     }
     .bbox-pin-btn {
@@ -1125,6 +1134,16 @@
     .bbox-pin-btn:hover {
       transform: scale(1.12);
       background: #4338ca;
+    }
+    .bbox-pin-btn.save-btn {
+      background: #059669;
+      border-color: #6ee7b7;
+    }
+    .bbox-pin-btn.save-btn:hover {
+      background: #047857;
+    }
+    .bbox-pin.unsaved-pin .bbox-pin-btn.save-btn {
+      box-shadow: 0 0 10px rgba(16, 185, 129, 0.85), 0 2px 6px rgba(0, 0, 0, 0.75);
     }
     .bbox-pin-btn.del-btn {
       background: #e11d48;
@@ -1937,11 +1956,17 @@
             <button class="btn-restore-block" id="btn-drawer-draw-region" onclick="toggleDrawRegionMode()" title="Выделить мышкой на картинке любой кружок или текст, который модель пропустила, и перевести его">
               ➕ Обвести текст
             </button>
-            <button class="btn-delete-block" onclick="deleteAllFreeTextBlocks()" title="Удалить перевод всех надписей вне бабблов (спецэффектов на фоне) и оставить оригинальный рисунок">
-              🗑 Убрать фон/SFX
+            <button class="btn-restore-block" id="btn-undo-removed-frame" onclick="undoLastRemovedFrame()" style="display:none;" title="Вернуть последнюю полностью удаленную рамку (Ctrl+Z)">
+              ↩ Вернуть рамку
             </button>
-            <button class="btn-delete-block" onclick="deleteAllPageBlocks()" title="Удалить вообще весь перевод на этой странице и вернуть чистый оригинал">
-              🗑 Сбросить стр.
+            <button class="btn-delete-block" onclick="removeEmptyBlocksFromPage()" title="Полностью удалить с картинки все пустые рамки (без перевода)">
+              🧹 Убрать пустые рамки
+            </button>
+            <button class="btn-delete-block" onclick="deleteAllFreeTextBlocks()" title="Полностью удалить с картинки все рамки надписей вне бабблов (спецэффектов на фоне) и оставить оригинальный рисунок">
+              🗑 Удалить рамки фона
+            </button>
+            <button class="btn-delete-block" onclick="deleteAllPageBlocks()" title="Полностью удалить все рамки и перевод на этой странице, вернув чистый оригинал">
+              🗑 Удалить все рамки
             </button>
           </div>
           <div class="editor-actions">
@@ -2003,11 +2028,12 @@
     <textarea id="popup-textarea" class="inline-popup-textarea" placeholder="Введите перевод для этого кружка (или оставьте пустым для сохранения оригинала)..." oninput="onPopupTextareaInput(this.value)" onkeydown="onPopupTextareaKeydown(event)"></textarea>
 
     <div class="inline-popup-footer">
-      <div style="display:flex; align-items:center; gap:5px;">
+      <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
         <button type="button" class="btn-save-edit" style="padding:5px 11px; font-size:11.5px;" onclick="saveFromInlinePopup()" title="Сохранить и перерисовать страницу (Ctrl+Enter или Ctrl+S)">💾 Применить</button>
         <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
-        <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Удалить перевод и оставить оригинальный рисунок">🗑 Удалить</button>
-        <button type="button" class="btn-restore-block" id="popup-restore-btn" onclick="restoreFromInlinePopup(event)" style="display:none;" title="Вернуть удаленный перевод">↩ Вернуть</button>
+        <button type="button" class="romaji-copy-btn" id="popup-clear-btn" onclick="clearTextFromInlinePopup(event)" title="Очистить только текст перевода внутри рамки (оставить саму рамку и оригинал на картинке)">🧹 Текст</button>
+        <button type="button" class="btn-restore-block" id="popup-restore-btn" onclick="restoreFromInlinePopup(event)" style="display:none;" title="Вернуть очищенный текст перевода">↩ Вернуть</button>
+        <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Полностью удалить эту рамку и её перевод с картинки">🗑 Удалить рамку</button>
       </div>
       <button type="button" class="romaji-copy-btn" onclick="openFullEditorFromPopup()" title="Открыть этот блок в большой панели редактора">📋 В список</button>
     </div>
@@ -2180,11 +2206,30 @@
 
             <label class="toggle-row">
               <div class="toggle-row-text">
-                <span class="toggle-row-title">⏱ Авто-перерисовка страницы через 2.5 сек бездействия (после сдвига/ресайза рамки)</span>
-                <span class="toggle-row-sub">Автоматически вшивает новый размер и положение рамок в картинку через 2.5 секунды после того, как вы отпустили мышь или покрутили колесико</span>
+                <span class="toggle-row-title" id="lbl-ui-autosave-title">⏱ Автосохранение только при перетаскивании рамки или прокрутке колесиком</span>
+                <span class="toggle-row-sub">Работает ТОЛЬКО когда вы двигаете/растягиваете рамку мышкой или меняете размер шрифта колесиком (при вводе текста в окне редактора автосохранение не мешает!). Если выключено — на каждой рамке появляется значок <b>💾</b> для ручного сохранения.</span>
               </div>
               <input id="chk-ui-auto-save-box" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
             </label>
+
+            <div class="toggle-row" id="row-ui-autosave-interval" style="cursor:default; flex-wrap:wrap; gap:10px;">
+              <div class="toggle-row-text" style="min-width:210px; flex:1;">
+                <span class="toggle-row-title">⏳ Интервал автосохранения рамок (в секундах): <b id="lbl-ui-autosave-sec-val" style="color:var(--mint);">2.5 сек</b></span>
+                <span class="toggle-row-sub">Через сколько секунд бездействия после перетаскивания рамки или прокрутки колесика страница автоматически перерисуется</span>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <input id="rng-ui-autosave-sec" type="range" min="0.5" max="10" step="0.5" value="2.5" style="width:120px; accent-color:var(--sakura); cursor:pointer;" oninput="onAutoSaveDelayInput(this.value)" />
+                <input id="inp-ui-autosave-sec" type="number" min="0.5" max="30" step="0.5" value="2.5" style="width:68px; text-align:center; padding:5px 6px;" onchange="onAutoSaveDelayInput(this.value)" />
+                <span style="font-size:11.5px; color:var(--text-secondary);">сек</span>
+                <div style="display:flex; gap:4px;">
+                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(1.0)">1с</button>
+                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(1.5)">1.5с</button>
+                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(2.5)">2.5с</button>
+                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(4.0)">4с</button>
+                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(5.0)">5с</button>
+                </div>
+              </div>
+            </div>
 
             <label class="toggle-row">
               <div class="toggle-row-text">
@@ -2463,11 +2508,42 @@
       const chkCollapse = document.getElementById("chk-ui-auto-collapse");
       if (chkCollapse) chkCollapse.checked = Boolean(uiSettings.auto_collapse_sidebar);
       const chkAutoSaveBox = document.getElementById("chk-ui-auto-save-box");
-      if (chkAutoSaveBox) chkAutoSaveBox.checked = uiSettings.auto_save_after_idle !== false;
+      const autoOn = uiSettings.auto_save_after_idle !== false;
+      if (chkAutoSaveBox) chkAutoSaveBox.checked = autoOn;
+
+      const delaySec = Math.max(0.5, Math.min(30, Number((uiSettings.auto_save_delay_ms || 2500) / 1000)));
+      const delaySecClean = Number(delaySec.toFixed(1));
+      const rngSec = document.getElementById("rng-ui-autosave-sec");
+      if (rngSec) rngSec.value = String(Math.min(10, delaySecClean));
+      const inpSec = document.getElementById("inp-ui-autosave-sec");
+      if (inpSec) inpSec.value = String(delaySecClean);
+      const lblSec = document.getElementById("lbl-ui-autosave-sec-val");
+      if (lblSec) lblSec.textContent = autoOn ? `${delaySecClean} сек` : `${delaySecClean} сек (выкл — ручное 💾 на рамке)`;
+      const rowInterval = document.getElementById("row-ui-autosave-interval");
+      if (rowInterval) rowInterval.style.opacity = autoOn ? "1" : "0.62";
+
       const chkMascot = document.getElementById("chk-ui-compact-mascot");
       if (chkMascot) chkMascot.checked = Boolean(uiSettings.compact_mascot);
 
+      if (!autoOn) {
+        cancelIdleAutoSaveTimer();
+      }
       renderBboxPinsOnStage();
+    }
+
+    function getAutoSaveSecLabel() {
+      const sec = Math.max(0.5, Math.min(30, Number((uiSettings.auto_save_delay_ms || 2500) / 1000)));
+      return Number(sec.toFixed(1));
+    }
+
+    function onAutoSaveDelayInput(valSec) {
+      let sec = parseFloat(valSec);
+      if (isNaN(sec) || sec < 0.5) sec = 0.5;
+      if (sec > 30) sec = 30;
+      sec = Math.round(sec * 2) / 2; // step 0.5s
+      uiSettings.auto_save_delay_ms = Math.round(sec * 1000);
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
     }
 
     function setEditorDockMode(mode) {
@@ -2987,7 +3063,7 @@
       renderFolderData(data);
     }
 
-    async function inspectCurrentFolder() {
+    async function inspectCurrentFolder(opts = {}) {
       if (!currentFolder) return;
       const res = await fetch("/folder_inspect", {
         method: "POST",
@@ -3070,7 +3146,15 @@
         selectPage(folderPages[0]);
       } else if (selectedPage) {
         const refreshed = folderPages.find(x => x.rel_path === selectedPage.rel_path);
-        if (refreshed) selectPage(refreshed);
+        if (refreshed) {
+          if (opts && opts.preserveCurrentSelection) {
+            selectedPage.is_translated = refreshed.is_translated;
+            selectedPage.dest_path = refreshed.dest_path || selectedPage.dest_path;
+            selectedPage.has_saved_blocks = true;
+          } else {
+            selectPage(refreshed);
+          }
+        }
       }
       updateTopPageNav();
     }
@@ -3224,7 +3308,10 @@
       document.getElementById("editor-title-lbl").textContent =
         `✏️ Редактор: стр. #${p.index} (${p.rel_path})`;
 
-      if (Array.isArray(p.blocks) && p.blocks.length > 0) {
+      deletedFramesUndoStack = [];
+      updateUndoRemovedFrameBtn();
+
+      if (Array.isArray(p.blocks) && (p.blocks.length > 0 || p.has_saved_blocks)) {
         currentBlocks = p.blocks.map(b => ({ ...b }));
       } else {
         currentBlocks = [];
@@ -3236,7 +3323,7 @@
       renderBlocksEditor();
 
       const drawerOpen = document.getElementById("text-drawer").classList.contains("open");
-      if (currentBlocks.length === 0 && (drawerOpen || p.is_translated)) {
+      if (!p.has_saved_blocks && currentBlocks.length === 0 && (drawerOpen || p.is_translated)) {
         ensurePageBlocksLoaded(false);
       }
     }
@@ -3350,6 +3437,20 @@
       }
     }
 
+    let deletedFramesUndoStack = [];
+    let clientEditRevision = 0;
+
+    function updateUndoRemovedFrameBtn() {
+      const btn = document.getElementById("btn-undo-removed-frame");
+      if (!btn) return;
+      if (deletedFramesUndoStack && deletedFramesUndoStack.length > 0) {
+        btn.style.display = "inline-flex";
+        btn.textContent = `↩ Вернуть рамку (${deletedFramesUndoStack.length})`;
+      } else {
+        btn.style.display = "none";
+      }
+    }
+
     function syncInputsToCurrentBlocks() {
       if (!currentBlocks) return;
       currentBlocks.forEach(b => {
@@ -3361,17 +3462,20 @@
         const fsSel = document.getElementById(`edit-fs-${b.id}`);
         if (fsSel) {
           const val = parseInt(fsSel.value, 10);
-          b.font_size = (!isNaN(val) && val >= 8) ? val : null;
+          b.font_size = (!isNaN(val) && val >= 6) ? val : null;
         }
       });
     }
 
     function copyRomajiToTranslation(blockId) {
+      cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk || !blk.romaji_text) return;
       blk.is_deleted = false;
       blk.translated_text = blk.romaji_text;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
       renderBlocksEditor();
       renderBboxPinsOnStage();
       if (popupBlockId === blockId) populateInlinePopup(blockId);
@@ -3379,8 +3483,57 @@
       if (ta) ta.focus();
     }
 
+    /* Полное удаление рамки #N с картинки и из списка блоков */
+    async function removeBlockFrameCompletely(blockId, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+      if (!currentBlocks) return;
+      const idx = currentBlocks.findIndex(x => x.id === blockId);
+      if (idx < 0) return;
+
+      const [removedBlk] = currentBlocks.splice(idx, 1);
+      deletedFramesUndoStack.push({
+        block: { ...removedBlk, bbox: [...(removedBlk.bbox || [])], clean_bbox: [...(removedBlk.clean_bbox || removedBlk.bbox || [])] },
+        index: idx
+      });
+      clientEditRevision++;
+
+      if (popupBlockId === blockId) {
+        closeInlineBubblePopup();
+      }
+      if (activeBlockId === blockId) {
+        activeBlockId = null;
+      }
+
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+
+      updateUndoRemovedFrameBtn();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      sayMiko(`Рамка #${blockId} полностью удалена с картинки! Восстанавливаю чистый оригинал на этом месте... 🗑✨`);
+      await saveEditedPageTranslation();
+    }
+
+    /* Оставляем алиас для совместимости: удаление на рамке/кнопке удаляет рамку полностью */
     async function deleteBlockTranslation(blockId, ev) {
-      if (ev) ev.stopPropagation();
+      await removeBlockFrameCompletely(blockId, ev);
+    }
+
+    /* Очистка только текста внутри рамки (сама рамка остается на картинке) */
+    async function clearBlockTextOnly(blockId, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk) return;
@@ -3389,62 +3542,139 @@
       }
       blk.translated_text = "";
       blk.is_deleted = true;
+      blk._dirtyPreview = false;
+      clientEditRevision++;
       renderBlocksEditor();
       renderBboxPinsOnStage();
       if (popupBlockId === blockId) populateInlinePopup(blockId);
-      sayMiko(`Удаляю перевод блока #${blockId} и восстанавливаю оригинальный текст/рисунок на странице... 🗑✨`);
+      sayMiko(`Текст внутри рамки #${blockId} очищен (на картинке возвращен оригинал, сама рамка сохранена)~ 🧹✨`);
+      await saveEditedPageTranslation();
+    }
+
+    async function undoLastRemovedFrame(ev) {
+      if (ev) ev.stopPropagation();
+      if (!deletedFramesUndoStack || deletedFramesUndoStack.length === 0) return;
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+      const item = deletedFramesUndoStack.pop();
+      const insertIdx = Math.max(0, Math.min(currentBlocks.length, item.index));
+      currentBlocks.splice(insertIdx, 0, item.block);
+      clientEditRevision++;
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+      }
+      updateUndoRemovedFrameBtn();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      highlightBlock(item.block.id, false);
+      sayMiko(`Рамка #${item.block.id} возвращена на страницу! ↩🌸`);
       await saveEditedPageTranslation();
     }
 
     async function restoreBlockTranslation(blockId, ev) {
       if (ev) ev.stopPropagation();
+      cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk) return;
       const restored = blk._backup_translation || blk.romaji_text || blk.original_text || "";
       blk.translated_text = restored;
       blk.is_deleted = false;
+      blk._dirtyPreview = false;
+      clientEditRevision++;
       renderBlocksEditor();
       renderBboxPinsOnStage();
       if (popupBlockId === blockId) populateInlinePopup(blockId);
       await saveEditedPageTranslation();
     }
 
-    async function deleteAllFreeTextBlocks() {
+    async function removeEmptyBlocksFromPage() {
       if (!currentBlocks || currentBlocks.length === 0) return;
+      cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
-      let removedCnt = 0;
-      currentBlocks.forEach(b => {
-        if (b.is_free_text && !b.is_deleted && (b.translated_text || "").trim()) {
-          b._backup_translation = b.translated_text.trim();
-          b.translated_text = "";
-          b.is_deleted = true;
-          removedCnt++;
+      const beforeCount = currentBlocks.length;
+      const kept = [];
+      currentBlocks.forEach((b, idx) => {
+        const isEmpty = Boolean(b.is_deleted) || !(b.translated_text || "").trim();
+        if (isEmpty) {
+          deletedFramesUndoStack.push({ block: { ...b }, index: idx });
+        } else {
+          kept.push(b);
         }
       });
+      const removedCnt = beforeCount - kept.length;
       if (removedCnt === 0) {
-        sayMiko("На этой странице нет активных переводов вне бабблов (на фоне)~ 🌸");
+        sayMiko("На этой странице нет пустых рамок — все рамки содержат текст перевода~ 🌸");
         return;
       }
+      currentBlocks = kept;
+      clientEditRevision++;
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+      closeInlineBubblePopup();
+      updateUndoRemovedFrameBtn();
+      updateDrawerBadgeCount();
       renderBlocksEditor();
       renderBboxPinsOnStage();
-      sayMiko(`Удалено ${removedCnt} надписей вне бабблов! Восстанавливаю чистый рисунок... 🎨`);
+      sayMiko(`С картинки полностью удалено пустых рамок: ${removedCnt} шт.! 🧹✨`);
+      await saveEditedPageTranslation();
+    }
+
+    async function deleteAllFreeTextBlocks() {
+      if (!currentBlocks || currentBlocks.length === 0) return;
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+      const beforeCount = currentBlocks.length;
+      const kept = [];
+      currentBlocks.forEach((b, idx) => {
+        if (b.is_free_text) {
+          deletedFramesUndoStack.push({ block: { ...b }, index: idx });
+        } else {
+          kept.push(b);
+        }
+      });
+      const removedCnt = beforeCount - kept.length;
+      if (removedCnt === 0) {
+        sayMiko("На этой странице нет рамок вне бабблов (на фоне)~ 🌸");
+        return;
+      }
+      currentBlocks = kept;
+      clientEditRevision++;
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+      closeInlineBubblePopup();
+      updateUndoRemovedFrameBtn();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      sayMiko(`Полностью удалено ${removedCnt} рамок вне бабблов! Восстанавливаю чистый рисунок... 🎨`);
       await saveEditedPageTranslation();
     }
 
     async function deleteAllPageBlocks() {
       if (!currentBlocks || currentBlocks.length === 0) return;
+      cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
-      currentBlocks.forEach(b => {
-        if ((b.translated_text || "").trim()) {
-          b._backup_translation = b.translated_text.trim();
-        }
-        b.translated_text = "";
-        b.is_deleted = true;
+      currentBlocks.forEach((b, idx) => {
+        deletedFramesUndoStack.push({ block: { ...b }, index: idx });
       });
+      currentBlocks = [];
+      clientEditRevision++;
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+      closeInlineBubblePopup();
+      updateUndoRemovedFrameBtn();
+      updateDrawerBadgeCount();
       renderBlocksEditor();
       renderBboxPinsOnStage();
-      sayMiko("Все переводы на этой странице удалены — возвращаю чистый оригинал! 🖼✨");
+      sayMiko("Все рамки и переводы на этой странице полностью удалены — возвращаю чистый оригинал! 🖼✨");
       await saveEditedPageTranslation();
     }
 
@@ -3536,9 +3766,11 @@
         resetBoxBtn.style.display = (isBlockBboxModified(blk) || blk.font_size) ? "inline-flex" : "none";
       }
 
+      const clearBtn = document.getElementById("popup-clear-btn");
       const delBtn = document.getElementById("popup-del-btn");
       const resBtn = document.getElementById("popup-restore-btn");
-      if (delBtn) delBtn.style.display = !isDel ? "inline-flex" : "none";
+      if (clearBtn) clearBtn.style.display = !isDel ? "inline-flex" : "none";
+      if (delBtn) delBtn.style.display = "inline-flex"; // Всегда доступна кнопка полного удаления рамки!
       if (resBtn) resBtn.style.display = (isDel && blk._backup_translation) ? "inline-flex" : "none";
     }
 
@@ -3597,25 +3829,29 @@
 
     function onPopupTextareaInput(val) {
       if (!popupBlockId) return;
+      // При редактировании текста в окне/попапе автосохранение НЕ срабатывает!
+      cancelIdleAutoSaveTimer();
       const blk = currentBlocks.find(x => x.id === popupBlockId);
       if (blk) {
         blk.translated_text = val;
         blk.is_deleted = !val.trim();
         blk._dirtyPreview = true;
+        clientEditRevision++;
       }
       const cardTa = document.getElementById(`edit-ta-${popupBlockId}`);
       if (cardTa) cardTa.value = val;
       updatePinDomForBlock(popupBlockId);
-      scheduleIdleAutoSave();
     }
 
     function onPopupFontChange(val) {
       if (!popupBlockId) return;
+      cancelIdleAutoSaveTimer();
       const blk = currentBlocks.find(x => x.id === popupBlockId);
       if (blk) {
         const parsed = parseInt(val, 10);
         blk.font_size = (!isNaN(parsed) && parsed >= 6) ? parsed : null;
         blk._dirtyPreview = true;
+        clientEditRevision++;
       }
       const cardFs = document.getElementById(`edit-fs-${popupBlockId}`);
       if (cardFs) {
@@ -3623,7 +3859,6 @@
         cardFs.value = val;
       }
       updatePinDomForBlock(popupBlockId);
-      scheduleIdleAutoSave();
     }
 
     function copyPopupRomajiToInput() {
@@ -3656,9 +3891,14 @@
       if (popupBlockId) populateInlinePopup(popupBlockId);
     }
 
+    async function clearTextFromInlinePopup(ev) {
+      if (!popupBlockId) return;
+      await clearBlockTextOnly(popupBlockId, ev);
+    }
+
     async function deleteFromInlinePopup(ev) {
       if (!popupBlockId) return;
-      await deleteBlockTranslation(popupBlockId, ev);
+      await removeBlockFrameCompletely(popupBlockId, ev);
     }
 
     async function restoreFromInlinePopup(ev) {
@@ -3720,17 +3960,20 @@
           `</select></div>`;
 
         const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>`;
+        const removeFrameBtnHtml = `<button type="button" class="btn-delete-block" onclick="removeBlockFrameCompletely(${b.id}, event)" title="Полностью удалить рамку #${b.id} с картинки и вернуть чистый оригинал">🗑 Удалить рамку</button>`;
         const deleteActionHtml = !isDel
           ? `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
               retranslateBtnHtml +
-              `<button type="button" class="btn-delete-block" onclick="deleteBlockTranslation(${b.id}, event)" title="Удалить этот перевод и оставить оригинальный текст/рисунок на картинке без замазки">🗑 Удалить перевод</button>` +
+              `<button type="button" class="romaji-copy-btn" onclick="clearBlockTextOnly(${b.id}, event)" title="Очистить только текст перевода внутри рамки (сама рамка останется)">🧹 Очистить текст</button>` +
+              removeFrameBtnHtml +
             `</div>`
           : `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
-              `<span class="deleted-status-badge">🚫 Оригинал</span>` +
+              `<span class="deleted-status-badge">🚫 Пусто (Оригинал)</span>` +
               retranslateBtnHtml +
               (b._backup_translation
-                ? `<button type="button" class="btn-restore-block" onclick="restoreBlockTranslation(${b.id}, event)">↩ Вернуть</button>`
+                ? `<button type="button" class="btn-restore-block" onclick="restoreBlockTranslation(${b.id}, event)">↩ Вернуть текст</button>`
                 : ``) +
+              removeFrameBtnHtml +
             `</div>`;
 
         const romajiSection = showRomaji
@@ -3765,12 +4008,31 @@
       }).join("");
     }
 
+    /* Точечное обновление контролов одной карточки в списке без пересоздания всего DOM */
+    function updateSingleBlockCardControls(blockId) {
+      const blk = currentBlocks ? currentBlocks.find(x => x.id === blockId) : null;
+      if (!blk) return;
+      const fsSel = document.getElementById(`edit-fs-${blockId}`);
+      if (fsSel) {
+        ensureFontSelectOption(fsSel, blk.font_size);
+        fsSel.value = blk.font_size ? String(blk.font_size) : "";
+        const autoOpt = fsSel.querySelector('option[value=""]');
+        if (autoOpt) {
+          autoOpt.textContent = blk.rendered_font_size
+            ? `Авто (${blk.rendered_font_size}px)`
+            : `Авто (~${estimateAutoFontSizeForBox(blk)}px)`;
+        }
+      }
+    }
+
     function onBlockFontSelect(blockId, val) {
+      cancelIdleAutoSaveTimer();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (blk) {
         const parsed = parseInt(val, 10);
         blk.font_size = (!isNaN(parsed) && parsed >= 6) ? parsed : null;
         blk._dirtyPreview = true;
+        clientEditRevision++;
       }
       if (popupBlockId === blockId) {
         const pFs = document.getElementById("popup-fs-select");
@@ -3780,22 +4042,23 @@
         }
       }
       updatePinDomForBlock(blockId);
-      scheduleIdleAutoSave();
     }
 
     function onBlockTextInput(blockId, val) {
+      // Автосохранение НЕ должно работать при редактировании текста в окне редактора!
+      cancelIdleAutoSaveTimer();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (blk) {
         blk.translated_text = val;
         blk.is_deleted = !val.trim();
         blk._dirtyPreview = true;
+        clientEditRevision++;
       }
       if (popupBlockId === blockId) {
         const pTa = document.getElementById("popup-textarea");
         if (pTa && pTa.value !== val) pTa.value = val;
       }
       updatePinDomForBlock(blockId);
-      scheduleIdleAutoSave();
     }
 
     function onBlockTextareaKeydown(e) {
@@ -3813,12 +4076,16 @@
         return;
       }
       syncInputsToCurrentBlocks();
-      if (!currentBlocks || currentBlocks.length === 0) {
-        if (!opts.isAuto) sayMiko("Нет текстовых блоков для сохранения~");
-        return;
-      }
+      if (!currentBlocks) return;
 
       isSavingEdits = true;
+      const saveRevision = clientEditRevision;
+      const snapshotBlocks = currentBlocks.map(b => ({
+        ...b,
+        bbox: Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0],
+        clean_bbox: Array.isArray(b.clean_bbox) ? [...b.clean_bbox] : (Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0])
+      }));
+
       const pill = document.getElementById("autosave-status-pill");
       if (pill) {
         pill.className = "autosave-status-pill active saving";
@@ -3830,7 +4097,7 @@
         saveBtn.textContent = "⏳ Сохраняю...";
       }
       if (!opts.isAuto) {
-        sayMiko(`Перерисовываю и сохраняю твой перевод на странице «${selectedPage.rel_path}»... 💾✨`);
+        sayMiko(`Перерисовываю и сохраняю изменения на странице «${selectedPage.rel_path}»... 💾✨`);
       }
 
       const payload = {
@@ -3843,7 +4110,7 @@
         max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
         return_image: true,
         image_format: "webp",
-        blocks: currentBlocks
+        blocks: snapshotBlocks
       };
 
       try {
@@ -3860,17 +4127,47 @@
 
         selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
         selectedPage.is_translated = true;
-        if (Array.isArray(data.blocks)) {
-          currentBlocks = data.blocks.map(b => ({ ...b }));
+        selectedPage.has_saved_blocks = true;
+
+        // Обновляем блоки только если пользователь не внес новых правок, пока шло сохранение!
+        if (clientEditRevision === saveRevision) {
+          if (Array.isArray(data.blocks)) {
+            currentBlocks = data.blocks.map(b => ({ ...b, _dirtyPreview: false }));
+          } else {
+            currentBlocks.forEach(b => { b._dirtyPreview = false; });
+          }
           selectedPage.blocks = currentBlocks;
+
+          // Если курсор сейчас НЕ в текстовом поле редактора — обновим карточки
+          const activeTag = document.activeElement?.tagName;
+          const isTypingInEditor = activeTag === "TEXTAREA" || activeTag === "INPUT";
+          if (!isTypingInEditor) {
+            renderBlocksEditor();
+          } else {
+            currentBlocks.forEach(b => updateSingleBlockCardControls(b.id));
+          }
+          if (popupBlockId && !isTypingInEditor) {
+            populateInlinePopup(popupBlockId);
+          }
         }
 
-        currentBlocks.forEach(b => { b._dirtyPreview = false; });
-        renderViewer(data.translated_image);
-        renderBlocksEditor();
-        if (popupBlockId) populateInlinePopup(popupBlockId);
-        sayMiko(`Готово за ${data.processing_time_sec}с! Изменения рамок и текста на странице «${selectedPage.rel_path}» вшиты в картинку и сохранены! 💾🌸`);
-        if (currentFolder) inspectCurrentFolder();
+        // Обновляем картинку на сцене без сброса скролла и без мигания рамок!
+        updateTranslatedImageSmoothly(data.translated_image);
+
+        // Синхронизируем счетчик в списке страниц слева без повторного вызова selectPage()
+        if (folderPages && selectedPage) {
+          const fp = folderPages.find(x => x.rel_path === selectedPage.rel_path);
+          if (fp) {
+            fp.is_translated = true;
+            fp.dest_path = selectedPage.dest_path;
+            fp.blocks_count = currentBlocks.length;
+            fp.has_saved_blocks = true;
+            fp.blocks = currentBlocks;
+            renderPagesListItems();
+          }
+        }
+
+        sayMiko(`Готово за ${data.processing_time_sec}с! Изменения на странице «${selectedPage.rel_path}» вшиты в картинку и сохранены! 💾🌸`);
       } catch (e) {
         sayMiko(`Ошибка связи при сохранении страницы: ${e.message}`);
       } finally {
@@ -3883,9 +4180,11 @@
         if (pill) {
           pill.className = "autosave-status-pill";
         }
-        if (pendingAutoSaveAfterCurrent) {
+        if (pendingAutoSaveAfterCurrent || clientEditRevision !== saveRevision) {
           pendingAutoSaveAfterCurrent = false;
-          scheduleIdleAutoSave(600);
+          if (uiSettings.auto_save_after_idle !== false && !isUserTypingInTextEditor()) {
+            scheduleIdleAutoSave(500);
+          }
         }
       }
     }
@@ -4115,7 +4414,7 @@
         } else {
           sayMiko(`Область #${newId} добавлена! Введи нужный текст перевода для #${newId} и нажми «Сохранить»~ ✏️`);
         }
-        if (currentFolder) inspectCurrentFolder();
+        if (currentFolder) inspectCurrentFolder({ preserveCurrentSelection: true });
       } catch (e) {
         sayMiko(`Ошибка при переводе выделенной области: ${e.message}`);
       }
@@ -4166,6 +4465,21 @@
       }
     }
 
+    /* Плавное обновление переведенной картинки на месте без пересоздания DOM сцены и без сброса скролла */
+    function updateTranslatedImageSmoothly(freshBase64) {
+      const transWrap = document.getElementById("pin-wrap-trans");
+      const transImg = transWrap ? transWrap.querySelector("img") : null;
+      if (transImg && freshBase64 && (viewMode === "split" || viewMode === "translated")) {
+        transImg.onload = () => {
+          renderBboxPinsOnStage();
+        };
+        transImg.src = freshBase64;
+        renderBboxPinsOnStage();
+        return;
+      }
+      renderViewer(freshBase64);
+    }
+
     function renderViewer(freshBase64 = null) {
       const stage = document.getElementById("viewer-stage");
       stage.classList.toggle("split-mode", viewMode === "split");
@@ -4196,12 +4510,25 @@
       attachManualDrawHandlers();
     }
 
-    /* ==================== INTERACTIVE BBOX MOVE, 8-WAY RESIZE, WHEEL FONT & 2.5s IDLE AUTO-SAVE ==================== */
+    /* ==================== INTERACTIVE BBOX MOVE, 8-WAY RESIZE, SMOOTH WHEEL & CONFIGURABLE AUTO-SAVE ==================== */
     let pinInteractState = null;
+    let pinDragRafId = null;
+    let wheelRafId = null;
+    let wheelPendingBlockId = null;
+    let wheelSettleTimer = null;
     let idleAutoSaveTimer = null;
     let idleCountdownInterval = null;
     let idleAutoSaveDeadline = 0;
     let pendingAutoSaveAfterCurrent = false;
+
+    function isUserTypingInTextEditor() {
+      const active = document.activeElement;
+      if (!active) return false;
+      const tag = active.tagName;
+      if (tag === "TEXTAREA") return true;
+      if (tag === "INPUT" && active.type === "text") return true;
+      return false;
+    }
 
     function ensureBlockCleanBbox(b) {
       if (!b || !Array.isArray(b.bbox) || b.bbox.length < 4) return;
@@ -4294,11 +4621,16 @@
       }
     }
 
+    /* Автосохранение вызывается ТОЛЬКО после перетаскивания/ресайза рамки мышкой или прокрутки колесиком! */
     function scheduleIdleAutoSave(customDelayMs) {
-      if (uiSettings.auto_save_after_idle === false) return;
-      if (pinInteractState) return; // Wait until user releases the mouse button
+      if (uiSettings.auto_save_after_idle === false) {
+        // Если автосохранение выключено, не запускаем таймер — на рамке светится значок 💾
+        return;
+      }
+      if (pinInteractState) return; // Ждем, пока пользователь отпустит кнопку мыши
+      if (isUserTypingInTextEditor()) return; // Не запускаем во время ввода текста в окне редактирования
       cancelIdleAutoSaveTimer();
-      const delay = customDelayMs || uiSettings.auto_save_delay_ms || 2500;
+      const delay = Math.max(500, Number(customDelayMs || uiSettings.auto_save_delay_ms || 2500));
       idleAutoSaveDeadline = Date.now() + delay;
 
       const pill = document.getElementById("autosave-status-pill");
@@ -4313,6 +4645,7 @@
 
       idleAutoSaveTimer = setTimeout(() => {
         cancelIdleAutoSaveTimer();
+        if (isUserTypingInTextEditor()) return;
         saveEditedPageTranslation({ isAuto: true });
       }, delay);
     }
@@ -4327,15 +4660,76 @@
       blk.bbox_modified = false;
       blk.font_size = null;
       blk._dirtyPreview = true;
-      renderBlocksEditor();
-      renderBboxPinsOnStage();
+      clientEditRevision++;
+      updateSingleBlockCardControls(blockId);
+      updatePinDomForBlock(blockId);
       if (popupBlockId === blockId) populateInlinePopup(blockId);
-      sayMiko(`Рамка #${blockId} и её размер шрифта возвращены в исходное положение! ↺🌸`);
-      scheduleIdleAutoSave(1200);
+      if (uiSettings.auto_save_after_idle !== false) {
+        sayMiko(`Рамка #${blockId} и её размер шрифта возвращены в исходное положение! Авто-обновление через ${getAutoSaveSecLabel()} сек~ ↺🌸`);
+        scheduleIdleAutoSave();
+      } else {
+        sayMiko(`Рамка #${blockId} возвращена в исходное положение! Нажми 💾 на рамке, чтобы сохранить~ ↺🌸`);
+      }
     }
 
-    function updatePinDomForBlock(blockId) {
-      const blk = currentBlocks.find(x => x.id === blockId);
+    /* Быстрое обновление DOM одной рамки (использует кэшированные ссылки без лишних reflow) */
+    function applyBlockStateToPinTarget(blk, target, estFs, dispText, isMod, isDel, showSaveBtn, isUnsaved) {
+      const { wrap, pin, badge, liveEl, resetBtn, saveBtn, nw, nh, scale } = target;
+      const [x1, y1, x2, y2] = blk.bbox;
+      const leftPct = Math.max(0, Math.min(99, (x1 / nw) * 100));
+      const topPct = Math.max(0, Math.min(99, (y1 / nh) * 100));
+      const widthPct = Math.max(1.5, Math.min(100 - leftPct, ((x2 - x1) / nw) * 100));
+      const heightPct = Math.max(1.5, Math.min(100 - topPct, ((y2 - y1) / nh) * 100));
+
+      if (pin) {
+        pin.style.left = leftPct + "%";
+        pin.style.top = topPct + "%";
+        pin.style.width = widthPct + "%";
+        pin.style.height = heightPct + "%";
+        pin.classList.toggle("modified-pin", isMod);
+        pin.classList.toggle("deleted-pin", isDel);
+        pin.classList.toggle("dirty-preview-pin", Boolean(blk._dirtyPreview) && !isDel);
+        pin.classList.toggle("unsaved-pin", isUnsaved);
+
+        if (badge) badge.textContent = formatPinBadgeText(blk);
+        if (liveEl) {
+          if (liveEl.textContent !== dispText) liveEl.textContent = dispText;
+          const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
+          liveEl.style.fontSize = cssFs + "px";
+        }
+        if (resetBtn) {
+          resetBtn.style.display = (isMod || blk.font_size) ? "inline-block" : "none";
+        }
+        if (saveBtn) {
+          saveBtn.style.display = showSaveBtn ? "inline-block" : "none";
+        }
+      }
+
+      let ghost = target.ghost !== undefined
+        ? target.ghost
+        : wrap.querySelector(`.clean-bbox-ghost[data-block-id="${blk.id}"]`);
+      if (isMod && !isDel) {
+        const [cx1, cy1, cx2, cy2] = blk.clean_bbox;
+        if (!ghost) {
+          ghost = document.createElement("div");
+          ghost.className = "clean-bbox-ghost";
+          ghost.dataset.blockId = String(blk.id);
+          ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${blk.id}</span>`;
+          wrap.appendChild(ghost);
+          target.ghost = ghost;
+        }
+        ghost.style.left = ((cx1 / nw) * 100) + "%";
+        ghost.style.top = ((cy1 / nh) * 100) + "%";
+        ghost.style.width = (((cx2 - cx1) / nw) * 100) + "%";
+        ghost.style.height = (((cy2 - cy1) / nh) * 100) + "%";
+      } else if (ghost) {
+        ghost.remove();
+        target.ghost = null;
+      }
+    }
+
+    function updatePinDomForBlock(blockId, prebuiltTargets = null) {
+      const blk = currentBlocks ? currentBlocks.find(x => x.id === blockId) : null;
       if (!blk) return;
       ensureBlockCleanBbox(blk);
       const isMod = isBlockBboxModified(blk);
@@ -4343,65 +4737,42 @@
       const estFs = estimateAutoFontSizeForBox(blk);
       const useUpper = document.getElementById("chk-uppercase")?.checked !== false;
       const dispText = useUpper ? String(blk.translated_text || "").toUpperCase() : String(blk.translated_text || "");
+      const autoOff = uiSettings.auto_save_after_idle === false;
+      const showSaveBtn = autoOff || Boolean(blk._dirtyPreview);
+      const isUnsaved = Boolean(blk._dirtyPreview) && (autoOff || !idleAutoSaveTimer);
+
+      if (prebuiltTargets && prebuiltTargets.length > 0) {
+        for (let i = 0; i < prebuiltTargets.length; i++) {
+          applyBlockStateToPinTarget(blk, prebuiltTargets[i], estFs, dispText, isMod, isDel, showSaveBtn, isUnsaved);
+        }
+        return;
+      }
 
       document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
         const img = wrap.querySelector("img");
         if (!img || !img.naturalWidth || !img.naturalHeight) return;
         const nw = img.naturalWidth;
         const nh = img.naturalHeight;
-        const rect = img.getBoundingClientRect();
-        const scale = rect.width / Math.max(1, nw);
+        const scale = img._cachedScale || ((img.clientWidth || img.getBoundingClientRect().width) / Math.max(1, nw));
+        img._cachedScale = scale;
 
-        const [x1, y1, x2, y2] = blk.bbox;
-        const leftPct = Math.max(0, Math.min(99, (x1 / nw) * 100));
-        const topPct = Math.max(0, Math.min(99, (y1 / nh) * 100));
-        const widthPct = Math.max(1.5, Math.min(100 - leftPct, ((x2 - x1) / nw) * 100));
-        const heightPct = Math.max(1.5, Math.min(100 - topPct, ((y2 - y1) / nh) * 100));
-
-        const pin = wrap.querySelector(`.bbox-pin[data-block-id="${blockId}"]`);
-        if (pin) {
-          pin.style.left = leftPct + "%";
-          pin.style.top = topPct + "%";
-          pin.style.width = widthPct + "%";
-          pin.style.height = heightPct + "%";
-          pin.classList.toggle("modified-pin", isMod);
-          pin.classList.toggle("deleted-pin", isDel);
-          pin.classList.toggle("dirty-preview-pin", Boolean(blk._dirtyPreview) && !isDel);
-
-          const badge = pin.querySelector(".bbox-pin-badge");
-          if (badge) badge.textContent = formatPinBadgeText(blk);
-
-          const liveEl = pin.querySelector(".bbox-live-text");
-          if (liveEl) {
-            liveEl.textContent = dispText;
-            const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
-            liveEl.style.fontSize = cssFs + "px";
-          }
-
-          const resetBtn = pin.querySelector(".bbox-pin-reset");
-          if (resetBtn) {
-            resetBtn.style.display = (isMod || blk.font_size) ? "inline-block" : "none";
-          }
-        }
-
-        // Update or create ghost outline for original clean_bbox when moved/resized
-        let ghost = wrap.querySelector(`.clean-bbox-ghost[data-block-id="${blockId}"]`);
-        if (isMod && !isDel) {
-          const [cx1, cy1, cx2, cy2] = blk.clean_bbox;
-          if (!ghost) {
-            ghost = document.createElement("div");
-            ghost.className = "clean-bbox-ghost";
-            ghost.dataset.blockId = String(blockId);
-            ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${blockId}</span>`;
-            wrap.appendChild(ghost);
-          }
-          ghost.style.left = ((cx1 / nw) * 100) + "%";
-          ghost.style.top = ((cy1 / nh) * 100) + "%";
-          ghost.style.width = (((cx2 - cx1) / nw) * 100) + "%";
-          ghost.style.height = (((cy2 - cy1) / nh) * 100) + "%";
-        } else if (ghost) {
-          ghost.remove();
-        }
+        const pin = (wrap._pinMap && wrap._pinMap.get(blockId)) || wrap.querySelector(`.bbox-pin[data-block-id="${blockId}"]`);
+        const refs = (pin && pin._refs) || {
+          badge: pin ? pin.querySelector(".bbox-pin-badge") : null,
+          liveEl: pin ? pin.querySelector(".bbox-live-text") : null,
+          resetBtn: pin ? pin.querySelector(".bbox-pin-reset") : null,
+          saveBtn: pin ? pin.querySelector(".bbox-pin-save") : null
+        };
+        applyBlockStateToPinTarget(
+          blk,
+          { wrap, pin, ...refs, nw, nh, scale },
+          estFs,
+          dispText,
+          isMod,
+          isDel,
+          showSaveBtn,
+          isUnsaved
+        );
       });
     }
 
@@ -4411,14 +4782,20 @@
       const shouldShowPins = drawerOpen || Boolean(uiSettings.always_show_pins);
       if (!shouldShowPins || !currentBlocks || currentBlocks.length === 0) return;
 
+      const autoOff = uiSettings.auto_save_after_idle === false;
+
       document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
         const img = wrap.querySelector("img");
         if (!img || !img.naturalWidth || !img.naturalHeight) return;
         const nw = img.naturalWidth;
         const nh = img.naturalHeight;
-        const rect = img.getBoundingClientRect();
-        const scale = rect.width / Math.max(1, nw);
+        const clientW = img.clientWidth || img.getBoundingClientRect().width;
+        const scale = clientW / Math.max(1, nw);
+        img._cachedScale = scale;
+        wrap._pinMap = new Map();
+
         const useUpper = document.getElementById("chk-uppercase")?.checked !== false;
+        const frag = document.createDocumentFragment();
 
         currentBlocks.forEach(b => {
           if (!Array.isArray(b.bbox) || b.bbox.length < 4) return;
@@ -4433,6 +4810,8 @@
           const isMod = isBlockBboxModified(b);
           const estFs = estimateAutoFontSizeForBox(b);
           const dispText = useUpper ? String(b.translated_text || "").toUpperCase() : String(b.translated_text || "");
+          const showSaveBtn = autoOff || Boolean(b._dirtyPreview);
+          const isUnsaved = Boolean(b._dirtyPreview) && (autoOff || !idleAutoSaveTimer);
 
           if (isMod && !isDel) {
             const [cx1, cy1, cx2, cy2] = b.clean_bbox;
@@ -4444,7 +4823,7 @@
             ghost.style.width = (((cx2 - cx1) / nw) * 100) + "%";
             ghost.style.height = (((cy2 - cy1) / nh) * 100) + "%";
             ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${b.id}</span>`;
-            wrap.appendChild(ghost);
+            frag.appendChild(ghost);
           }
 
           const pin = document.createElement("div");
@@ -4452,15 +4831,16 @@
             (activeBlockId === b.id ? " active-pin" : "") +
             (isDel ? " deleted-pin" : "") +
             (isMod ? " modified-pin" : "") +
-            (b._dirtyPreview && !isDel ? " dirty-preview-pin" : "");
+            (b._dirtyPreview && !isDel ? " dirty-preview-pin" : "") +
+            (isUnsaved ? " unsaved-pin" : "");
           pin.dataset.blockId = String(b.id);
           pin.style.left = leftPct + "%";
           pin.style.top = topPct + "%";
           pin.style.width = widthPct + "%";
           pin.style.height = heightPct + "%";
           pin.title = isDel
-            ? `#${b.id} (Оригинал сохранен): ${b.original_text || ""} — Кликните для редактирования`
-            : `#${b.id}: Перетащите мышкой для сдвига, потяните за края/уголки для изменения размера текста или покрутите колесико мыши для смены шрифта`;
+            ? `#${b.id} (Пустая рамка / Оригинал): ${b.original_text || ""} — Кликните для редактирования или нажмите 🗑 для полного удаления рамки`
+            : `#${b.id}: Перетащите мышкой, потяните за края/уголки для ресайза или покрутите колесико мыши для смены шрифта`;
 
           const handlesHtml = ["nw", "n", "ne", "e", "se", "s", "sw", "w"]
             .map(dir => `<div class="bbox-resize-handle handle-${dir}" data-resize-dir="${dir}"></div>`)
@@ -4470,31 +4850,50 @@
           pin.innerHTML =
             `<span class="bbox-pin-badge">${formatPinBadgeText(b)}</span>` +
             `<div class="bbox-pin-actions">` +
+              `<button type="button" class="bbox-pin-btn save-btn bbox-pin-save" style="display:${showSaveBtn ? "inline-block" : "none"};" title="Сохранить изменения рамки #${b.id} в картинку (Ctrl+S)">💾</button>` +
               `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${b.id} к оригиналу">↺</button>` +
-              (!isDel ? `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Удалить перевод блока #${b.id} (оставить оригинал на картинке)">🗑</button>` : "") +
+              `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Полностью удалить рамку #${b.id} с картинки">🗑</button>` +
             `</div>` +
             `<div class="bbox-live-text" style="font-size:${cssFs}px;">${escapeHtml(dispText)}</div>` +
             handlesHtml;
 
+          const saveBtn = pin.querySelector(".bbox-pin-save");
           const resetBtn = pin.querySelector(".bbox-pin-reset");
+          const delBtn = pin.querySelector(".bbox-pin-del");
+          const badge = pin.querySelector(".bbox-pin-badge");
+          const liveEl = pin.querySelector(".bbox-live-text");
+
+          pin._refs = { badge, liveEl, resetBtn, saveBtn };
+          wrap._pinMap.set(b.id, pin);
+
+          if (saveBtn) {
+            saveBtn.onmousedown = (ev) => ev.stopPropagation();
+            saveBtn.onclick = (ev) => {
+              ev.preventDefault();
+              ev.stopPropagation();
+              saveEditedPageTranslation();
+            };
+          }
+
           if (resetBtn) {
             resetBtn.onmousedown = (ev) => ev.stopPropagation();
             resetBtn.onclick = (ev) => {
+              ev.preventDefault();
               ev.stopPropagation();
               resetSingleBlockBbox(b.id, ev);
             };
           }
 
-          const delBtn = pin.querySelector(".bbox-pin-del");
           if (delBtn) {
             delBtn.onmousedown = (ev) => ev.stopPropagation();
             delBtn.onclick = (ev) => {
+              ev.preventDefault();
               ev.stopPropagation();
-              deleteBlockTranslation(b.id, ev);
+              removeBlockFrameCompletely(b.id, ev);
             };
           }
 
-          // MouseDown on pin or its 8 resize handles
+          // MouseDown on pin or its 8 resize handles (caches geometry & DOM nodes once for 0-reflow dragging!)
           pin.addEventListener("mousedown", (ev) => {
             if (isDrawRegionMode || ev.button !== 0) return;
             if (ev.target.closest(".bbox-pin-btn")) return;
@@ -4506,6 +4905,33 @@
             const imgRect = img.getBoundingClientRect();
 
             ensureBlockCleanBbox(b);
+
+            const cachedTargets = [];
+            document.querySelectorAll(".img-pin-wrap").forEach(w => {
+              const wImg = w.querySelector("img");
+              if (!wImg || !wImg.naturalWidth || !wImg.naturalHeight) return;
+              const wRect = (wImg === img) ? imgRect : wImg.getBoundingClientRect();
+              const wScale = wRect.width / Math.max(1, wImg.naturalWidth);
+              wImg._cachedScale = wScale;
+              const wPin = (w._pinMap && w._pinMap.get(b.id)) || w.querySelector(`.bbox-pin[data-block-id="${b.id}"]`);
+              const wGhost = w.querySelector(`.clean-bbox-ghost[data-block-id="${b.id}"]`);
+              const refs = (wPin && wPin._refs) || {
+                badge: wPin ? wPin.querySelector(".bbox-pin-badge") : null,
+                liveEl: wPin ? wPin.querySelector(".bbox-live-text") : null,
+                resetBtn: wPin ? wPin.querySelector(".bbox-pin-reset") : null,
+                saveBtn: wPin ? wPin.querySelector(".bbox-pin-save") : null
+              };
+              cachedTargets.push({
+                wrap: w,
+                pin: wPin,
+                ghost: wGhost,
+                ...refs,
+                nw: wImg.naturalWidth,
+                nh: wImg.naturalHeight,
+                scale: wScale
+              });
+            });
+
             pinInteractState = {
               block: b,
               blockId: b.id,
@@ -4514,6 +4940,9 @@
               imgRect,
               nw,
               nh,
+              scaleX: nw / Math.max(1, imgRect.width),
+              scaleY: nh / Math.max(1, imgRect.height),
+              cachedTargets,
               mode: resizeDir ? "resize" : "move",
               resizeDir,
               startClientX: ev.clientX,
@@ -4524,47 +4953,75 @@
             cancelIdleAutoSaveTimer();
           });
 
-          // MouseWheel on pin to quickly scale font size up/down
+          // Fast, hardware-smooth MouseWheel font scaling on pin (rAF visual update + debounced UI sync)
           pin.addEventListener("wheel", (ev) => {
             if (ev.ctrlKey || ev.metaKey) return; // Let Ctrl+Wheel zoom the stage
             ev.preventDefault();
             ev.stopPropagation();
             ensureBlockCleanBbox(b);
+
             const curEst = b.font_size ? Number(b.font_size) : (b.rendered_font_size || estimateAutoFontSizeForBox(b));
-            const step = ev.deltaY < 0 ? 2 : -2;
+            const absDelta = Math.abs(ev.deltaY);
+            const mag = absDelta > 160 ? 4 : (absDelta < 35 ? 1 : 2);
+            const step = ev.deltaY < 0 ? mag : -mag;
             const nextFs = Math.max(8, Math.min(140, Math.round(curEst + step)));
+            if (b.font_size === nextFs && b._dirtyPreview) {
+              return;
+            }
             b.font_size = nextFs;
             b.is_deleted = false;
             b._dirtyPreview = true;
+            clientEditRevision++;
 
-            highlightBlock(b.id, false);
-            updatePinDomForBlock(b.id);
+            pin.classList.add("wheeling-pin");
+            wheelPendingBlockId = b.id;
 
-            const cardFs = document.getElementById(`edit-fs-${b.id}`);
-            if (cardFs) {
-              ensureFontSelectOption(cardFs, nextFs);
-              cardFs.value = String(nextFs);
+            if (!wheelRafId) {
+              wheelRafId = requestAnimationFrame(() => {
+                wheelRafId = null;
+                if (wheelPendingBlockId !== null) {
+                  updatePinDomForBlock(wheelPendingBlockId);
+                }
+              });
             }
-            if (popupBlockId === b.id) {
-              populateInlinePopup(b.id);
-            }
-            sayMiko(`Шрифт блока #${b.id} изменен колесиком: ${nextFs}px! Через 2.5 сек страница обновится автоматически~ 🔤✨`);
-            scheduleIdleAutoSave();
+
+            if (wheelSettleTimer) clearTimeout(wheelSettleTimer);
+            wheelSettleTimer = setTimeout(() => {
+              wheelSettleTimer = null;
+              pin.classList.remove("wheeling-pin");
+              highlightBlock(b.id, false);
+              updateSingleBlockCardControls(b.id);
+              if (popupBlockId === b.id) {
+                const pFs = document.getElementById("popup-fs-select");
+                if (pFs) {
+                  ensureFontSelectOption(pFs, b.font_size);
+                  pFs.value = String(b.font_size);
+                }
+              }
+              if (uiSettings.auto_save_after_idle !== false) {
+                sayMiko(`Шрифт рамки #${b.id}: ${b.font_size}px! Через ${getAutoSaveSecLabel()} сек страница перерисуется автоматически~ 🔤✨`);
+                scheduleIdleAutoSave();
+              } else {
+                sayMiko(`Шрифт рамки #${b.id}: ${b.font_size}px! Нажми 💾 прямо на рамке, чтобы сохранить~ 🔤💾`);
+              }
+            }, 110);
           }, { passive: false });
 
-          wrap.appendChild(pin);
+          frag.appendChild(pin);
         });
+
+        wrap.appendChild(frag);
       });
     }
 
-    // Global mousemove / mouseup handlers for interactive pin move & 8-way resize
+    // Global mousemove / mouseup handlers for interactive pin move & 8-way resize (rAF throttled, 0 forced reflows!)
     window.addEventListener("mousemove", (ev) => {
       if (!pinInteractState) return;
       const st = pinInteractState;
       const dxScreen = ev.clientX - st.startClientX;
       const dyScreen = ev.clientY - st.startClientY;
 
-      if (!st.hasMoved && Math.hypot(dxScreen, dyScreen) < 4) {
+      if (!st.hasMoved && (dxScreen * dxScreen + dyScreen * dyScreen) < 12) {
         return;
       }
 
@@ -4572,15 +5029,13 @@
         st.hasMoved = true;
         closeInlineBubblePopup();
         highlightBlock(st.blockId, false);
-        document.querySelectorAll(`.bbox-pin[data-block-id="${st.blockId}"]`).forEach(el => {
-          el.classList.add("dragging-pin");
+        st.cachedTargets.forEach(t => {
+          if (t.pin) t.pin.classList.add("dragging-pin");
         });
       }
 
-      const scaleX = st.nw / Math.max(1, st.imgRect.width);
-      const scaleY = st.nh / Math.max(1, st.imgRect.height);
-      const dxImg = Math.round(dxScreen * scaleX);
-      const dyImg = Math.round(dyScreen * scaleY);
+      const dxImg = Math.round(dxScreen * st.scaleX);
+      const dyImg = Math.round(dyScreen * st.scaleY);
 
       let [x1, y1, x2, y2] = st.origBbox;
       const minW = 18;
@@ -4589,8 +5044,8 @@
       if (st.mode === "move") {
         const w = x2 - x1;
         const h = y2 - y1;
-        let nx1 = Math.max(0, Math.min(st.nw - w, x1 + dxImg));
-        let ny1 = Math.max(0, Math.min(st.nh - h, y1 + dyImg));
+        const nx1 = Math.max(0, Math.min(st.nw - w, x1 + dxImg));
+        const ny1 = Math.max(0, Math.min(st.nh - h, y1 + dyImg));
         st.block.bbox = [nx1, ny1, nx1 + w, ny1 + h];
         st.block.bbox_modified = true;
       } else {
@@ -4601,13 +5056,21 @@
         if (dir.includes("s")) y2 = Math.min(st.nh, Math.max(y1 + minH, y2 + dyImg));
         st.block.bbox = [x1, y1, x2, y2];
         st.block.bbox_modified = true;
-        // When user resizes the box with mouse handles, auto-fit font to the new box dimensions!
         st.block.font_size = null;
         st.block.rendered_font_size = null;
       }
 
       st.block._dirtyPreview = true;
-      updatePinDomForBlock(st.blockId);
+      clientEditRevision++;
+
+      if (!pinDragRafId) {
+        pinDragRafId = requestAnimationFrame(() => {
+          pinDragRafId = null;
+          if (pinInteractState) {
+            updatePinDomForBlock(pinInteractState.blockId, pinInteractState.cachedTargets);
+          }
+        });
+      }
     });
 
     window.addEventListener("mouseup", (ev) => {
@@ -4615,22 +5078,38 @@
       const st = pinInteractState;
       pinInteractState = null;
 
-      document.querySelectorAll(`.bbox-pin[data-block-id="${st.blockId}"]`).forEach(el => {
-        el.classList.remove("dragging-pin");
+      if (pinDragRafId) {
+        cancelAnimationFrame(pinDragRafId);
+        pinDragRafId = null;
+      }
+
+      st.cachedTargets.forEach(t => {
+        if (t.pin) t.pin.classList.remove("dragging-pin");
       });
 
       if (!st.hasMoved) {
-        // Simple click without dragging -> open popup / focus block
         onPinClicked(st.blockId, st.pinEl, ev);
         return;
       }
 
-      renderBlocksEditor();
+      updatePinDomForBlock(st.blockId, st.cachedTargets);
+      updateSingleBlockCardControls(st.blockId);
+
+      const autoOn = uiSettings.auto_save_after_idle !== false;
+      const secLbl = getAutoSaveSecLabel();
       if (st.mode === "resize") {
         const est = estimateAutoFontSizeForBox(st.block);
-        sayMiko(`Размер рамки #${st.blockId} изменен (авто-кегль ~${est}px, замазка осталась на старом месте)! Через 2.5 сек бездействия страница перерисуется~ 📐✨`);
+        sayMiko(
+          autoOn
+            ? `Размер рамки #${st.blockId} изменен (авто-кегль ~${est}px, замазка на старом месте)! Через ${secLbl} сек страница перерисуется~ 📐✨`
+            : `Размер рамки #${st.blockId} изменен (авто-кегль ~${est}px)! Нажми 💾 на рамке, чтобы сохранить~ 📐💾`
+        );
       } else {
-        sayMiko(`Рамка перевода #${st.blockId} передвинута (область замазки оригинала не сместилась)! Через 2.5 сек бездействия страница обновится~ ✋✨`);
+        sayMiko(
+          autoOn
+            ? `Рамка #${st.blockId} передвинута (замазка оригинала осталась на месте)! Через ${secLbl} сек страница обновится~ ✋✨`
+            : `Рамка #${st.blockId} передвинута! Нажми 💾 прямо на рамке, чтобы сохранить изменения~ ✋💾`
+        );
       }
       scheduleIdleAutoSave();
     });
@@ -4824,7 +5303,7 @@
         renderBlocksEditor();
 
         sayMiko(`Готово за ${data.processing_time_sec}с! Найдено блоков: ${data.blocks_count}. Кликни по любому кружку #N на картинке или открой «✏️ Редактор», чтобы подправить текст~ ✨`);
-        if (currentFolder) inspectCurrentFolder();
+        if (currentFolder) inspectCurrentFolder({ preserveCurrentSelection: true });
       } finally {
         subBtn.disabled = false;
       }
@@ -4944,11 +5423,28 @@
       }
 
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
-        if (selectedPage && currentBlocks && currentBlocks.length > 0) {
+        if (selectedPage && currentBlocks) {
           e.preventDefault();
           saveEditedPageTranslation();
         }
         return;
+      }
+
+      if (!inInput && (e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
+        if (deletedFramesUndoStack && deletedFramesUndoStack.length > 0) {
+          e.preventDefault();
+          undoLastRemovedFrame();
+          return;
+        }
+      }
+
+      if (!inInput && e.key === "Delete" && activeBlockId !== null) {
+        const pop = document.getElementById("inline-bubble-popup");
+        if (!pop || !pop.classList.contains("open")) {
+          e.preventDefault();
+          removeBlockFrameCompletely(activeBlockId);
+          return;
+        }
       }
 
       if (e.key === "F11") {

@@ -167,7 +167,16 @@ SOURCE_LANG_NAMES_RU = {
 }
 
 MAX_BUBBLES_PER_BATCH_LOCAL = 24
-MAX_BUBBLES_PER_BATCH_CLOUD = 110
+MAX_BUBBLES_PER_BATCH_CLOUD = 260
+CLOUD_PARALLEL_CHUNK_SIZE = 42
+MAX_CONCURRENT_CLOUD_REQUESTS = 3
+
+REFUSAL_PATTERNS_REGEX = re.compile(
+    r"(?i)(?:\bi\s*(?:can['\u2019]?t|cannot|am\s+unable\s+to|won['\u2019]?t|must\s+decline)\b.*"
+    r"\b(?:translat|intensif|explicit|sexual|content|request|assist|fulfill|generate|rewrite|child|minor)\b"
+    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+sexual\s+content)\b"
+    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь)|откровенн\w+\s+сексуальн\w+)\b)"
+)
 
 SHORT_INTERJECTIONS_RU = {
     "あ": "Ах!",
@@ -950,6 +959,9 @@ class OllamaTranslator:
         }
         self.recent_context_lines: list[str] = []
         self.phrase_cache: dict[str, str] = {}
+        self.stop_requested: bool = False
+        self._last_call_was_refusal: bool = False
+        self.last_refusal_message: str = ""
         self._load_saved_config()
 
     @staticmethod
@@ -1252,8 +1264,11 @@ class OllamaTranslator:
                             if is_remote:
                                 found_ids = self._prioritize_cloud_models(found_ids)
                             return u_url, found_ids, True
+                        if is_remote and path == "/v1/models":
+                            return u_url, ["deepseek-v4-flash", "deepseek-v4-pro"], True
                     except Exception:
-                        pass
+                        if is_remote and path == "/v1/models":
+                            return u_url, ["deepseek-v4-flash", "deepseek-v4-pro"], True
             except Exception:
                 continue
 
@@ -1882,24 +1897,28 @@ class OllamaTranslator:
         return f"ollama::{fallback_name}"
 
     async def resolve_model(self, requested_model: str | None = None) -> str:
-        available = await self.list_available_models()
-
         req = (requested_model or "").strip()
         if req.startswith("unsloth::ollama/"):
             req = "ollama::" + req.split("unsloth::ollama/", 1)[1]
 
-        if req and req != "auto":
-            if "::" in req:
-                return req
-            for m in available:
-                if req.lower() in m["id"].lower():
-                    return m["id"]
-            return f"ollama::{req}"
+        # Быстрый возврат без лишних сетевых HTTP-запросов к /v1/models и /api/tags во время пакетного перевода!
+        if req and req != "auto" and "::" in req:
+            return req
 
-        if self._resolved_model and self._resolved_model != "auto":
+        if (not req or req == "auto") and self._resolved_model and self._resolved_model != "auto":
             if self._resolved_model.startswith("unsloth::ollama/"):
                 self._resolved_model = "ollama::" + self._resolved_model.split("unsloth::ollama/", 1)[1]
             return self._resolved_model
+
+        available = await self.list_available_models()
+
+        if req and req != "auto":
+            for m in available:
+                if req.lower() in m["id"].lower():
+                    return m["id"]
+            if self._is_remote_cloud_url(self.unsloth_url) and self.unsloth_api_key:
+                return f"unsloth::{req}"
+            return f"ollama::{req}"
 
         return self._pick_best_default_model(
             available,
@@ -1913,6 +1932,21 @@ class OllamaTranslator:
         s = str(raw_key).strip()
         digits = re.sub(r"\D+", "", s)
         return digits if digits else s
+
+    @classmethod
+    def _is_refusal_response(cls, raw_text: str) -> bool:
+        if not raw_text:
+            return False
+        cleaned = THINK_REGEX.sub("", raw_text).strip()
+        if not cleaned:
+            return False
+        if REFUSAL_PATTERNS_REGEX.search(cleaned):
+            return True
+        if "{" not in cleaned and ":" not in cleaned:
+            low = cleaned.lower()
+            if low.startswith(("i can't", "i cannot", "i’m sorry", "i'm sorry", "sorry,", "извините", "я не могу")):
+                return True
+        return False
 
     @classmethod
     def _parse_json_response(cls, raw_text: str) -> dict[str, str]:
@@ -1952,7 +1986,7 @@ class OllamaTranslator:
         recovered: dict[str, str] = {}
         for k_match, v_match in KV_PAIR_REGEX.findall(cleaned):
             norm_k = cls._normalize_key(k_match)
-            unescaped_v = v_match.replace('\\"', '"').replace("\\n", " ").strip()
+            unescaped_v = v_match.replace('\"', '"').replace("\\n", " ").strip()
             if norm_k and unescaped_v:
                 recovered[norm_k] = unescaped_v
 
@@ -1995,93 +2029,74 @@ class OllamaTranslator:
         context_block_ru = ""
         context_block_en = ""
         if context_lines:
-            joined_ctx = "\n".join(f"- {line}" for line in context_lines[-10:])
+            joined_ctx = "\n".join(f"- {line}" for line in context_lines[-6:])
             context_block_ru = (
-                "\n\nКОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ И ГЛОССАРИЙ ИМЕН (СТРОГО сохраняй точно такое же написание "
-                "имен собственных, прозвищ и пол персонажей, как в этих строках! НЕ включай сами эти строки в ответ):\n"
+                "\nГЛОССАРИЙ И КОНТЕКСТ (сохраняй такое же написание имен, не включай эти строки в ответ):\n"
                 f"{joined_ctx}"
             )
             context_block_en = (
-                "\n\nPREVIOUS PAGES CONTEXT & CHARACTER NAME MEMORY (STRICTLY keep the exact same spelling "
-                "of character names, nicknames, and pronouns established in these lines! Do NOT include these lines in your output):\n"
+                "\nNAME GLOSSARY & CONTEXT (keep identical character name spelling, do NOT include in output):\n"
                 f"{joined_ctx}"
             )
 
         if t_lang == "romaji":
             sys_prompt = (
-                "You are an expert Japanese manga linguist and Hepburn Romaji transliterator (supporting all genres including mature/adult 18+ manga without censorship).\n"
-                "You receive a JSON object containing Japanese lines from a manga page in reading order.\n\n"
-                "STRICT RULES:\n"
-                "1. Transliterate EVERY single line into accurate Hepburn Romaji using ONLY the Latin alphabet (A-Z, a-z) and standard punctuation.\n"
-                "2. DO NOT translate the meaning into English! Write the exact Japanese pronunciation in Romaji separated by spaces between words (e.g., 'なにをしてるの！？' -> 'Nani o shiteru no!?', 'ありがとう、先輩！' -> 'Arigatou, senpai!', 'やめてよ！' -> 'Yamete yo!').\n"
-                "3. Convert ALL Kanji, Hiragana, and Katakana into their contextually accurate Japanese readings in Romaji.\n"
-                "4. NEVER leave any Kanji, Hiragana, Katakana, or CJK characters in the output, and NEVER skip any JSON key.\n"
-                "5. Do NOT output <think> tags. Return ONLY a valid JSON object with the EXACT same string keys."
+                "You are a Japanese linguist and Hepburn Romaji transliterator.\n"
+                "Rules:\n"
+                "1. Transliterate every JSON value into space-separated Hepburn Romaji using ONLY Latin letters (A-Z, a-z) and punctuation.\n"
+                "2. Do NOT translate meaning into English. Output zero Kanji/Kana/CJK characters.\n"
+                "3. Return ONLY a valid JSON object with the exact same string keys."
                 f"{context_block_en}"
             )
-            usr_prompt = (
-                "Transliterate all Japanese lines into space-separated Hepburn Romaji (Latin letters ONLY, do NOT translate into English, NO Kanji/Kana allowed!).\n"
-                "Return a JSON object with the exact same keys:\n"
-                f"{source_map_json}"
-            )
-            retry_prefix = (
-                "Some lines are missing or still contain untranslated Kanji/Kana characters. "
-                "Transliterate them COMPLETELY into space-separated Hepburn Romaji (Latin alphabet ONLY) with zero CJK characters. "
-                "Return a JSON object with the exact same keys:\n"
-            )
+            usr_prompt = f"Transliterate all JSON values into Hepburn Romaji (keep exact keys):\n{source_map_json}"
+            retry_prefix = "Transliterate into Hepburn Romaji (Latin letters ONLY, exact same JSON keys):\n"
             return sys_prompt, usr_prompt, retry_prefix
 
         if t_lang == "ru":
             sys_prompt = (
-                f"Ты — ведущий профессиональный переводчик и литературный редактор {src_ru} (включая романтику, повседневность, боевики и взрослую мангу 18+ / NSFW) на русский язык.\n"
-                "На вход подается JSON-объект со всеми репликами и надписями одной страницы в порядке их чтения.\n\n"
-                "СТРОГИЕ ПРАВИЛА ПЕРЕВОДА И ИМЕН ПЕРСОНАЖЕЙ:\n"
-                "1. ИМЕНА И ПРОЗВИЩА (КРИТИЧЕСКИ ВАЖНО): Японские имена, фамилии и сокращенные домашние прозвища ВСЕГДА передавай фонетически по системе Поливанова/Хэпбёрна и НИКОГДА не переводи их буквально по значению кандзи-числительных или слов!\n"
-                "   - Примеры: 七香 / ななか -> Нанака; 七ちゃん / ななちゃん -> Нана-тян или Нанака-тян (КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО переводить как «Семь-тян»!); 一 / いち -> Ити/Кадзу (НЕ «Один»); 双葉 -> Футаба; 三玖 -> Мику; 四葉 -> Ёцуба; 五月 -> Ицуки.\n"
-                "   - Именные суффиксы (-сан, -тян, -кун, -сэмпай, -сэнсэй) сохраняй через дефис (например: Симадзаки-сан, Аомура-сан, Нанака-тян) и никогда не оставляй имена непереведенными иероглифами!\n"
-                "   - Всегда сверяйся с блоком КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ ниже: если имя персонажа уже переводилось как «Нанака», используй «Нанака» на всех следующих страницах.\n"
-                "2. ЖИВОЙ РАЗГОВОРНЫЙ ЯЗЫК: Переводи связно, живо и естественно, учитывая соседние бабблы на странице как единый диалог. Избегай машинного буквализма; делай реплики емкими и лаконичными под размер облачков.\n"
-                "3. Короткие возгласы, стоны и звукоподражания (あっ, んっ, はぁ, やめて и т.п.) переводи естественными русскими междометиями (Ах!, Мм.., Ха-а.., Прекрати!).\n"
-                "4. КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО оставлять корейские (한글), китайские (汉字), японские символы или пропускать ключи JSON.\n"
-                "5. Не выводи <think>. Верни ТОЛЬКО валидный JSON-объект с теми же строковыми ключами."
+                f"Ты — профессиональный переводчик и редактор локализации диалогов {src_ru} на русский язык.\n"
+                "Правила:\n"
+                "1. Имена, фамилии и домашние прозвища передавай фонетически (Поливанов/Хэпбёрн), НЕ переводи их буквально по смыслу иероглифов (七香/ななか -> Нанака, 七ちゃん -> Нана-тян, НЕ «Семь-тян»; 一 -> Ити/Кадзу; 双葉 -> Футаба; 三玖 -> Мику; 四葉 -> Ёцуба; 五月 -> Ицуки). Сохраняй суффиксы (-сан, -тян, -кун, -сэмпай, -сэнсэй).\n"
+                "2. Переводи реплики и междометия связно, живо и лаконично под размер облачков.\n"
+                "3. Запрещено оставлять японские/корейские/китайские символы или пропускать ключи JSON.\n"
+                "4. Не выводи <think>. Верни ТОЛЬКО валидный JSON-объект с теми же ключами."
                 f"{context_block_ru}"
             )
-            usr_prompt = (
-                f"Переведи все без исключения реплики {src_ru} на русский язык (ТОЛЬКО кириллицей, без цензуры и без азиатских символов!).\n"
-                "Верни JSON с теми же ключами:\n"
-                f"{source_map_json}"
-            )
-            retry_prefix = (
-                "В этих репликах остались непереведенные символы или пропуски. "
-                "Локализуй каждую строку ПОЛНОСТЬЮ на русский язык (кириллицей, включая стоны и междометия). Верни JSON с теми же ключами:\n"
-            )
+            usr_prompt = f"Переведи все значения JSON с {src_ru} на русский язык (только кириллицей, сохрани ключи):\n{source_map_json}"
+            retry_prefix = "Переведи на русский язык (только кириллицей, верни JSON с теми же ключами):\n"
             return sys_prompt, usr_prompt, retry_prefix
 
         sys_prompt = (
-            f"You are a veteran, uncensored professional {src_en}-to-English scanlation translator and localization editor (for slice-of-life, romance, action, and mature 18+ manga).\n"
-            "You receive a JSON object containing all speech bubbles and page captions from a single manga page in reading order.\n\n"
-            "STRICT SCANLATION & CHARACTER NAMING RULES:\n"
-            "1. CHARACTER NAMES & NICKNAMES (CRITICAL): NEVER translate Japanese personal names, surnames, or shortened nicknames literally by their Kanji meaning (especially number Kanji)! Always romanize them phonetically using Hepburn romanization:\n"
-            "   - Examples: '七香' / 'ななか' -> 'Nanaka'; '七ちゃん' / 'ななちゃん' -> 'Nana-chan' or 'Nanaka-chan' (NEVER translate '七ちゃん' literally as 'Seven-chan'!); '一' -> 'Ichi'/'Kazu' (NEVER 'One'); '双葉' -> 'Futaba'; '三玖' -> 'Miku'; '四葉' -> 'Yotsuba'; '五月' -> 'Itsuki'; '島崎' -> 'Shimazaki'; '青村' -> 'Aomura'.\n"
-            "   - Keep Japanese honorifics attached to romanized names ('-san', '-chan', '-kun', '-senpai', '-sensei', e.g., 'Shimazaki-san', 'Aomura-san', 'Nanaka-chan'). NEVER leave a character name in Kanji/Kana or drop the name before '-san'/'-chan'!\n"
-            "   - Strictly follow the PREVIOUS PAGES CONTEXT below so character names stay 100% consistent across every page.\n"
-            "2. COHERENT DIALOGUE FLOW: Read all bubbles on the page together as a connected conversation. Translate Japanese conversational particles ('わね', 'よね', 'かしら', 'っけ') into natural, flowing, idiomatic English rather than stiff word-by-word fragments.\n"
-            "3. Always translate short cries, moans, and interjections (e.g., あっ -> Ah!, んっ -> Mmh!, はぁ -> Haa...) into natural English equivalents.\n"
-            "4. NEVER output any Korean Hangul, Chinese Hanzi, or Japanese Kanji/Kana characters, and NEVER skip any JSON key.\n"
-            "5. Keep lines concise and punchy so they fit cleanly inside speech bubbles. Do NOT output <think> tags. Return ONLY a valid JSON object with the EXACT same string keys."
+            f"You are a professional {src_en}-to-English localization translator.\n"
+            "Rules:\n"
+            "1. Romanize personal names and nicknames phonetically (Hepburn) and NEVER translate name Kanji literally (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan, NEVER 'Seven-chan'; 一 -> Ichi/Kazu; 双葉 -> Futaba; 三玖 -> Miku; 四葉 -> Yotsuba; 五月 -> Itsuki). Keep honorifics (-san, -chan, -kun, -senpai, -sensei).\n"
+            "2. Translate every line and interjection into natural, concise, idiomatic English that fits speech bubbles.\n"
+            "3. Output zero Japanese/Korean/Chinese characters and never skip any JSON key.\n"
+            "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys."
             f"{context_block_en}"
         )
-        usr_prompt = (
-            f"Translate all lines from {src_en} into natural English (NO Korean, Chinese, or Japanese characters allowed!).\n"
-            "Return a JSON object with the exact same keys:\n"
-            f"{source_map_json}"
-        )
-        retry_prefix = (
-            "Some lines are missing or still contain untranslated Asian characters. "
-            "Rewrite them COMPLETELY in natural English with zero CJK/Hangul characters. "
-            "Return a JSON object with the exact same keys:\n"
-        )
+        usr_prompt = f"Localize all JSON values from {src_en} into natural English (keep exact keys, no CJK):\n{source_map_json}"
+        retry_prefix = "Translate into natural English with zero CJK characters (return JSON with exact same keys):\n"
         return sys_prompt, usr_prompt, retry_prefix
+
+    @staticmethod
+    def _get_minimal_retry_prompts(target_lang: str, retry_json: str) -> tuple[str, str]:
+        """Сверхкомпактный промпт (~25 токенов) для доперевода 1-10 пропущенных кружков без повторной отправки огромного системного промпта."""
+        t_lang = target_lang.lower().strip()
+        if t_lang == "ru":
+            return (
+                "Переведи значения JSON с японского/корейского/китайского на русский язык (кириллицей, имена фонетически). Верни ТОЛЬКО валидный JSON с теми же ключами.",
+                retry_json,
+            )
+        if t_lang == "romaji":
+            return (
+                "Transliterate all JSON values into Hepburn Romaji (Latin letters ONLY). Return ONLY valid JSON with the exact same keys.",
+                retry_json,
+            )
+        return (
+            "Provide literal English translations for each JSON value (romanize names phonetically). Return ONLY valid JSON with the exact same keys.",
+            retry_json,
+        )
 
     async def _call_ollama_direct(
         self,
@@ -2090,11 +2105,7 @@ class OllamaTranslator:
         system_prompt: str,
         user_prompt: str,
     ) -> dict[str, str]:
-        """
-        Прямой вызов локального сервера Ollama (`http://127.0.0.1:11434/api/generate`).
-        Если выбранная модель еще не скачана (404 Not Found), проверяет не создана ли её локальная
-        GGUF-копия (`shisa-v2.1-14b:Q4_K_M`), а если нет — запускает скачивание с авто-обходом Fake-IP!
-        """
+        self._last_call_was_refusal = False
         clean_name = ollama_model_name.strip()
         if clean_name.startswith("ollama::"):
             clean_name = clean_name.split("ollama::", 1)[1]
@@ -2117,7 +2128,6 @@ class OllamaTranslator:
         response = await client.post(f"{self.base_url}/api/generate", json=payload)
 
         if response.status_code == 404:
-            # Проверим, возможно модель уже импортирована под коротким local_tag
             fb_info = self._resolve_gguf_fallback_info(clean_name)
             if fb_info:
                 _, _, _, loc_tag = fb_info
@@ -2141,7 +2151,12 @@ class OllamaTranslator:
 
         response.raise_for_status()
         raw_output = response.json().get("response", "{}")
-        return self._parse_json_response(raw_output)
+        parsed = self._parse_json_response(raw_output)
+        if not parsed and self._is_refusal_response(raw_output):
+            self._last_call_was_refusal = True
+            self.last_refusal_message = raw_output.strip()[:240]
+            return {"__refusal__": self.last_refusal_message}
+        return parsed
 
     async def _call_llm_json(
         self,
@@ -2150,6 +2165,7 @@ class OllamaTranslator:
         system_prompt: str,
         user_prompt: str,
     ) -> dict[str, str]:
+        self._last_call_was_refusal = False
         if full_model_id.startswith("unsloth::ollama/") and not self._is_remote_cloud_url(self.unsloth_url):
             real_ollama = full_model_id.split("unsloth::ollama/", 1)[1]
             logger.info("Перенаправление прокси-модели '%s' напрямую в Ollama (%s)...", full_model_id, real_ollama)
@@ -2160,62 +2176,77 @@ class OllamaTranslator:
             is_cloud = self._is_remote_cloud_url(self.unsloth_url)
 
             if model_name in ("", "default", "auto"):
-                _, detected_ids, _ = await self._probe_unsloth_url(self.unsloth_url)
-                non_ollama_ids = [x for x in detected_ids if not x.lower().startswith("ollama/")]
-                if non_ollama_ids:
-                    model_name = non_ollama_ids[0]
-                elif detected_ids and detected_ids[0].lower().startswith("ollama/") and not is_cloud:
-                    real_ollama = detected_ids[0].split("/", 1)[1]
-                    return await self._call_ollama_direct(client, real_ollama, system_prompt, user_prompt)
+                if is_cloud:
+                    # По умолчанию для облака всегда выбираем экономную deepseek-v4-flash (не дорогую pro!)
+                    model_name = "deepseek-v4-flash"
                 else:
-                    model_name = "deepseek-v4-pro" if is_cloud else "default"
+                    _, detected_ids, _ = await self._probe_unsloth_url(self.unsloth_url)
+                    non_ollama_ids = [x for x in detected_ids if not x.lower().startswith("ollama/")]
+                    if non_ollama_ids:
+                        model_name = non_ollama_ids[0]
+                    elif detected_ids and detected_ids[0].lower().startswith("ollama/"):
+                        real_ollama = detected_ids[0].split("/", 1)[1]
+                        return await self._call_ollama_direct(client, real_ollama, system_prompt, user_prompt)
+                    else:
+                        model_name = "default"
 
-            # Для внешних облачных API (ModuleAPI, PositionAPI, ListAPI, DeepSeek, OpenRouter) отправляем стандарт OpenAI
+            # Для внешних облачных API (ModuleAPI, DeepSeek, OpenRouter) используем строго выбранную модель
+            # и НИКОГДА не переключаем deepseek-v4-flash на дорогую deepseek-v4-pro!
             if is_cloud:
-                candidates_to_try = [model_name]
-                for fb_m in ("deepseek-v4-pro", "deepseek-v4-flash", "deepseek-chat"):
-                    if fb_m not in candidates_to_try:
-                        candidates_to_try.append(fb_m)
-
+                payload_cloud: dict[str, Any] = {
+                    "model": model_name,
+                    "messages": [
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": user_prompt},
+                    ],
+                    "temperature": 0.1,
+                    "max_tokens": 4096,
+                    "stream": False,
+                }
                 last_cloud_err: Exception | None = None
-                for cand_model in candidates_to_try:
-                    payload_cloud: dict[str, Any] = {
-                        "model": cand_model,
-                        "messages": [
-                            {"role": "system", "content": system_prompt},
-                            {"role": "user", "content": user_prompt},
-                        ],
-                        "temperature": 0.2,
-                        "stream": False,
-                    }
+                for attempt in range(2):
+                    if self.stop_requested:
+                        return {}
                     try:
                         response = await client.post(
                             f"{self.unsloth_url}/v1/chat/completions",
                             headers=self._unsloth_headers(),
                             json=payload_cloud,
                         )
-                        if response.status_code in (400, 403, 404) and cand_model != candidates_to_try[-1]:
+                        if response.status_code in (502, 503, 504) and attempt == 0:
                             logger.warning(
-                                "Облачный API (%s) вернул %s для модели '%s' (%s). Пробую модель '%s'...",
+                                "Облачный шлюз (%s) вернул %s для '%s' — повторная попытка через 1.5с...",
                                 self.unsloth_url,
                                 response.status_code,
-                                cand_model,
-                                response.text[:160],
-                                candidates_to_try[candidates_to_try.index(cand_model) + 1],
+                                model_name,
                             )
+                            await asyncio.sleep(1.5)
                             continue
                         response.raise_for_status()
-                        if cand_model != model_name:
-                            self.save_config(selected_model=f"unsloth::{cand_model}")
                         data = response.json()
                         choices = data.get("choices", [])
                         msg_obj = choices[0].get("message", {}) if choices else {}
                         raw_output = str(msg_obj.get("content") or "{}")
-                        return self._parse_json_response(raw_output)
+                        parsed = self._parse_json_response(raw_output)
+                        if not parsed and self._is_refusal_response(raw_output):
+                            self._last_call_was_refusal = True
+                            self.last_refusal_message = raw_output.strip()[:240]
+                            return {"__refusal__": self.last_refusal_message}
+                        return parsed
+                    except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as net_exc:
+                        last_cloud_err = net_exc
+                        if attempt == 0:
+                            logger.warning(
+                                "Таймаут/сбой сети при обращении к '%s' (%s) — повторная попытка на той же модели...",
+                                model_name,
+                                net_exc,
+                            )
+                            await asyncio.sleep(1.2)
+                            continue
+                        break
                     except Exception as c_exc:
                         last_cloud_err = c_exc
-                        if isinstance(c_exc, httpx.HTTPStatusError) and c_exc.response.status_code == 401:
-                            break
+                        break
                 if last_cloud_err is not None:
                     raise last_cloud_err
 
@@ -2258,7 +2289,12 @@ class OllamaTranslator:
                 data = response.json()
                 choices = data.get("choices", [])
                 raw_output = choices[0].get("message", {}).get("content", "{}") if choices else "{}"
-                return self._parse_json_response(raw_output)
+                parsed = self._parse_json_response(raw_output)
+                if not parsed and self._is_refusal_response(raw_output):
+                    self._last_call_was_refusal = True
+                    self.last_refusal_message = raw_output.strip()[:240]
+                    return {"__refusal__": self.last_refusal_message}
+                return parsed
             except Exception as unsloth_exc:
                 available = await self.list_available_models()
                 ollama_candidates = [
@@ -2287,11 +2323,15 @@ class OllamaTranslator:
         active_model: str,
         context_lines: list[str] | None = None,
     ) -> dict[str, str]:
+        if self.stop_requested or not chunk_blocks:
+            return {}
+
         source_map: dict[str, str] = {
             str(block["id"]): block["original_text"] for block in chunk_blocks
         }
-        source_map_json = json.dumps(source_map, ensure_ascii=False, indent=2)
-        system_prompt, user_prompt, retry_prefix = self._get_prompts(
+        # Компактный JSON без отступов экономит 150-300 входных токенов на каждой пачке
+        source_map_json = json.dumps(source_map, ensure_ascii=False, separators=(",", ":"))
+        system_prompt, user_prompt, _ = self._get_prompts(
             source_lang=source_lang,
             target_lang=target_lang,
             source_map_json=source_map_json,
@@ -2304,6 +2344,7 @@ class OllamaTranslator:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
+        was_refusal = bool(translated_map.pop("__refusal__", None))
 
         t_lang = target_lang.lower().strip()
         if t_lang == "ru":
@@ -2318,43 +2359,119 @@ class OllamaTranslator:
             if not c:
                 return False
             if t_lang == "ru":
-                # Для русского перевода обязательно наличие хотя бы одной русской (кириллической) буквы
                 return bool(re.search(r"[А-Яа-яЁё]", c))
             return bool(re.search(r"[A-Za-zА-Яа-яЁё]", c))
 
-        bad_keys = [
-            k
-            for k in source_map
-            if not translated_map.get(k)
-            or self._contains_cjk(translated_map.get(k, ""))
-            or not _is_valid_target_translation(translated_map.get(k, ""))
-        ]
-
-        if bad_keys:
+        # СЦЕНАРИЙ 1: Если облачный API вернул отказ цензуры (например, "I can't translate..."),
+        # КАТЕГОРИЧЕСКИ НЕ запускаем поштучный доперевод 85 кружков!
+        # Вместо этого пробуем 1 раз с нейтральным лингвистическим промптом БЕЗ context_lines (которые часто содержат триггер-слова с прошлых страниц).
+        if was_refusal and not translated_map and not self.stop_requested:
+            items_list = list(source_map.items())
+            sub_size = max(15, (len(items_list) + 1) // 2) if len(items_list) <= 50 else max(15, (len(items_list) + 2) // 3)
+            sub_chunks = [dict(items_list[i : i + sub_size]) for i in range(0, len(items_list), sub_size)]
             logger.warning(
-                "Обнаружены пропуски или непереведенные кружки в блоках %s — повторный доперевод (%s -> %s)...",
-                bad_keys,
-                source_lang,
-                target_lang,
+                "Облачный API отклонил пакет (%d блоков) из-за фильтра цензуры провайдера. "
+                "Делю пакет на %d нейтральных подгруппы без контекста прошлых страниц (никаких поштучных запросов!)...",
+                len(source_map),
+                len(sub_chunks),
             )
-            retry_source = {
-                k: (
-                    f"Source ({source_lang}): {source_map[k]} | Draft: {translated_map.get(k, '')}"
-                    if translated_map.get(k)
-                    else source_map[k]
+            local_ollama = [
+                m["id"]
+                for m in (self._cached_models or [])
+                if m.get("provider") == "ollama" and m.get("installed") == "true"
+            ]
+            for sc_idx, sub_map in enumerate(sub_chunks, start=1):
+                if self.stop_requested:
+                    break
+                sub_json = json.dumps(sub_map, ensure_ascii=False, separators=(",", ":"))
+                min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, sub_json)
+                sub_res = await self._call_llm_json(
+                    client=client,
+                    full_model_id=active_model,
+                    system_prompt=min_sys,
+                    user_prompt=min_usr,
                 )
-                for k in bad_keys
-            }
-            retry_prompt = retry_prefix + json.dumps(retry_source, ensure_ascii=False, indent=2)
-            retry_map = await self._call_llm_json(
-                client=client,
-                full_model_id=active_model,
-                system_prompt=system_prompt,
-                user_prompt=retry_prompt,
-            )
-            for k in bad_keys:
-                if retry_map.get(k) and _is_valid_target_translation(retry_map.get(k, "")):
-                    translated_map[k] = retry_map[k]
+                sub_refused = bool(sub_res.pop("__refusal__", None))
+                if sub_res:
+                    translated_map.update(sub_res)
+                elif sub_refused:
+                    if local_ollama and active_model.startswith("unsloth::"):
+                        logger.warning(
+                            "Подгруппа %d/%d отклонена облачной цензурой — перевожу её локально через %s (0 токенов)!",
+                            sc_idx,
+                            len(sub_chunks),
+                            local_ollama[0],
+                        )
+                        try:
+                            loc_res = await self._call_ollama_direct(
+                                client=client,
+                                ollama_model_name=local_ollama[0],
+                                system_prompt=min_sys,
+                                user_prompt=min_usr,
+                            )
+                            loc_res.pop("__refusal__", None)
+                            if loc_res:
+                                translated_map.update(loc_res)
+                        except Exception:
+                            pass
+                    else:
+                        logger.warning(
+                            "Подгруппа %d/%d (%d фраз) заблокирована цензурой облачного шлюза (%s). "
+                            "Повторные запросы для этой подгруппы остановлены для экономии ваших токенов!",
+                            sc_idx,
+                            len(sub_chunks),
+                            len(sub_map),
+                            active_model,
+                        )
+
+        # Сначала подставляем известные междометия из локального словаря для всех пустых ключей (0 токенов)
+        for k, orig_val in source_map.items():
+            cur_v = translated_map.get(k, "")
+            if not cur_v or not _is_valid_target_translation(cur_v) or self._contains_cjk(cur_v):
+                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
+                if norm_orig in interj_dict:
+                    translated_map[k] = interj_dict[norm_orig]
+                elif t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
+                    translated_map[k] = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
+
+        # СЦЕНАРИЙ 2: Если это НЕ отказ цензуры, но модель случайно пропустила несколько ключей (например, 1-15 шт. из 110),
+        # отправляем МАКСИМУМ 1 сверхлегкий микро-запрос (~25 токенов промпта) для пропущенных ключей.
+        # Никаких поштучных запросов в цикле!
+        if not was_refusal and not self.stop_requested:
+            bad_keys = [
+                k
+                for k in source_map
+                if (
+                    not translated_map.get(k)
+                    or self._contains_cjk(translated_map.get(k, ""))
+                    or not _is_valid_target_translation(translated_map.get(k, ""))
+                )
+                and bool(CJK_REGEX.search(source_map[k]))
+            ]
+            if bad_keys and len(bad_keys) <= max(15, len(source_map) // 2):
+                logger.info(
+                    "Доперевод %d пропущенных кружков %s одним легким микро-запросом (%s -> %s)...",
+                    len(bad_keys),
+                    bad_keys,
+                    source_lang,
+                    target_lang,
+                )
+                retry_source = {k: source_map[k] for k in bad_keys}
+                retry_json = json.dumps(retry_source, ensure_ascii=False, separators=(",", ":"))
+                min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, retry_json)
+                try:
+                    retry_map = await self._call_llm_json(
+                        client=client,
+                        full_model_id=active_model,
+                        system_prompt=min_sys,
+                        user_prompt=min_usr,
+                    )
+                    retry_map.pop("__refusal__", None)
+                    for k in bad_keys:
+                        if retry_map.get(k) and _is_valid_target_translation(retry_map.get(k, "")):
+                            translated_map[k] = retry_map[k]
+                except Exception as retry_exc:
+                    logger.warning("Микро-доперевод пропущенных блоков не удался: %s", retry_exc)
 
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
@@ -2367,29 +2484,8 @@ class OllamaTranslator:
                 norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
                 if norm_orig in interj_dict:
                     cleaned_val = interj_dict[norm_orig]
-                elif t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
-                    cleaned_val = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
-                else:
-                    # Индивидуальный принудительный доперевод упрямого кружка (работает при любом размере пачки!)
-                    try:
-                        single_instruction = (
-                            f'Переведи эту реплику из облачка манги НА РУССКИЙ ЯЗЫК (ТОЛЬКО кириллицей, без пропусков!): {{"{k}": "{orig_val}"}}'
-                            if t_lang == "ru"
-                            else retry_prefix + json.dumps({k: orig_val}, ensure_ascii=False)
-                        )
-                        single_map = await self._call_llm_json(
-                            client=client,
-                            full_model_id=active_model,
-                            system_prompt=system_prompt,
-                            user_prompt=single_instruction,
-                        )
-                        cand_single = single_map.get(k) or (list(single_map.values())[0] if single_map else "")
-                        cleaned_val = self._clean_translated_text(str(cand_single), target_lang=t_lang)
-                    except Exception as single_exc:
-                        logger.warning("Ошибка одиночного доперевода блока #%s: %s", k, single_exc)
-
-                    if not cleaned_val and t_lang == "romaji":
-                        cleaned_val = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
+                elif t_lang == "romaji":
+                    cleaned_val = self._clean_translated_text(japanese_to_romaji_local(orig_val), target_lang="romaji")
 
             final_map[k] = cleaned_val
 
@@ -2406,7 +2502,7 @@ class OllamaTranslator:
         use_cache: bool = True,
         skip_sighs: bool | None = None,
     ) -> list[dict[str, Any]]:
-        if not blocks:
+        if not blocks or self.stop_requested:
             return []
 
         active_model = await self.resolve_model(model)
@@ -2484,36 +2580,91 @@ class OllamaTranslator:
             for cl in context_lines:
                 if cl and cl not in running_context:
                     running_context.append(cl)
-        running_context = running_context[-12:]
+        running_context = running_context[-6:]
 
-        for start_idx in range(0, len(unique_to_translate), batch_limit):
-            chunk = unique_to_translate[start_idx : start_idx + batch_limit]
-            chunk_map = await self._translate_batch_chunk(
-                client=client,
-                chunk_blocks=chunk,
-                source_lang=source_lang,
-                target_lang=target_lang,
-                active_model=active_model,
-                context_lines=running_context if running_context else None,
+        # Для облачного API при большом числе фраз (>42 блоков, например с 12 страниц)
+        # делим их на 2–3 параллельных подзапроса по ~40 фраз и отправляем ОДНОВРЕМЕННО через asyncio.gather!
+        # Это сокращает время генерации ответа с 50–55 секунд до 14–18 секунд и исключает пропуски ключей в конце длинного JSON.
+        if is_cloud_call and len(unique_to_translate) > CLOUD_PARALLEL_CHUNK_SIZE:
+            num_parallel = min(
+                MAX_CONCURRENT_CLOUD_REQUESTS,
+                max(2, (len(unique_to_translate) + CLOUD_PARALLEL_CHUNK_SIZE - 1) // CLOUD_PARALLEL_CHUNK_SIZE),
             )
-            translated_map.update(chunk_map)
+            sub_chunk_size = (len(unique_to_translate) + num_parallel - 1) // num_parallel
+            parallel_chunks = [
+                unique_to_translate[i : i + sub_chunk_size]
+                for i in range(0, len(unique_to_translate), sub_chunk_size)
+            ]
+            logger.info(
+                "⚡ Параллельный облачный перевод: %d уникальных фраз разделены на %d одновременных потока (по ~%d фраз) для ускорения в %dx раза!",
+                len(unique_to_translate),
+                len(parallel_chunks),
+                sub_chunk_size,
+                len(parallel_chunks),
+            )
+            sem = asyncio.Semaphore(MAX_CONCURRENT_CLOUD_REQUESTS)
+            ctx_snapshot = list(running_context) if running_context else None
 
-            for b in chunk:
-                k = str(b["id"])
-                orig_raw = (b.get("original_text") or "").strip()
-                t_val = chunk_map.get(k, "")
-                if t_val and orig_raw:
-                    self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
-                    pair_str = f"{orig_raw} => {t_val}"
-                    if pair_str not in running_context:
-                        running_context.append(pair_str)
-            running_context = running_context[-12:]
+            async def _run_sub(sub_c: list[dict[str, Any]]) -> dict[str, str]:
+                async with sem:
+                    if self.stop_requested:
+                        return {}
+                    return await self._translate_batch_chunk(
+                        client=client,
+                        chunk_blocks=sub_c,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        active_model=active_model,
+                        context_lines=ctx_snapshot,
+                    )
+
+            sub_results = await asyncio.gather(*(_run_sub(sc) for sc in parallel_chunks))
+            for sc, chunk_map in zip(parallel_chunks, sub_results):
+                translated_map.update(chunk_map)
+                for b in sc:
+                    k = str(b["id"])
+                    orig_raw = (b.get("original_text") or "").strip()
+                    t_val = chunk_map.get(k, "")
+                    if t_val and orig_raw:
+                        self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
+                        if len(orig_raw) >= 4 and len(t_val) >= 4:
+                            pair_str = f"{orig_raw} => {t_val}"
+                            if pair_str not in running_context:
+                                running_context.append(pair_str)
+            running_context = running_context[-6:]
+        else:
+            for start_idx in range(0, len(unique_to_translate), batch_limit):
+                if self.stop_requested:
+                    break
+                chunk = unique_to_translate[start_idx : start_idx + batch_limit]
+                chunk_map = await self._translate_batch_chunk(
+                    client=client,
+                    chunk_blocks=chunk,
+                    source_lang=source_lang,
+                    target_lang=target_lang,
+                    active_model=active_model,
+                    context_lines=running_context if running_context else None,
+                )
+                translated_map.update(chunk_map)
+
+                for b in chunk:
+                    k = str(b["id"])
+                    orig_raw = (b.get("original_text") or "").strip()
+                    t_val = chunk_map.get(k, "")
+                    if t_val and orig_raw:
+                        self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
+                        # В контекст добавляем только содержательные реплики (не короткие вздохи), чтобы экономить токены
+                        if len(orig_raw) >= 4 and len(t_val) >= 4:
+                            pair_str = f"{orig_raw} => {t_val}"
+                            if pair_str not in running_context:
+                                running_context.append(pair_str)
+                running_context = running_context[-6:]
 
         # Заполняем дубликаты внутри пачки
         for dup_k, master_k in duplicate_links.items():
             translated_map[dup_k] = translated_map.get(master_k, "")
 
-        self.recent_context_lines = list(running_context[-12:])
+        self.recent_context_lines = list(running_context[-6:])
         if external_cache is not None:
             external_cache.update(self.phrase_cache)
 

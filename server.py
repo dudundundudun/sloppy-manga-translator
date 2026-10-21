@@ -446,8 +446,20 @@ def _normalize_rel_path(rel: Path | str) -> str:
     return str(rel).replace("\\", "/").strip("/")
 
 
+def _unwrap_output_folder_if_needed(folder: Path) -> Path:
+    """Если пользователь случайно выбрал уже переведенную папку `<Имя>_RU`, возвращает чистую исходную `<Имя>`, если она есть рядом."""
+    name = folder.name
+    for sfx in OUTPUT_FOLDER_SUFFIXES:
+        if name.upper().endswith(sfx.upper()) and len(name) > len(sfx):
+            orig_candidate = folder.parent / name[: -len(sfx)]
+            if orig_candidate.exists() and orig_candidate.is_dir():
+                return orig_candidate
+    return folder
+
+
 def get_output_dir_for_folder(source_dir: Path, target_lang: str) -> Path:
-    return source_dir.parent / f"{source_dir.name}_{target_lang.upper().strip()}"
+    clean_src = _unwrap_output_folder_if_needed(source_dir)
+    return clean_src.parent / f"{clean_src.name}_{target_lang.upper().strip()}"
 
 
 def collect_images_in_folder(folder: Path) -> list[Path]:
@@ -499,6 +511,7 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
     if t_lang not in VALID_TARGET_LANGS:
         t_lang = "en"
 
+    source_dir = _unwrap_output_folder_if_needed(source_dir)
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
     images = collect_images_in_folder(source_dir)
     manifest = _load_folder_manifest(output_dir)
@@ -516,7 +529,8 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
             translated_count += 1
 
         meta = pages_meta.get(rel_norm, {}) if isinstance(pages_meta.get(rel_norm), dict) else {}
-        saved_blocks_raw = meta.get("blocks") if isinstance(meta.get("blocks"), list) else []
+        has_saved_blocks_key = "blocks" in meta and isinstance(meta.get("blocks"), list)
+        saved_blocks_raw = meta.get("blocks") if has_saved_blocks_key else []
         phrase_cache_dict = manifest.get("phrase_cache") if isinstance(manifest.get("phrase_cache"), dict) else {}
         enriched_saved_blocks: list[dict[str, Any]] = []
         for sb in saved_blocks_raw:
@@ -543,7 +557,7 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
                 "free_text_count": meta.get("free_text_count", 0),
                 "detected_lang": meta.get("detected_lang"),
                 "updated_at": meta.get("updated_at"),
-                "has_saved_blocks": len(enriched_saved_blocks) > 0,
+                "has_saved_blocks": has_saved_blocks_key,
                 "blocks": enriched_saved_blocks,
             }
         )
@@ -816,6 +830,7 @@ async def process_single_pil_image(
             eff_min_len,
         )
 
+    translator_engine.stop_requested = False
     active_model = await translator_engine.resolve_model(ollama_model)
 
     if not blocks:
@@ -887,6 +902,7 @@ async def _run_folder_translation_job(
     assert renderer_engine is not None
 
     _folder_stop_requested = False
+    translator_engine.stop_requested = False
     start_ts = time.perf_counter()
     pages_per_batch = max(1, min(25, int(batch_pages or 12)))
 
@@ -938,8 +954,20 @@ async def _run_folder_translation_job(
     try:
         done_in_run = 0
         active_mod = await translator_engine.resolve_model(ollama_model)
+        chapter_detected_lang: str | None = lang if lang in ("ja", "ko", "zh") else None
+        eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
+            detect_free_text=detect_free_text,
+            text_filter_mode=text_filter_mode,
+            skip_sighs=skip_sighs,
+            skip_sfx=skip_sfx,
+            min_text_length=min_text_length,
+        )
 
-        # Обрабатываем страницы пачками по pages_per_batch (по умолчанию 12 страниц за 1 общий запрос к ИИ!)
+        def _load_pil_sync(p_path: Path) -> Image.Image:
+            with Image.open(p_path) as raw_im:
+                return _pil_to_rgb_clean(raw_im)
+
+        # Обрабатываем страницы пачками по pages_per_batch (по умолчанию 12 страниц)
         for batch_start in range(0, len(to_process), pages_per_batch):
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
@@ -950,43 +978,48 @@ async def _run_folder_translation_job(
             page_batch = to_process[batch_start : batch_start + pages_per_batch]
             scanned_pages: list[dict[str, Any]] = []
             combined_blocks: list[dict[str, Any]] = []
-            batch_detected_lang = "ja"
+            batch_detected_lang = chapter_detected_lang or "ja"
             global_block_id = 1
 
-            # Шаг 1: Быстрое локальное OCR-сканирование пачки страниц на видеокарте (0 токенов API!)
-            for p_idx, (orig_idx, img_path, dest_path, rel_norm) in enumerate(page_batch, start=1):
+            # Параллельно предзагружаем изображения пачки с диска в ОЗУ (без ожидания внутри GPU-цикла)
+            preloaded_pils = await asyncio.gather(
+                *(asyncio.to_thread(_load_pil_sync, item[1]) for item in page_batch),
+                return_exceptions=True,
+            )
+
+            # Шаг 1: Быстрое локальное OCR-сканирование пачки страниц на видеокарте (с батчингом MangaOCR!)
+            for p_idx, ((orig_idx, img_path, dest_path, rel_norm), pre_pil) in enumerate(
+                zip(page_batch, preloaded_pils), start=1
+            ):
                 if _folder_stop_requested:
                     break
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 folder_job_state["current_file"] = (
-                    f"🔍 [1/2 OCR пачки {p_idx}/{len(page_batch)}] {rel_norm}"
+                    f"🔍 [1/3 OCR пачки {p_idx}/{len(page_batch)}] {rel_norm}"
                     if len(page_batch) > 1
                     else rel_norm
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
 
                 try:
-                    with Image.open(img_path) as raw_im:
-                        pil_img = _pil_to_rgb_clean(raw_im)
-                    eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
-                        detect_free_text=detect_free_text,
-                        text_filter_mode=text_filter_mode,
-                        skip_sighs=skip_sighs,
-                        skip_sfx=skip_sfx,
-                        min_text_length=min_text_length,
-                    )
+                    if isinstance(pre_pil, Exception):
+                        raise pre_pil
+                    pil_img: Image.Image = pre_pil
+                    scan_lang = chapter_detected_lang if chapter_detected_lang else lang
                     async with gpu_lock:
                         p_blocks, det_lang = await asyncio.to_thread(
                             _run_ocr_compat,
                             ocr_engine,
                             pil_img,
-                            lang,
+                            scan_lang,
                             eff_free,
                             eff_mode,
                             eff_skip_sighs,
                             eff_skip_sfx,
                             eff_min_len,
                         )
+                    if chapter_detected_lang is None and det_lang in ("ja", "ko", "zh"):
+                        chapter_detected_lang = det_lang
                     batch_detected_lang = det_lang
                     folder_job_state["detected_lang"] = det_lang
 
@@ -1023,21 +1056,14 @@ async def _run_folder_translation_job(
                 _save_folder_manifest(output_dir, manifest)
                 return
 
-            # Шаг 2: Отправляем текст со ВСЕХ отсканированных страниц пачки в ИИ ОДНИМ запросом!
+            # Шаг 2: Параллельный ИИ-перевод пачки (автоматически делится на 2-3 параллельных потока в translator.py!)
             translated_by_gid: dict[int, str] = {}
             if combined_blocks:
                 folder_job_state["current_file"] = (
-                    f"☁️ [2/2 ИИ-перевод пачки: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз за 1 запрос]..."
+                    f"☁️ [2/3 ИИ-перевод пачки: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
                 try:
-                    _, _, eff_skip_sighs_batch, _, _ = _resolve_filter_params(
-                        detect_free_text=detect_free_text,
-                        text_filter_mode=text_filter_mode,
-                        skip_sighs=skip_sighs,
-                        skip_sfx=skip_sfx,
-                        min_text_length=min_text_length,
-                    )
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -1045,72 +1071,99 @@ async def _run_folder_translation_job(
                         model=active_mod,
                         context_lines=rolling_context if rolling_context else None,
                         external_cache=phrase_cache,
-                        skip_sighs=eff_skip_sighs_batch,
+                        skip_sighs=eff_skip_sighs,
                     )
                     for eb in enriched_combined:
                         translated_by_gid[int(eb["id"])] = str(eb.get("translated_text") or "").strip()
                 except Exception as llm_exc:
                     logger.exception("Ошибка пакетного ИИ-перевода пачки страниц: %s", llm_exc)
 
-            # Шаг 3: Локальная очистка бабблов и верстка каждой страницы пачки (0 токенов API!)
+            if _folder_stop_requested:
+                folder_job_state["status"] = "stopped"
+                folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                _save_folder_manifest(output_dir, manifest)
+                return
+
+            # Шаг 3: Быстрая параллельная очистка бабблов, верстка и сохранение всех страниц пачки!
             for sp in scanned_pages:
                 if not sp.get("ok"):
+                    continue
+                p_blocks = sp["blocks"]
+                gids = sp["global_ids"]
+                for b, gid in zip(p_blocks, gids):
+                    t_txt = translated_by_gid.get(gid, "")
+                    b["translated_text"] = t_txt
+                    _ensure_block_clean_bbox(b)
+                    orig_t = (b.get("original_text") or "").strip()
+                    if orig_t:
+                        b["romaji_text"] = (
+                            t_txt
+                            if target_lang == "romaji"
+                            else (
+                                phrase_cache.get(f"romaji||{orig_t}")
+                                or str(b.get("romaji_text") or "").strip()
+                                or japanese_to_romaji_local(orig_t)
+                            )
+                        )
+                    if orig_t and t_txt:
+                        pair_s = f"{orig_t} => {t_txt}"
+                        if pair_s not in rolling_context:
+                            rolling_context.append(pair_s)
+                rolling_context = rolling_context[-12:]
+
+            render_sem = asyncio.Semaphore(4)
+            uses_gpu_lama = cleaner_engine.lama_model is not None
+
+            def _clean_render_save_sync(
+                pil_img_in: Image.Image,
+                blocks_in: list[dict[str, Any]],
+                src_p: Path,
+                dst_p: Path,
+            ) -> None:
+                if not blocks_in:
+                    shutil.copy2(src_p, dst_p)
+                    return
+                cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, blocks_in)
+                final_im = renderer_engine.render_blocks(
+                    cleaned_im,
+                    blocks_in,
+                    uppercase,
+                    max_font_size,
+                    min_font_size,
+                )
+                ext = dst_p.suffix.lower()
+                if ext == ".webp":
+                    final_im.save(dst_p, format="WEBP", quality=92, method=2)
+                elif ext in (".jpg", ".jpeg"):
+                    final_im.save(dst_p, format="JPEG", quality=95, optimize=True)
+                else:
+                    final_im.save(dst_p)
+
+            async def _render_page_task(sp_item: dict[str, Any]) -> None:
+                nonlocal done_in_run
+                if _folder_stop_requested:
+                    return
+                if not sp_item.get("ok"):
                     done_in_run += 1
                     folder_job_state["translated_in_run"] = done_in_run
                     folder_job_state["current"] = skipped_count + done_in_run
-                    continue
+                    return
 
-                img_path = sp["img_path"]
-                dest_path = sp["dest_path"]
-                rel_norm = sp["rel_norm"]
-                pil_img = sp["pil_img"]
-                p_blocks = sp["blocks"]
-                gids = sp["global_ids"]
-                det_lang = sp["detected_lang"]
+                img_path = sp_item["img_path"]
+                dest_path = sp_item["dest_path"]
+                rel_norm = sp_item["rel_norm"]
+                pil_img = sp_item["pil_img"]
+                p_blocks = sp_item["blocks"]
+                det_lang = sp_item["detected_lang"]
 
-                folder_job_state["current_file"] = f"🎨 Очистка и верстка: {rel_norm}"
-
+                folder_job_state["current_file"] = f"🎨 [3/3 Очистка и верстка] {rel_norm}"
                 try:
-                    if not p_blocks:
-                        shutil.copy2(img_path, dest_path)
-                    else:
-                        for b, gid in zip(p_blocks, gids):
-                            t_txt = translated_by_gid.get(gid, "")
-                            b["translated_text"] = t_txt
-                            _ensure_block_clean_bbox(b)
-                            orig_t = (b.get("original_text") or "").strip()
-                            if orig_t:
-                                b["romaji_text"] = (
-                                    t_txt
-                                    if target_lang == "romaji"
-                                    else (
-                                        phrase_cache.get(f"romaji||{orig_t}")
-                                        or str(b.get("romaji_text") or "").strip()
-                                        or japanese_to_romaji_local(orig_t)
-                                    )
-                                )
-                            if orig_t and t_txt:
-                                pair_s = f"{orig_t} => {t_txt}"
-                                if pair_s not in rolling_context:
-                                    rolling_context.append(pair_s)
-                        rolling_context = rolling_context[-12:]
-
+                    if uses_gpu_lama and p_blocks:
                         async with gpu_lock:
-                            cleaned_img, _ = await asyncio.to_thread(
-                                cleaner_engine.clean_image, pil_img, p_blocks
-                            )
-                        final_img = await asyncio.to_thread(
-                            renderer_engine.render_blocks,
-                            cleaned_img,
-                            p_blocks,
-                            uppercase,
-                            max_font_size,
-                            min_font_size,
-                        )
-                        save_kwargs: dict[str, Any] = {}
-                        if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
-                            save_kwargs["quality"] = 95
-                        final_img.save(dest_path, **save_kwargs)
+                            await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
+                    else:
+                        async with render_sem:
+                            await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
 
                     manifest["pages"][rel_norm] = {
                         "blocks_count": len(p_blocks),
@@ -1123,25 +1176,33 @@ async def _run_folder_translation_job(
                         "updated_at": int(time.time()),
                         "blocks": p_blocks,
                     }
-                    manifest["rolling_context"] = rolling_context
-                    manifest["phrase_cache"] = phrase_cache
-                    _save_folder_manifest(output_dir, manifest)
                 except Exception as render_exc:
                     logger.exception("Ошибка при сохранении страницы %s: %s", img_path, render_exc)
                     shutil.copy2(img_path, dest_path)
                 finally:
-                    sp["pil_img"] = None
+                    sp_item["pil_img"] = None
 
                 done_in_run += 1
                 folder_job_state["translated_in_run"] = done_in_run
                 folder_job_state["current"] = skipped_count + done_in_run
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
 
-                if _folder_stop_requested:
-                    folder_job_state["status"] = "stopped"
-                    folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
-                    _save_folder_manifest(output_dir, manifest)
-                    return
+            if uses_gpu_lama:
+                for sp in scanned_pages:
+                    if _folder_stop_requested:
+                        break
+                    await _render_page_task(sp)
+            else:
+                await asyncio.gather(*(_render_page_task(sp) for sp in scanned_pages))
+
+            manifest["rolling_context"] = rolling_context
+            manifest["phrase_cache"] = phrase_cache
+            _save_folder_manifest(output_dir, manifest)
+
+            if _folder_stop_requested:
+                folder_job_state["status"] = "stopped"
+                folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                return
 
         total_elapsed = round(time.perf_counter() - start_ts, 2)
         folder_job_state["status"] = "completed"
@@ -1834,9 +1895,14 @@ def _resolve_page_paths(
         t_lang = "en"
 
     if source_dir_str:
-        source_dir = Path(source_dir_str).resolve()
+        source_dir = _unwrap_output_folder_if_needed(Path(source_dir_str).resolve())
     else:
-        source_dir = src_file.parent
+        source_dir = _unwrap_output_folder_if_needed(src_file.parent)
+
+    # Если исходный файл был выбран прямо из папки перевода (<Папка>_RU/001.png),
+    # а в чистой папке <Папка>/001.png лежит оригинал — берем чистый оригинал!
+    if src_file.parent != source_dir and (source_dir / src_file.name).exists():
+        src_file = (source_dir / src_file.name).resolve()
 
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
     try:
@@ -1895,7 +1961,7 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
     saved_blocks = page_meta.get("blocks")
     det_lang = str(page_meta.get("detected_lang") or "ja")
 
-    if isinstance(saved_blocks, list) and len(saved_blocks) > 0 and not payload.force_rescan:
+    if isinstance(saved_blocks, list) and not payload.force_rescan:
         blocks = []
         for b in saved_blocks:
             if not isinstance(b, dict):
@@ -2541,6 +2607,8 @@ async def stop_folder_translation_endpoint() -> dict[str, Any]:
     if folder_job_state.get("status") != "running":
         return {"status": "idle", "message": "Пакетный перевод сейчас не выполняется."}
     _folder_stop_requested = True
+    if translator_engine is not None:
+        translator_engine.stop_requested = True
     folder_job_state["status"] = "stopping"
     folder_job_state["current_file"] = "Пауза после текущей страницы..."
     return {"status": "stopping", "message": "Запрос на остановку отправлен. Прогресс сохранен."}

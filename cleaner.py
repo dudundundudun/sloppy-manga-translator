@@ -1,10 +1,11 @@
 """
-Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.0).
+Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.1).
 
-Изменения v1.0.0:
-1. Поддержка флага `is_deleted` (удаленный пользователем в редакторе перевод):
-   если у блока `is_deleted=True` или пустой `translated_text`, этот блок полностью исключается из маски
-   очистки, и на странице сохраняется нетронутый оригинальный рисунок и оригинальный текст!
+Изменения v1.0.1:
+1. Поддержка полного удаления рамок и флага `is_deleted`:
+   - если рамка полностью удалена пользователем из списка блоков, её область вообще не затрагивается;
+   - если у блока `is_deleted=True` или пустой `translated_text`, этот блок полностью исключается из маски
+     очистки, а его `clean_bbox` защищается от случайного перекрытия соседними рамками (`crop_padding`).
 2. Идеально чистая очистка белых и однотонных speech bubbles без серых разводов и «призраков» от букв.
 3. Фиксация области инпейнтинга по `clean_bbox` (`original_bbox`): если пользователь передвинул или
    изменил размер рамки перевода (`bbox`) мышкой в редакторе, замазка оригинального японского/корейского
@@ -137,7 +138,8 @@ class BubbleCleaner:
     ) -> np.ndarray:
         """
         Строит точную бинарную маску (uint8, 0 или 255) по пикселям текста и его антиалиасинга
-        внутри каждого активного Bounding Box. Удаленные в редакторе блоки полностью пропускаются.
+        внутри каждого активного Bounding Box. Удаленные в редакторе блоки полностью пропускаются,
+        а их области защищаются от замазки при частичном перекрытии с соседними рамками.
         """
         img_h, img_w = image_rgb.shape[:2]
         full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
@@ -284,6 +286,17 @@ class BubbleCleaner:
             dilated_roi = cv2.dilate(clean_roi_mask, active_kernel, iterations=1)
             full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
 
+        # Защищаем области явно пропущенных/удаленных блоков от случайного захвата соседними рамками
+        for block in blocks:
+            if not self._is_block_skipped(block):
+                continue
+            dx1, dy1, dx2, dy2 = self._get_clean_bbox(block)
+            dx1 = max(0, min(dx1, img_w - 1))
+            dy1 = max(0, min(dy1, img_h - 1))
+            dx2 = max(dx1 + 1, min(dx2, img_w))
+            dy2 = max(dy1 + 1, min(dy2, img_h))
+            full_mask[dy1:dy2, dx1:dx2] = 0
+
         return full_mask
 
     def _inpaint_crop(
@@ -368,7 +381,14 @@ class BubbleCleaner:
             if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
                 continue
 
-            crop_mask = mask_np[cy1:cy2, cx1:cx2]
+            # Ограничиваем активную маску текущего кропа собственной областью блока (без захвата чужих соседних масок в pad-зоне)
+            bx1 = max(cx1, x1 - (4 if is_free_text else 1))
+            by1 = max(cy1, y1 - (4 if is_free_text else 1))
+            bx2 = min(cx2, x2 + (4 if is_free_text else 1))
+            by2 = min(cy2, y2 + (4 if is_free_text else 1))
+
+            crop_mask = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
+            crop_mask[by1 - cy1 : by2 - cy1, bx1 - cx1 : bx2 - cx1] = mask_np[by1:by2, bx1:bx2]
             if np.count_nonzero(crop_mask) == 0:
                 continue
 

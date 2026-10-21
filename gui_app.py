@@ -150,6 +150,8 @@ class MikoMangaStudioGUI:
         self.var_detect_free_text = tk.BooleanVar(value=False)
         self.var_min_text_len = tk.IntVar(value=2)
         self.var_skip_existing = tk.BooleanVar(value=True)
+        self.var_auto_save_boxes = tk.BooleanVar(value=True)
+        self.var_auto_save_sec = tk.DoubleVar(value=2.5)
         self.var_auto_save_web = tk.BooleanVar(value=True)
         self.var_web_save_dir = tk.StringVar(value=str(BASE_DIR / "Saved_Manga"))
         self.view_mode: str = "split"
@@ -188,6 +190,11 @@ class MikoMangaStudioGUI:
                         self.var_text_filter_label.set(lbl)
                         break
                 self.var_skip_existing.set(bool(data.get("skip_existing", True)))
+                self.var_auto_save_boxes.set(bool(data.get("auto_save_boxes", True)))
+                try:
+                    self.var_auto_save_sec.set(max(0.5, min(30.0, float(data.get("auto_save_sec", 2.5)))))
+                except Exception:
+                    self.var_auto_save_sec.set(2.5)
                 if data.get("unsloth_url"):
                     self.var_unsloth_url.set(str(data["unsloth_url"]))
                 if data.get("unsloth_api_key"):
@@ -210,6 +217,8 @@ class MikoMangaStudioGUI:
             "detect_free_text": bool(self.var_detect_free_text.get()),
             "min_text_length": int(self.var_min_text_len.get()),
             "skip_existing": bool(self.var_skip_existing.get()),
+            "auto_save_boxes": bool(self.var_auto_save_boxes.get()),
+            "auto_save_sec": float(self.var_auto_save_sec.get() or 2.5),
             "unsloth_url": self.var_unsloth_url.get().strip(),
             "unsloth_api_key": self.var_api_key.get().strip(),
             "last_folder": str(self.current_folder) if self.current_folder else None,
@@ -1053,6 +1062,34 @@ class MikoMangaStudioGUI:
 
         tk.Checkbutton(
             pad,
+            text="⏱ Автосохранение при перетаскивании рамки или прокрутке колесиком",
+            variable=self.var_auto_save_boxes,
+            bg=BG_BENTO,
+            fg=FG_PRIMARY,
+            selectcolor=BG_INNER,
+            activebackground=BG_BENTO,
+            activeforeground=FG_PRIMARY,
+        ).pack(anchor="w", pady=1)
+
+        f_row_as = tk.Frame(pad, bg=BG_BENTO)
+        f_row_as.pack(fill=tk.X, pady=2)
+        tk.Label(
+            f_row_as,
+            text="⏳ Интервал автосохранения рамок (сек):",
+            bg=BG_BENTO,
+            fg=FG_SECONDARY,
+        ).pack(side=tk.LEFT)
+        ttk.Spinbox(
+            f_row_as,
+            from_=0.5,
+            to=30.0,
+            increment=0.5,
+            textvariable=self.var_auto_save_sec,
+            width=8,
+        ).pack(side=tk.RIGHT)
+
+        tk.Checkbutton(
+            pad,
             text="💾 Автосохранение манги из расширения Chrome в папку на ПК",
             variable=self.var_auto_save_web,
             bg=BG_BENTO,
@@ -1292,7 +1329,15 @@ class MikoMangaStudioGUI:
                     anchor="w",
                 ).pack(side=tk.LEFT)
 
-                def _delete_single_block_trans(t_w: tk.Text = txt_edit, blk_ref: dict[str, Any] = b) -> None:
+                def _remove_frame_completely(blk_ref: dict[str, Any] = b) -> None:
+                    if block_widgets:
+                        self.last_blocks = _collect_edited_blocks()
+                    target_id = blk_ref.get("id")
+                    self.last_blocks = [x for x in self.last_blocks if x.get("id") != target_id]
+                    _rebuild_cards()
+                    _save_edited_page()
+
+                def _clear_single_block_text(t_w: tk.Text = txt_edit, blk_ref: dict[str, Any] = b) -> None:
                     cur_v = t_w.get("1.0", tk.END).strip()
                     if cur_v:
                         blk_ref["_backup_translation"] = cur_v
@@ -1303,7 +1348,7 @@ class MikoMangaStudioGUI:
 
                 tk.Button(
                     trans_lbl_row,
-                    text="🗑 Удалить перевод (оставить оригинал)",
+                    text="🗑 Удалить рамку",
                     bg=ACCENT_ROSE,
                     fg="#ffffff",
                     bd=0,
@@ -1311,7 +1356,20 @@ class MikoMangaStudioGUI:
                     pady=2,
                     font=("Segoe UI", 8, "bold"),
                     cursor="hand2",
-                    command=_delete_single_block_trans,
+                    command=_remove_frame_completely,
+                ).pack(side=tk.RIGHT, padx=(4, 0))
+
+                tk.Button(
+                    trans_lbl_row,
+                    text="🧹 Очистить текст",
+                    bg=BG_INNER,
+                    fg=FG_PRIMARY,
+                    bd=0,
+                    padx=8,
+                    pady=2,
+                    font=("Segoe UI", 8, "bold"),
+                    cursor="hand2",
+                    command=_clear_single_block_text,
                 ).pack(side=tk.RIGHT)
 
                 txt_edit.pack(fill=tk.X)
@@ -1416,7 +1474,7 @@ class MikoMangaStudioGUI:
                 return
             edited_blocks = _collect_edited_blocks()
             self.last_blocks = edited_blocks
-            if not edited_blocks:
+            if edited_blocks is None:
                 return
 
             status_var.set("⏳ Перерисовываю текст на странице и сохраняю файл...")
@@ -1829,6 +1887,11 @@ class MikoMangaStudioGUI:
         self.preview_canvas.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self.preview_photo_ref)
         self._draw_interactive_bbox_pins()
 
+    def _redraw_pins_only(self) -> None:
+        """Быстрая перерисовка только контуров рамок на холсте без тяжелого ресайза картинки (<0.3 мс)."""
+        self.preview_canvas.delete("bbox_pin_overlay")
+        self._draw_interactive_bbox_pins()
+
     def _draw_interactive_bbox_pins(self) -> None:
         if not self.show_canvas_pins.get() or not self.last_blocks:
             return
@@ -1842,6 +1905,7 @@ class MikoMangaStudioGUI:
         is_split = bool(info.get("is_split_both"))
         gap = int(info.get("gap") or 0)
         offset_x = (orig_w + gap) if is_split else 0
+        auto_off = not bool(self.var_auto_save_boxes.get())
 
         for b in self.last_blocks:
             bbox = b.get("bbox")
@@ -1861,6 +1925,7 @@ class MikoMangaStudioGUI:
                 outline=color,
                 width=2,
                 dash=(4, 2) if is_del else (),
+                tags=("bbox_pin_overlay",),
             )
             fs_lbl = f"{b['font_size']}px" if b.get("font_size") else "Авто"
             self.preview_canvas.create_text(
@@ -1870,11 +1935,46 @@ class MikoMangaStudioGUI:
                 fill="#ffffff",
                 anchor="w",
                 font=("Segoe UI", 8, "bold"),
+                tags=("bbox_pin_overlay",),
             )
+            # Кнопка полного удаления рамки [🗑] в правом верхнем углу
+            del_x1, del_y1 = sx2 - 16, max(2, sy1 - 16)
+            del_x2, del_y2 = sx2, max(16, sy1)
+            self.preview_canvas.create_rectangle(
+                del_x1, del_y1, del_x2, del_y2,
+                fill="#e11d48", outline="#ffffff", width=1,
+                tags=("bbox_pin_overlay",),
+            )
+            self.preview_canvas.create_text(
+                (del_x1 + del_x2) // 2,
+                (del_y1 + del_y2) // 2,
+                text="×",
+                fill="#ffffff",
+                font=("Segoe UI", 9, "bold"),
+                tags=("bbox_pin_overlay",),
+            )
+            # Значок сохранения [💾] на рамке, если автосохранение выключено или есть несохраненные изменения
+            if auto_off or b.get("_dirty"):
+                sav_x1, sav_y1 = sx2 - 35, max(2, sy1 - 16)
+                sav_x2, sav_y2 = sx2 - 18, max(16, sy1)
+                self.preview_canvas.create_rectangle(
+                    sav_x1, sav_y1, sav_x2, sav_y2,
+                    fill="#059669", outline="#6ee7b7", width=1,
+                    tags=("bbox_pin_overlay",),
+                )
+                self.preview_canvas.create_text(
+                    (sav_x1 + sav_x2) // 2,
+                    (sav_y1 + sav_y2) // 2,
+                    text="💾",
+                    fill="#ffffff",
+                    font=("Segoe UI", 7, "bold"),
+                    tags=("bbox_pin_overlay",),
+                )
             # Угловой маркер ресайза (правый нижний угол)
             self.preview_canvas.create_rectangle(
                 sx2 - 5, sy2 - 5, sx2 + 5, sy2 + 5,
-                fill="#10b981", outline="#0f0d18", width=1
+                fill="#10b981", outline="#0f0d18", width=1,
+                tags=("bbox_pin_overlay",),
             )
 
     def _hit_test_bbox_pin(self, cx: int, cy: int) -> tuple[dict[str, Any] | None, str]:
@@ -1890,6 +1990,7 @@ class MikoMangaStudioGUI:
         is_split = bool(info.get("is_split_both"))
         gap = int(info.get("gap") or 0)
         offset_x = (orig_w + gap) if is_split else 0
+        auto_off = not bool(self.var_auto_save_boxes.get())
 
         for b in reversed(self.last_blocks):
             bbox = b.get("bbox")
@@ -1900,6 +2001,18 @@ class MikoMangaStudioGUI:
             sy1 = img_y0 + int(y1 * scale)
             sx2 = img_x0 + int((x2 + offset_x) * scale)
             sy2 = img_y0 + int(y2 * scale)
+
+            del_x1, del_y1 = sx2 - 16, max(2, sy1 - 16)
+            del_x2, del_y2 = sx2, max(16, sy1)
+            if del_x1 <= cx <= del_x2 and del_y1 <= cy <= del_y2:
+                return b, "delete_pin"
+
+            if auto_off or b.get("_dirty"):
+                sav_x1, sav_y1 = sx2 - 35, max(2, sy1 - 16)
+                sav_x2, sav_y2 = sx2 - 18, max(16, sy1)
+                if sav_x1 <= cx <= sav_x2 and sav_y1 <= cy <= sav_y2:
+                    return b, "save_pin"
+
             if abs(cx - sx2) <= 9 and abs(cy - sy2) <= 9:
                 return b, "resize_se"
             if abs(cx - sx1) <= 8 and abs(cy - sy1) <= 8:
@@ -1908,19 +2021,29 @@ class MikoMangaStudioGUI:
                 return b, "move"
         return None, ""
 
-    def _schedule_idle_autosave(self, delay_ms: int = 2500) -> None:
+    def _schedule_idle_autosave(self, delay_ms: int | None = None) -> None:
+        if not bool(self.var_auto_save_boxes.get()):
+            return
         if self._idle_autosave_job is not None:
             try:
                 self.root.after_cancel(self._idle_autosave_job)
             except Exception:
                 pass
+        if delay_ms is None:
+            try:
+                sec = max(0.5, min(30.0, float(self.var_auto_save_sec.get())))
+            except Exception:
+                sec = 2.5
+            delay_ms = int(round(sec * 1000))
         self._idle_autosave_job = self.root.after(delay_ms, self._auto_save_edited_blocks_now)
 
     def _auto_save_edited_blocks_now(self) -> None:
         self._idle_autosave_job = None
-        if not self.selected_page or not self.last_blocks:
+        if not self.selected_page or self.last_blocks is None:
             return
         page = self.selected_page
+        for b in self.last_blocks:
+            b.pop("_dirty", None)
         payload = {
             "source_path": page["source_path"],
             "dest_path": page.get("dest_path") or None,
@@ -1955,11 +2078,11 @@ class MikoMangaStudioGUI:
                     if data.get("saved_output_path"):
                         page["dest_path"] = data["saved_output_path"]
                     self._redraw_preview_canvas()
-                    self._say_miko(f"Рамки и текст автоматически перерисованы и сохранены ({data.get('processing_time_sec')}с)! 💾🌸")
+                    self._say_miko(f"Рамки и текст перерисованы и сохранены ({data.get('processing_time_sec')}с)! 💾🌸")
 
                 self.root.after(0, _done)
             except Exception as exc:
-                self.root.after(0, lambda: self._say_miko(f"Ошибка авто-сохранения рамок: {exc}"))
+                self.root.after(0, lambda: self._say_miko(f"Ошибка сохранения рамок: {exc}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -1972,9 +2095,13 @@ class MikoMangaStudioGUI:
         next_fs = max(8, min(140, cur_fs + step))
         blk["font_size"] = next_fs
         blk["is_deleted"] = False
-        self._redraw_preview_canvas()
-        self._say_miko(f"Шрифт блока #{blk.get('id')} изменен колесиком: {next_fs}px! Авто-обновление через 2.5 сек~ 🔤✨")
-        self._schedule_idle_autosave(2500)
+        blk["_dirty"] = True
+        self._redraw_pins_only()
+        if bool(self.var_auto_save_boxes.get()):
+            self._say_miko(f"Шрифт рамки #{blk.get('id')}: {next_fs}px! Авто-обновление через {self.var_auto_save_sec.get()} сек~ 🔤✨")
+            self._schedule_idle_autosave()
+        else:
+            self._say_miko(f"Шрифт рамки #{blk.get('id')}: {next_fs}px! Нажмите 💾 на рамке для сохранения~ 🔤💾")
 
     def _toggle_draw_region_mode(self) -> None:
         if not self.selected_page or self.preview_orig_pil is None:
@@ -1993,6 +2120,17 @@ class MikoMangaStudioGUI:
         if not self.is_draw_region_mode:
             blk, mode = self._hit_test_bbox_pin(int(event.x), int(event.y))
             if blk is not None:
+                if mode == "delete_pin":
+                    bid = blk.get("id")
+                    self.last_blocks = [x for x in self.last_blocks if x.get("id") != bid]
+                    self._redraw_pins_only()
+                    self._say_miko(f"Рамка #{bid} полностью удалена с картинки! Перерисовываю страницу... 🗑✨")
+                    self._auto_save_edited_blocks_now()
+                    return
+                if mode == "save_pin":
+                    self._say_miko(f"Сохраняю изменения рамки #{blk.get('id')}... 💾✨")
+                    self._auto_save_edited_blocks_now()
+                    return
                 if not blk.get("clean_bbox"):
                     blk["clean_bbox"] = list(blk["bbox"])
                 self._bbox_drag_state = {
@@ -2045,7 +2183,8 @@ class MikoMangaStudioGUI:
                 blk["bbox"] = [nx1, ny1, ox2, oy2]
                 blk["bbox_modified"] = True
                 blk["font_size"] = None
-            self._redraw_preview_canvas()
+            blk["_dirty"] = True
+            self._redraw_pins_only()
             return
         if self._draw_start_xy is None or self._draw_rect_id is None:
             return
@@ -2058,8 +2197,12 @@ class MikoMangaStudioGUI:
                 st = self._bbox_drag_state
                 self._bbox_drag_state = None
                 if st.get("moved"):
-                    self._say_miko(f"Рамка #{st['block'].get('id')} изменена мышкой! Перерисую страницу через 2.5 сек бездействия~ ✨")
-                    self._schedule_idle_autosave(2500)
+                    self._redraw_pins_only()
+                    if bool(self.var_auto_save_boxes.get()):
+                        self._say_miko(f"Рамка #{st['block'].get('id')} изменена мышкой! Перерисую страницу через {self.var_auto_save_sec.get()} сек~ ✨")
+                        self._schedule_idle_autosave()
+                    else:
+                        self._say_miko(f"Рамка #{st['block'].get('id')} изменена! Нажмите 💾 на рамке для сохранения~ 💾")
             return
         if self._draw_start_xy is None:
             return
