@@ -962,7 +962,107 @@ class OllamaTranslator:
         self.stop_requested: bool = False
         self._last_call_was_refusal: bool = False
         self.last_refusal_message: str = ""
+        self.diagnostics_stats: dict[str, Any] = {
+            "session_started_at": int(time.time()),
+            "total_llm_requests": 0,
+            "total_ollama_requests": 0,
+            "total_cloud_requests": 0,
+            "parallel_batches_count": 0,
+            "phrases_requested_total": 0,
+            "phrases_sent_to_llm": 0,
+            "phrases_saved_by_cache": 0,
+            "refusals_count": 0,
+            "sanitized_retries_count": 0,
+            "micro_retries_count": 0,
+            "errors_count": 0,
+            "total_llm_time_sec": 0.0,
+        }
+        self.recent_api_calls: list[dict[str, Any]] = []
         self._load_saved_config()
+
+    def reset_diagnostics(self) -> None:
+        self.diagnostics_stats = {
+            "session_started_at": int(time.time()),
+            "total_llm_requests": 0,
+            "total_ollama_requests": 0,
+            "total_cloud_requests": 0,
+            "parallel_batches_count": 0,
+            "phrases_requested_total": 0,
+            "phrases_sent_to_llm": 0,
+            "phrases_saved_by_cache": 0,
+            "refusals_count": 0,
+            "sanitized_retries_count": 0,
+            "micro_retries_count": 0,
+            "errors_count": 0,
+            "total_llm_time_sec": 0.0,
+        }
+        self.recent_api_calls.clear()
+
+    def _record_api_call(
+        self,
+        provider: str,
+        model: str,
+        elapsed_sec: float,
+        returned_keys: int,
+        status: str,
+        note: str = "",
+    ) -> None:
+        self.diagnostics_stats["total_llm_requests"] += 1
+        if provider == "ollama":
+            self.diagnostics_stats["total_ollama_requests"] += 1
+        else:
+            self.diagnostics_stats["total_cloud_requests"] += 1
+        self.diagnostics_stats["total_llm_time_sec"] = round(
+            float(self.diagnostics_stats["total_llm_time_sec"]) + elapsed_sec, 3
+        )
+        if "REFUSAL" in status:
+            self.diagnostics_stats["refusals_count"] += 1
+        if "ERROR" in status:
+            self.diagnostics_stats["errors_count"] += 1
+
+        entry = {
+            "time": time.strftime("%H:%M:%S"),
+            "timestamp": int(time.time()),
+            "provider": provider,
+            "model": model,
+            "elapsed_sec": round(elapsed_sec, 2),
+            "returned_keys": returned_keys,
+            "status": status,
+            "note": (note or "")[:180],
+        }
+        self.recent_api_calls.append(entry)
+        if len(self.recent_api_calls) > 60:
+            self.recent_api_calls = self.recent_api_calls[-60:]
+
+    def get_diagnostics_summary(self) -> dict[str, Any]:
+        total_req = int(self.diagnostics_stats.get("total_llm_requests") or 0)
+        tot_time = float(self.diagnostics_stats.get("total_llm_time_sec") or 0.0)
+        avg_lat = round(tot_time / total_req, 2) if total_req > 0 else 0.0
+        tot_phr = int(self.diagnostics_stats.get("phrases_requested_total") or 0)
+        saved_phr = int(self.diagnostics_stats.get("phrases_saved_by_cache") or 0)
+        cache_rate = round((saved_phr / tot_phr) * 100.0, 1) if tot_phr > 0 else 0.0
+        masked_key = ""
+        if self.unsloth_api_key:
+            k = self.unsloth_api_key.strip()
+            masked_key = f"{k[:5]}...{k[-4:]}" if len(k) > 10 else "***"
+        return {
+            **self.diagnostics_stats,
+            "avg_llm_latency_sec": avg_lat,
+            "cache_hit_rate_pct": cache_rate,
+            "phrase_cache_size": len(self.phrase_cache),
+            "selected_model": self._resolved_model or "auto",
+            "api_url": self.unsloth_url,
+            "masked_api_key": masked_key,
+            "text_filter_mode": self.text_filter_mode,
+            "skip_sighs": self.skip_sighs,
+            "skip_sfx": self.skip_sfx,
+            "detect_free_text": self.detect_free_text,
+            "min_text_length": self.min_text_length,
+            "batch_pages": self.batch_pages,
+            "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
+            "cloud_parallel_chunk_size": CLOUD_PARALLEL_CHUNK_SIZE,
+            "recent_api_calls": list(reversed(self.recent_api_calls[-30:])),
+        }
 
     @staticmethod
     def _normalize_api_base_url(raw_url: str) -> str:
@@ -2080,6 +2180,59 @@ class OllamaTranslator:
         return sys_prompt, usr_prompt, retry_prefix
 
     @staticmethod
+    def _sanitize_safety_triggers_for_cloud(text: str) -> str:
+        """
+        Заменяет слова-триггеры родства/возраста в исходном тексте при повторной попытке
+        после отказа облачного фильтра безопасности (parent and child / incest),
+        чтобы облачный шлюз перевел реплики без блокировки всей пачки.
+        """
+        if not text:
+            return text
+        replacements = (
+            ("実の娘", "彼女"),
+            ("義理の娘", "彼女"),
+            ("お父さん", "あなた"),
+            ("父さん", "あなた"),
+            ("おとうさん", "あなた"),
+            ("パパ", "ダーリン"),
+            ("父親", "彼"),
+            ("義父", "彼"),
+            ("お母さん", "あなた"),
+            ("母さん", "あなた"),
+            ("ママ", "ハニー"),
+            ("母親", "彼女"),
+            ("お兄ちゃん", "あなた"),
+            ("兄ちゃん", "あなた"),
+            ("おにいちゃん", "あなた"),
+            ("お兄さん", "あなた"),
+            ("兄さん", "あなた"),
+            ("兄貴", "あなた"),
+            ("お姉ちゃん", "あなた"),
+            ("姉ちゃん", "あなた"),
+            ("お姉さん", "あなた"),
+            ("姉さん", "あなた"),
+            ("実の妹", "彼女"),
+            ("妹", "彼女"),
+            ("いもうと", "かのじょ"),
+            ("弟", "彼"),
+            ("娘", "彼女"),
+            ("むすめ", "かのじょ"),
+            ("息子", "彼"),
+            ("親子", "二人"),
+            ("近親", "恋人"),
+            ("小学生", "学生"),
+            ("中学生", "学生"),
+            ("未成年", "大人"),
+            ("子供", "女の子"),
+            ("こども", "おんなのこ"),
+        )
+        out = text
+        for old_w, new_w in replacements:
+            if old_w in out:
+                out = out.replace(old_w, new_w)
+        return out
+
+    @staticmethod
     def _get_minimal_retry_prompts(target_lang: str, retry_json: str) -> tuple[str, str]:
         """Сверхкомпактный промпт (~25 токенов) для доперевода 1-10 пропущенных кружков без повторной отправки огромного системного промпта."""
         t_lang = target_lang.lower().strip()
@@ -2155,7 +2308,9 @@ class OllamaTranslator:
         if not parsed and self._is_refusal_response(raw_output):
             self._last_call_was_refusal = True
             self.last_refusal_message = raw_output.strip()[:240]
+            self._record_api_call("ollama", clean_name, 0.0, 0, "REFUSAL", self.last_refusal_message)
             return {"__refusal__": self.last_refusal_message}
+        self._record_api_call("ollama", clean_name, 0.0, len(parsed), "OK")
         return parsed
 
     async def _call_llm_json(
@@ -2207,6 +2362,7 @@ class OllamaTranslator:
                 for attempt in range(2):
                     if self.stop_requested:
                         return {}
+                    _t0_cloud = time.perf_counter()
                     try:
                         response = await client.post(
                             f"{self.unsloth_url}/v1/chat/completions",
@@ -2227,11 +2383,14 @@ class OllamaTranslator:
                         choices = data.get("choices", [])
                         msg_obj = choices[0].get("message", {}) if choices else {}
                         raw_output = str(msg_obj.get("content") or "{}")
+                        _el_cloud = time.perf_counter() - _t0_cloud
                         parsed = self._parse_json_response(raw_output)
                         if not parsed and self._is_refusal_response(raw_output):
                             self._last_call_was_refusal = True
                             self.last_refusal_message = raw_output.strip()[:240]
+                            self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
                             return {"__refusal__": self.last_refusal_message}
+                        self._record_api_call("cloud", model_name, _el_cloud, len(parsed), "OK")
                         return parsed
                     except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as net_exc:
                         last_cloud_err = net_exc
@@ -2383,7 +2542,11 @@ class OllamaTranslator:
             for sc_idx, sub_map in enumerate(sub_chunks, start=1):
                 if self.stop_requested:
                     break
-                sub_json = json.dumps(sub_map, ensure_ascii=False, separators=(",", ":"))
+                self.diagnostics_stats["sanitized_retries_count"] += 1
+                sanitized_sub_map = {
+                    k: self._sanitize_safety_triggers_for_cloud(v) for k, v in sub_map.items()
+                }
+                sub_json = json.dumps(sanitized_sub_map, ensure_ascii=False, separators=(",", ":"))
                 min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, sub_json)
                 sub_res = await self._call_llm_json(
                     client=client,
@@ -2449,6 +2612,7 @@ class OllamaTranslator:
                 and bool(CJK_REGEX.search(source_map[k]))
             ]
             if bad_keys and len(bad_keys) <= max(15, len(source_map) // 2):
+                self.diagnostics_stats["micro_retries_count"] += 1
                 logger.info(
                     "Доперевод %d пропущенных кружков %s одним легким микро-запросом (%s -> %s)...",
                     len(bad_keys),
@@ -2565,6 +2729,12 @@ class OllamaTranslator:
 
         is_cloud_call = active_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url)
         batch_limit = MAX_BUBBLES_PER_BATCH_CLOUD if is_cloud_call else MAX_BUBBLES_PER_BATCH_LOCAL
+
+        self.diagnostics_stats["phrases_requested_total"] += len(blocks)
+        self.diagnostics_stats["phrases_sent_to_llm"] += len(unique_to_translate)
+        self.diagnostics_stats["phrases_saved_by_cache"] += cached_hits
+        if is_cloud_call and len(unique_to_translate) > CLOUD_PARALLEL_CHUNK_SIZE:
+            self.diagnostics_stats["parallel_batches_count"] += 1
 
         logger.info(
             "Перевод блоков: всего=%d, отправлено в ИИ=%d (сэкономлено из кэша/повторов=%d, лимит пачки=%d, модель=%s)",

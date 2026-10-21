@@ -90,9 +90,9 @@ class MikoMangaStudioGUI:
     """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v1.0.0)."""
 
     def __init__(self, root: tk.Tk) -> None:
-        print("[GUI] Инициализация окна Miko-chan Manga Studio v1.0.0...", flush=True)
+        print("[GUI] Инициализация окна Miko-chan Manga Studio v1.0.4...", flush=True)
         self.root = root
-        self.root.title("🌸 Miko-chan Manga Studio v1.0.0")
+        self.root.title("🌸 Miko-chan Manga Studio v1.0.4")
         self.root.geometry("1460x880")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_DEEP)
@@ -354,6 +354,22 @@ class MikoMangaStudioGUI:
         )
         self.lbl_summary_chip.pack(side=tk.LEFT, padx=6)
         self.lbl_summary_chip.bind("<Button-1>", lambda _: self._open_settings_modal())
+
+        btn_diag = tk.Button(
+            right_top,
+            text="🩺 Диагностика / Логи",
+            bg="#065f46",
+            fg="#a7f3d0",
+            activebackground=ACCENT_MINT,
+            activeforeground="#ffffff",
+            bd=0,
+            padx=12,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=self._open_diagnostics_modal,
+        )
+        btn_diag.pack(side=tk.LEFT, padx=4)
 
         btn_settings = tk.Button(
             right_top,
@@ -827,6 +843,131 @@ class MikoMangaStudioGUI:
                     subprocess.Popen([exe, f"--app={url}", "--window-size=1480,900"])
                     return
         webbrowser.open(url)
+
+    def _open_diagnostics_modal(self) -> None:
+        win = tk.Toplevel(self.root)
+        win.title("🩺 Диагностика, Тайминги и Логи (v1.0.4)")
+        win.geometry("880x640")
+        win.configure(bg=BG_BENTO)
+        win.transient(self.root)
+
+        top_bar = tk.Frame(win, bg=BG_BENTO, padx=16, pady=12)
+        top_bar.pack(fill=tk.X)
+
+        lbl_status = tk.Label(
+            top_bar,
+            text="Лог пишется автоматически в logs/miko_studio.log",
+            bg=BG_BENTO,
+            fg=FG_SECONDARY,
+            font=("Segoe UI", 9, "bold"),
+        )
+        lbl_status.pack(side=tk.LEFT)
+
+        txt_wrap = tk.Frame(win, bg=BG_DEEP, padx=16, pady=8)
+        txt_wrap.pack(fill=tk.BOTH, expand=True)
+
+        txt_report = tk.Text(
+            txt_wrap,
+            bg="#0b0912",
+            fg="#a7f3d0",
+            insertbackground="#ffffff",
+            font=("Consolas", 9),
+            wrap=tk.WORD,
+            padx=10,
+            pady=10,
+        )
+        vsb = ttk.Scrollbar(txt_wrap, orient=tk.VERTICAL, command=txt_report.yview)
+        txt_report.configure(yscrollcommand=vsb.set)
+        txt_report.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        vsb.pack(side=tk.RIGHT, fill=tk.Y)
+
+        def _refresh_report() -> None:
+            def _worker() -> None:
+                try:
+                    with httpx.Client(trust_env=False, timeout=10.0) as client:
+                        resp = client.get(f"{SERVER_URL}/diagnostics/report")
+                        resp.raise_for_status()
+                        rep_txt = resp.json().get("report_text", "")
+
+                    def _apply() -> None:
+                        if win.winfo_exists():
+                            txt_report.delete("1.0", tk.END)
+                            txt_report.insert("1.0", rep_txt)
+                            txt_report.see(tk.END)
+
+                    self.root.after(0, _apply)
+                except Exception as exc:
+                    if win.winfo_exists():
+                        self.root.after(
+                            0,
+                            lambda: (
+                                txt_report.delete("1.0", tk.END),
+                                txt_report.insert("1.0", f"Ошибка получения отчета диагностики: {exc}"),
+                            ),
+                        )
+
+            threading.Thread(target=_worker, daemon=True).start()
+
+        def _copy_to_clipboard() -> None:
+            content = txt_report.get("1.0", tk.END).strip()
+            if not content:
+                return
+            self.root.clipboard_clear()
+            self.root.clipboard_append(content)
+            self.root.update()
+            lbl_status.config(text="✅ Отчет скопирован в буфер обмена! Вставьте его в чат (Ctrl+V)", fg=ACCENT_MINT)
+            self._say_miko("📋 Диагностический отчет скопирован в буфер обмена! Вставь его в наш чат (Ctrl+V)~ 🩺🌸")
+
+        def _open_logs_dir() -> None:
+            def _w() -> None:
+                try:
+                    with httpx.Client(trust_env=False, timeout=5.0) as client:
+                        client.post(f"{SERVER_URL}/diagnostics/open_logs")
+                except Exception:
+                    pass
+
+            threading.Thread(target=_w, daemon=True).start()
+
+        tk.Button(
+            top_bar,
+            text="📋 Скопировать отчет для чата (в 1 клик)",
+            bg=ACCENT_SAKURA,
+            fg="#ffffff",
+            bd=0,
+            padx=14,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=_copy_to_clipboard,
+        ).pack(side=tk.RIGHT, padx=(6, 0))
+
+        tk.Button(
+            top_bar,
+            text="📂 Открыть папку logs/",
+            bg=BG_INNER,
+            fg=FG_PRIMARY,
+            bd=0,
+            padx=10,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=_open_logs_dir,
+        ).pack(side=tk.RIGHT, padx=4)
+
+        tk.Button(
+            top_bar,
+            text="🔄 Обновить",
+            bg=BG_INNER,
+            fg=FG_PRIMARY,
+            bd=0,
+            padx=10,
+            pady=6,
+            font=("Segoe UI", 9, "bold"),
+            cursor="hand2",
+            command=_refresh_report,
+        ).pack(side=tk.RIGHT, padx=4)
+
+        _refresh_report()
 
     def _open_settings_modal(self) -> None:
         win = tk.Toplevel(self.root)
@@ -1635,8 +1776,8 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.0":
-                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v1.0.0...", flush=True)
+                if running_ver != "1.0.4":
+                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v1.0.4...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)
                     except Exception:

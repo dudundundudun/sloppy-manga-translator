@@ -604,13 +604,14 @@ class MangaOCREngine:
                 pass
             return kana_chars, ja_hanzi_chars
 
-        if vertical_votes >= horizontal_votes:
-            _evaluate_ja()
-            ja_total = kana_chars + ja_hanzi_chars
-            kana_ratio = kana_chars / max(1, ja_total)
-            if kana_chars >= 2 and kana_ratio >= 0.22:
-                self._last_detected_lang = "ja"
-                return "ja"
+        # Всегда сначала проверяем японский через уже загруженный в VRAM MangaOCR (0 скачиваний, ~50 мс!),
+        # чтобы на японской манге никогда не запускалось лишнее скачивание и прогон тяжелых моделей EasyOCR (ko/zh)!
+        _evaluate_ja()
+        ja_total = kana_chars + ja_hanzi_chars
+        kana_ratio = kana_chars / max(1, ja_total)
+        if (kana_chars >= 2 and kana_ratio >= 0.20) or (vertical_votes >= horizontal_votes and kana_chars >= 1):
+            self._last_detected_lang = "ja"
+            return "ja"
 
         hangul_chars = 0
         ko_score = 0.0

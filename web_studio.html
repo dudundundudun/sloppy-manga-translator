@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Miko-chan Manga Studio v1.0.0</title>
+  <title>Miko-chan Manga Studio v1.0.4</title>
   <style>
     :root {
       --bg-deep: #0f0d18;
@@ -1762,7 +1762,7 @@
       <div class="brand">
         <span class="brand-sparkle">🌸</span>
         <span>Miko-chan Manga Studio</span>
-        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.0</span>
+        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.4</span>
       </div>
     </div>
 
@@ -1785,6 +1785,10 @@
       <div class="summary-chip" id="summary-chip" onclick="openSettingsOnTab('tab-ai')" title="Нажмите для быстрой настройки ИИ, фильтрации текста и интерфейса">
         Шрифт: 12–32px · Только диалоги · ИИ: Авто
       </div>
+      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-diag')" title="Открыть панель диагностики, таймингов этапов (OCR / ИИ / Рендер), живой лог и скопировать отчет для чата в 1 клик">
+        <span>🩺</span>
+        <span>Диагностика</span>
+      </button>
       <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ui')" title="Настроить расположение редактора, всплывающий попап у бабблов и внешний вид">
         <span>🎨</span>
         <span>Вид / Редактор</span>
@@ -2056,6 +2060,7 @@
         <button type="button" class="settings-tab-btn" id="stab-btn-ui" onclick="switchSettingsTab('tab-ui')">🎨 Интерфейс и Редактор</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-filter" onclick="switchSettingsTab('tab-filter')">📊 Фильтр текста и SFX</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-font" onclick="switchSettingsTab('tab-font')">🔤 Шрифт и Сохранение</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-diag" onclick="switchSettingsTab('tab-diag')">🩺 Диагностика и Логи</button>
       </div>
 
       <div class="settings-body">
@@ -2345,6 +2350,55 @@
                 <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="openWebSaveDirInStudio()">📂 Открыть</button>
               </div>
             </div>
+          </div>
+        </div>
+
+        <!-- TAB 5: DIAGNOSTICS & LOGS -->
+        <div class="settings-tab-pane" id="tab-diag">
+          <div class="section-box">
+            <div class="section-title">
+              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.4)</span>
+              <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер обмена!</span>
+            </div>
+            <div class="section-desc">
+              Все события и замеры скорости автоматически записываются в файл <b>logs/miko_studio.log</b>. Нажмите <b>«📋 Скопировать отчет для чата»</b> и вставьте его в диалог (Ctrl+V), чтобы мгновенно разобрать любую задержку или ошибку (ваш API-ключ автоматически скрывается).
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <button type="button" class="cta-main" style="width:auto; padding:9px 16px; font-size:12.5px;" onclick="copyDiagnosticsReportToClipboard()">
+                📋 Скопировать отчет для чата (в 1 клик)
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="loadDiagnosticsPanel()">
+                🔄 Обновить
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openLogsFolderInStudio()">
+                📂 Открыть папку logs/
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="window.open('/diagnostics/download_log', '_blank')">
+                💾 Скачать miko_studio.log
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="clearDiagnosticsInStudio()">
+                🧹 Сбросить счетчики
+              </button>
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">📊 Сводка по серверу, видеокарте и вызовам ИИ</div>
+            <div id="diag-summary-cards" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; font-size:12px;">
+              <div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">Загрузка метрик...</div>
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">⏱ Тайминги последних переведенных пачек и страниц (OCR vs ИИ vs Верстка)</div>
+            <div id="diag-jobs-list" style="font-family:Consolas, monospace; font-size:11.5px; background:#0d0b14; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); max-height:150px; overflow-y:auto; white-space:pre-wrap; color:#e0e7ff;">
+              Нет данных о переводах в текущей сессии.
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">📜 Живой журнал сервера (logs/miko_studio.log + предупреждения)</div>
+            <textarea id="diag-report-textarea" readonly style="width:100%; height:220px; background:#0b0912; color:#a7f3d0; font-family:Consolas, monospace; font-size:11.5px; border:1px solid rgba(244,114,182,0.3); border-radius:10px; padding:10px; resize:vertical; line-height:1.4; user-select:text;"></textarea>
           </div>
         </div>
       </div>
@@ -2686,7 +2740,7 @@
     }
 
     function switchSettingsTab(tabId) {
-      ["tab-ai", "tab-ui", "tab-filter", "tab-font"].forEach(id => {
+      ["tab-ai", "tab-ui", "tab-filter", "tab-font", "tab-diag"].forEach(id => {
         const pane = document.getElementById(id);
         if (pane) pane.classList.toggle("active", id === tabId);
       });
@@ -2694,12 +2748,108 @@
         "tab-ai": "stab-btn-ai",
         "tab-ui": "stab-btn-ui",
         "tab-filter": "stab-btn-filter",
-        "tab-font": "stab-btn-font"
+        "tab-font": "stab-btn-font",
+        "tab-diag": "stab-btn-diag"
       };
       Object.entries(btnMap).forEach(([k, btnId]) => {
         const b = document.getElementById(btnId);
         if (b) b.classList.toggle("active", k === tabId);
       });
+      if (tabId === "tab-diag") {
+        loadDiagnosticsPanel();
+      }
+    }
+
+    async function loadDiagnosticsPanel() {
+      try {
+        const [diagRes, repRes] = await Promise.all([
+          fetch("/diagnostics"),
+          fetch("/diagnostics/report")
+        ]);
+        const d = await diagRes.json();
+        const rep = await repRes.json();
+        const srv = d.server || {};
+        const gpu = d.gpu || {};
+        const tr = d.translator || {};
+
+        const cardsEl = document.getElementById("diag-summary-cards");
+        if (cardsEl) {
+          cardsEl.innerHTML =
+            `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
+              `<b style="color:var(--sakura);">🖥 Сервер и процесс:</b><br>` +
+              `Версия: <b>v${escapeHtml(srv.version || "1.0.4")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
+              `Лог: <b>${srv.log_file_size_kb || 0} КБ</b> (logs/miko_studio.log)` +
+            `</div>` +
+            `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
+              `<b style="color:var(--mint);">🎮 GPU и Очистка:</b><br>` +
+              `${escapeHtml(gpu.device_name || "CPU")} · VRAM: <b>${gpu.vram_allocated_mb || 0} / ${gpu.vram_total_mb || 0} МБ</b><br>` +
+              `Инпейнт: ${escapeHtml(gpu.inpaint_backend || "—")}` +
+            `</div>` +
+            `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
+              `<b style="color:var(--indigo);">☁️ Запросы к ИИ:</b><br>` +
+              `Всего запросов: <b>${tr.total_llm_requests || 0}</b> (параллельных пачек: <b>${tr.parallel_batches_count || 0}</b>)<br>` +
+              `Средний ответ ИИ: <b>${tr.avg_llm_latency_sec || 0}с</b> · Модель: <b>${escapeHtml(tr.selected_model || "auto")}</b>` +
+            `</div>` +
+            `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
+              `<b style="color:var(--amber);">🛡 Кэш и Защита от цензуры:</b><br>` +
+              `Из кэша: <b>${tr.phrases_saved_by_cache || 0} / ${tr.phrases_requested_total || 0} фраз (${tr.cache_hit_rate_pct || 0}%)</b><br>` +
+              `Отказов цензуры: <b>${tr.refusals_count || 0}</b> · Санитизатор родства: <b>${tr.sanitized_retries_count || 0}</b>` +
+            `</div>`;
+        }
+
+        const jobsEl = document.getElementById("diag-jobs-list");
+        const jobs = d.recent_jobs || [];
+        if (jobsEl) {
+          if (jobs.length === 0) {
+            jobsEl.textContent = "В этой сессии еще не переводились страницы. Запустите перевод страницы или папки, чтобы увидеть разбивку времени по шагам (OCR / ИИ / Очистка+Верстка).";
+          } else {
+            jobsEl.textContent = jobs.map(j =>
+              `[${j.time}] ${j.label} | Блоков: ${j.blocks_count} | OCR: ${j.ocr_sec}с | ИИ: ${j.llm_sec}с | Очистка+Верстка: ${j.render_sec}с => ВСЕГО: ${j.total_sec}с (${j.sec_per_page}с/стр) | VRAM: ${j.vram_mb} МБ`
+            ).join("\n");
+          }
+        }
+
+        const repTa = document.getElementById("diag-report-textarea");
+        if (repTa && rep.report_text) {
+          repTa.value = rep.report_text;
+          repTa.scrollTop = repTa.scrollHeight;
+        }
+      } catch (e) {
+        const repTa = document.getElementById("diag-report-textarea");
+        if (repTa) repTa.value = "Ошибка загрузки диагностики: " + e.message;
+      }
+    }
+
+    async function copyDiagnosticsReportToClipboard() {
+      await loadDiagnosticsPanel();
+      const repTa = document.getElementById("diag-report-textarea");
+      const text = repTa ? repTa.value : "";
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        if (repTa) {
+          repTa.select();
+          document.execCommand("copy");
+        }
+      }
+      const badge = document.getElementById("diag-copy-badge");
+      if (badge) {
+        badge.style.display = "inline";
+        setTimeout(() => { badge.style.display = "none"; }, 4500);
+      }
+      sayMiko("📋 Диагностический отчет скопирован в буфер обмена! Просто вставь его в наш чат (Ctrl+V), и мы сразу увидим всю картину~ 🩺🌸");
+    }
+
+    async function openLogsFolderInStudio() {
+      await fetch("/diagnostics/open_logs", { method: "POST" });
+      sayMiko("Открыла папку logs/ с файлом miko_studio.log в Проводнике Windows! 📂🌸");
+    }
+
+    async function clearDiagnosticsInStudio() {
+      await fetch("/diagnostics/clear", { method: "POST" });
+      await loadDiagnosticsPanel();
+      sayMiko("Диагностические счетчики и буфер логов очищены! 🧹✨");
     }
 
     function openSettingsOnTab(tabId) {

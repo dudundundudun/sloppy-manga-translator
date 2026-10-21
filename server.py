@@ -61,15 +61,92 @@ from ocr_engine import MangaOCREngine
 from renderer import MangaRenderer
 from translator import CLOUD_API_PRESETS, RECOMMENDED_LOCAL_MODELS, OllamaTranslator, japanese_to_romaji_local
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
-)
-logger = logging.getLogger("manga_server")
+from collections import deque
+from logging.handlers import RotatingFileHandler
+import platform
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMP_DIR = BASE_DIR / "temp_debug"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
+LOGS_DIR = BASE_DIR / "logs"
+LOGS_DIR.mkdir(parents=True, exist_ok=True)
+MAIN_LOG_FILE = LOGS_DIR / "miko_studio.log"
+DIAG_EVENTS_FILE = LOGS_DIR / "diagnostics_events.jsonl"
+SERVER_STARTED_AT = time.time()
+
+_recent_log_entries: deque[dict[str, Any]] = deque(maxlen=400)
+_recent_warn_err_entries: deque[dict[str, Any]] = deque(maxlen=80)
+_recent_job_profiles: deque[dict[str, Any]] = deque(maxlen=50)
+
+
+class RingBufferLogHandler(logging.Handler):
+    """Перехватывает все логи сервера в кольцевой буфер ОЗУ для живой диагностики в интерфейсе и отчетах."""
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = self.format(record)
+            entry = {
+                "time": time.strftime("%H:%M:%S", time.localtime(record.created)),
+                "level": record.levelname,
+                "logger": record.name,
+                "message": record.getMessage(),
+                "formatted": msg,
+            }
+            _recent_log_entries.append(entry)
+            if record.levelno >= logging.WARNING:
+                _recent_warn_err_entries.append(entry)
+        except Exception:
+            pass
+
+
+_log_formatter = logging.Formatter("%(asctime)s | %(levelname)-8s | %(name)s | %(message)s")
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
+)
+_root_logger = logging.getLogger()
+try:
+    _file_handler = RotatingFileHandler(
+        MAIN_LOG_FILE,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
+    _file_handler.setFormatter(_log_formatter)
+    _root_logger.addHandler(_file_handler)
+except Exception:
+    pass
+
+_ring_handler = RingBufferLogHandler()
+_ring_handler.setFormatter(_log_formatter)
+_root_logger.addHandler(_ring_handler)
+
+logger = logging.getLogger("manga_server")
+
+
+def _get_vram_allocated_mb() -> float:
+    try:
+        if torch.cuda.is_available():
+            return round(torch.cuda.memory_allocated(0) / (1024**2), 1)
+    except Exception:
+        pass
+    return 0.0
+
+
+def _append_diagnostic_event(event_type: str, data: dict[str, Any]) -> None:
+    record = {
+        "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "timestamp": int(time.time()),
+        "event_type": event_type,
+        "vram_mb": _get_vram_allocated_mb(),
+        **data,
+    }
+    _recent_job_profiles.append(record)
+    try:
+        with open(DIAG_EVENTS_FILE, "a", encoding="utf-8") as f_ev:
+            f_ev.write(json.dumps(record, ensure_ascii=False) + "\n")
+    except Exception:
+        pass
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 VALID_SOURCE_LANGS = {"auto", "ja", "ko", "zh"}
@@ -160,7 +237,7 @@ async def lifespan(app: FastAPI):
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.0)", flush=True)
+    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.4)", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -183,7 +260,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.0",
+    version="1.0.4",
     lifespan=lifespan,
 )
 
@@ -817,6 +894,8 @@ async def process_single_pil_image(
         min_text_length=min_text_length,
     )
 
+    _t0_all = time.perf_counter()
+    _t0_ocr = time.perf_counter()
     async with gpu_lock:
         blocks, detected_lang = await asyncio.to_thread(
             _run_ocr_compat,
@@ -829,6 +908,7 @@ async def process_single_pil_image(
             eff_skip_sfx,
             eff_min_len,
         )
+    _ocr_sec = round(time.perf_counter() - _t0_ocr, 2)
 
     translator_engine.stop_requested = False
     active_model = await translator_engine.resolve_model(ollama_model)
@@ -837,6 +917,7 @@ async def process_single_pil_image(
         empty_mask = Image.new("L", pil_image.size, 0)
         return pil_image.copy(), pil_image.copy(), empty_mask, [], active_model, detected_lang
 
+    _t0_llm = time.perf_counter()
     blocks = await translator_engine.translate_blocks(
         blocks=blocks,
         source_lang=detected_lang,
@@ -846,6 +927,7 @@ async def process_single_pil_image(
         external_cache=external_cache,
         skip_sighs=eff_skip_sighs,
     )
+    _llm_sec = round(time.perf_counter() - _t0_llm, 2)
 
     # Оставляем только блоки с непустым переводом, чтобы не замазывать пропущенные вздохи
     blocks = [b for b in blocks if str(b.get("translated_text") or "").strip()]
@@ -858,6 +940,7 @@ async def process_single_pil_image(
         empty_mask = Image.new("L", pil_image.size, 0)
         return pil_image.copy(), pil_image.copy(), empty_mask, [], active_model, detected_lang
 
+    _t0_render = time.perf_counter()
     async with gpu_lock:
         cleaned_image, mask_image = await asyncio.to_thread(
             cleaner_engine.clean_image, pil_image, blocks
@@ -870,6 +953,34 @@ async def process_single_pil_image(
         uppercase,
         max_font_size,
         min_font_size,
+    )
+    _render_sec = round(time.perf_counter() - _t0_render, 2)
+    _total_sec = round(time.perf_counter() - _t0_all, 2)
+
+    logger.info(
+        "📊 [ДИАГНОСТИКА СТРАНИЦЫ] Блоков: %d | Тайминг: OCR=%.2fс, ИИ=%.2fс, Очистка+Верстка=%.2fс | Всего=%.2fс | Модель=%s",
+        len(blocks),
+        _ocr_sec,
+        _llm_sec,
+        _render_sec,
+        _total_sec,
+        active_model,
+    )
+    _append_diagnostic_event(
+        "single_page",
+        {
+            "label": "1 стр.",
+            "pages_count": 1,
+            "blocks_count": len(blocks),
+            "detected_lang": detected_lang,
+            "target_lang": target_lang,
+            "model": active_model,
+            "ocr_sec": _ocr_sec,
+            "llm_sec": _llm_sec,
+            "render_sec": _render_sec,
+            "total_sec": _total_sec,
+            "sec_per_page": _total_sec,
+        },
     )
 
     return final_image, cleaned_image, mask_image, blocks, active_model, detected_lang
@@ -975,6 +1086,8 @@ async def _run_folder_translation_job(
                 _save_folder_manifest(output_dir, manifest)
                 return
 
+            _batch_t0 = time.perf_counter()
+            _batch_num = (batch_start // pages_per_batch) + 1
             page_batch = to_process[batch_start : batch_start + pages_per_batch]
             scanned_pages: list[dict[str, Any]] = []
             combined_blocks: list[dict[str, Any]] = []
@@ -982,6 +1095,7 @@ async def _run_folder_translation_job(
             global_block_id = 1
 
             # Параллельно предзагружаем изображения пачки с диска в ОЗУ (без ожидания внутри GPU-цикла)
+            _ocr_t0 = time.perf_counter()
             preloaded_pils = await asyncio.gather(
                 *(asyncio.to_thread(_load_pil_sync, item[1]) for item in page_batch),
                 return_exceptions=True,
@@ -1056,7 +1170,10 @@ async def _run_folder_translation_job(
                 _save_folder_manifest(output_dir, manifest)
                 return
 
+            _batch_ocr_sec = round(time.perf_counter() - _ocr_t0, 2)
+
             # Шаг 2: Параллельный ИИ-перевод пачки (автоматически делится на 2-3 параллельных потока в translator.py!)
+            _llm_t0 = time.perf_counter()
             translated_by_gid: dict[int, str] = {}
             if combined_blocks:
                 folder_job_state["current_file"] = (
@@ -1084,7 +1201,10 @@ async def _run_folder_translation_job(
                 _save_folder_manifest(output_dir, manifest)
                 return
 
+            _batch_llm_sec = round(time.perf_counter() - _llm_t0, 2)
+
             # Шаг 3: Быстрая параллельная очистка бабблов, верстка и сохранение всех страниц пачки!
+            _render_t0 = time.perf_counter()
             for sp in scanned_pages:
                 if not sp.get("ok"):
                     continue
@@ -1195,6 +1315,47 @@ async def _run_folder_translation_job(
             else:
                 await asyncio.gather(*(_render_page_task(sp) for sp in scanned_pages))
 
+            _batch_render_sec = round(time.perf_counter() - _render_t0, 2)
+            _batch_total_sec = round(time.perf_counter() - _batch_t0, 2)
+            _pages_cnt = max(1, len(page_batch))
+            _sec_per_page = round(_batch_total_sec / _pages_cnt, 2)
+            _tot_non_zero = max(0.01, _batch_total_sec)
+            _ocr_pct = int(round((_batch_ocr_sec / _tot_non_zero) * 100))
+            _llm_pct = int(round((_batch_llm_sec / _tot_non_zero) * 100))
+            _ren_pct = max(0, 100 - _ocr_pct - _llm_pct)
+
+            logger.info(
+                "📊 [ДИАГНОСТИКА ПАЧКИ #%d] Стр: %d | Блоков: %d | Тайминг: OCR=%.2fс (%d%%), ИИ=%.2fс (%d%%), Очистка+Верстка=%.2fс (%d%%) | Всего=%.2fс (%.2fс/стр) | VRAM=%.0f МБ",
+                _batch_num,
+                len(page_batch),
+                len(combined_blocks),
+                _batch_ocr_sec,
+                _ocr_pct,
+                _batch_llm_sec,
+                _llm_pct,
+                _batch_render_sec,
+                _ren_pct,
+                _batch_total_sec,
+                _sec_per_page,
+                _get_vram_allocated_mb(),
+            )
+            _append_diagnostic_event(
+                "folder_batch",
+                {
+                    "label": f"Пачка #{_batch_num} ({len(page_batch)} стр.)",
+                    "pages_count": len(page_batch),
+                    "blocks_count": len(combined_blocks),
+                    "detected_lang": batch_detected_lang,
+                    "target_lang": target_lang,
+                    "model": active_mod,
+                    "ocr_sec": _batch_ocr_sec,
+                    "llm_sec": _batch_llm_sec,
+                    "render_sec": _batch_render_sec,
+                    "total_sec": _batch_total_sec,
+                    "sec_per_page": _sec_per_page,
+                },
+            )
+
             manifest["rolling_context"] = rolling_context
             manifest["phrase_cache"] = phrase_cache
             _save_folder_manifest(output_dir, manifest)
@@ -1231,7 +1392,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.0 Server Running</h1>")
+    return HTMLResponse(content="<h1>Manga Translator v1.0.4 Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -1272,7 +1433,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.0",
+        "version": "1.0.4",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -2619,6 +2780,175 @@ async def get_folder_status() -> dict[str, Any]:
     return folder_job_state
 
 
+def _build_diagnostics_payload() -> dict[str, Any]:
+    cuda_avail = torch.cuda.is_available()
+    gpu_data: dict[str, Any] = {
+        "cuda_available": cuda_avail,
+        "torch_version": str(torch.__version__),
+    }
+    if cuda_avail:
+        try:
+            gpu_data["device_name"] = torch.cuda.get_device_name(0)
+            gpu_data["vram_allocated_mb"] = round(torch.cuda.memory_allocated(0) / (1024**2), 1)
+            gpu_data["vram_reserved_mb"] = round(torch.cuda.memory_reserved(0) / (1024**2), 1)
+            gpu_data["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024**2), 1)
+        except Exception:
+            pass
+
+    inpaint_backend = (
+        "SimpleLama (LaMa GPU)"
+        if (cleaner_engine is not None and cleaner_engine.lama_model is not None)
+        else "Hybrid Pure White Fill + OpenCV INPAINT_TELEA"
+    )
+    easyocr_ok = bool(ocr_engine and hasattr(ocr_engine, "_check_easyocr") and ocr_engine._check_easyocr())
+    log_size_kb = round(MAIN_LOG_FILE.stat().st_size / 1024.0, 1) if MAIN_LOG_FILE.exists() else 0.0
+
+    trans_diag = translator_engine.get_diagnostics_summary() if translator_engine is not None else {}
+
+    return {
+        "status": "ok",
+        "server": {
+            "version": "1.0.4",
+            "pid": os.getpid(),
+            "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
+            "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
+            "python_version": sys.version.split()[0],
+            "platform": platform.platform(),
+            "base_dir": str(BASE_DIR),
+            "log_file_path": str(MAIN_LOG_FILE),
+            "events_file_path": str(DIAG_EVENTS_FILE),
+            "log_file_size_kb": log_size_kb,
+        },
+        "gpu": {
+            **gpu_data,
+            "inpaint_backend": inpaint_backend,
+            "easyocr_installed": easyocr_ok,
+        },
+        "translator": trans_diag,
+        "folder_job": folder_job_state,
+        "recent_jobs": list(reversed(list(_recent_job_profiles)[-25:])),
+        "recent_warnings_errors": list(reversed(list(_recent_warn_err_entries)[-40:])),
+        "recent_logs": [e["formatted"] for e in list(_recent_log_entries)[-150:]],
+    }
+
+
+@app.get("/diagnostics")
+async def get_diagnostics_endpoint() -> dict[str, Any]:
+    """Возвращает полный диагностический слепок сервера, GPU/VRAM, таймингов этапов, запросов к ИИ и логов."""
+    return _build_diagnostics_payload()
+
+
+@app.get("/diagnostics/report")
+async def get_diagnostics_report_endpoint() -> dict[str, str]:
+    """Генерирует готовый к отправке в чат диагностический Markdown-отчет (API-ключ замаскирован)."""
+    d = _build_diagnostics_payload()
+    srv = d["server"]
+    gpu = d["gpu"]
+    tr = d["translator"]
+    fj = d["folder_job"]
+
+    lines: list[str] = [
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.4 ===",
+        f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
+        f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
+        f"• Папка проекта: {srv.get('base_dir')}",
+        f"• Лог-файл: {srv.get('log_file_path')} ({srv.get('log_file_size_kb')} КБ)",
+        f"• Видеокарта: {gpu.get('device_name', 'CPU')} | VRAM занято: {gpu.get('vram_allocated_mb', 0)} / {gpu.get('vram_total_mb', 0)} МБ (резерв: {gpu.get('vram_reserved_mb', 0)} МБ)",
+        f"• Очистка бабблов: {gpu.get('inpaint_backend')} | EasyOCR установлен: {gpu.get('easyocr_installed')}",
+        "",
+        "--- 🤖 НАСТРОЙКИ И СТАТИСТИКА ИИ / КЭША ---",
+        f"• Активная модель: {tr.get('selected_model')} | API URL: {tr.get('api_url')} | Ключ: {tr.get('masked_api_key') or 'нет'}",
+        f"• Лимит облачной пачки: {tr.get('cloud_batch_limit')} | Параллельный чанк: {tr.get('cloud_parallel_chunk_size')} | Страниц в пачке: {tr.get('batch_pages')}",
+        f"• Фильтр текста: mode={tr.get('text_filter_mode')}, skip_sighs={tr.get('skip_sighs')}, skip_sfx={tr.get('skip_sfx')}, free_text={tr.get('detect_free_text')}",
+        f"• Запросов к ИИ за сессию: всего={tr.get('total_llm_requests')} (Cloud={tr.get('total_cloud_requests')}, Ollama={tr.get('total_ollama_requests')}, параллельных пачек={tr.get('parallel_batches_count')})",
+        f"• Среднее время ответа ИИ: {tr.get('avg_llm_latency_sec')}с | Суммарное время ИИ: {tr.get('total_llm_time_sec')}с",
+        f"• Экономия кэша: {tr.get('phrases_saved_by_cache')} из {tr.get('phrases_requested_total')} фраз ({tr.get('cache_hit_rate_pct')}%) | Отправлено в ИИ: {tr.get('phrases_sent_to_llm')} | Размер кэша: {tr.get('phrase_cache_size')}",
+        f"• Отказов цензуры (Refusals): {tr.get('refusals_count')} | Срабатываний санитизатора родства: {tr.get('sanitized_retries_count')} | Микро-допереводов: {tr.get('micro_retries_count')} | Ошибок сети: {tr.get('errors_count')}",
+        f"• Статус перевода папки: status={fj.get('status')}, прогресс={fj.get('current')}/{fj.get('total')}, файл={fj.get('current_file')}, время={fj.get('elapsed_sec')}с",
+    ]
+
+    recent_jobs = d.get("recent_jobs") or []
+    lines.append("")
+    lines.append(f"--- ⏱ ТАЙМИНГИ ПОСЛЕДНИХ ПЕРЕВОДОВ ({len(recent_jobs)} шт.) ---")
+    if not recent_jobs:
+        lines.append("  (переводов в этой сессии еще не было)")
+    else:
+        for jb in recent_jobs[:12]:
+            lines.append(
+                f"  [{jb.get('time')}] {jb.get('label')} | Блоков: {jb.get('blocks_count')} | "
+                f"OCR={jb.get('ocr_sec')}с, ИИ={jb.get('llm_sec')}с, Рендер={jb.get('render_sec')}с "
+                f"=> ВСЕГО={jb.get('total_sec')}с ({jb.get('sec_per_page')}с/стр) | Модель: {jb.get('model')}"
+            )
+
+    api_calls = tr.get("recent_api_calls") or []
+    lines.append("")
+    lines.append(f"--- ☁️ ПОСЛЕДНИЕ ВЫЗОВЫ API ИИ ({len(api_calls)} шт.) ---")
+    if not api_calls:
+        lines.append("  (вызовов API еще не было)")
+    else:
+        for ac in api_calls[:15]:
+            note_s = f" | {ac.get('note')}" if ac.get("note") else ""
+            lines.append(
+                f"  [{ac.get('time')}] {ac.get('provider')}::{ac.get('model')} | Статус: {ac.get('status')} | "
+                f"Время: {ac.get('elapsed_sec')}с | Получено ключей: {ac.get('returned_keys')}{note_s}"
+            )
+
+    warns = d.get("recent_warnings_errors") or []
+    lines.append("")
+    lines.append(f"--- ⚠️ ПОСЛЕДНИЕ ПРЕДУПРЕЖДЕНИЯ И ОШИБКИ ({len(warns)} шт.) ---")
+    if not warns:
+        lines.append("  (ошибок и предупреждений нет)")
+    else:
+        for w in warns[:20]:
+            lines.append(f"  {w.get('formatted')}")
+
+    tail_logs = (d.get("recent_logs") or [])[-50:]
+    lines.append("")
+    lines.append(f"--- 📜 ПОСЛЕДНИЕ {len(tail_logs)} СТРОК ЛОГА СЕРВЕРА ---")
+    lines.extend(tail_logs)
+    lines.append("=== КОНЕЦ ДИАГНОСТИЧЕСКОГО ОТЧЕТА ===")
+
+    return {"status": "ok", "report_text": "\n".join(lines)}
+
+
+@app.get("/diagnostics/download_log")
+async def download_log_file_endpoint():
+    """Скачивание полного файла лога logs/miko_studio.log."""
+    if not MAIN_LOG_FILE.exists():
+        MAIN_LOG_FILE.write_text("Лог-файл инициализирован.\n", encoding="utf-8")
+    return FileResponse(
+        str(MAIN_LOG_FILE),
+        media_type="text/plain; charset=utf-8",
+        filename="miko_studio.log",
+    )
+
+
+@app.post("/diagnostics/open_logs")
+async def open_logs_folder_endpoint() -> dict[str, str]:
+    """Открывает папку logs/ в Проводнике Windows."""
+    LOGS_DIR.mkdir(parents=True, exist_ok=True)
+    if os.name == "nt" and hasattr(os, "startfile"):
+        try:
+            os.startfile(str(LOGS_DIR))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {"status": "ok", "logs_dir": str(LOGS_DIR), "log_file": str(MAIN_LOG_FILE)}
+
+
+@app.post("/diagnostics/clear")
+async def clear_diagnostics_endpoint() -> dict[str, str]:
+    """Очищает оперативные счетчики диагностики и буфер логов в памяти."""
+    _recent_log_entries.clear()
+    _recent_warn_err_entries.clear()
+    _recent_job_profiles.clear()
+    if translator_engine is not None:
+        translator_engine.reset_diagnostics()
+    logger.info("Диагностические счетчики и буфер логов очищены пользователем.")
+    return {"status": "ok"}
+
+
+
 def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> bool:
     try:
         with httpx.Client(trust_env=False, timeout=2.5) as client:
@@ -2626,10 +2956,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.0":
+                if running_ver != "1.0.4":
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.0...",
+                        f"Останавливаю старый процесс для запуска v1.0.4...",
                         flush=True,
                     )
                     try:
@@ -2654,5 +2984,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.0 на 127.0.0.1:5000...", flush=True)
+    print("Запуск локального сервера Manga Translator v1.0.4 на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)
