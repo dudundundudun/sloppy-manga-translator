@@ -3225,7 +3225,7 @@
       });
       if (!res.ok) return;
       const data = await res.json();
-      renderFolderData(data);
+      renderFolderData(data, opts);
     }
 
     function setPagesListFilter(filt) {
@@ -3265,7 +3265,7 @@
       });
     }
 
-    function renderFolderData(data) {
+    function renderFolderData(data, opts = {}) {
       currentOutputDir = data.output_dir || "";
       folderPages = data.pages || [];
       const total = data.total_pages || 0;
@@ -3301,9 +3301,13 @@
         const refreshed = folderPages.find(x => x.rel_path === selectedPage.rel_path);
         if (refreshed) {
           if (opts && opts.preserveCurrentSelection) {
+            const justBecameTranslated = !selectedPage.is_translated && Boolean(refreshed.is_translated);
             selectedPage.is_translated = refreshed.is_translated;
             selectedPage.dest_path = refreshed.dest_path || selectedPage.dest_path;
-            selectedPage.has_saved_blocks = true;
+            selectedPage.has_saved_blocks = Boolean(refreshed.has_saved_blocks || refreshed.is_translated);
+            if (justBecameTranslated && !isSavingEdits && !isUserTypingInTextEditor()) {
+              selectPage(refreshed);
+            }
           } else {
             selectPage(refreshed);
           }
@@ -4262,6 +4266,7 @@
         min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
         max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
         return_image: true,
+        prefer_url: true,
         image_format: "webp",
         blocks: snapshotBlocks
       };
@@ -4304,8 +4309,8 @@
           }
         }
 
-        // Обновляем картинку на сцене без сброса скролла и без мигания рамок!
-        updateTranslatedImageSmoothly(data.translated_image);
+        // Обновляем картинку на сцене через легковесный URL без тяжелого Base64, без сброса скролла и без моргания!
+        updateTranslatedImageSmoothly(data.translated_image_url || data.translated_image);
 
         // Синхронизируем счетчик в списке страниц слева без повторного вызова selectPage()
         if (folderPages && selectedPage) {
@@ -4618,19 +4623,28 @@
       }
     }
 
-    /* Плавное обновление переведенной картинки на месте без пересоздания DOM сцены и без сброса скролла */
-    function updateTranslatedImageSmoothly(freshBase64) {
+    /* Плавное обновление переведенной картинки на месте через предзагрузку URL без пересоздания DOM и без моргания */
+    function updateTranslatedImageSmoothly(urlOrBase64) {
+      const url = urlOrBase64 || (selectedPage && selectedPage.is_translated && selectedPage.dest_path
+        ? `/local_image?path=${encodeURIComponent(selectedPage.dest_path)}&t=${Date.now()}`
+        : null);
       const transWrap = document.getElementById("pin-wrap-trans");
       const transImg = transWrap ? transWrap.querySelector("img") : null;
-      if (transImg && freshBase64 && (viewMode === "split" || viewMode === "translated")) {
-        transImg.onload = () => {
+      if (transImg && url && (viewMode === "split" || viewMode === "translated")) {
+        const preImg = new Image();
+        preImg.onload = () => {
+          transImg.src = preImg.src;
           renderBboxPinsOnStage();
         };
-        transImg.src = freshBase64;
+        preImg.onerror = () => {
+          transImg.src = url;
+          renderBboxPinsOnStage();
+        };
+        preImg.src = url;
         renderBboxPinsOnStage();
         return;
       }
-      renderViewer(freshBase64);
+      renderViewer(url);
     }
 
     function renderViewer(freshBase64 = null) {
@@ -5507,25 +5521,45 @@
       startFolderPolling();
     }
 
+    let lastFolderPollCurrent = -1;
+
     function startFolderPolling() {
       if (pollTimer) clearInterval(pollTimer);
+      lastFolderPollCurrent = Array.isArray(folderPages)
+        ? folderPages.filter(p => Boolean(p.is_translated)).length
+        : -1;
       pollTimer = setInterval(async () => {
-        const res = await fetch("/folder_status");
-        const st = await res.json();
-        const total = st.total || 0;
-        const cur = st.current || 0;
-        const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
+        try {
+          const res = await fetch("/folder_status");
+          if (!res.ok) return;
+          const st = await res.json();
+          const total = st.total || 0;
+          const cur = st.current || 0;
+          const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
 
-        document.getElementById("progress-fill").style.width = pct + "%";
-        document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
+          document.getElementById("progress-fill").style.width = pct + "%";
+          document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
 
-        if (st.status === "running" || st.status === "stopping") {
-          sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
-        } else {
-          clearInterval(pollTimer);
-          pollTimer = null;
-          isJobRunning = false;
-          await inspectCurrentFolder();
+          if (st.status === "running" || st.status === "stopping") {
+            if (lastFolderPollCurrent >= 0 && cur > lastFolderPollCurrent) {
+              lastFolderPollCurrent = cur;
+              await inspectCurrentFolder({ preserveCurrentSelection: true });
+            } else if (lastFolderPollCurrent < 0) {
+              lastFolderPollCurrent = cur;
+              if (cur > 0) {
+                await inspectCurrentFolder({ preserveCurrentSelection: true });
+              }
+            }
+            sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
+          } else {
+            clearInterval(pollTimer);
+            pollTimer = null;
+            isJobRunning = false;
+            lastFolderPollCurrent = -1;
+            await inspectCurrentFolder({ preserveCurrentSelection: true });
+          }
+        } catch (err) {
+          console.warn("Ошибка опроса статуса папки:", err);
         }
       }, 1200);
     }

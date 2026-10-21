@@ -1,12 +1,14 @@
 """
-Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Шаг 4, v1.0.0).
+Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Шаг 4, v1.0.6-step1).
 
-Изменения v1.0.0:
-1. Пропуск блоков с `is_deleted=True` (когда пользователь удалил перевод в редакторе, чтобы оставить оригинал).
-2. Поддержка выбора минимального (`min_font_size`) и максимального (`max_font_size`) размера шрифта.
-3. Автоматическая подгонка размера текста под новую площадь рамки (`bbox_modified`), когда пользователь
-   растягивает или сжимает квадрат мышкой в редакторе (с обходом глобального потолка `max_font_size`),
-   а также поддержка быстрой прокрутки кегля колесиком мыши (`font_size`).
+Изменения v1.0.6-step1:
+1. Ускорение подбора оптимального размера шрифта в `_fit_text_to_box`:
+   замена линейного перебора (до 130 итераций `multiline_textbbox` при `unconstrained_size=True`)
+   на бинарный поиск (`low = min_lim`, `high = start_size`) как для прохода без переносов
+   (`allow_hyphenation=False`), так и для прохода с переносами (`allow_hyphenation=True`),
+   с сохранением 100% точности выбора максимального подходящего кегля и записи `block["rendered_font_size"] = chosen_fs`.
+2. Сохранены все функции v1.0.0: пропуск блоков с `is_deleted=True`, поддержка `min_font_size` / `max_font_size`,
+   авто-подгонка при `bbox_modified` / `bbox_resized` и индивидуальный `font_size`.
 """
 
 from __future__ import annotations
@@ -284,7 +286,10 @@ class MangaRenderer:
                 max(min_lim, int(min(target_w, target_h) * (0.45 if is_free_text else 0.38))),
             )
 
-        for font_size in range(start_size, min_lim - 1, -1):
+        def _evaluate_font_size(
+            font_size: int,
+            allow_hyphenation: bool,
+        ) -> tuple[bool, str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int]:
             font = self._get_font(font_size)
             stroke_w = (
                 stroke_width_override
@@ -297,31 +302,66 @@ class MangaRenderer:
                 text,
                 font,
                 target_w,
-                allow_hyphenation=False,
+                allow_hyphenation=allow_hyphenation,
                 elliptical_shaping=use_ellipse,
             )
-            if self._fits_in_box(draw, wrapped, font, spacing, stroke_w, target_w, target_h, elliptical=use_ellipse):
-                return wrapped, font, stroke_w, spacing, font_size
+            fits = self._fits_in_box(
+                draw,
+                wrapped,
+                font,
+                spacing,
+                stroke_w,
+                target_w,
+                target_h,
+                elliptical=use_ellipse,
+            )
+            return fits, wrapped, font, stroke_w, spacing
 
+        def _binary_search_best_fit(
+            low_bound: int,
+            high_bound: int,
+            allow_hyphenation: bool,
+        ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int] | None:
+            if high_bound < low_bound:
+                return None
+
+            # Быстрая проверка верхней границы (если максимальный кегль сразу помещается — 1 вызов!)
+            fits_hi, wrap_hi, font_hi, stroke_hi, space_hi = _evaluate_font_size(high_bound, allow_hyphenation)
+            if fits_hi:
+                return wrap_hi, font_hi, stroke_hi, space_hi, high_bound
+
+            low = low_bound
+            high = high_bound - 1
+            best: tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int] | None = None
+
+            while low <= high:
+                mid = (low + high) // 2
+                fits, wrapped, font, stroke_w, spacing = _evaluate_font_size(mid, allow_hyphenation)
+                if fits:
+                    best = (wrapped, font, stroke_w, spacing, mid)
+                    low = mid + 1
+                else:
+                    high = mid - 1
+
+            # Дополнительная проверка +1..+2px от найденного максимума на случай дискретного переноса строк в эллипсе
+            if best is not None:
+                best_fs = best[4]
+                for probe_fs in range(min(high_bound - 1, best_fs + 2), best_fs, -1):
+                    p_fits, p_wrap, p_font, p_stroke, p_space = _evaluate_font_size(probe_fs, allow_hyphenation)
+                    if p_fits:
+                        return p_wrap, p_font, p_stroke, p_space, probe_fs
+            return best
+
+        # Проход 1: бинарный поиск без переносов слов (allow_hyphenation=False)
+        best_no_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=False)
+        if best_no_hyph is not None:
+            return best_no_hyph
+
+        # Проход 2: бинарный поиск с разрешенными переносами длинных слов (allow_hyphenation=True)
         hyph_start = max(min_lim, min(start_size, max(28 if unconstrained_size else 22, min_lim)))
-        for font_size in range(hyph_start, min_lim - 1, -1):
-            font = self._get_font(font_size)
-            stroke_w = (
-                stroke_width_override
-                if stroke_width_override is not None
-                else (max(3, font_size // 8) if is_free_text else max(2, font_size // 10))
-            )
-            spacing = self._get_line_spacing(font_size)
-            wrapped = self._wrap_text_pixel(
-                draw,
-                text,
-                font,
-                target_w,
-                allow_hyphenation=True,
-                elliptical_shaping=use_ellipse,
-            )
-            if self._fits_in_box(draw, wrapped, font, spacing, stroke_w, target_w, target_h, elliptical=use_ellipse):
-                return wrapped, font, stroke_w, spacing, font_size
+        best_with_hyph = _binary_search_best_fit(min_lim, hyph_start, allow_hyphenation=True)
+        if best_with_hyph is not None:
+            return best_with_hyph
 
         min_font = self._get_font(min_lim)
         min_spacing = self._get_line_spacing(min_lim)

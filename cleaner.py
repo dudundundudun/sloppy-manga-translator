@@ -1,20 +1,27 @@
 """
-Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.1).
+Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.6-step1).
 
-Изменения v1.0.1:
-1. Поддержка полного удаления рамок и флага `is_deleted`:
-   - если рамка полностью удалена пользователем из списка блоков, её область вообще не затрагивается;
-   - если у блока `is_deleted=True` или пустой `translated_text`, этот блок полностью исключается из маски
-     очистки, а его `clean_bbox` защищается от случайного перекрытия соседними рамками (`crop_padding`).
-2. Идеально чистая очистка белых и однотонных speech bubbles без серых разводов и «призраков» от букв.
-3. Фиксация области инпейнтинга по `clean_bbox` (`original_bbox`): если пользователь передвинул или
-   изменил размер рамки перевода (`bbox`) мышкой в редакторе, замазка оригинального японского/корейского
-   текста остается строго на исходном месте и не смещается.
+Изменения v1.0.6-step1:
+1. Детерминированный хэш состояния замазки страницы `compute_clean_state_hash`:
+   учитывает `src_file`, `mtime`, глобальный `dilate_size` и отсортированный список кортежей
+   `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))` для всех активных
+   неудаленных блоков.
+2. Потокобезопасный LRU-кэш очищенного слоя `cleaned_image` в памяти (на 8 последних страниц:
+   `(src_file_str, clean_state_hash) -> PIL.Image`) + опциональный дисковый кэш в `temp_debug/`,
+   позволяющий пропускать повторный запуск `SimpleLama` (0 мс) при редактировании текста, кегля
+   или сдвиге/масштабировании рамки перевода `bbox`.
+3. Сохранены все улучшения v1.0.1: поддержка `is_deleted`, чистая заливка белых бабблов и фиксация
+   области инпейнтинга строго по `clean_bbox`.
 """
 
 from __future__ import annotations
 
+from collections import OrderedDict
+import hashlib
+import json
 import logging
+from pathlib import Path
+import threading
 from typing import Any
 
 import cv2
@@ -25,7 +32,7 @@ logger = logging.getLogger(__name__)
 
 
 class BubbleCleaner:
-    """Очищает текстовые бабблы и надписи на странице по координатам Bounding Boxes с сохранением арта."""
+    """Очищает текстовые бабблы и надписи на странице по координатам Bounding Boxes с сохранением арта и LRU-кэшем."""
 
     def __init__(
         self,
@@ -33,6 +40,8 @@ class BubbleCleaner:
         dilate_size: int = 9,
         box_margin_ratio: float = 0.03,
         crop_padding: int = 20,
+        cache_max_pages: int = 8,
+        disk_cache_dir: str | Path | None = None,
         **kwargs: Any,
     ) -> None:
         if "dilate_Size" in kwargs and kwargs["dilate_Size"] is not None:
@@ -41,6 +50,19 @@ class BubbleCleaner:
         self.dilate_size = max(1, int(dilate_size))
         self.box_margin_ratio = box_margin_ratio
         self.crop_padding = max(8, int(crop_padding))
+        self.cache_max_pages = max(1, int(cache_max_pages))
+        self._cache_lock = threading.Lock()
+        self._cleaned_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
+
+        if disk_cache_dir is not None:
+            self.disk_cache_dir: Path | None = Path(disk_cache_dir).resolve()
+            try:
+                self.disk_cache_dir.mkdir(parents=True, exist_ok=True)
+            except Exception:
+                self.disk_cache_dir = None
+        else:
+            self.disk_cache_dir = None
+
         self.lama_model: Any | None = None
 
         if use_lama:
@@ -57,6 +79,133 @@ class BubbleCleaner:
                     exc,
                 )
                 self.lama_model = None
+
+    @staticmethod
+    def _normalize_src_key(src_file: str | Path | None) -> str:
+        if not src_file:
+            return ""
+        try:
+            return str(Path(src_file).resolve())
+        except Exception:
+            return str(src_file)
+
+    def compute_clean_state_hash(
+        self,
+        blocks: list[dict[str, Any]],
+        src_file: str | Path | None = None,
+        src_mtime: float | int | None = None,
+    ) -> str:
+        """
+        Вычисляет детерминированный хэш состояния замазки страницы на основе пути исходного файла `src_file`,
+        его `mtime`, глобального `dilate_size` и отсортированного списка кортежей
+        `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))` для всех активных блоков.
+        """
+        src_key = self._normalize_src_key(src_file)
+        if src_mtime is None and src_key:
+            try:
+                p = Path(src_key)
+                if p.exists():
+                    src_mtime = p.stat().st_mtime_ns
+            except OSError:
+                src_mtime = 0
+
+        active_tuples: list[tuple[tuple[int, int, int, int], bool, int]] = []
+        for block in blocks:
+            if not isinstance(block, dict) or self._is_block_skipped(block):
+                continue
+            cb = self._get_clean_bbox(block)
+            clean_tuple = (int(cb[0]), int(cb[1]), int(cb[2]), int(cb[3]))
+            is_free = bool(block.get("is_free_text", False))
+            mask_dilate_val = int(block.get("mask_dilate") or 0)
+            active_tuples.append((clean_tuple, is_free, mask_dilate_val))
+
+        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]))
+
+        payload = {
+            "src_file": src_key,
+            "mtime": int(src_mtime or 0),
+            "dilate_size": int(self.dilate_size),
+            "active_clean_blocks": [
+                [list(coords), is_free, mdil] for coords, is_free, mdil in active_tuples
+            ],
+        }
+        raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()[:24]
+
+    def _get_disk_cache_path(self, src_key: str, clean_state_hash: str) -> Path | None:
+        if self.disk_cache_dir is None or not clean_state_hash:
+            return None
+        stem = Path(src_key).stem if src_key else "page"
+        safe_stem = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in stem)[:32] or "page"
+        return self.disk_cache_dir / f"clean_{safe_stem}_{clean_state_hash}.png"
+
+    def get_cached_cleaned_image(
+        self,
+        src_file: str | Path | None,
+        clean_state_hash: str,
+    ) -> Image.Image | None:
+        """Возвращает копию очищенного слоя `cleaned_image` из LRU-кэша в памяти (или из `temp_debug/`), если хэш совпадает."""
+        src_key = self._normalize_src_key(src_file)
+        if not src_key or not clean_state_hash:
+            return None
+        cache_key = (src_key, clean_state_hash)
+        with self._cache_lock:
+            cached = self._cleaned_lru_cache.get(cache_key)
+            if cached is not None:
+                self._cleaned_lru_cache.move_to_end(cache_key)
+                return cached.copy()
+
+        disk_path = self._get_disk_cache_path(src_key, clean_state_hash)
+        if disk_path is not None and disk_path.exists():
+            try:
+                with Image.open(disk_path) as im:
+                    loaded = im.convert("RGB").copy()
+                with self._cache_lock:
+                    self._cleaned_lru_cache[cache_key] = loaded.copy()
+                    self._cleaned_lru_cache.move_to_end(cache_key)
+                    while len(self._cleaned_lru_cache) > self.cache_max_pages:
+                        self._cleaned_lru_cache.popitem(last=False)
+                return loaded
+            except Exception as exc:
+                logger.debug("Не удалось прочитать кэш очищенного слоя с диска (%s): %s", disk_path, exc)
+        return None
+
+    def put_cached_cleaned_image(
+        self,
+        src_file: str | Path | None,
+        clean_state_hash: str,
+        cleaned_image: Image.Image,
+        save_to_disk: bool = False,
+    ) -> None:
+        """Сохраняет очищенный слой `cleaned_image` в LRU-кэш в памяти (до 8 страниц) и опционально в `temp_debug/`."""
+        src_key = self._normalize_src_key(src_file)
+        if not src_key or not clean_state_hash:
+            return
+        cache_key = (src_key, clean_state_hash)
+        rgb_copy = cleaned_image.convert("RGB").copy()
+        with self._cache_lock:
+            self._cleaned_lru_cache[cache_key] = rgb_copy
+            self._cleaned_lru_cache.move_to_end(cache_key)
+            while len(self._cleaned_lru_cache) > self.cache_max_pages:
+                self._cleaned_lru_cache.popitem(last=False)
+
+        if save_to_disk and self.disk_cache_dir is not None:
+            disk_path = self._get_disk_cache_path(src_key, clean_state_hash)
+            if disk_path is not None and not disk_path.exists():
+                try:
+                    rgb_copy.save(disk_path, format="PNG", compress_level=1)
+                    # Поддерживаем чистоту в папке дискового кэша (не более 16 последних файлов)
+                    cache_files = sorted(
+                        self.disk_cache_dir.glob("clean_*.png"),
+                        key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
+                    )
+                    for old_f in cache_files[:-16]:
+                        try:
+                            old_f.unlink(missing_ok=True)
+                        except OSError:
+                            pass
+                except Exception as exc:
+                    logger.debug("Не удалось сохранить кэш очищенного слоя на диск: %s", exc)
 
     @staticmethod
     def _extract_bubble_interior_mask(roi_gray: np.ndarray, bg_level: float) -> np.ndarray:
@@ -170,6 +319,12 @@ class BubbleCleaner:
                 continue
 
             is_free_text = bool(block.get("is_free_text", False))
+            custom_dilate = int(block.get("mask_dilate") or 0)
+            if custom_dilate > 0:
+                d_val = max(1, min(35, custom_dilate))
+                block_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d_val, d_val))
+            else:
+                block_kernel = None
 
             if is_free_text:
                 ix1 = max(0, x1 - 4)
@@ -224,7 +379,8 @@ class BubbleCleaner:
                     clean_roi_mask[labels == label_idx] = 255
 
                 if np.count_nonzero(clean_roi_mask) > 0:
-                    dilated_roi = cv2.dilate(clean_roi_mask, kernel_bubble, iterations=1)
+                    eff_bub_kernel = block_kernel if block_kernel is not None else kernel_bubble
+                    dilated_roi = cv2.dilate(clean_roi_mask, eff_bub_kernel, iterations=1)
                     dilated_roi = cv2.bitwise_and(dilated_roi, interior_mask)
                     full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
                     continue
@@ -282,7 +438,11 @@ class BubbleCleaner:
             if np.count_nonzero(clean_roi_mask) == 0:
                 continue
 
-            active_kernel = kernel_free if is_free_text else kernel_bubble
+            active_kernel = (
+                block_kernel
+                if block_kernel is not None
+                else (kernel_free if is_free_text else kernel_bubble)
+            )
             dilated_roi = cv2.dilate(clean_roi_mask, active_kernel, iterations=1)
             full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
 

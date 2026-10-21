@@ -61,9 +61,11 @@ from ocr_engine import MangaOCREngine
 from renderer import MangaRenderer
 from translator import CLOUD_API_PRESETS, RECOMMENDED_LOCAL_MODELS, OllamaTranslator, japanese_to_romaji_local
 
-from collections import deque
+from collections import OrderedDict, deque
+import hashlib
 from logging.handlers import RotatingFileHandler
 import platform
+from urllib.parse import quote
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMP_DIR = BASE_DIR / "temp_debug"
@@ -198,6 +200,167 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     return block
 
 
+_CLEANED_PAGE_CACHE_MAX = 8
+_cleaned_page_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
+_cleaned_page_cache_lock = threading.Lock()
+
+
+def _is_block_active_for_cleaning(block: dict[str, Any]) -> bool:
+    if not isinstance(block, dict):
+        return False
+    if bool(block.get("is_deleted", False)):
+        return False
+    if "translated_text" in block and not str(block.get("translated_text") or "").strip():
+        return False
+    return True
+
+
+def _compute_clean_state_hash(
+    src_file: Path | str | None,
+    blocks: list[dict[str, Any]],
+    dilate_size: int | None = None,
+) -> str:
+    """
+    Вычисляет детерминированный хэш состояния замазки страницы `clean_state_hash`
+    на основе пути исходного файла `src_file`, его `mtime`, глобального `dilate_size`
+    и отсортированного списка кортежей `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))`
+    для всех активных неудаленных блоков.
+    """
+    eff_dilate = int(
+        dilate_size
+        if dilate_size is not None
+        else (cleaner_engine.dilate_size if cleaner_engine is not None else 7)
+    )
+    if cleaner_engine is not None and hasattr(cleaner_engine, "compute_clean_state_hash"):
+        return cleaner_engine.compute_clean_state_hash(blocks=blocks, src_file=src_file)
+
+    src_key = ""
+    src_mtime = 0
+    if src_file:
+        try:
+            p = Path(src_file).resolve()
+            src_key = str(p)
+            if p.exists():
+                src_mtime = p.stat().st_mtime_ns
+        except Exception:
+            src_key = str(src_file)
+
+    active_tuples: list[tuple[tuple[int, int, int, int], bool, int]] = []
+    for b in blocks:
+        if not _is_block_active_for_cleaning(b):
+            continue
+        raw_cb = b.get("clean_bbox") or b.get("original_bbox") or b.get("bbox") or [0, 0, 0, 0]
+        cb = [int(round(float(c))) for c in raw_cb[:4]] if len(raw_cb) >= 4 else [0, 0, 0, 0]
+        clean_tuple = (cb[0], cb[1], cb[2], cb[3])
+        is_free = bool(b.get("is_free_text", False))
+        mask_dilate_val = int(b.get("mask_dilate") or 0)
+        active_tuples.append((clean_tuple, is_free, mask_dilate_val))
+
+    active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]))
+    payload = {
+        "src_file": src_key,
+        "mtime": int(src_mtime),
+        "dilate_size": eff_dilate,
+        "active_clean_blocks": [
+            [list(coords), is_free, mdil] for coords, is_free, mdil in active_tuples
+        ],
+    }
+    raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()[:24]
+
+
+def _get_cached_cleaned_image(
+    src_file: Path | str | None,
+    clean_state_hash: str,
+) -> Image.Image | None:
+    if not src_file or not clean_state_hash:
+        return None
+    try:
+        src_key = str(Path(src_file).resolve())
+    except Exception:
+        src_key = str(src_file)
+
+    cache_key = (src_key, clean_state_hash)
+    with _cleaned_page_cache_lock:
+        cached = _cleaned_page_lru_cache.get(cache_key)
+        if cached is not None:
+            _cleaned_page_lru_cache.move_to_end(cache_key)
+            return cached.copy()
+
+    if cleaner_engine is not None and hasattr(cleaner_engine, "get_cached_cleaned_image"):
+        eng_cached = cleaner_engine.get_cached_cleaned_image(src_key, clean_state_hash)
+        if eng_cached is not None:
+            with _cleaned_page_cache_lock:
+                _cleaned_page_lru_cache[cache_key] = eng_cached.copy()
+                _cleaned_page_lru_cache.move_to_end(cache_key)
+                while len(_cleaned_page_lru_cache) > _CLEANED_PAGE_CACHE_MAX:
+                    _cleaned_page_lru_cache.popitem(last=False)
+            return eng_cached
+    return None
+
+
+def _store_cached_cleaned_image(
+    src_file: Path | str | None,
+    clean_state_hash: str,
+    cleaned_image: Image.Image,
+    save_to_disk: bool = True,
+) -> None:
+    if not src_file or not clean_state_hash:
+        return
+    try:
+        src_key = str(Path(src_file).resolve())
+    except Exception:
+        src_key = str(src_file)
+
+    cache_key = (src_key, clean_state_hash)
+    rgb_copy = cleaned_image.convert("RGB").copy()
+    with _cleaned_page_cache_lock:
+        _cleaned_page_lru_cache[cache_key] = rgb_copy
+        _cleaned_page_lru_cache.move_to_end(cache_key)
+        while len(_cleaned_page_lru_cache) > _CLEANED_PAGE_CACHE_MAX:
+            _cleaned_page_lru_cache.popitem(last=False)
+
+    if cleaner_engine is not None and hasattr(cleaner_engine, "put_cached_cleaned_image"):
+        cleaner_engine.put_cached_cleaned_image(
+            src_key,
+            clean_state_hash,
+            rgb_copy,
+            save_to_disk=save_to_disk,
+        )
+
+
+async def _get_or_clean_page_image(
+    pil_image: Image.Image,
+    active_blocks: list[dict[str, Any]],
+    src_file: Path | str | None = None,
+    save_to_disk: bool = True,
+) -> tuple[Image.Image, Image.Image | None, bool, str]:
+    """
+    Возвращает `(cleaned_image, mask_image, cache_hit, clean_state_hash)`.
+    Если `clean_state_hash` для `src_file` совпадает с записью в LRU-кэше (8 последних страниц)
+    или в `temp_debug/clean_cache/`, возвращает готовый `cleaned_image` за 0 мс без запуска SimpleLama.
+    """
+    assert cleaner_engine is not None
+    clean_state_hash = _compute_clean_state_hash(src_file, active_blocks)
+    if src_file:
+        cached_clean = _get_cached_cleaned_image(src_file, clean_state_hash)
+        if cached_clean is not None:
+            return cached_clean, None, True, clean_state_hash
+
+    async with gpu_lock:
+        cleaned_image, mask_image = await asyncio.to_thread(
+            cleaner_engine.clean_image, pil_image, active_blocks
+        )
+    if src_file:
+        _store_cached_cleaned_image(
+            src_file,
+            clean_state_hash,
+            cleaned_image,
+            save_to_disk=save_to_disk,
+        )
+    return cleaned_image, mask_image, False, clean_state_hash
+
+
 def launch_studio_window(url: str = "http://127.0.0.1:5000/") -> None:
     print(f"\n>>> Открываю окно интерфейса Miko-chan Manga Studio ({url})...", flush=True)
     if os.name == "nt":
@@ -230,7 +393,7 @@ async def lifespan(app: FastAPI):
     ocr_engine = MangaOCREngine(models_dir=BASE_DIR / "models")
 
     print("  [2/4] Инициализация нейросетевой очистки SimpleLama...", flush=True)
-    cleaner_engine = BubbleCleaner(use_lama=True, dilate_size=7)
+    cleaner_engine = BubbleCleaner(use_lama=True, dilate_size=7, cache_max_pages=8, disk_cache_dir=TEMP_DIR / "clean_cache")
 
     print("  [3/4] Инициализация шрифтового движка и клиента Ollama/Cloud API...", flush=True)
     renderer_engine = MangaRenderer(fonts_dir=BASE_DIR / "fonts")
@@ -474,6 +637,10 @@ class SaveEditedPageRequest(BaseModel):
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     return_image: bool = Field(default=True)
+    prefer_url: bool = Field(
+        default=True,
+        description="Если True и dest_path существует, возвращает легковесный URL /local_image вместо огромного Base64",
+    )
     image_format: str = Field(default="webp")
     blocks: list[TextBlock]
 
@@ -916,6 +1083,7 @@ async def process_single_pil_image(
     min_text_length: int | None = None,
     context_lines: list[str] | None = None,
     external_cache: dict[str, str] | None = None,
+    src_file: Path | str | None = None,
 ) -> tuple[Image.Image, Image.Image, Image.Image, list[dict[str, Any]], str, str]:
     assert ocr_engine is not None
     assert translator_engine is not None
@@ -975,10 +1143,14 @@ async def process_single_pil_image(
         return pil_image.copy(), pil_image.copy(), empty_mask, [], active_model, detected_lang
 
     _t0_render = time.perf_counter()
-    async with gpu_lock:
-        cleaned_image, mask_image = await asyncio.to_thread(
-            cleaner_engine.clean_image, pil_image, blocks
-        )
+    cleaned_image, mask_image, _clean_hit, _clean_hash = await _get_or_clean_page_image(
+        pil_image,
+        blocks,
+        src_file=src_file,
+        save_to_disk=True,
+    )
+    if mask_image is None:
+        mask_image = Image.new("L", pil_image.size, 0)
 
     final_image = await asyncio.to_thread(
         renderer_engine.render_blocks,
@@ -1333,7 +1505,13 @@ async def _run_folder_translation_job(
                 if not blocks_in:
                     shutil.copy2(src_p, dst_p)
                     return
-                cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, blocks_in)
+                clean_hash = _compute_clean_state_hash(src_p, blocks_in)
+                cached_im = _get_cached_cleaned_image(src_p, clean_hash)
+                if cached_im is not None:
+                    cleaned_im = cached_im
+                else:
+                    cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, blocks_in)
+                    _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
                 final_im = renderer_engine.render_blocks(
                     cleaned_im,
                     blocks_in,
@@ -1386,6 +1564,9 @@ async def _run_folder_translation_job(
                         "updated_at": int(time.time()),
                         "blocks": p_blocks,
                     }
+                    manifest["rolling_context"] = rolling_context
+                    manifest["phrase_cache"] = phrase_cache
+                    _save_folder_manifest(output_dir, manifest)
                 except Exception as render_exc:
                     logger.exception("Ошибка при сохранении страницы %s: %s", img_path, render_exc)
                     shutil.copy2(img_path, dest_path)
@@ -1782,6 +1963,7 @@ def _save_web_translated_page(
     page_url: str | None = None,
     image_url: str | None = None,
     page_index: int | None = None,
+    cleaned_image: Image.Image | None = None,
 ) -> str:
     """
     Сохраняет переведенную из браузера (Chrome Extension) страницу манги на компьютер:
@@ -1833,6 +2015,12 @@ def _save_web_translated_page(
     if not orig_file_path.exists():
         raw_image.save(orig_file_path, format="PNG")
     final_image.save(dest_file_path, format="PNG")
+    if cleaned_image is not None and blocks:
+        try:
+            c_hash = _compute_clean_state_hash(orig_file_path, blocks)
+            _store_cached_cleaned_image(orig_file_path, c_hash, cleaned_image, save_to_disk=True)
+        except Exception:
+            pass
 
     manifest = _load_folder_manifest(output_chapter_dir)
     if not isinstance(manifest.get("pages"), dict):
@@ -1969,6 +2157,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
                 page_url=payload.page_url,
                 image_url=payload.image_url,
                 page_index=payload.page_index,
+                cleaned_image=cleaned_image,
             )
         except Exception as save_exc:
             logger.warning("Не удалось автосохранить веб-страницу на диск: %s", save_exc)
@@ -2079,6 +2268,7 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
         min_text_length=payload.min_text_length,
         context_lines=context_lines,
         external_cache=phrase_cache,
+        src_file=src_file,
     )
 
     if not blocks:
@@ -2404,13 +2594,18 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
             active_blocks.append(bd)
         blocks_dicts.append(bd)
 
+    clean_cache_hit = False
+    clean_state_hash = ""
     if not active_blocks:
         final_image = pil_image.copy()
+        clean_cache_hit = True
     else:
-        async with gpu_lock:
-            cleaned_image, _ = await asyncio.to_thread(
-                cleaner_engine.clean_image, pil_image, active_blocks
-            )
+        cleaned_image, _, clean_cache_hit, clean_state_hash = await _get_or_clean_page_image(
+            pil_image,
+            active_blocks,
+            src_file=src_file,
+            save_to_disk=True,
+        )
         final_image = await asyncio.to_thread(
             renderer_engine.render_blocks,
             cleaned_image,
@@ -2460,18 +2655,36 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     manifest["pages"][rel_norm] = prev_meta
     _save_folder_manifest(output_dir, manifest)
 
-    translated_b64 = (
-        encode_pil_to_data_url(final_image, fmt=payload.image_format)
-        if payload.return_image
+    translated_image_url: str | None = (
+        f"/local_image?path={quote(str(dest_path))}&t={int(time.time() * 1000)}"
+        if dest_path.exists()
         else None
     )
+    if payload.return_image:
+        if payload.prefer_url and translated_image_url:
+            translated_b64 = None
+        else:
+            translated_b64 = encode_pil_to_data_url(final_image, fmt=payload.image_format)
+    else:
+        translated_b64 = None
+
     elapsed = round(time.perf_counter() - start_ts, 3)
+    logger.info(
+        "💾 [SAVE EDITED PAGE] %s | Время=%.3fс | Кэш очистки=%s | Блоков=%d",
+        rel_norm,
+        elapsed,
+        "HIT (0мс SimpleLama)" if clean_cache_hit else "MISS (SimpleLama)",
+        len(blocks_dicts),
+    )
 
     return {
         "status": "ok",
         "saved_output_path": str(dest_path),
         "processing_time_sec": elapsed,
+        "clean_cache_hit": clean_cache_hit,
+        "clean_state_hash": clean_state_hash,
         "blocks_count": len(blocks_dicts),
+        "translated_image_url": translated_image_url,
         "translated_image": translated_b64,
         "blocks": [TextBlock(**b) for b in blocks_dicts],
     }
@@ -2585,10 +2798,12 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
     if not active_blocks:
         final_image = pil_image.copy()
     else:
-        async with gpu_lock:
-            cleaned_image, _ = await asyncio.to_thread(
-                cleaner_engine.clean_image, pil_image, active_blocks
-            )
+        cleaned_image, _, _, _ = await _get_or_clean_page_image(
+            pil_image,
+            active_blocks,
+            src_file=src_file,
+            save_to_disk=True,
+        )
         final_image = await asyncio.to_thread(
             renderer_engine.render_blocks,
             cleaned_image,
@@ -2716,10 +2931,12 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     if not active_blocks:
         final_image = pil_image.copy()
     else:
-        async with gpu_lock:
-            cleaned_image, _ = await asyncio.to_thread(
-                cleaner_engine.clean_image, pil_image, active_blocks
-            )
+        cleaned_image, _, _, _ = await _get_or_clean_page_image(
+            pil_image,
+            active_blocks,
+            src_file=src_file,
+            save_to_disk=True,
+        )
         final_image = await asyncio.to_thread(
             renderer_engine.render_blocks,
             cleaned_image,
