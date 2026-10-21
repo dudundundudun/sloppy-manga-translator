@@ -1,17 +1,15 @@
 """
-Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.6-step1).
+Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.6-step3).
 
-Изменения v1.0.6-step1:
-1. Детерминированный хэш состояния замазки страницы `compute_clean_state_hash`:
-   учитывает `src_file`, `mtime`, глобальный `dilate_size` и отсортированный список кортежей
-   `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))` для всех активных
-   неудаленных блоков.
-2. Потокобезопасный LRU-кэш очищенного слоя `cleaned_image` в памяти (на 8 последних страниц:
-   `(src_file_str, clean_state_hash) -> PIL.Image`) + опциональный дисковый кэш в `temp_debug/`,
-   позволяющий пропускать повторный запуск `SimpleLama` (0 мс) при редактировании текста, кегля
-   или сдвиге/масштабировании рамки перевода `bbox`.
-3. Сохранены все улучшения v1.0.1: поддержка `is_deleted`, чистая заливка белых бабблов и фиксация
-   области инпейнтинга строго по `clean_bbox`.
+Изменения v1.0.6-step3:
+1. Индивидуальный радиус замазки `mask_dilate` (1..28 px) для каждого блока в `build_text_mask`:
+   создает эллиптическое ядро `cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d))` специально для блока,
+   позволяя в 1 движение ползунка убрать торчащие края иероглифов или уменьшить замазку для сохранения рисунка.
+2. Поддержка ручной кисти и ластика маски замазки `custom_mask_strokes` (`[{"x": int, "y": int, "r": int, "mode": "add"|"erase"}]`):
+   применяет поверх `full_mask` круги `cv2.circle(..., 255)` для `"add"` (замазать остаток буквы)
+   и `cv2.circle(..., 0)` для `"erase"` (восстановить стертую линию рисунка), с автоматическим расширением
+   области кропа инпейнтинга и учетом мазков в `compute_clean_state_hash`.
+3. Сохранены все оптимизации v1.0.6-step1 (LRU-кэш `cleaned_image` на 8 страниц + дисковый кэш в `temp_debug/`).
 """
 
 from __future__ import annotations
@@ -89,6 +87,25 @@ class BubbleCleaner:
         except Exception:
             return str(src_file)
 
+    @staticmethod
+    def _normalize_block_strokes(block: dict[str, Any]) -> list[tuple[int, int, int, str]]:
+        raw_strokes = block.get("custom_mask_strokes")
+        if not isinstance(raw_strokes, list) or not raw_strokes:
+            return []
+        norm: list[tuple[int, int, int, str]] = []
+        for s in raw_strokes:
+            if not isinstance(s, dict):
+                continue
+            try:
+                sx = int(round(float(s.get("x", 0))))
+                sy = int(round(float(s.get("y", 0))))
+                sr = max(1, min(80, int(round(float(s.get("r", 8))))))
+                smode = "erase" if str(s.get("mode") or "add").lower().strip() == "erase" else "add"
+                norm.append((sx, sy, sr, smode))
+            except Exception:
+                continue
+        return norm
+
     def compute_clean_state_hash(
         self,
         blocks: list[dict[str, Any]],
@@ -98,7 +115,8 @@ class BubbleCleaner:
         """
         Вычисляет детерминированный хэш состояния замазки страницы на основе пути исходного файла `src_file`,
         его `mtime`, глобального `dilate_size` и отсортированного списка кортежей
-        `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))` для всех активных блоков.
+        `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))` (+ `custom_mask_strokes`)
+        для всех активных неудаленных блоков.
         """
         src_key = self._normalize_src_key(src_file)
         if src_mtime is None and src_key:
@@ -109,7 +127,7 @@ class BubbleCleaner:
             except OSError:
                 src_mtime = 0
 
-        active_tuples: list[tuple[tuple[int, int, int, int], bool, int]] = []
+        active_tuples: list[tuple[tuple[int, int, int, int], bool, int, tuple[tuple[int, int, int, str], ...]]] = []
         for block in blocks:
             if not isinstance(block, dict) or self._is_block_skipped(block):
                 continue
@@ -117,16 +135,18 @@ class BubbleCleaner:
             clean_tuple = (int(cb[0]), int(cb[1]), int(cb[2]), int(cb[3]))
             is_free = bool(block.get("is_free_text", False))
             mask_dilate_val = int(block.get("mask_dilate") or 0)
-            active_tuples.append((clean_tuple, is_free, mask_dilate_val))
+            strokes_tuple = tuple(self._normalize_block_strokes(block))
+            active_tuples.append((clean_tuple, is_free, mask_dilate_val, strokes_tuple))
 
-        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]))
+        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3]))
 
         payload = {
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
             "active_clean_blocks": [
-                [list(coords), is_free, mdil] for coords, is_free, mdil in active_tuples
+                [list(coords), is_free, mdil, [list(st) for st in strokes]]
+                for coords, is_free, mdil, strokes in active_tuples
             ],
         }
         raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -194,7 +214,6 @@ class BubbleCleaner:
             if disk_path is not None and not disk_path.exists():
                 try:
                     rgb_copy.save(disk_path, format="PNG", compress_level=1)
-                    # Поддерживаем чистоту в папке дискового кэша (не более 16 последних файлов)
                     cache_files = sorted(
                         self.disk_cache_dir.glob("clean_*.png"),
                         key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
@@ -280,6 +299,29 @@ class BubbleCleaner:
             return [int(round(float(c))) for c in raw[:4]]
         return [0, 0, 0, 0]
 
+    def _get_effective_clean_bounds(
+        self,
+        block: dict[str, Any],
+        img_w: int,
+        img_h: int,
+    ) -> tuple[int, int, int, int]:
+        """
+        Возвращает область очистки блока с учетом ручных мазков кисти `custom_mask_strokes` (режим `add`),
+        чтобы мазки за пределами исходного `clean_bbox` также попадали в кроп инпейнтинга.
+        """
+        x1, y1, x2, y2 = self._get_clean_bbox(block)
+        for sx, sy, sr, smode in self._normalize_block_strokes(block):
+            if smode == "add":
+                x1 = min(x1, sx - sr - 2)
+                y1 = min(y1, sy - sr - 2)
+                x2 = max(x2, sx + sr + 2)
+                y2 = max(y2, sy + sr + 2)
+        x1 = max(0, min(x1, img_w - 1))
+        y1 = max(0, min(y1, img_h - 1))
+        x2 = max(x1 + 1, min(x2, img_w))
+        y2 = max(y1 + 1, min(y2, img_h))
+        return x1, y1, x2, y2
+
     def build_text_mask(
         self,
         image_rgb: np.ndarray,
@@ -287,8 +329,8 @@ class BubbleCleaner:
     ) -> np.ndarray:
         """
         Строит точную бинарную маску (uint8, 0 или 255) по пикселям текста и его антиалиасинга
-        внутри каждого активного Bounding Box. Удаленные в редакторе блоки полностью пропускаются,
-        а их области защищаются от замазки при частичном перекрытии с соседними рамками.
+        внутри каждого активного Bounding Box с учетом индивидуального `mask_dilate` и ручных
+        мазков кисти/ластика `custom_mask_strokes`.
         """
         img_h, img_w = image_rgb.shape[:2]
         full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
@@ -319,9 +361,10 @@ class BubbleCleaner:
                 continue
 
             is_free_text = bool(block.get("is_free_text", False))
-            custom_dilate = int(block.get("mask_dilate") or 0)
+            raw_dilate = block.get("mask_dilate")
+            custom_dilate = int(raw_dilate) if isinstance(raw_dilate, (int, float)) and int(raw_dilate) > 0 else 0
             if custom_dilate > 0:
-                d_val = max(1, min(35, custom_dilate))
+                d_val = max(1, min(28, custom_dilate))
                 block_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d_val, d_val))
             else:
                 block_kernel = None
@@ -381,7 +424,9 @@ class BubbleCleaner:
                 if np.count_nonzero(clean_roi_mask) > 0:
                     eff_bub_kernel = block_kernel if block_kernel is not None else kernel_bubble
                     dilated_roi = cv2.dilate(clean_roi_mask, eff_bub_kernel, iterations=1)
-                    dilated_roi = cv2.bitwise_and(dilated_roi, interior_mask)
+                    # Если пользователь вручную увеличил mask_dilate, позволяем замазать края чуть шире interior_mask
+                    if block_kernel is None or custom_dilate <= 12:
+                        dilated_roi = cv2.bitwise_and(dilated_roi, interior_mask)
                     full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
                     continue
 
@@ -457,6 +502,19 @@ class BubbleCleaner:
             dy2 = max(dy1 + 1, min(dy2, img_h))
             full_mask[dy1:dy2, dx1:dx2] = 0
 
+        # Применяем ручные мазки кисти/ластика замазки (custom_mask_strokes) поверх full_mask
+        for block in blocks:
+            if self._is_block_skipped(block):
+                continue
+            for sx, sy, sr, smode in self._normalize_block_strokes(block):
+                cx = max(0, min(img_w - 1, sx))
+                cy = max(0, min(img_h - 1, sy))
+                radius = max(1, min(80, sr))
+                if smode == "erase":
+                    cv2.circle(full_mask, (cx, cy), radius, 0, -1)
+                else:
+                    cv2.circle(full_mask, (cx, cy), radius, 255, -1)
+
         return full_mask
 
     def _inpaint_crop(
@@ -508,7 +566,7 @@ class BubbleCleaner:
     ) -> tuple[Image.Image, Image.Image]:
         """
         Удаляет оригинальный текст со страницы манги, обрабатывая кропы вокруг активных бабблов и надписей
-        строго по исходным координатам `clean_bbox`.
+        строго по исходным координатам `clean_bbox` (плюс ручные мазки `custom_mask_strokes`).
         """
         rgb_image = image.convert("RGB")
         orig_w, orig_h = rgb_image.size
@@ -526,12 +584,9 @@ class BubbleCleaner:
         for block in blocks:
             if self._is_block_skipped(block):
                 continue
-            x1, y1, x2, y2 = self._get_clean_bbox(block)
-            x1 = max(0, min(x1, orig_w - 1))
-            y1 = max(0, min(y1, orig_h - 1))
-            x2 = max(x1 + 1, min(x2, orig_w))
-            y2 = max(y1 + 1, min(y2, orig_h))
+            x1, y1, x2, y2 = self._get_effective_clean_bounds(block, orig_w, orig_h)
             is_free_text = bool(block.get("is_free_text", False))
+            has_strokes = len(self._normalize_block_strokes(block)) > 0
 
             cx1 = max(0, x1 - pad)
             cy1 = max(0, y1 - pad)
@@ -541,11 +596,11 @@ class BubbleCleaner:
             if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
                 continue
 
-            # Ограничиваем активную маску текущего кропа собственной областью блока (без захвата чужих соседних масок в pad-зоне)
-            bx1 = max(cx1, x1 - (4 if is_free_text else 1))
-            by1 = max(cy1, y1 - (4 if is_free_text else 1))
-            bx2 = min(cx2, x2 + (4 if is_free_text else 1))
-            by2 = min(cy2, y2 + (4 if is_free_text else 1))
+            margin_extra = 4 if (is_free_text or has_strokes) else 1
+            bx1 = max(cx1, x1 - margin_extra)
+            by1 = max(cy1, y1 - margin_extra)
+            bx2 = min(cx2, x2 + margin_extra)
+            by2 = min(cy2, y2 + margin_extra)
 
             crop_mask = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
             crop_mask[by1 - cy1 : by2 - cy1, bx1 - cx1 : bx2 - cx1] = mask_np[by1:by2, bx1:bx2]

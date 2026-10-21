@@ -1805,6 +1805,146 @@
       flex-shrink: 0;
     }
 
+    /* ==================== STEP 3: TYPESETTING & MASK RETOUCHING UI ==================== */
+    .style-retouch-details {
+      background: rgba(15, 12, 26, 0.72);
+      border: 1px solid rgba(129, 140, 248, 0.28);
+      border-radius: 9px;
+      padding: 6px 8px;
+      font-size: 11.5px;
+      color: var(--text-secondary);
+      margin-top: 4px;
+    }
+    .style-retouch-details summary {
+      cursor: pointer;
+      font-weight: 700;
+      color: #c7d2fe;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      list-style: none;
+      user-select: none;
+    }
+    .style-retouch-details summary::-webkit-details-marker {
+      display: none;
+    }
+    .style-retouch-details[open] summary {
+      margin-bottom: 7px;
+      padding-bottom: 5px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      color: var(--sakura);
+    }
+    .style-preset-pills {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+      margin-bottom: 6px;
+    }
+    .style-preset-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 7px;
+      padding: 3px 7px;
+      font-size: 10.5px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .style-preset-btn:hover {
+      background: rgba(244, 114, 182, 0.18);
+      color: #fff;
+      border-color: var(--sakura);
+    }
+    .style-preset-btn.active {
+      background: linear-gradient(135deg, rgba(244, 114, 182, 0.35), rgba(99, 102, 241, 0.35));
+      color: #fff;
+      border-color: var(--sakura);
+      box-shadow: 0 2px 8px rgba(244, 114, 182, 0.25);
+    }
+    .style-grid-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      flex-wrap: wrap;
+      margin-bottom: 5px;
+    }
+    .align-btn-group {
+      display: inline-flex;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.12);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .align-btn {
+      background: transparent;
+      color: var(--text-muted);
+      border: none;
+      padding: 2px 7px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+    }
+    .align-btn.active {
+      background: rgba(129, 140, 248, 0.35);
+      color: #fff;
+    }
+    .color-input-mini {
+      width: 24px;
+      height: 22px;
+      padding: 0;
+      border: 1px solid rgba(255, 255, 255, 0.25);
+      border-radius: 5px;
+      background: transparent;
+      cursor: pointer;
+    }
+    .btn-mask-brush {
+      background: rgba(52, 211, 153, 0.14);
+      color: #6ee7b7;
+      border: 1px solid rgba(52, 211, 153, 0.42);
+      border-radius: 7px;
+      padding: 3px 8px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.14s ease;
+    }
+    .btn-mask-brush:hover {
+      background: rgba(52, 211, 153, 0.28);
+      color: #fff;
+    }
+    .btn-mask-brush.active {
+      background: linear-gradient(135deg, #f43f5e, #fb923c) !important;
+      color: #fff !important;
+      border-color: #fda4af !important;
+      box-shadow: 0 0 12px rgba(244, 63, 94, 0.55);
+    }
+    .img-pin-wrap.mask-brush-active,
+    .img-pin-wrap.mask-brush-active img,
+    .img-pin-wrap.mask-brush-active .bbox-pin {
+      cursor: crosshair !important;
+      user-select: none !important;
+    }
+    .mask-stroke-dot {
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 22;
+      transform: translate(-50%, -50%);
+    }
+    .mask-stroke-dot.mode-add {
+      background: rgba(244, 63, 94, 0.42);
+      border: 1.5px solid rgba(251, 113, 133, 0.9);
+      box-shadow: 0 0 6px rgba(244, 63, 94, 0.5);
+    }
+    .mask-stroke-dot.mode-erase {
+      background: rgba(56, 189, 248, 0.42);
+      border: 1.5px dashed rgba(125, 211, 252, 0.95);
+      box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
+    }
+
     /* Responsive Media Queries */
     @media (max-width: 1100px) {
       :root {
@@ -1990,6 +2130,7 @@
             <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения рамок мышкой или колесиком">⏳ Авто-сохранение...</span>
             <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (перетаскивайте рамки мышкой, тяните за края/углы для изменения размера текста или крутите колесико мыши)">📌 Рамки #N</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице, чтобы принудительно добавить его в перевод">➕ Обвести</button>
+            <button class="pill-btn" id="btn-top-mask-brush" onclick="toggleMaskBrushMode()" title="Кисть ретуши замазки: ЛКМ — дотереть остатки оригинала, ПКМ — восстановить задетый рисунок (Горячая клавиша: B)">🖌 Кисть маски</button>
             <button class="pill-btn" id="btn-toggle-drawer" onclick="openPageEditor()" title="Открыть или скрыть панель редактора текста">✏️ Редактор (0)</button>
             <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
             <button class="pill-btn" onclick="openOutputFolder()" title="Открыть папку с готовым переводом в Проводнике">📂 Папка</button>
@@ -2113,6 +2254,74 @@
     </div>
 
     <textarea id="popup-textarea" class="inline-popup-textarea" placeholder="Введите перевод для этого кружка (или оставьте пустым для сохранения оригинала)..." oninput="onPopupTextareaInput(this.value)" onkeydown="onPopupTextareaKeydown(event)"></textarea>
+
+    <details class="style-retouch-details" id="popup-style-details">
+      <summary>
+        <span>🎨 Стиль, Поворот и Кисть замазки</span>
+        <span id="popup-style-summary-badge" style="font-size:10px; color:var(--text-muted); font-weight:600;">Диалог · 0°</span>
+      </summary>
+      <div class="style-preset-pills" id="popup-preset-pills">
+        <button type="button" class="style-preset-btn active" data-preset="dialogue" onclick="applyBlockStylePreset(popupBlockId, 'dialogue')">💬 Диалог</button>
+        <button type="button" class="style-preset-btn" data-preset="thought" onclick="applyBlockStylePreset(popupBlockId, 'thought')">💭 Мысли</button>
+        <button type="button" class="style-preset-btn" data-preset="shout" onclick="applyBlockStylePreset(popupBlockId, 'shout')">💥 Крик</button>
+        <button type="button" class="style-preset-btn" data-preset="whisper" onclick="applyBlockStylePreset(popupBlockId, 'whisper')">🤫 Шепот</button>
+        <button type="button" class="style-preset-btn" data-preset="narration" onclick="applyBlockStylePreset(popupBlockId, 'narration')">▭ Нарратив</button>
+        <button type="button" class="style-preset-btn" data-preset="sfx" onclick="applyBlockStylePreset(popupBlockId, 'sfx')">🔊 SFX</button>
+      </div>
+      <div class="style-grid-row">
+        <select id="popup-font-family" class="font-override-select" style="flex:1; min-width:120px;" onchange="onBlockStylePropChange(popupBlockId, 'font_family', this.value || null)" title="Выбор шрифта для этого кружка">
+          <option value="">Шрифт: По умолчанию</option>
+        </select>
+        <div class="align-btn-group" title="Выравнивание текста">
+          <button type="button" class="align-btn" id="popup-align-left" onclick="onBlockStylePropChange(popupBlockId, 'align', 'left')">⬅</button>
+          <button type="button" class="align-btn active" id="popup-align-center" onclick="onBlockStylePropChange(popupBlockId, 'align', 'center')">↔</button>
+          <button type="button" class="align-btn" id="popup-align-right" onclick="onBlockStylePropChange(popupBlockId, 'align', 'right')">➡</button>
+        </div>
+      </div>
+      <div class="style-grid-row">
+        <div style="display:flex; align-items:center; gap:4px;">
+          <span style="font-size:10.5px;">Текст:</span>
+          <input type="color" id="popup-text-color" class="color-input-mini" value="#0f0f0f" oninput="onBlockStylePropChange(popupBlockId, 'text_color', this.value)" title="Цвет текста" />
+          <span style="font-size:10.5px;">Обводка:</span>
+          <input type="color" id="popup-stroke-color" class="color-input-mini" value="#ffffff" oninput="onBlockStylePropChange(popupBlockId, 'stroke_color', this.value)" title="Цвет обводки" />
+          <button type="button" class="romaji-copy-btn" onclick="resetBlockColors(popupBlockId)" title="Сбросить цвета к автоматическому контрасту">↺ Авто</button>
+        </div>
+        <select id="popup-stroke-width" class="font-override-select" onchange="onBlockStylePropChange(popupBlockId, 'stroke_width', this.value === '' ? null : parseInt(this.value, 10))" title="Толщина обводки текста">
+          <option value="">Обводка: Авто</option>
+          <option value="0">0 px (без обводки)</option>
+          <option value="1">1 px</option>
+          <option value="2">2 px</option>
+          <option value="3">3 px</option>
+          <option value="4">4 px</option>
+          <option value="5">5 px</option>
+          <option value="6">6 px</option>
+          <option value="8">8 px</option>
+          <option value="10">10 px</option>
+        </select>
+      </div>
+      <div class="style-grid-row">
+        <span style="font-size:10.5px;">🔄 Поворот: <b id="popup-angle-lbl">0°</b></span>
+        <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
+          <input type="range" id="popup-angle-range" min="-45" max="45" step="1" value="0" style="width:110px; accent-color:var(--sakura);" oninput="onBlockAngleInput(popupBlockId, this.value)" />
+          <button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(popupBlockId, 0, true)" title="Сбросить угол поворота на 0°">0°</button>
+        </div>
+      </div>
+      <div class="style-grid-row">
+        <span style="font-size:10.5px;">🖌 Замазка (dilate): <b id="popup-dilate-lbl">Авто</b></span>
+        <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
+          <input type="range" id="popup-dilate-range" min="0" max="25" step="1" value="0" style="width:110px; accent-color:var(--mint);" oninput="onBlockDilateInput(popupBlockId, this.value)" onchange="onBlockDilateCommit(popupBlockId, this.value)" title="Толщина маски очистки оригинального текста (0 = Авто)" />
+          <button type="button" class="romaji-copy-btn" onclick="onBlockDilateCommit(popupBlockId, 0)" title="Сбросить толщину замазки на Авто">Авто</button>
+        </div>
+      </div>
+      <div class="style-grid-row" style="margin-bottom:0; padding-top:3px; border-top:1px dashed rgba(255,255,255,0.08);">
+        <button type="button" class="btn-mask-brush" id="popup-mask-brush-btn" onclick="toggleMaskBrushMode(popupBlockId)" title="Рисовать маску замазки прямо на картинке: ЛКМ — стереть кусок оригинала, ПКМ — восстановить задетый рисунок">🖌 Кисть замазки (ЛКМ/ПКМ)</button>
+        <div style="display:flex; align-items:center; gap:4px;">
+          <span style="font-size:10px; color:var(--text-muted);" title="Радиус кисти замазки">R:</span>
+          <input type="range" id="popup-brush-radius" min="4" max="30" step="1" value="12" style="width:58px; accent-color:var(--sakura);" oninput="setMaskBrushRadius(this.value)" title="Радиус кисти замазки (px)" />
+          <button type="button" class="romaji-copy-btn" id="popup-clear-strokes-btn" onclick="clearBlockMaskStrokes(popupBlockId)" style="display:none;" title="Очистить все ручные мазки кисти на этом блоке">🧹 Сброс мазков</button>
+        </div>
+      </div>
+    </details>
 
     <div class="inline-popup-footer">
       <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
@@ -2516,6 +2725,11 @@
     let pollTimer = null;
     let pullPollTimer = null;
     let activeModelLabel = "Авто";
+    let availableFonts = [];
+    let isMaskBrushMode = false;
+    let maskBrushBlockId = null;
+    let maskBrushRadius = 12;
+    let activeMaskStrokeState = null;
 
     // UI & Editor Settings State (All 5 user-requested enhancements!)
     const DEFAULT_UI_SETTINGS = {
@@ -3163,6 +3377,10 @@
         }
         updateDeepSeekPresetCards(act);
 
+        if (Array.isArray(data.available_fonts)) {
+          availableFonts = data.available_fonts;
+          populateFontFamilySelect(document.getElementById("popup-font-family"), null);
+        }
         let models = data.models || [];
         if (force) {
           const mRes = await fetch("/models?refresh=true");
@@ -3697,6 +3915,9 @@
         ...b,
         bbox: Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0],
         clean_bbox: Array.isArray(b.clean_bbox) ? [...b.clean_bbox] : (Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0]),
+        custom_mask_strokes: Array.isArray(b.custom_mask_strokes)
+          ? b.custom_mask_strokes.map(s => ({ ...s }))
+          : null,
         _dirtyPreview: false
       }));
       return JSON.stringify(cleanCopy);
@@ -4166,6 +4387,375 @@
       await splitBlockById(popupBlockId, ev);
     }
 
+    const STYLE_PRESET_LABELS = {
+      dialogue: "💬 Диалог",
+      thought: "💭 Мысли",
+      shout: "💥 Крик",
+      whisper: "🤫 Шепот",
+      narration: "▭ Нарратив",
+      sfx: "🔊 SFX"
+    };
+
+    function populateFontFamilySelect(selEl, selectedVal) {
+      if (!selEl) return;
+      const cur = selectedVal || "";
+      let optsHtml = `<option value="" ${cur === "" ? "selected" : ""}>Шрифт: По умолчанию</option>`;
+      const list = Array.isArray(availableFonts) ? availableFonts : [];
+      const seen = new Set();
+      list.forEach(f => {
+        const fid = String(f.id || f.name || "");
+        if (!fid || seen.has(fid)) return;
+        seen.add(fid);
+        const fname = escapeHtml(f.name || fid);
+        optsHtml += `<option value="${escapeHtml(fid)}" ${cur === fid ? "selected" : ""}>${fname}</option>`;
+      });
+      if (cur && !seen.has(cur)) {
+        optsHtml += `<option value="${escapeHtml(cur)}" selected>${escapeHtml(cur)}</option>`;
+      }
+      selEl.innerHTML = optsHtml;
+    }
+
+    function formatBlockStyleSummary(b) {
+      if (!b) return "Диалог · 0°";
+      const pName = (STYLE_PRESET_LABELS[b.style_preset || "dialogue"] || "💬 Диалог").replace(/^[^\s]+\s/, "");
+      const ang = Math.round(Number(b.angle || 0));
+      const dil = b.mask_dilate ? ` · Замазка ${b.mask_dilate}px` : "";
+      const strokesCnt = Array.isArray(b.custom_mask_strokes) ? b.custom_mask_strokes.length : 0;
+      const stStr = strokesCnt > 0 ? ` · 🖌${strokesCnt}` : "";
+      return `${pName} · ${ang}°${dil}${stStr}`;
+    }
+
+    function applyBlockStylePreset(blockId, presetName, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+
+      blk.style_preset = presetName;
+      if (presetName === "dialogue") {
+        blk.text_color = null;
+        blk.stroke_color = null;
+        blk.stroke_width = null;
+        blk.align = "center";
+      } else if (presetName === "thought") {
+        blk.text_color = "#374151";
+        blk.stroke_color = "#ffffff";
+        blk.stroke_width = 2;
+        blk.align = "center";
+      } else if (presetName === "shout") {
+        blk.text_color = "#0a0a0a";
+        blk.stroke_color = "#ffffff";
+        blk.stroke_width = 4;
+        blk.align = "center";
+      } else if (presetName === "whisper") {
+        blk.text_color = "#52525b";
+        blk.stroke_color = "#ffffff";
+        blk.stroke_width = 1;
+        blk.align = "center";
+      } else if (presetName === "narration") {
+        blk.text_color = "#0f0f0f";
+        blk.stroke_color = "#ffffff";
+        blk.stroke_width = 2;
+        blk.align = "center";
+        blk.bbox_modified = true;
+      } else if (presetName === "sfx") {
+        blk.text_color = "#e11d48";
+        blk.stroke_color = "#ffffff";
+        blk.stroke_width = 4;
+        blk.align = "center";
+      }
+
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+      sayMiko(`Для блока #${blockId} применен пресет «${STYLE_PRESET_LABELS[presetName] || presetName}»! 🎨✨`);
+      if (uiSettings.auto_save_after_idle !== false) {
+        scheduleIdleAutoSave(900);
+      }
+    }
+
+    function onBlockStylePropChange(blockId, propName, val, ev) {
+      if (ev) ev.stopPropagation();
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+      blk[propName] = val;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+      if (uiSettings.auto_save_after_idle !== false) {
+        scheduleIdleAutoSave(900);
+      }
+    }
+
+    function resetBlockColors(blockId, ev) {
+      if (ev) ev.stopPropagation();
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+      blk.text_color = null;
+      blk.stroke_color = null;
+      blk.stroke_width = null;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+      sayMiko(`Цвета и обводка блока #${blockId} сброшены к автоматическому контрасту~ ↺`);
+      if (uiSettings.auto_save_after_idle !== false) {
+        scheduleIdleAutoSave(900);
+      }
+    }
+
+    let angleHistorySnapshot = null;
+    let angleSettleTimer = null;
+
+    function onBlockAngleInput(blockId, angleVal, immediateCommit = false) {
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      if (angleHistorySnapshot === null) {
+        angleHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
+      }
+      const deg = Math.max(-45, Math.min(45, Math.round(Number(angleVal) || 0)));
+      blk.angle = deg;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+
+      if (angleSettleTimer) clearTimeout(angleSettleTimer);
+      const finishAngle = () => {
+        angleSettleTimer = null;
+        if (angleHistorySnapshot !== null) {
+          pushPageHistorySnapshot(angleHistorySnapshot);
+          angleHistorySnapshot = null;
+        }
+        if (uiSettings.auto_save_after_idle !== false) {
+          scheduleIdleAutoSave(900);
+        }
+      };
+      if (immediateCommit) {
+        finishAngle();
+      } else {
+        angleSettleTimer = setTimeout(finishAngle, 250);
+      }
+    }
+
+    function onBlockDilateInput(blockId, dilateVal) {
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      const d = parseInt(dilateVal, 10);
+      blk.mask_dilate = (!isNaN(d) && d >= 1) ? Math.min(28, d) : null;
+      syncBlockStyleControlsUi(blockId);
+    }
+
+    function onBlockDilateCommit(blockId, dilateVal) {
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+      const d = parseInt(dilateVal, 10);
+      blk.mask_dilate = (!isNaN(d) && d >= 1) ? Math.min(28, d) : null;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+      sayMiko(
+        blk.mask_dilate
+          ? `Толщина замазки блока #${blockId} установлена на ${blk.mask_dilate}px! Перерисовываю очистку... 🖌✨`
+          : `Толщина замазки блока #${blockId} сброшена на Авто! 🖌`
+      );
+      if (uiSettings.auto_save_after_idle !== false) {
+        scheduleIdleAutoSave(600);
+      }
+    }
+
+    function syncBlockStyleControlsUi(blockId) {
+      const blk = currentBlocks ? currentBlocks.find(x => x.id === blockId) : null;
+      if (!blk) return;
+      const summaryTxt = formatBlockStyleSummary(blk);
+      const preset = blk.style_preset || "dialogue";
+      const align = blk.align || "center";
+      const angle = Math.round(Number(blk.angle || 0));
+      const dilate = blk.mask_dilate ? Number(blk.mask_dilate) : 0;
+      const strokesCnt = Array.isArray(blk.custom_mask_strokes) ? blk.custom_mask_strokes.length : 0;
+
+      // Sync card controls
+      const cardBadge = document.getElementById(`card-style-badge-${blockId}`);
+      if (cardBadge) cardBadge.textContent = summaryTxt;
+      const cardFont = document.getElementById(`edit-font-family-${blockId}`);
+      if (cardFont && cardFont.value !== (blk.font_family || "")) {
+        populateFontFamilySelect(cardFont, blk.font_family);
+      }
+      const cardAngleLbl = document.getElementById(`edit-angle-lbl-${blockId}`);
+      if (cardAngleLbl) cardAngleLbl.textContent = `${angle}°`;
+      const cardAngleRng = document.getElementById(`edit-angle-rng-${blockId}`);
+      if (cardAngleRng) cardAngleRng.value = String(angle);
+      const cardDilLbl = document.getElementById(`edit-dilate-lbl-${blockId}`);
+      if (cardDilLbl) cardDilLbl.textContent = dilate > 0 ? `${dilate} px` : "Авто";
+      const cardDilRng = document.getElementById(`edit-dilate-rng-${blockId}`);
+      if (cardDilRng) cardDilRng.value = String(dilate);
+      const cardClearStrokes = document.getElementById(`edit-clear-strokes-${blockId}`);
+      if (cardClearStrokes) {
+        cardClearStrokes.style.display = strokesCnt > 0 ? "inline-flex" : "none";
+        cardClearStrokes.textContent = `🧹 Сброс (${strokesCnt})`;
+      }
+      const cardBrushBtn = document.getElementById(`edit-brush-btn-${blockId}`);
+      if (cardBrushBtn) {
+        cardBrushBtn.classList.toggle("active", isMaskBrushMode && maskBrushBlockId === blockId);
+      }
+      ["dialogue", "thought", "shout", "whisper", "narration", "sfx"].forEach(p => {
+        const bEl = document.getElementById(`edit-preset-${blockId}-${p}`);
+        if (bEl) bEl.classList.toggle("active", p === preset);
+      });
+      ["left", "center", "right"].forEach(al => {
+        const aEl = document.getElementById(`edit-align-${blockId}-${al}`);
+        if (aEl) aEl.classList.toggle("active", al === align);
+      });
+
+      // Sync inline popup controls if open for this block
+      if (popupBlockId === blockId) {
+        const popBadge = document.getElementById("popup-style-summary-badge");
+        if (popBadge) popBadge.textContent = summaryTxt;
+        const popFont = document.getElementById("popup-font-family");
+        if (popFont) populateFontFamilySelect(popFont, blk.font_family);
+        ["left", "center", "right"].forEach(al => {
+          const el = document.getElementById("popup-align-" + al);
+          if (el) el.classList.toggle("active", al === align);
+        });
+        document.querySelectorAll("#popup-preset-pills .style-preset-btn").forEach(btn => {
+          btn.classList.toggle("active", btn.dataset.preset === preset);
+        });
+        const popTextCol = document.getElementById("popup-text-color");
+        if (popTextCol) popTextCol.value = blk.text_color || "#0f0f0f";
+        const popStrokeCol = document.getElementById("popup-stroke-color");
+        if (popStrokeCol) popStrokeCol.value = blk.stroke_color || "#ffffff";
+        const popStrokeW = document.getElementById("popup-stroke-width");
+        if (popStrokeW) popStrokeW.value = (blk.stroke_width !== null && blk.stroke_width !== undefined) ? String(blk.stroke_width) : "";
+        const popAngLbl = document.getElementById("popup-angle-lbl");
+        if (popAngLbl) popAngLbl.textContent = `${angle}°`;
+        const popAngRng = document.getElementById("popup-angle-range");
+        if (popAngRng) popAngRng.value = String(angle);
+        const popDilLbl = document.getElementById("popup-dilate-lbl");
+        if (popDilLbl) popDilLbl.textContent = dilate > 0 ? `${dilate} px` : "Авто";
+        const popDilRng = document.getElementById("popup-dilate-range");
+        if (popDilRng) popDilRng.value = String(dilate);
+        const popClearSt = document.getElementById("popup-clear-strokes-btn");
+        if (popClearSt) {
+          popClearSt.style.display = strokesCnt > 0 ? "inline-flex" : "none";
+          popClearSt.textContent = `🧹 Сброс (${strokesCnt})`;
+        }
+        const popBrushBtn = document.getElementById("popup-mask-brush-btn");
+        if (popBrushBtn) {
+          popBrushBtn.classList.toggle("active", isMaskBrushMode && maskBrushBlockId === blockId);
+        }
+      }
+    }
+
+    function setMaskBrushRadius(val) {
+      maskBrushRadius = Math.max(3, Math.min(40, parseInt(val, 10) || 12));
+      const popR = document.getElementById("popup-brush-radius");
+      if (popR && popR.value !== String(maskBrushRadius)) popR.value = String(maskBrushRadius);
+    }
+
+    function toggleMaskBrushMode(targetBlockId = null, forceState = null) {
+      if (!selectedPage || !currentBlocks || currentBlocks.length === 0) {
+        sayMiko("Сначала выбери страницу с текстовыми рамками, чтобы использовать кисть замазки~ 🖌🌸");
+        return;
+      }
+      if (isDrawRegionMode) {
+        toggleDrawRegionMode(false);
+      }
+      const resolvedId = targetBlockId || popupBlockId || activeBlockId || currentBlocks[0].id;
+      const nextState = typeof forceState === "boolean"
+        ? forceState
+        : !(isMaskBrushMode && maskBrushBlockId === resolvedId);
+
+      isMaskBrushMode = nextState;
+      maskBrushBlockId = nextState ? resolvedId : null;
+      if (nextState) {
+        activeBlockId = resolvedId;
+      }
+
+      const topBtn = document.getElementById("btn-top-mask-brush");
+      if (topBtn) {
+        topBtn.classList.toggle("draw-active", isMaskBrushMode);
+        topBtn.textContent = isMaskBrushMode ? `🖌 Кисть #${maskBrushBlockId} (Esc)` : "🖌 Кисть маски";
+      }
+      document.querySelectorAll(".img-pin-wrap").forEach(w => {
+        w.classList.toggle("mask-brush-active", isMaskBrushMode);
+      });
+      if (resolvedId) syncBlockStyleControlsUi(resolvedId);
+      renderMaskStrokeDotsOnStage();
+
+      if (isMaskBrushMode) {
+        sayMiko(
+          `🖌 Кисть замазки для рамки #${maskBrushBlockId} включена! Зажми ЛКМ на картинке, чтобы затереть остатки оригинала, или ПКМ — чтобы вернуть задетый рисунок (Esc — выход)~ ✨`
+        );
+      } else {
+        sayMiko("Режим кисти замазки выключен.");
+      }
+    }
+
+    async function clearBlockMaskStrokes(blockId, ev) {
+      if (ev) ev.stopPropagation();
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk || !Array.isArray(blk.custom_mask_strokes) || blk.custom_mask_strokes.length === 0) return;
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+      blk.custom_mask_strokes = null;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      renderMaskStrokeDotsOnStage();
+      sayMiko(`Все ручные мазки кисти для блока #${blockId} сброшены! Перерисовываю страницу... 🧹✨`);
+      await saveEditedPageTranslation({ isAuto: true });
+    }
+
+    function renderMaskStrokeDotsOnStage() {
+      document.querySelectorAll(".mask-stroke-dot").forEach(el => el.remove());
+      if (!isMaskBrushMode || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === maskBrushBlockId);
+      if (!blk || !Array.isArray(blk.custom_mask_strokes) || blk.custom_mask_strokes.length === 0) return;
+
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        const img = wrap.querySelector("img");
+        if (!img || !img.naturalWidth || !img.naturalHeight) return;
+        const nw = img.naturalWidth;
+        const nh = img.naturalHeight;
+        const clientW = img.clientWidth || img.getBoundingClientRect().width;
+        const scale = clientW / Math.max(1, nw);
+        const frag = document.createDocumentFragment();
+        blk.custom_mask_strokes.forEach(st => {
+          const dot = document.createElement("div");
+          const isErase = st.mode === "erase";
+          dot.className = "mask-stroke-dot " + (isErase ? "mode-erase" : "mode-add");
+          dot.style.left = ((st.x / nw) * 100) + "%";
+          dot.style.top = ((st.y / nh) * 100) + "%";
+          const dPx = Math.max(6, Math.round((st.r || 12) * 2 * scale));
+          dot.style.width = dPx + "px";
+          dot.style.height = dPx + "px";
+          frag.appendChild(dot);
+        });
+        wrap.appendChild(frag);
+      });
+      renderMaskStrokeDotsOnStage();
+    }
+
     function syncInputsToCurrentBlocks() {
       if (!currentBlocks) return;
       currentBlocks.forEach(b => {
@@ -4474,6 +5064,7 @@
       if (clearBtn) clearBtn.style.display = !isDel ? "inline-flex" : "none";
       if (delBtn) delBtn.style.display = "inline-flex"; // Всегда доступна кнопка полного удаления рамки!
       if (resBtn) resBtn.style.display = (isDel && blk._backup_translation) ? "inline-flex" : "none";
+      syncBlockStyleControlsUi(blockId);
       updateMergeButtonsUi();
     }
 
@@ -4692,6 +5283,62 @@
             `</div>`
           : "";
 
+        const curPreset = b.style_preset || "dialogue";
+        const curAlign = b.align || "center";
+        const curAngle = Math.round(Number(b.angle || 0));
+        const curDilate = b.mask_dilate ? Number(b.mask_dilate) : 0;
+        const curStrokesCnt = Array.isArray(b.custom_mask_strokes) ? b.custom_mask_strokes.length : 0;
+        const curFontFam = b.font_family || "";
+        const fontOptionsHtml = `<option value="" ${curFontFam === "" ? "selected" : ""}>Шрифт: По умолчанию</option>` +
+          (Array.isArray(availableFonts) ? availableFonts : []).map(
+            f => `<option value="${escapeHtml(f.id || f.name)}" ${curFontFam === (f.id || f.name) ? "selected" : ""}>${escapeHtml(f.name || f.id)}</option>`
+          ).join("");
+
+        const styleDetailsHtml =
+          `<details class="style-retouch-details" onclick="event.stopPropagation()">` +
+            `<summary>` +
+              `<span>🎨 Стиль и Замазка</span>` +
+              `<span id="card-style-badge-${b.id}" style="font-size:10px; color:var(--text-muted); font-weight:600;">${escapeHtml(formatBlockStyleSummary(b))}</span>` +
+            `</summary>` +
+            `<div class="style-preset-pills">` +
+              ["dialogue", "thought", "shout", "whisper", "narration", "sfx"].map(p =>
+                `<button type="button" id="edit-preset-${b.id}-${p}" class="style-preset-btn ${curPreset === p ? "active" : ""}" onclick="applyBlockStylePreset(${b.id}, '${p}', event)">${STYLE_PRESET_LABELS[p]}</button>`
+              ).join("") +
+            `</div>` +
+            `<div class="style-grid-row">` +
+              `<select id="edit-font-family-${b.id}" class="font-override-select" style="flex:1; min-width:110px;" onchange="onBlockStylePropChange(${b.id}, 'font_family', this.value || null, event)">${fontOptionsHtml}</select>` +
+              `<div class="align-btn-group">` +
+                `<button type="button" id="edit-align-${b.id}-left" class="align-btn ${curAlign === "left" ? "active" : ""}" onclick="onBlockStylePropChange(${b.id}, 'align', 'left', event)">⬅</button>` +
+                `<button type="button" id="edit-align-${b.id}-center" class="align-btn ${curAlign === "center" ? "active" : ""}" onclick="onBlockStylePropChange(${b.id}, 'align', 'center', event)">↔</button>` +
+                `<button type="button" id="edit-align-${b.id}-right" class="align-btn ${curAlign === "right" ? "active" : ""}" onclick="onBlockStylePropChange(${b.id}, 'align', 'right', event)">➡</button>` +
+              `</div>` +
+            `</div>` +
+            `<div class="style-grid-row">` +
+              `<div style="display:flex; align-items:center; gap:4px;">` +
+                `<span style="font-size:10.5px;">Текст:</span>` +
+                `<input type="color" class="color-input-mini" value="${escapeHtml(b.text_color || "#0f0f0f")}" oninput="onBlockStylePropChange(${b.id}, 'text_color', this.value, event)" />` +
+                `<span style="font-size:10.5px;">Обв.:</span>` +
+                `<input type="color" class="color-input-mini" value="${escapeHtml(b.stroke_color || "#ffffff")}" oninput="onBlockStylePropChange(${b.id}, 'stroke_color', this.value, event)" />` +
+                `<button type="button" class="romaji-copy-btn" onclick="resetBlockColors(${b.id}, event)">↺ Авто</button>` +
+              `</div>` +
+              `<div style="display:flex; align-items:center; gap:4px;">` +
+                `<span style="font-size:10.5px;">🔄 <b id="edit-angle-lbl-${b.id}">${curAngle}°</b></span>` +
+                `<input type="range" id="edit-angle-rng-${b.id}" min="-45" max="45" step="1" value="${curAngle}" style="width:75px; accent-color:var(--sakura);" oninput="onBlockAngleInput(${b.id}, this.value)" />` +
+                `<button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(${b.id}, 0, true)">0°</button>` +
+              `</div>` +
+            `</div>` +
+            `<div class="style-grid-row" style="margin-bottom:0;">` +
+              `<div style="display:flex; align-items:center; gap:4px;">` +
+                `<span style="font-size:10.5px;">🖌 Dilate: <b id="edit-dilate-lbl-${b.id}">${curDilate > 0 ? curDilate + " px" : "Авто"}</b></span>` +
+                `<input type="range" id="edit-dilate-rng-${b.id}" min="0" max="25" step="1" value="${curDilate}" style="width:75px; accent-color:var(--mint);" oninput="onBlockDilateInput(${b.id}, this.value)" onchange="onBlockDilateCommit(${b.id}, this.value)" />` +
+              `</div>` +
+              `<div style="display:flex; align-items:center; gap:4px;">` +
+                `<button type="button" id="edit-brush-btn-${b.id}" class="btn-mask-brush ${(isMaskBrushMode && maskBrushBlockId === b.id) ? "active" : ""}" onclick="toggleMaskBrushMode(${b.id})">🖌 Кисть (ЛКМ/ПКМ)</button>` +
+                `<button type="button" id="edit-clear-strokes-${b.id}" class="romaji-copy-btn" style="display:${curStrokesCnt > 0 ? "inline-flex" : "none"};" onclick="clearBlockMaskStrokes(${b.id}, event)">🧹 Сброс (${curStrokesCnt})</button>` +
+              `</div>` +
+            `</div>` +
+          `</details>`;
+
         const isMultiSel = selectedBlockIds && selectedBlockIds.size >= 2 && selectedBlockIds.has(b.id);
         return (
           `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isMultiSel ? "multi-selected-card" : ""} ${isDel ? "deleted-block" : ""}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="onBlockCardClick(${b.id}, event)">` +
@@ -4712,6 +5359,7 @@
               `onfocus="highlightBlock(${b.id}, true)" ` +
               `oninput="onBlockTextInput(${b.id}, this.value)" ` +
               `onkeydown="onBlockTextareaKeydown(event)">${transHtml}</textarea>` +
+              styleDetailsHtml +
             `</div>` +
           `</div>`
         );
@@ -5005,11 +5653,40 @@
     function attachManualDrawHandlers() {
       document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
         wrap.classList.toggle("draw-mode-active", isDrawRegionMode);
+        wrap.classList.toggle("mask-brush-active", isMaskBrushMode);
         const img = wrap.querySelector("img");
         if (img) {
           img.draggable = false;
         }
+        wrap.oncontextmenu = (ev) => {
+          if (isMaskBrushMode) {
+            ev.preventDefault();
+            return false;
+          }
+        };
         wrap.onmousedown = (ev) => {
+          if (isMaskBrushMode && (ev.button === 0 || ev.button === 2)) {
+            ev.preventDefault();
+            ev.stopPropagation();
+            if (!img || !img.naturalWidth || !img.naturalHeight || !currentBlocks) return;
+            const targetId = maskBrushBlockId || activeBlockId || (currentBlocks[0] && currentBlocks[0].id);
+            const blk = currentBlocks.find(x => x.id === targetId);
+            if (!blk) return;
+            cancelIdleAutoSaveTimer();
+            const strokeMode = ev.button === 2 ? "erase" : "add";
+            const startSnap = cloneBlocksSnapshot(currentBlocks);
+            activeMaskStrokeState = {
+              wrap,
+              img,
+              block: blk,
+              mode: strokeMode,
+              startSnapshot: startSnap,
+              lastX: null,
+              lastY: null
+            };
+            addMaskBrushPointFromEvent(ev);
+            return;
+          }
           if (!isDrawRegionMode || ev.button !== 0) return;
           ev.preventDefault();
           ev.stopPropagation();
@@ -5028,7 +5705,41 @@
       });
     }
 
+    function addMaskBrushPointFromEvent(ev) {
+      if (!activeMaskStrokeState) return;
+      const { wrap, img, block, mode } = activeMaskStrokeState;
+      const rect = wrap.getBoundingClientRect();
+      const relX = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
+      const relY = Math.max(0, Math.min(rect.height, ev.clientY - rect.top));
+      const scaleX = img.naturalWidth / Math.max(1, rect.width);
+      const scaleY = img.naturalHeight / Math.max(1, rect.height);
+      const imgX = Math.round(relX * scaleX);
+      const imgY = Math.round(relY * scaleY);
+      const rImg = Math.max(2, Math.round(maskBrushRadius));
+
+      if (
+        activeMaskStrokeState.lastX !== null &&
+        Math.hypot(imgX - activeMaskStrokeState.lastX, imgY - activeMaskStrokeState.lastY) < Math.max(3, rImg * 0.35)
+      ) {
+        return;
+      }
+      activeMaskStrokeState.lastX = imgX;
+      activeMaskStrokeState.lastY = imgY;
+
+      if (!Array.isArray(block.custom_mask_strokes)) {
+        block.custom_mask_strokes = [];
+      }
+      block.custom_mask_strokes.push({ x: imgX, y: imgY, r: rImg, mode });
+      block._dirtyPreview = true;
+      clientEditRevision++;
+      renderMaskStrokeDotsOnStage();
+    }
+
     window.addEventListener("mousemove", (ev) => {
+      if (activeMaskStrokeState) {
+        addMaskBrushPointFromEvent(ev);
+        return;
+      }
       if (!activeDrawState) return;
       const { wrap, startX, startY, boxEl } = activeDrawState;
       const rect = wrap.getBoundingClientRect();
@@ -5047,6 +5758,21 @@
     });
 
     window.addEventListener("mouseup", async () => {
+      if (activeMaskStrokeState) {
+        const st = activeMaskStrokeState;
+        activeMaskStrokeState = null;
+        if (st.startSnapshot) {
+          pushPageHistorySnapshot(st.startSnapshot);
+        }
+        syncBlockStyleControlsUi(st.block.id);
+        updatePinDomForBlock(st.block.id);
+        const modeLbl = st.mode === "erase" ? "восстановление рисунка (ПКМ)" : "дотирание оригинала (ЛКМ)";
+        sayMiko(`🖌 Добавлен мазок кисти (${modeLbl}) для рамки #${st.block.id}! Применяю к маске очистки... ✨`);
+        if (uiSettings.auto_save_after_idle !== false) {
+          scheduleIdleAutoSave(600);
+        }
+        return;
+      }
       if (!activeDrawState) return;
       const { wrap, img, startX, startY, curX, curY, boxEl } = activeDrawState;
       activeDrawState = null;
@@ -5422,6 +6148,11 @@
           if (liveEl.textContent !== dispText) liveEl.textContent = dispText;
           const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
           liveEl.style.fontSize = cssFs + "px";
+          const ang = Number(blk.angle || 0);
+          liveEl.style.transform = Math.abs(ang) >= 0.5 ? `rotate(${ang}deg)` : "";
+          liveEl.style.textAlign = blk.align || "center";
+          if (blk.text_color) liveEl.style.color = blk.text_color;
+          else liveEl.style.color = "#0f0f0f";
         }
         if (resetBtn) {
           resetBtn.style.display = (isMod || blk.font_size) ? "inline-block" : "none";
@@ -5582,7 +6313,7 @@
               `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${b.id} к оригиналу">↺</button>` +
               `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Полностью удалить рамку #${b.id} с картинки">🗑</button>` +
             `</div>` +
-            `<div class="bbox-live-text" style="font-size:${cssFs}px;">${escapeHtml(dispText)}</div>` +
+            `<div class="bbox-live-text" style="font-size:${cssFs}px; ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
             handlesHtml;
 
           const saveBtn = pin.querySelector(".bbox-pin-save");
@@ -5623,7 +6354,7 @@
 
           // MouseDown on pin or its 8 resize handles (caches geometry & DOM nodes once for 0-reflow dragging!)
           pin.addEventListener("mousedown", (ev) => {
-            if (isDrawRegionMode || ev.button !== 0) return;
+            if (isDrawRegionMode || isMaskBrushMode || ev.button !== 0) return;
             if (ev.target.closest(".bbox-pin-btn")) return;
             ev.preventDefault();
             ev.stopPropagation();
@@ -6231,6 +6962,10 @@
         if (isHoldCompareActive) {
           setHoldCompareMode(false);
         }
+        if (isMaskBrushMode) {
+          toggleMaskBrushMode(null, false);
+          return;
+        }
         if (isDrawRegionMode) {
           toggleDrawRegionMode(false);
           sayMiko("Режим выделения области отменен.");
@@ -6305,6 +7040,17 @@
           setHoldCompareMode(true);
         }
         return;
+      }
+
+      // Toggle Mask Brush mode: B
+      if (!inInput && !e.ctrlKey && !e.altKey && !e.metaKey && (
+        e.key === "b" || e.key === "B" || e.key === "и" || e.key === "И"
+      )) {
+        if (selectedPage && currentBlocks && currentBlocks.length > 0) {
+          e.preventDefault();
+          toggleMaskBrushMode();
+          return;
+        }
       }
 
       // Merge selected frames: M

@@ -1,14 +1,20 @@
 """
-Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Шаг 4, v1.0.6-step1).
+Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Шаг 4, v1.0.6-step3).
 
-Изменения v1.0.6-step1:
-1. Ускорение подбора оптимального размера шрифта в `_fit_text_to_box`:
-   замена линейного перебора (до 130 итераций `multiline_textbbox` при `unconstrained_size=True`)
-   на бинарный поиск (`low = min_lim`, `high = start_size`) как для прохода без переносов
-   (`allow_hyphenation=False`), так и для прохода с переносами (`allow_hyphenation=True`),
-   с сохранением 100% точности выбора максимального подходящего кегля и записи `block["rendered_font_size"] = chosen_fs`.
-2. Сохранены все функции v1.0.0: пропуск блоков с `is_deleted=True`, поддержка `min_font_size` / `max_font_size`,
-   авто-подгонка при `bbox_modified` / `bbox_resized` и индивидуальный `font_size`.
+Изменения v1.0.6-step3:
+1. Индивидуальные шрифты (`font_family`), кэшируемые по ключу `(font_family_path, size)`,
+   и сканирование всех доступных `.ttf`/`.otf` из `fonts/` + системных пресетов (`list_available_fonts`).
+2. Поддержка пресетов стилей бабблов (`style_preset`):
+   - `"dialogue"` (Диалог): классический комиксный стиль по центру;
+   - `"thought"` (Мысли): курсивный/мягкий шрифт, темно-серый текст `#222222`, увеличенный межстрочный интервал;
+   - `"shout"` (Крик): жирный акцидентный кегль, увеличенная контрастная обводка;
+   - `"whisper"` (Шепот): уменьшенный аккуратный кегль и тонкая обводка;
+   - `"narration"` (Рассказчик / Квадратная рамка): прямоугольная верстка (`force_rectangular=True`) без эллиптического сжатия;
+   - `"sfx"` (Звук / Фон): крупная контрастная обводка `stroke_width >= 4`.
+3. Поддержка индивидуальных цветов (`text_color`, `stroke_color`), толщины обводки (`stroke_width`),
+   выравнивания (`align`: `"center"`, `"left"`, `"right"`) и поворота текста (`angle`: `-45°..+45°`
+   через рендер на прозрачном `RGBA`-слое с `Image.rotate(angle, resample=Image.BICUBIC, expand=True)`).
+4. Сохранен бинарный поиск оптимального размера шрифта из v1.0.6-step1.
 """
 
 from __future__ import annotations
@@ -22,6 +28,56 @@ import numpy as np
 from PIL import Image, ImageDraw, ImageFont
 
 logger = logging.getLogger(__name__)
+
+
+SYSTEM_FONT_PRESETS: dict[str, list[str]] = {
+    "WildWords": [
+        "ccwildwords.ttf",
+        "wildwords.ttf",
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/seguisb.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ],
+    "AnimeAce": [
+        "animeace2_reg.ttf",
+        "animeace.ttf",
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/comic.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
+    ],
+    "Comic": [
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/comic.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ],
+    "ComicItalic": [
+        "C:/Windows/Fonts/comici.ttf",
+        "C:/Windows/Fonts/comic.ttf",
+        "C:/Windows/Fonts/segoeuii.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Oblique.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSans-Italic.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+    ],
+    "Segoe": [
+        "C:/Windows/Fonts/seguisb.ttf",
+        "C:/Windows/Fonts/segoeuib.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ],
+    "Impact": [
+        "C:/Windows/Fonts/impact.ttf",
+        "C:/Windows/Fonts/arialbd.ttf",
+        "C:/Windows/Fonts/trebucbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
+    ],
+    "Serif": [
+        "C:/Windows/Fonts/georgiab.ttf",
+        "C:/Windows/Fonts/georgia.ttf",
+        "C:/Windows/Fonts/timesbd.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSerif-Bold.ttf",
+        "/usr/share/fonts/truetype/liberation/LiberationSerif-Bold.ttf",
+    ],
+}
 
 
 class MangaRenderer:
@@ -45,7 +101,7 @@ class MangaRenderer:
         self.uppercase_comic_style = uppercase_comic_style
 
         self.font_path = self._resolve_font_path()
-        self._font_cache: dict[int, ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
+        self._font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
         logger.info("Используемый шрифт для тайпсеттинга: %s", self.font_path or "Pillow Default")
 
     def _resolve_font_path(self) -> str | None:
@@ -73,21 +129,128 @@ class MangaRenderer:
 
         return None
 
-    def _get_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+    def list_available_fonts(self) -> list[dict[str, str]]:
+        """Возвращает список доступных шрифтовых пресетов и пользовательских `.ttf`/`.otf` файлов из папки `fonts/`."""
+        items: list[dict[str, str]] = [
+            {"id": "default", "name": "✨ По умолчанию (Авто)"},
+            {"id": "Comic", "name": "💬 Comic Sans Bold (Манга)"},
+            {"id": "WildWords", "name": "🌸 WildWords / Комикс"},
+            {"id": "AnimeAce", "name": "🎌 Anime Ace / Сканлейт"},
+            {"id": "Segoe", "name": "📘 Segoe UI Semibold (Чистый)"},
+            {"id": "Impact", "name": "💥 Impact / Акцидентный (Крик/SFX)"},
+            {"id": "Serif", "name": "📖 Georgia / Serif (Книжный/Мысли)"},
+        ]
+        seen_ids = {x["id"].lower() for x in items}
+        if self.fonts_dir.exists():
+            custom_files = sorted(
+                list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf"))
+            )
+            for f_path in custom_files:
+                fid = f_path.name
+                if fid.lower() in seen_ids:
+                    continue
+                seen_ids.add(fid.lower())
+                items.append({"id": fid, "name": f"📁 {f_path.stem} ({f_path.suffix.lower()})"})
+        return items
+
+    def _resolve_font_family_path(
+        self,
+        font_family: str | None = None,
+        style_preset: str = "dialogue",
+    ) -> str | None:
+        fam = (font_family or "").strip()
+        preset = (style_preset or "dialogue").lower().strip()
+
+        if fam and fam.lower() not in ("default", "auto", "none"):
+            # 1. Проверяем файл в папке fonts/
+            local_cand = self.fonts_dir / fam
+            if local_cand.exists() and local_cand.is_file():
+                return str(local_cand)
+            if self.fonts_dir.exists():
+                for f_p in list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf")):
+                    if f_p.name.lower() == fam.lower() or f_p.stem.lower() == fam.lower():
+                        return str(f_p)
+
+            # 2. Проверяем системный пресет
+            for preset_key, cand_list in SYSTEM_FONT_PRESETS.items():
+                if preset_key.lower() == fam.lower():
+                    for cand in cand_list:
+                        local_p = self.fonts_dir / cand
+                        if local_p.exists():
+                            return str(local_p)
+                        if Path(cand).exists():
+                            return cand
+
+            # 3. Прямой путь
+            if Path(fam).exists() and Path(fam).is_file():
+                return str(Path(fam))
+
+        # Авто-подбор шрифта по style_preset, если font_family не задан вручную
+        if preset == "thought":
+            for cand in SYSTEM_FONT_PRESETS["ComicItalic"] + SYSTEM_FONT_PRESETS["Serif"]:
+                if Path(cand).exists():
+                    return cand
+        elif preset in ("shout", "sfx"):
+            for cand in SYSTEM_FONT_PRESETS["Impact"] + SYSTEM_FONT_PRESETS["Comic"]:
+                if Path(cand).exists():
+                    return cand
+        elif preset == "narration":
+            for cand in SYSTEM_FONT_PRESETS["Segoe"] + SYSTEM_FONT_PRESETS["Serif"]:
+                if Path(cand).exists():
+                    return cand
+
+        return self.font_path
+
+    def _get_font(
+        self,
+        size: int,
+        font_family_path: str | None = None,
+    ) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
         size = max(6, int(size))
-        if size not in self._font_cache:
-            if self.font_path:
+        eff_path = font_family_path if font_family_path is not None else (self.font_path or "")
+        cache_key = (str(eff_path), size)
+        if cache_key not in self._font_cache:
+            if eff_path:
                 try:
-                    self._font_cache[size] = ImageFont.truetype(self.font_path, size=size)
+                    self._font_cache[cache_key] = ImageFont.truetype(eff_path, size=size)
                 except OSError:
-                    self._font_cache[size] = ImageFont.load_default()
+                    if self.font_path and self.font_path != eff_path:
+                        try:
+                            self._font_cache[cache_key] = ImageFont.truetype(self.font_path, size=size)
+                        except OSError:
+                            self._font_cache[cache_key] = ImageFont.load_default()
+                    else:
+                        self._font_cache[cache_key] = ImageFont.load_default()
             else:
-                self._font_cache[size] = ImageFont.load_default()
-        return self._font_cache[size]
+                self._font_cache[cache_key] = ImageFont.load_default()
+        return self._font_cache[cache_key]
 
     @staticmethod
-    def _get_line_spacing(font_size: int) -> int:
+    def _get_line_spacing(font_size: int, style_preset: str = "dialogue") -> int:
+        preset = (style_preset or "dialogue").lower().strip()
+        if preset == "thought":
+            return max(3, int(round(font_size * 0.22)))
+        if preset == "shout":
+            return max(2, int(round(font_size * 0.12)))
         return max(2, int(round(font_size * 0.15)))
+
+    @staticmethod
+    def _parse_hex_color(color_str: str | None) -> tuple[int, int, int] | None:
+        if not color_str:
+            return None
+        s = str(color_str).strip().lower()
+        if not s or s in ("auto", "default", "none"):
+            return None
+        if s.startswith("#"):
+            s = s[1:]
+        if len(s) == 3:
+            s = "".join(ch * 2 for ch in s)
+        if len(s) == 6:
+            try:
+                return int(s[0:2], 16), int(s[2:4], 16), int(s[4:6], 16)
+            except ValueError:
+                return None
+        return None
 
     @staticmethod
     def _split_long_word(
@@ -184,13 +347,14 @@ class MangaRenderer:
         target_w: int,
         target_h: int,
         elliptical: bool = True,
+        align: str = "center",
     ) -> bool:
         bbox = draw.multiline_textbbox(
             (0, 0),
             wrapped_text,
             font=font,
             spacing=spacing,
-            align="center",
+            align=align,
             stroke_width=stroke_w,
         )
         total_w = bbox[2] - bbox[0]
@@ -258,6 +422,26 @@ class MangaRenderer:
                 return True
         return bool(block.get("bbox_modified", False))
 
+    @staticmethod
+    def _compute_stroke_width(
+        font_size: int,
+        is_free_text: bool,
+        style_preset: str,
+        stroke_width_override: int | None,
+    ) -> int:
+        if stroke_width_override is not None:
+            return max(0, min(16, int(stroke_width_override)))
+        preset = (style_preset or "dialogue").lower().strip()
+        if preset == "sfx":
+            return max(4, font_size // 6)
+        if preset == "shout":
+            return max(3, font_size // 7)
+        if preset == "whisper":
+            return max(1, font_size // 12)
+        if is_free_text:
+            return max(3, font_size // 8)
+        return max(2, font_size // 10)
+
     def _fit_text_to_box(
         self,
         draw: ImageDraw.ImageDraw,
@@ -270,7 +454,14 @@ class MangaRenderer:
         stroke_width_override: int | None = None,
         force_rectangular: bool = False,
         unconstrained_size: bool = False,
+        font_family_path: str | None = None,
+        style_preset: str = "dialogue",
+        align: str = "center",
     ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int]:
+        preset = (style_preset or "dialogue").lower().strip()
+        if preset in ("narration", "sfx"):
+            force_rectangular = True
+
         min_lim = max(6 if unconstrained_size else 8, int(min_font_limit))
         max_lim = max(min_lim, int(max_font_limit))
         use_ellipse = not (is_free_text or force_rectangular)
@@ -281,22 +472,24 @@ class MangaRenderer:
                 max(min_lim, int(min(target_w, target_h) * 0.88)),
             )
         else:
+            ratio = 0.45 if (is_free_text or preset in ("shout", "sfx")) else 0.38
             start_size = min(
                 max_lim,
-                max(min_lim, int(min(target_w, target_h) * (0.45 if is_free_text else 0.38))),
+                max(min_lim, int(min(target_w, target_h) * ratio)),
             )
 
         def _evaluate_font_size(
             font_size: int,
             allow_hyphenation: bool,
         ) -> tuple[bool, str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int]:
-            font = self._get_font(font_size)
-            stroke_w = (
-                stroke_width_override
-                if stroke_width_override is not None
-                else (max(3, font_size // 8) if is_free_text else max(2, font_size // 10))
+            font = self._get_font(font_size, font_family_path=font_family_path)
+            stroke_w = self._compute_stroke_width(
+                font_size=font_size,
+                is_free_text=is_free_text,
+                style_preset=preset,
+                stroke_width_override=stroke_width_override,
             )
-            spacing = self._get_line_spacing(font_size)
+            spacing = self._get_line_spacing(font_size, style_preset=preset)
             wrapped = self._wrap_text_pixel(
                 draw,
                 text,
@@ -314,6 +507,7 @@ class MangaRenderer:
                 target_w,
                 target_h,
                 elliptical=use_ellipse,
+                align=align,
             )
             return fits, wrapped, font, stroke_w, spacing
 
@@ -325,7 +519,6 @@ class MangaRenderer:
             if high_bound < low_bound:
                 return None
 
-            # Быстрая проверка верхней границы (если максимальный кегль сразу помещается — 1 вызов!)
             fits_hi, wrap_hi, font_hi, stroke_hi, space_hi = _evaluate_font_size(high_bound, allow_hyphenation)
             if fits_hi:
                 return wrap_hi, font_hi, stroke_hi, space_hi, high_bound
@@ -343,7 +536,6 @@ class MangaRenderer:
                 else:
                     high = mid - 1
 
-            # Дополнительная проверка +1..+2px от найденного максимума на случай дискретного переноса строк в эллипсе
             if best is not None:
                 best_fs = best[4]
                 for probe_fs in range(min(high_bound - 1, best_fs + 2), best_fs, -1):
@@ -363,12 +555,13 @@ class MangaRenderer:
         if best_with_hyph is not None:
             return best_with_hyph
 
-        min_font = self._get_font(min_lim)
-        min_spacing = self._get_line_spacing(min_lim)
-        min_stroke = (
-            stroke_width_override
-            if stroke_width_override is not None
-            else (max(3, min_lim // 8) if is_free_text else max(2, min_lim // 10))
+        min_font = self._get_font(min_lim, font_family_path=font_family_path)
+        min_spacing = self._get_line_spacing(min_lim, style_preset=preset)
+        min_stroke = self._compute_stroke_width(
+            font_size=min_lim,
+            is_free_text=is_free_text,
+            style_preset=preset,
+            stroke_width_override=stroke_width_override,
         )
         wrap_limit = max(target_w, int(min_lim * 2.5)) if min_lim == max_lim else target_w
         wrapped = self._wrap_text_pixel(
@@ -451,10 +644,30 @@ class MangaRenderer:
             if not raw_text:
                 continue
 
+            style_preset = str(block.get("style_preset") or "dialogue").lower().strip()
+            if style_preset not in ("dialogue", "thought", "shout", "whisper", "narration", "sfx"):
+                style_preset = "dialogue"
+
+            align = str(block.get("align") or "center").lower().strip()
+            if align not in ("center", "left", "right"):
+                align = "center"
+
+            try:
+                angle = float(block.get("angle") or 0.0)
+                angle = max(-45.0, min(45.0, angle))
+            except (ValueError, TypeError):
+                angle = 0.0
+
+            font_family_path = self._resolve_font_family_path(
+                font_family=block.get("font_family"),
+                style_preset=style_preset,
+            )
+
             text = raw_text.upper() if use_upper else raw_text
-            is_free_text = bool(block.get("is_free_text", False))
+            is_free_text = bool(block.get("is_free_text", False)) or (style_preset == "sfx")
             is_modified = self._is_bbox_modified(block)
             is_resized = self._is_bbox_resized(block)
+            force_rect = is_modified or (style_preset in ("narration", "sfx"))
 
             raw_bbox = block.get("bbox") or [0, 0, 0, 0]
             x1, y1, x2, y2 = [int(round(float(c))) for c in raw_bbox[:4]]
@@ -463,7 +676,7 @@ class MangaRenderer:
             x2 = max(x1 + 4, min(x2, img_w))
             y2 = max(y1 + 4, min(y2, img_h))
 
-            if is_free_text and not is_modified:
+            if is_free_text and not is_modified and style_preset != "narration":
                 rx1, rx2 = self._expand_free_text_width([x1, y1, x2, y2], blocks, img_w)
             else:
                 rx1, rx2 = x1, x2
@@ -473,9 +686,9 @@ class MangaRenderer:
             if box_w < 10 or box_h < 10:
                 continue
 
-            if is_free_text or is_modified:
-                pad_x = max(2, int(box_w * 0.04)) if is_modified else 2
-                pad_y = max(2, int(box_h * 0.04)) if is_modified else 2
+            if is_free_text or force_rect:
+                pad_x = max(2, int(box_w * 0.04)) if force_rect else 2
+                pad_y = max(2, int(box_h * 0.04)) if force_rect else 2
             else:
                 pad_x = max(4, int(box_w * self.box_padding_ratio))
                 pad_y = max(4, int(box_h * self.box_padding_ratio))
@@ -488,11 +701,22 @@ class MangaRenderer:
             if isinstance(block_font_override, (int, float)) and int(block_font_override) >= 6:
                 b_min = b_max = max(6, min(160, int(block_font_override)))
             elif is_resized:
-                # Если пользователь растянул/сжал рамку мышкой — кегль свободно подстраивается под новую площадь
                 b_min, b_max = 6, 140
                 unconstrained_size = True
+            elif style_preset == "shout":
+                b_min = font_min
+                b_max = min(140, max(font_cap + 6, int(font_cap * 1.22)))
+            elif style_preset == "whisper":
+                b_min = max(8, font_min - 2)
+                b_max = max(b_min + 2, int(font_cap * 0.82))
             else:
                 b_min, b_max = font_min, font_cap
+
+            block_stroke_override = block.get("stroke_width")
+            if isinstance(block_stroke_override, (int, float)) and int(block_stroke_override) >= 0:
+                eff_stroke_override: int | None = max(0, min(12, int(block_stroke_override)))
+            else:
+                eff_stroke_override = stroke_width_override
 
             wrapped_text, font, stroke_w, dyn_spacing, chosen_fs = self._fit_text_to_box(
                 draw=draw,
@@ -502,9 +726,12 @@ class MangaRenderer:
                 min_font_limit=b_min,
                 max_font_limit=b_max,
                 is_free_text=is_free_text,
-                stroke_width_override=stroke_width_override,
-                force_rectangular=is_modified,
+                stroke_width_override=eff_stroke_override,
+                force_rectangular=force_rect,
                 unconstrained_size=unconstrained_size,
+                font_family_path=font_family_path,
+                style_preset=style_preset,
+                align=align,
             )
             block["rendered_font_size"] = chosen_fs
 
@@ -516,38 +743,77 @@ class MangaRenderer:
             median_lum = self._compute_perceptual_luminance(roi)
 
             if median_lum >= 115.0:
-                text_fill = (15, 15, 15)
-                stroke_fill = (255, 255, 255)
+                default_text_fill = (34, 34, 34) if style_preset == "thought" else (15, 15, 15)
+                default_stroke_fill = (255, 255, 255)
             else:
-                text_fill = (250, 250, 250)
-                stroke_fill = (10, 10, 10)
+                default_text_fill = (250, 250, 250)
+                default_stroke_fill = (10, 10, 10)
+
+            custom_text_rgb = self._parse_hex_color(block.get("text_color"))
+            custom_stroke_rgb = self._parse_hex_color(block.get("stroke_color"))
+            text_fill = custom_text_rgb if custom_text_rgb is not None else default_text_fill
+            stroke_fill = custom_stroke_rgb if custom_stroke_rgb is not None else default_stroke_fill
 
             t_bbox = draw.multiline_textbbox(
                 (0, 0),
                 wrapped_text,
                 font=font,
                 spacing=dyn_spacing,
-                align="center",
+                align=align,
                 stroke_width=stroke_w,
             )
             tw = t_bbox[2] - t_bbox[0]
             th = t_bbox[3] - t_bbox[1]
 
-            draw_x = rx1 + (box_w - tw) / 2.0 - t_bbox[0]
-            draw_y = y1 + (box_h - th) / 2.0 - t_bbox[1]
+            if abs(angle) >= 0.5:
+                pad_rot = max(12, stroke_w * 2 + 8)
+                layer_w = max(16, int(math.ceil(tw + 2 * pad_rot)))
+                layer_h = max(16, int(math.ceil(th + 2 * pad_rot)))
+                txt_layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+                txt_draw = ImageDraw.Draw(txt_layer)
 
-            draw_x = max(2.0, min(draw_x, float(img_w - tw - 2)))
-            draw_y = max(2.0, min(draw_y, float(img_h - th - 2)))
+                local_x = pad_rot - t_bbox[0]
+                local_y = pad_rot - t_bbox[1]
+                txt_draw.multiline_text(
+                    (local_x, local_y),
+                    wrapped_text,
+                    font=font,
+                    fill=(*text_fill, 255),
+                    spacing=dyn_spacing,
+                    align=align,
+                    stroke_width=stroke_w,
+                    stroke_fill=(*stroke_fill, 255) if stroke_w > 0 else None,
+                )
 
-            draw.multiline_text(
-                (draw_x, draw_y),
-                wrapped_text,
-                font=font,
-                fill=text_fill,
-                spacing=dyn_spacing,
-                align="center",
-                stroke_width=stroke_w,
-                stroke_fill=stroke_fill,
-            )
+                rot_layer = txt_layer.rotate(angle, resample=Image.BICUBIC, expand=True)
+                rw_rot, rh_rot = rot_layer.size
+                paste_x = int(round(rx1 + (box_w - rw_rot) / 2.0))
+                paste_y = int(round(y1 + (box_h - rh_rot) / 2.0))
+                paste_x = max(-rw_rot // 2, min(paste_x, img_w - rw_rot // 2))
+                paste_y = max(-rh_rot // 2, min(paste_y, img_h - rh_rot // 2))
+                canvas.paste(rot_layer, (paste_x, paste_y), rot_layer)
+                draw = ImageDraw.Draw(canvas)
+            else:
+                if align == "left":
+                    draw_x = rx1 + pad_x - t_bbox[0]
+                elif align == "right":
+                    draw_x = rx2 - pad_x - tw - t_bbox[0]
+                else:
+                    draw_x = rx1 + (box_w - tw) / 2.0 - t_bbox[0]
+                draw_y = y1 + (box_h - th) / 2.0 - t_bbox[1]
+
+                draw_x = max(2.0, min(draw_x, float(img_w - tw - 2)))
+                draw_y = max(2.0, min(draw_y, float(img_h - th - 2)))
+
+                draw.multiline_text(
+                    (draw_x, draw_y),
+                    wrapped_text,
+                    font=font,
+                    fill=text_fill,
+                    spacing=dyn_spacing,
+                    align=align,
+                    stroke_width=stroke_w,
+                    stroke_fill=stroke_fill if stroke_w > 0 else None,
+                )
 
         return canvas

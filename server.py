@@ -1,5 +1,12 @@
 """
-FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.0).
+FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.6-step3).
+
+Изменения v1.0.6-step3:
+- Расширение схемы `TextBlock` полями профессиональной верстки и локальной ретуши маски:
+  `font_family`, `text_color`, `stroke_color`, `stroke_width`, `align`, `angle`,
+  `style_preset`, `mask_dilate`, `custom_mask_strokes` (с полной обратной совместимостью).
+- Возврат списка доступных шрифтов `available_fonts` в `GET /health` из папки `fonts/` и системных шрифтов.
+- Учет `mask_dilate` и `custom_mask_strokes` при расчете `clean_state_hash`.
 
 Изменения v1.0.0:
 1. Эндпоинты `POST /pull_model` и `GET /pull_status` для автоматического скачивания лучших моделей
@@ -185,7 +192,7 @@ _AUTO_OPEN_GUI: bool = False
 
 
 def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
-    """Гарантирует наличие исходного `clean_bbox` у блока, чтобы при сдвиге рамки инпейнтинг оставался на месте."""
+    """Гарантирует наличие исходного `clean_bbox` и безопасных дефолтов полей стилизации/ретуши (Шаг 3)."""
     bbox_raw = block.get("bbox") or [0, 0, 0, 0]
     bbox = [int(round(float(x))) for x in bbox_raw[:4]] if len(bbox_raw) >= 4 else [0, 0, 0, 0]
     block["bbox"] = bbox
@@ -202,6 +209,62 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     nw = bbox[2] - bbox[0]
     nh = bbox[3] - bbox[1]
     block["bbox_resized"] = bool(block.get("bbox_resized", False)) or (abs(nw - cw) >= 3 or abs(nh - ch) >= 3)
+
+    # Поля профессиональной верстки и ретуши маски (Шаг 3) с обратной совместимостью
+    block.setdefault("font_family", None)
+    block.setdefault("text_color", None)
+    block.setdefault("stroke_color", None)
+    if block.get("stroke_width") is not None:
+        try:
+            block["stroke_width"] = max(0, min(20, int(block["stroke_width"])))
+        except (ValueError, TypeError):
+            block["stroke_width"] = None
+    else:
+        block["stroke_width"] = None
+
+    align_val = str(block.get("align") or "center").strip().lower()
+    block["align"] = align_val if align_val in ("center", "left", "right") else "center"
+
+    try:
+        angle_val = float(block.get("angle") or 0.0)
+        block["angle"] = max(-180.0, min(180.0, round(angle_val, 1)))
+    except (ValueError, TypeError):
+        block["angle"] = 0.0
+
+    preset_val = str(block.get("style_preset") or "dialogue").strip().lower()
+    block["style_preset"] = (
+        preset_val
+        if preset_val in ("dialogue", "thought", "shout", "whisper", "narration", "sfx")
+        else "dialogue"
+    )
+
+    if block.get("mask_dilate") is not None:
+        try:
+            md_val = int(block["mask_dilate"])
+            block["mask_dilate"] = max(1, min(28, md_val)) if md_val > 0 else None
+        except (ValueError, TypeError):
+            block["mask_dilate"] = None
+    else:
+        block["mask_dilate"] = None
+
+    raw_strokes = block.get("custom_mask_strokes")
+    if isinstance(raw_strokes, list):
+        norm_strokes: list[dict[str, Any]] = []
+        for st in raw_strokes:
+            if not isinstance(st, dict):
+                continue
+            try:
+                sx = int(round(float(st.get("x", 0))))
+                sy = int(round(float(st.get("y", 0))))
+                sr = max(1, min(80, int(round(float(st.get("r", 10))))))
+                smode = "erase" if str(st.get("mode") or "add").strip().lower() == "erase" else "add"
+                norm_strokes.append({"x": sx, "y": sy, "r": sr, "mode": smode})
+            except (ValueError, TypeError):
+                continue
+        block["custom_mask_strokes"] = norm_strokes if norm_strokes else None
+    else:
+        block["custom_mask_strokes"] = None
+
     return block
 
 
@@ -250,7 +313,7 @@ def _compute_clean_state_hash(
         except Exception:
             src_key = str(src_file)
 
-    active_tuples: list[tuple[tuple[int, int, int, int], bool, int]] = []
+    active_tuples: list[tuple[tuple[int, int, int, int], bool, int, tuple[tuple[int, int, int, str], ...]]] = []
     for b in blocks:
         if not _is_block_active_for_cleaning(b):
             continue
@@ -259,15 +322,30 @@ def _compute_clean_state_hash(
         clean_tuple = (cb[0], cb[1], cb[2], cb[3])
         is_free = bool(b.get("is_free_text", False))
         mask_dilate_val = int(b.get("mask_dilate") or 0)
-        active_tuples.append((clean_tuple, is_free, mask_dilate_val))
+        raw_st = b.get("custom_mask_strokes") or []
+        st_list: list[tuple[int, int, int, str]] = []
+        if isinstance(raw_st, list):
+            for st in raw_st:
+                if isinstance(st, dict):
+                    try:
+                        st_list.append((
+                            int(round(float(st.get("x", 0)))),
+                            int(round(float(st.get("y", 0)))),
+                            max(1, int(round(float(st.get("r", 8))))),
+                            "erase" if str(st.get("mode") or "add").lower() == "erase" else "add",
+                        ))
+                    except (ValueError, TypeError):
+                        pass
+        active_tuples.append((clean_tuple, is_free, mask_dilate_val, tuple(st_list)))
 
-    active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]))
+    active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3]))
     payload = {
         "src_file": src_key,
         "mtime": int(src_mtime),
         "dilate_size": eff_dilate,
         "active_clean_blocks": [
-            [list(coords), is_free, mdil] for coords, is_free, mdil in active_tuples
+            [list(coords), is_free, mdil, [list(s) for s in st_tup]]
+            for coords, is_free, mdil, st_tup in active_tuples
         ],
     }
     raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -517,6 +595,42 @@ class TextBlock(BaseModel):
     )
     font_size: int | None = Field(default=None, description="Индивидуальный размер шрифта для этого блока (px), если задан вручную")
     rendered_font_size: int | None = Field(default=None, description="Фактический кегль шрифта (px), рассчитанный при верстке")
+    font_family: str | None = Field(
+        default=None,
+        description="Имя файла шрифта из папки fonts/ или системный идентификатор шрифта для данного блока",
+    )
+    text_color: str | None = Field(
+        default=None,
+        description="Цвет текста в формате HEX (#RRGGBB). Если None — авто-контраст по яркости фона",
+    )
+    stroke_color: str | None = Field(
+        default=None,
+        description="Цвет обводки в формате HEX (#RRGGBB). Если None — авто-контраст",
+    )
+    stroke_width: int | None = Field(
+        default=None,
+        description="Толщина обводки текста (0..16 px). Если None — авто-расчет от кегля",
+    )
+    align: str = Field(
+        default="center",
+        description="Выравнивание текста: 'center', 'left' или 'right'",
+    )
+    angle: float = Field(
+        default=0.0,
+        description="Угол поворота текста в градусах (-45..+45)",
+    )
+    style_preset: str = Field(
+        default="dialogue",
+        description="Пресет оформления блока: 'dialogue', 'thought', 'shout', 'whisper', 'narration', 'sfx'",
+    )
+    mask_dilate: int | None = Field(
+        default=None,
+        description="Индивидуальная толщина маски очистки для этого блока (1..28 px). Если None — авто",
+    )
+    custom_mask_strokes: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Ручные мазки кисти/ластика замазки: [{'x': int, 'y': int, 'r': int, 'mode': 'add'|'erase'}]",
+    )
 
 
 class TranslateResponse(BaseModel):
@@ -1745,6 +1859,11 @@ async def health_check() -> dict[str, Any]:
         "ocr_engine_updated": has_multilang_engine,
         "inpaint_backend": inpaint_backend,
         "font": renderer_engine.font_path if renderer_engine is not None else None,
+        "available_fonts": (
+            renderer_engine.list_available_fonts()
+            if (renderer_engine is not None and hasattr(renderer_engine, "list_available_fonts"))
+            else []
+        ),
         "folder_job": folder_job_state,
     }
 
