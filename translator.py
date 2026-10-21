@@ -1093,7 +1093,7 @@ class OllamaTranslator:
     def _get_http_client(self) -> httpx.AsyncClient:
         if self._http_client is None or self._http_client.is_closed:
             self._http_client = httpx.AsyncClient(
-                timeout=httpx.Timeout(self.timeout_sec, connect=10.0),
+                timeout=httpx.Timeout(self.timeout_sec, connect=15.0),
                 trust_env=False,
                 follow_redirects=True,
                 limits=httpx.Limits(max_keepalive_connections=10, max_connections=20),
@@ -2359,7 +2359,8 @@ class OllamaTranslator:
                     "stream": False,
                 }
                 last_cloud_err: Exception | None = None
-                for attempt in range(2):
+                max_attempts = 3
+                for attempt in range(max_attempts):
                     if self.stop_requested:
                         return {}
                     _t0_cloud = time.perf_counter()
@@ -2369,14 +2370,18 @@ class OllamaTranslator:
                             headers=self._unsloth_headers(),
                             json=payload_cloud,
                         )
-                        if response.status_code in (502, 503, 504) and attempt == 0:
+                        if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+                            wait_s = 1.5 * (attempt + 1)
                             logger.warning(
-                                "Облачный шлюз (%s) вернул %s для '%s' — повторная попытка через 1.5с...",
+                                "Облачный шлюз (%s) вернул HTTP %s для '%s' (попытка %d/%d) — повтор через %.1fс...",
                                 self.unsloth_url,
                                 response.status_code,
                                 model_name,
+                                attempt + 1,
+                                max_attempts,
+                                wait_s,
                             )
-                            await asyncio.sleep(1.5)
+                            await asyncio.sleep(wait_s)
                             continue
                         response.raise_for_status()
                         data = response.json()
@@ -2392,15 +2397,29 @@ class OllamaTranslator:
                             return {"__refusal__": self.last_refusal_message}
                         self._record_api_call("cloud", model_name, _el_cloud, len(parsed), "OK")
                         return parsed
-                    except (httpx.ReadTimeout, httpx.ConnectTimeout, httpx.RemoteProtocolError) as net_exc:
+                    except (
+                        httpx.ConnectError,
+                        httpx.ConnectTimeout,
+                        httpx.ReadTimeout,
+                        httpx.WriteTimeout,
+                        httpx.PoolTimeout,
+                        httpx.RemoteProtocolError,
+                        httpx.ReadError,
+                        httpx.WriteError,
+                    ) as net_exc:
                         last_cloud_err = net_exc
-                        if attempt == 0:
+                        if attempt < max_attempts - 1:
+                            wait_s = 1.5 * (attempt + 1)
                             logger.warning(
-                                "Таймаут/сбой сети при обращении к '%s' (%s) — повторная попытка на той же модели...",
+                                "Сбой соединения с '%s' (%s: %s, попытка %d/%d) — повтор через %.1fс (0 лишних токенов)...",
                                 model_name,
+                                type(net_exc).__name__,
                                 net_exc,
+                                attempt + 1,
+                                max_attempts,
+                                wait_s,
                             )
-                            await asyncio.sleep(1.2)
+                            await asyncio.sleep(wait_s)
                             continue
                         break
                     except Exception as c_exc:
@@ -2775,20 +2794,33 @@ class OllamaTranslator:
             sem = asyncio.Semaphore(MAX_CONCURRENT_CLOUD_REQUESTS)
             ctx_snapshot = list(running_context) if running_context else None
 
-            async def _run_sub(sub_c: list[dict[str, Any]]) -> dict[str, str]:
+            async def _run_sub(idx: int, sub_c: list[dict[str, Any]]) -> dict[str, str]:
+                # Небольшая ступенька (0.35с) между стартом потоков, чтобы шлюз не сбрасывал одновременные TLS-рукопожатия
+                if idx > 0:
+                    await asyncio.sleep(idx * 0.35)
                 async with sem:
                     if self.stop_requested:
                         return {}
-                    return await self._translate_batch_chunk(
-                        client=client,
-                        chunk_blocks=sub_c,
-                        source_lang=source_lang,
-                        target_lang=target_lang,
-                        active_model=active_model,
-                        context_lines=ctx_snapshot,
-                    )
+                    try:
+                        return await self._translate_batch_chunk(
+                            client=client,
+                            chunk_blocks=sub_c,
+                            source_lang=source_lang,
+                            target_lang=target_lang,
+                            active_model=active_model,
+                            context_lines=ctx_snapshot,
+                        )
+                    except Exception as sub_exc:
+                        logger.error(
+                            "Ошибка в параллельном потоке #%d/%d (%d фраз): %s — соседние потоки и кэш сохранены!",
+                            idx + 1,
+                            len(parallel_chunks),
+                            len(sub_c),
+                            sub_exc,
+                        )
+                        return {}
 
-            sub_results = await asyncio.gather(*(_run_sub(sc) for sc in parallel_chunks))
+            sub_results = await asyncio.gather(*(_run_sub(i, sc) for i, sc in enumerate(parallel_chunks)))
             for sc, chunk_map in zip(parallel_chunks, sub_results):
                 translated_map.update(chunk_map)
                 for b in sc:
@@ -2807,14 +2839,22 @@ class OllamaTranslator:
                 if self.stop_requested:
                     break
                 chunk = unique_to_translate[start_idx : start_idx + batch_limit]
-                chunk_map = await self._translate_batch_chunk(
-                    client=client,
-                    chunk_blocks=chunk,
-                    source_lang=source_lang,
-                    target_lang=target_lang,
-                    active_model=active_model,
-                    context_lines=running_context if running_context else None,
-                )
+                try:
+                    chunk_map = await self._translate_batch_chunk(
+                        client=client,
+                        chunk_blocks=chunk,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        active_model=active_model,
+                        context_lines=running_context if running_context else None,
+                    )
+                except Exception as chunk_exc:
+                    logger.error(
+                        "Ошибка перевода подгруппы (%d фраз): %s — переводы из кэша и словаря сохранены!",
+                        len(chunk),
+                        chunk_exc,
+                    )
+                    chunk_map = {}
                 translated_map.update(chunk_map)
 
                 for b in chunk:
