@@ -197,6 +197,11 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
         clean_bbox = list(bbox)
     block["clean_bbox"] = clean_bbox
     block["bbox_modified"] = bool(block.get("bbox_modified", False)) or (clean_bbox != bbox)
+    cw = clean_bbox[2] - clean_bbox[0]
+    ch = clean_bbox[3] - clean_bbox[1]
+    nw = bbox[2] - bbox[0]
+    nh = bbox[3] - bbox[1]
+    block["bbox_resized"] = bool(block.get("bbox_resized", False)) or (abs(nw - cw) >= 3 or abs(nh - ch) >= 3)
     return block
 
 
@@ -496,6 +501,10 @@ class TextBlock(BaseModel):
     bbox_modified: bool = Field(
         default=False,
         description="Если True, пользователь вручную передвинул или изменил размер рамки перевода мышкой",
+    )
+    bbox_resized: bool = Field(
+        default=False,
+        description="Если True, размер рамки был изменен пользователем (ресайз, объединение Merge или разделение Split)",
     )
     confidence: float = 1.0
     original_text: str

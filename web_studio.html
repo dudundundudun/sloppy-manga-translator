@@ -1087,6 +1087,83 @@
       border: 2px dashed rgba(251, 191, 36, 0.72);
       background: rgba(251, 191, 36, 0.06);
     }
+    .bbox-pin.multi-selected-pin {
+      border: 2.5px solid #38bdf8 !important;
+      background: rgba(56, 189, 248, 0.20) !important;
+      box-shadow: 0 0 16px rgba(56, 189, 248, 0.78) !important;
+      z-index: 10 !important;
+    }
+    .block-edit-card.multi-selected-card {
+      border-color: #38bdf8 !important;
+      background: rgba(14, 116, 144, 0.28) !important;
+      box-shadow: 0 0 14px rgba(56, 189, 248, 0.28) !important;
+    }
+    .viewer-stage.hold-compare-original .bbox-pin,
+    .viewer-stage.hold-compare-original .clean-bbox-ghost {
+      opacity: 0 !important;
+      pointer-events: none !important;
+    }
+    .hold-compare-banner {
+      position: absolute;
+      top: 58px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(15, 13, 24, 0.92);
+      color: #38bdf8;
+      border: 1.5px solid rgba(56, 189, 248, 0.65);
+      border-radius: 999px;
+      padding: 6px 16px;
+      font-size: 12px;
+      font-weight: 700;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.75);
+      z-index: 30;
+      pointer-events: none;
+      display: none;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .hold-compare-banner.active {
+      display: inline-flex;
+    }
+    .btn-merge-blocks {
+      background: linear-gradient(135deg, #0284c7, #4f46e5);
+      color: #fff;
+      border: 1px solid rgba(56, 189, 248, 0.6);
+      border-radius: 999px;
+      padding: 5px 12px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      box-shadow: 0 3px 12px rgba(56, 189, 248, 0.35);
+      transition: transform 0.12s ease, opacity 0.15s ease;
+      display: none;
+      align-items: center;
+      gap: 5px;
+    }
+    .btn-merge-blocks:hover {
+      opacity: 0.95;
+      transform: translateY(-1px);
+    }
+    .btn-split-block {
+      background: rgba(251, 191, 36, 0.15);
+      color: #fde68a;
+      border: 1px solid rgba(251, 191, 36, 0.42);
+      border-radius: 8px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+    }
+    .btn-split-block:hover {
+      background: rgba(251, 191, 36, 0.32);
+      color: #fff;
+      border-color: #fbbf24;
+    }
     .bbox-pin-badge {
       position: absolute;
       top: -13px;
@@ -1919,6 +1996,7 @@
           </div>
         </div>
 
+        <div class="hold-compare-banner" id="hold-compare-banner">👁 Режим сверки с оригиналом (отпустите Space / V)</div>
         <!-- True Full-Page Scrollable Stage -->
         <div class="viewer-stage zoom-fit-width split-mode" id="viewer-stage">
           <div class="empty-viewer">
@@ -1946,6 +2024,8 @@
           </div>
 
           <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
+            <button type="button" class="pill-btn" id="btn-undo-action" onclick="undoPageAction(event)" disabled title="Отменить последнее действие на странице (Ctrl+Z)">↩ Отменить (Ctrl+Z)</button>
+            <button type="button" class="pill-btn" id="btn-redo-action" onclick="redoPageAction(event)" disabled title="Повторить отмененное действие на странице (Ctrl+Y / Ctrl+Shift+Z)">↪ Повторить (Ctrl+Y)</button>
             <button type="button" class="pill-btn" id="btn-wide-mode" onclick="toggleLeftSidebar()" title="Режим широкого экрана: скрыть/показать левую панель со списком страниц">↔ Широкий экран</button>
             <button type="button" class="pill-btn subtle-active" id="btn-auto-center-pin" onclick="toggleAutoScrollBubble()" title="Авто-центровка: плавно прокручивать страницу манги к выбранному в редакторе кружку #N">🎯 Авто-фокус</button>
             <button type="button" class="pill-btn" id="btn-floating-fade" onclick="toggleFloatingAutoFade()" style="display:none;" title="Авто-прозрачность плавающего окна при наведении курсора на страницу манги">👻 Прозрачн.</button>
@@ -1960,8 +2040,11 @@
             <button class="btn-restore-block" id="btn-drawer-draw-region" onclick="toggleDrawRegionMode()" title="Выделить мышкой на картинке любой кружок или текст, который модель пропустила, и перевести его">
               ➕ Обвести текст
             </button>
-            <button class="btn-restore-block" id="btn-undo-removed-frame" onclick="undoLastRemovedFrame()" style="display:none;" title="Вернуть последнюю полностью удаленную рамку (Ctrl+Z)">
-              ↩ Вернуть рамку
+            <button class="btn-merge-blocks" id="btn-merge-blocks" onclick="mergeSelectedBlocks(event)" title="Объединить выделенные через Shift+Клик рамки в один общий блок (Горячая клавиша: M)">
+              🔗 Объединить рамки (M)
+            </button>
+            <button class="btn-restore-block" id="btn-undo-removed-frame" onclick="undoPageAction(event)" style="display:none;" title="Отменить последнее действие на странице (Ctrl+Z)">
+              ↩ Отменить
             </button>
             <button class="btn-delete-block" onclick="removeEmptyBlocksFromPage()" title="Полностью удалить с картинки все пустые рамки (без перевода)">
               🧹 Убрать пустые рамки
@@ -2035,6 +2118,8 @@
       <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
         <button type="button" class="btn-save-edit" style="padding:5px 11px; font-size:11.5px;" onclick="saveFromInlinePopup()" title="Сохранить и перерисовать страницу (Ctrl+Enter или Ctrl+S)">💾 Применить</button>
         <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
+        <button type="button" class="btn-split-block" id="popup-split-btn" onclick="splitFromInlinePopup(event)" title="Разделить эту рамку и её текст на 2 независимых блока">✂️ Разделить рамку</button>
+        <button type="button" class="btn-merge-blocks" id="popup-merge-btn" onclick="mergeSelectedBlocks(event)" title="Объединить выделенные через Shift+Клик рамки в один блок (M)">🔗 Объединить рамки (M)</button>
         <button type="button" class="romaji-copy-btn" id="popup-clear-btn" onclick="clearTextFromInlinePopup(event)" title="Очистить только текст перевода внутри рамки (оставить саму рамку и оригинал на картинке)">🧹 Текст</button>
         <button type="button" class="btn-restore-block" id="popup-restore-btn" onclick="restoreFromInlinePopup(event)" style="display:none;" title="Вернуть очищенный текст перевода">↩ Вернуть</button>
         <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Полностью удалить эту рамку и её перевод с картинки">🗑 Удалить рамку</button>
@@ -3465,8 +3550,8 @@
       document.getElementById("editor-title-lbl").textContent =
         `✏️ Редактор: стр. #${p.index} (${p.rel_path})`;
 
-      deletedFramesUndoStack = [];
-      updateUndoRemovedFrameBtn();
+      selectedBlockIds = new Set();
+      resetPageHistory();
 
       if (Array.isArray(p.blocks) && (p.blocks.length > 0 || p.has_saved_blocks)) {
         currentBlocks = p.blocks.map(b => ({ ...b }));
@@ -3594,18 +3679,491 @@
       }
     }
 
-    let deletedFramesUndoStack = [];
+    /* ==================== STEP 2: UNIVERSAL PAGE HISTORY (UNDO / REDO) & MULTI-SELECT (MERGE / SPLIT) ==================== */
+    let pageHistory = {
+      undoStack: [],
+      redoStack: [],
+      maxDepth: 40
+    };
+    let textHistoryDebounceTimer = null;
+    let pendingTextHistorySnapshot = null;
+    let wheelHistorySnapshot = null;
+    let selectedBlockIds = new Set();
     let clientEditRevision = 0;
 
-    function updateUndoRemovedFrameBtn() {
-      const btn = document.getElementById("btn-undo-removed-frame");
-      if (!btn) return;
-      if (deletedFramesUndoStack && deletedFramesUndoStack.length > 0) {
-        btn.style.display = "inline-flex";
-        btn.textContent = `↩ Вернуть рамку (${deletedFramesUndoStack.length})`;
-      } else {
-        btn.style.display = "none";
+    function cloneBlocksSnapshot(blocksArr = currentBlocks) {
+      if (!Array.isArray(blocksArr)) return "[]";
+      const cleanCopy = blocksArr.map(b => ({
+        ...b,
+        bbox: Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0],
+        clean_bbox: Array.isArray(b.clean_bbox) ? [...b.clean_bbox] : (Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0]),
+        _dirtyPreview: false
+      }));
+      return JSON.stringify(cleanCopy);
+    }
+
+    function resetPageHistory() {
+      if (textHistoryDebounceTimer) {
+        clearTimeout(textHistoryDebounceTimer);
+        textHistoryDebounceTimer = null;
       }
+      pendingTextHistorySnapshot = null;
+      wheelHistorySnapshot = null;
+      pageHistory.undoStack = [];
+      pageHistory.redoStack = [];
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
+    }
+
+    function flushPendingTextHistory() {
+      if (textHistoryDebounceTimer) {
+        clearTimeout(textHistoryDebounceTimer);
+        textHistoryDebounceTimer = null;
+      }
+      if (pendingTextHistorySnapshot !== null) {
+        const snap = pendingTextHistorySnapshot;
+        pendingTextHistorySnapshot = null;
+        const curSnap = cloneBlocksSnapshot(currentBlocks);
+        if (snap !== curSnap) {
+          if (pageHistory.undoStack.length === 0 || pageHistory.undoStack[pageHistory.undoStack.length - 1] !== snap) {
+            pageHistory.undoStack.push(snap);
+            if (pageHistory.undoStack.length > pageHistory.maxDepth) {
+              pageHistory.undoStack.shift();
+            }
+          }
+          pageHistory.redoStack = [];
+          updateUndoRedoButtonsUi();
+        }
+      }
+    }
+
+    function scheduleTextHistorySnapshot() {
+      if (pendingTextHistorySnapshot === null) {
+        pendingTextHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
+      }
+      if (textHistoryDebounceTimer) clearTimeout(textHistoryDebounceTimer);
+      textHistoryDebounceTimer = setTimeout(() => {
+        flushPendingTextHistory();
+      }, 400);
+    }
+
+    function pushPageHistorySnapshot(explicitSnapshotStr = null) {
+      flushPendingTextHistory();
+      const snap = explicitSnapshotStr !== null ? explicitSnapshotStr : cloneBlocksSnapshot(currentBlocks);
+      if (pageHistory.undoStack.length > 0 && pageHistory.undoStack[pageHistory.undoStack.length - 1] === snap) {
+        return;
+      }
+      pageHistory.undoStack.push(snap);
+      if (pageHistory.undoStack.length > pageHistory.maxDepth) {
+        pageHistory.undoStack.shift();
+      }
+      pageHistory.redoStack = [];
+      updateUndoRedoButtonsUi();
+    }
+
+    function updateUndoRedoButtonsUi() {
+      const uLen = pageHistory.undoStack.length + (pendingTextHistorySnapshot !== null ? 1 : 0);
+      const rLen = pageHistory.redoStack.length;
+
+      const btnUndo = document.getElementById("btn-undo-action");
+      if (btnUndo) {
+        btnUndo.disabled = uLen === 0;
+        btnUndo.textContent = uLen > 0 ? `↩ Отменить (${uLen}) (Ctrl+Z)` : `↩ Отменить (Ctrl+Z)`;
+      }
+      const btnRedo = document.getElementById("btn-redo-action");
+      if (btnRedo) {
+        btnRedo.disabled = rLen === 0;
+        btnRedo.textContent = rLen > 0 ? `↪ Повторить (${rLen}) (Ctrl+Y)` : `↪ Повторить (Ctrl+Y)`;
+      }
+      const legacyBtn = document.getElementById("btn-undo-removed-frame");
+      if (legacyBtn) {
+        if (uLen > 0) {
+          legacyBtn.style.display = "inline-flex";
+          legacyBtn.textContent = `↩ Отменить (${uLen})`;
+        } else {
+          legacyBtn.style.display = "none";
+        }
+      }
+    }
+
+    function updateUndoRemovedFrameBtn() {
+      updateUndoRedoButtonsUi();
+    }
+
+    async function undoPageAction(ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+      flushPendingTextHistory();
+
+      if (pageHistory.undoStack.length === 0) {
+        sayMiko("Нет действий для отмены на этой странице~ 🌸");
+        return;
+      }
+
+      const currentSnap = cloneBlocksSnapshot(currentBlocks);
+      const prevSnap = pageHistory.undoStack.pop();
+      pageHistory.redoStack.push(currentSnap);
+      if (pageHistory.redoStack.length > pageHistory.maxDepth) {
+        pageHistory.redoStack.shift();
+      }
+
+      try {
+        currentBlocks = JSON.parse(prevSnap).map(b => ({ ...b, _dirtyPreview: false }));
+      } catch (err) {
+        return;
+      }
+      clientEditRevision++;
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+      selectedBlockIds = new Set();
+      if (popupBlockId && !currentBlocks.some(b => b.id === popupBlockId)) {
+        closeInlineBubblePopup();
+      } else if (popupBlockId) {
+        populateInlinePopup(popupBlockId);
+      }
+
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      sayMiko(`↩ Действие отменено (осталось шагов отмены: ${pageHistory.undoStack.length})! Обновляю страницу... ✨`);
+      await saveEditedPageTranslation({ isAuto: true });
+    }
+
+    async function redoPageAction(ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+      flushPendingTextHistory();
+
+      if (pageHistory.redoStack.length === 0) {
+        sayMiko("Нет отмененных действий для повтора~ 🌸");
+        return;
+      }
+
+      const currentSnap = cloneBlocksSnapshot(currentBlocks);
+      const nextSnap = pageHistory.redoStack.pop();
+      pageHistory.undoStack.push(currentSnap);
+      if (pageHistory.undoStack.length > pageHistory.maxDepth) {
+        pageHistory.undoStack.shift();
+      }
+
+      try {
+        currentBlocks = JSON.parse(nextSnap).map(b => ({ ...b, _dirtyPreview: false }));
+      } catch (err) {
+        return;
+      }
+      clientEditRevision++;
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+      selectedBlockIds = new Set();
+      if (popupBlockId && !currentBlocks.some(b => b.id === popupBlockId)) {
+        closeInlineBubblePopup();
+      } else if (popupBlockId) {
+        populateInlinePopup(popupBlockId);
+      }
+
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      sayMiko(`↪ Действие возвращено (осталось шагов повтора: ${pageHistory.redoStack.length})! Обновляю страницу... ✨`);
+      await saveEditedPageTranslation({ isAuto: true });
+    }
+
+    async function undoLastRemovedFrame(ev) {
+      await undoPageAction(ev);
+    }
+
+    function updateMergeButtonsUi() {
+      const count = selectedBlockIds ? selectedBlockIds.size : 0;
+      const showMerge = count >= 2;
+      const btnMerge = document.getElementById("btn-merge-blocks");
+      if (btnMerge) {
+        btnMerge.style.display = showMerge ? "inline-flex" : "none";
+        btnMerge.textContent = `🔗 Объединить рамки (${count}) (M)`;
+      }
+      const popMerge = document.getElementById("popup-merge-btn");
+      if (popMerge) {
+        popMerge.style.display = showMerge ? "inline-flex" : "none";
+        popMerge.textContent = `🔗 Объединить (${count}) (M)`;
+      }
+      document.querySelectorAll(".bbox-pin").forEach(el => {
+        const bid = Number(el.dataset.blockId);
+        el.classList.toggle("multi-selected-pin", showMerge && selectedBlockIds.has(bid));
+      });
+      document.querySelectorAll(".block-edit-card").forEach(el => {
+        const bid = Number(el.dataset.blockId);
+        el.classList.toggle("multi-selected-card", showMerge && selectedBlockIds.has(bid));
+      });
+    }
+
+    function toggleBlockMultiSelection(blockId, isShiftKey = false) {
+      if (!isShiftKey) {
+        selectedBlockIds = new Set([blockId]);
+        updateMergeButtonsUi();
+        return;
+      }
+      if (selectedBlockIds.size === 0 && activeBlockId !== null && activeBlockId !== blockId) {
+        selectedBlockIds.add(activeBlockId);
+      }
+      if (selectedBlockIds.has(blockId)) {
+        selectedBlockIds.delete(blockId);
+      } else {
+        selectedBlockIds.add(blockId);
+      }
+      activeBlockId = blockId;
+      updateMergeButtonsUi();
+      if (selectedBlockIds.size >= 2) {
+        const idsStr = Array.from(selectedBlockIds).sort((a, b) => a - b).map(id => `#${id}`).join(", ");
+        sayMiko(`Выделено рамок: ${selectedBlockIds.size} (${idsStr}). Нажми «🔗 Объединить рамки (M)», чтобы склеить их в один блок! ✨`);
+      }
+    }
+
+    async function mergeSelectedBlocks(ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!currentBlocks || currentBlocks.length < 2 || !selectedBlockIds || selectedBlockIds.size < 2) {
+        sayMiko("Выдели 2 или более рамок через Shift + Клик (на странице или в списке), чтобы объединить их~ 🔗🌸");
+        return;
+      }
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+
+      const selectedList = currentBlocks
+        .filter(b => selectedBlockIds.has(b.id))
+        .sort((a, b) => a.id - b.id);
+
+      if (selectedList.length < 2) return;
+
+      pushPageHistorySnapshot();
+
+      selectedList.forEach(b => ensureBlockCleanBbox(b));
+
+      const minX1 = Math.min(...selectedList.map(b => b.bbox[0]));
+      const minY1 = Math.min(...selectedList.map(b => b.bbox[1]));
+      const maxX2 = Math.max(...selectedList.map(b => b.bbox[2]));
+      const maxY2 = Math.max(...selectedList.map(b => b.bbox[3]));
+
+      const minCX1 = Math.min(...selectedList.map(b => b.clean_bbox[0]));
+      const minCY1 = Math.min(...selectedList.map(b => b.clean_bbox[1]));
+      const maxCX2 = Math.max(...selectedList.map(b => b.clean_bbox[2]));
+      const maxCY2 = Math.max(...selectedList.map(b => b.clean_bbox[3]));
+
+      const mergedOrig = selectedList.map(b => (b.original_text || "").trim()).filter(Boolean).join(" ");
+      const mergedRomaji = selectedList.map(b => (b.romaji_text || "").trim()).filter(Boolean).join(" ");
+      const mergedTrans = selectedList.map(b => (b.translated_text || "").trim()).filter(Boolean).join(" ");
+
+      const baseBlock = selectedList[0];
+      const mergedBlock = {
+        ...baseBlock,
+        id: baseBlock.id,
+        bbox: [minX1, minY1, maxX2, maxY2],
+        clean_bbox: [minCX1, minCY1, maxCX2, maxCY2],
+        bbox_modified: true,
+        bbox_resized: true,
+        original_text: mergedOrig,
+        romaji_text: mergedRomaji,
+        translated_text: mergedTrans,
+        is_free_text: selectedList.every(b => Boolean(b.is_free_text)),
+        is_deleted: !mergedTrans.trim(),
+        font_size: null,
+        rendered_font_size: null,
+        _dirtyPreview: false
+      };
+
+      const mergedSet = new Set(selectedList.map(b => b.id));
+      const nextBlocks = [];
+      let inserted = false;
+      for (const b of currentBlocks) {
+        if (mergedSet.has(b.id)) {
+          if (!inserted) {
+            nextBlocks.push(mergedBlock);
+            inserted = true;
+          }
+        } else {
+          nextBlocks.push(b);
+        }
+      }
+
+      nextBlocks.forEach((b, idx) => { b.id = idx + 1; });
+      currentBlocks = nextBlocks;
+      clientEditRevision++;
+
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+
+      activeBlockId = mergedBlock.id;
+      selectedBlockIds = new Set([mergedBlock.id]);
+      if (popupBlockId) {
+        popupBlockId = mergedBlock.id;
+        populateInlinePopup(mergedBlock.id);
+      }
+
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      highlightBlock(mergedBlock.id, false);
+      sayMiko(`🔗 Объединено ${selectedList.length} рамок в общий блок #${mergedBlock.id}! Перерисовываю страницу... ✨`);
+      await saveEditedPageTranslation();
+    }
+
+    function splitTextIntoTwoParts(rawText) {
+      const txt = String(rawText || "").trim();
+      if (!txt) return ["", ""];
+      if (txt.includes("\n")) {
+        const lines = txt.split(/\r?\n/).map(s => s.trim()).filter(Boolean);
+        if (lines.length >= 2) {
+          const mid = Math.ceil(lines.length / 2);
+          return [lines.slice(0, mid).join("\n"), lines.slice(mid).join("\n")];
+        }
+      }
+      const sentences = txt.split(/(?<=[.!?…！？。])\s+/).map(s => s.trim()).filter(Boolean);
+      if (sentences.length >= 2) {
+        const mid = Math.ceil(sentences.length / 2);
+        return [sentences.slice(0, mid).join(" "), sentences.slice(mid).join(" ")];
+      }
+      const words = txt.split(/\s+/).filter(Boolean);
+      if (words.length >= 2) {
+        const mid = Math.ceil(words.length / 2);
+        return [words.slice(0, mid).join(" "), words.slice(mid).join(" ")];
+      }
+      if (txt.length >= 4) {
+        const mid = Math.ceil(txt.length / 2);
+        return [txt.slice(0, mid), txt.slice(mid)];
+      }
+      return [txt, ""];
+    }
+
+    async function splitBlockById(blockId, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!currentBlocks || !blockId) return;
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+
+      const idx = currentBlocks.findIndex(b => b.id === blockId);
+      if (idx < 0) return;
+      const blk = currentBlocks[idx];
+      ensureBlockCleanBbox(blk);
+
+      const [x1, y1, x2, y2] = blk.bbox;
+      const [cx1, cy1, cx2, cy2] = blk.clean_bbox;
+      const bw = x2 - x1;
+      const bh = y2 - y1;
+      if (bw < 24 && bh < 24) {
+        sayMiko("Эта рамка слишком маленькая для разделения~ ✂️");
+        return;
+      }
+
+      pushPageHistorySnapshot();
+
+      let bbox1, bbox2, cbbox1, cbbox2;
+      const isVerticalSplit = bw > bh * 1.15;
+      if (isVerticalSplit) {
+        // Делим по вертикали на правую (первая при чтении манги) и левую половины
+        const midX = Math.round((x1 + x2) / 2);
+        const cmidX = Math.round((cx1 + cx2) / 2);
+        bbox1 = [Math.min(x2 - 8, midX + 1), y1, x2, y2];
+        bbox2 = [x1, y1, Math.max(x1 + 8, midX - 1), y2];
+        cbbox1 = [Math.min(cx2 - 8, cmidX + 1), cy1, cx2, cy2];
+        cbbox2 = [cx1, cy1, Math.max(cx1 + 8, cmidX - 1), cy2];
+      } else {
+        // Делим по горизонтали на верхнюю и нижнюю половины
+        const midY = Math.round((y1 + y2) / 2);
+        const cmidY = Math.round((cy1 + cy2) / 2);
+        bbox1 = [x1, y1, x2, Math.max(y1 + 8, midY - 1)];
+        bbox2 = [x1, Math.min(y2 - 8, midY + 1), x2, y2];
+        cbbox1 = [cx1, cy1, cx2, Math.max(cy1 + 8, cmidY - 1)];
+        cbbox2 = [cx1, Math.min(cy2 - 8, cmidY + 1), cx2, cy2];
+      }
+
+      const [tr1, tr2] = splitTextIntoTwoParts(blk.translated_text);
+      const [or1, or2] = splitTextIntoTwoParts(blk.original_text);
+      const [rm1, rm2] = splitTextIntoTwoParts(blk.romaji_text);
+
+      const firstHalf = {
+        ...blk,
+        bbox: bbox1,
+        clean_bbox: cbbox1,
+        bbox_modified: true,
+        bbox_resized: true,
+        original_text: or1 || blk.original_text || "",
+        romaji_text: rm1 || blk.romaji_text || "",
+        translated_text: tr1,
+        is_deleted: !tr1.trim(),
+        font_size: null,
+        rendered_font_size: null,
+        _dirtyPreview: false
+      };
+
+      const secondHalf = {
+        ...blk,
+        bbox: bbox2,
+        clean_bbox: cbbox2,
+        bbox_modified: true,
+        bbox_resized: true,
+        original_text: or2 || blk.original_text || "",
+        romaji_text: rm2 || "",
+        translated_text: tr2 || tr1,
+        is_deleted: !(tr2 || tr1).trim(),
+        font_size: null,
+        rendered_font_size: null,
+        _dirtyPreview: false
+      };
+
+      currentBlocks.splice(idx, 1, firstHalf, secondHalf);
+      currentBlocks.forEach((b, i) => { b.id = i + 1; });
+      clientEditRevision++;
+
+      if (selectedPage) {
+        selectedPage.blocks = currentBlocks;
+        selectedPage.has_saved_blocks = true;
+      }
+
+      activeBlockId = firstHalf.id;
+      selectedBlockIds = new Set([firstHalf.id]);
+      if (popupBlockId) {
+        popupBlockId = firstHalf.id;
+        populateInlinePopup(firstHalf.id);
+      }
+
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
+      updateDrawerBadgeCount();
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      highlightBlock(firstHalf.id, false);
+      sayMiko(
+        `✂️ Рамка разделена ${isVerticalSplit ? "по вертикали (на правую и левую)" : "по горизонтали (на верхнюю и нижнюю)"} на блоки #${firstHalf.id} и #${secondHalf.id}! ✨`
+      );
+      await saveEditedPageTranslation();
+    }
+
+    async function splitFromInlinePopup(ev) {
+      if (!popupBlockId) return;
+      await splitBlockById(popupBlockId, ev);
     }
 
     function syncInputsToCurrentBlocks() {
@@ -3629,6 +4187,7 @@
       syncInputsToCurrentBlocks();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk || !blk.romaji_text) return;
+      pushPageHistorySnapshot();
       blk.is_deleted = false;
       blk.translated_text = blk.romaji_text;
       blk._dirtyPreview = true;
@@ -3652,11 +4211,9 @@
       const idx = currentBlocks.findIndex(x => x.id === blockId);
       if (idx < 0) return;
 
-      const [removedBlk] = currentBlocks.splice(idx, 1);
-      deletedFramesUndoStack.push({
-        block: { ...removedBlk, bbox: [...(removedBlk.bbox || [])], clean_bbox: [...(removedBlk.clean_bbox || removedBlk.bbox || [])] },
-        index: idx
-      });
+      pushPageHistorySnapshot();
+      currentBlocks.splice(idx, 1);
+      selectedBlockIds.delete(blockId);
       clientEditRevision++;
 
       if (popupBlockId === blockId) {
@@ -3671,11 +4228,12 @@
         selectedPage.has_saved_blocks = true;
       }
 
-      updateUndoRemovedFrameBtn();
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
       renderBboxPinsOnStage();
-      sayMiko(`Рамка #${blockId} полностью удалена с картинки! Восстанавливаю чистый оригинал на этом месте... 🗑✨`);
+      sayMiko(`Рамка #${blockId} полностью удалена с картинки (можно вернуть по Ctrl+Z)! Восстанавливаю чистый оригинал... 🗑✨`);
       await saveEditedPageTranslation();
     }
 
@@ -3694,6 +4252,7 @@
       syncInputsToCurrentBlocks();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk) return;
+      pushPageHistorySnapshot();
       if (blk.translated_text && blk.translated_text.trim()) {
         blk._backup_translation = blk.translated_text.trim();
       }
@@ -3708,33 +4267,13 @@
       await saveEditedPageTranslation();
     }
 
-    async function undoLastRemovedFrame(ev) {
-      if (ev) ev.stopPropagation();
-      if (!deletedFramesUndoStack || deletedFramesUndoStack.length === 0) return;
-      cancelIdleAutoSaveTimer();
-      syncInputsToCurrentBlocks();
-      const item = deletedFramesUndoStack.pop();
-      const insertIdx = Math.max(0, Math.min(currentBlocks.length, item.index));
-      currentBlocks.splice(insertIdx, 0, item.block);
-      clientEditRevision++;
-      if (selectedPage) {
-        selectedPage.blocks = currentBlocks;
-      }
-      updateUndoRemovedFrameBtn();
-      updateDrawerBadgeCount();
-      renderBlocksEditor();
-      renderBboxPinsOnStage();
-      highlightBlock(item.block.id, false);
-      sayMiko(`Рамка #${item.block.id} возвращена на страницу! ↩🌸`);
-      await saveEditedPageTranslation();
-    }
-
     async function restoreBlockTranslation(blockId, ev) {
       if (ev) ev.stopPropagation();
       cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk) return;
+      pushPageHistorySnapshot();
       const restored = blk._backup_translation || blk.romaji_text || blk.original_text || "";
       blk.translated_text = restored;
       blk.is_deleted = false;
@@ -3751,28 +4290,23 @@
       cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       const beforeCount = currentBlocks.length;
-      const kept = [];
-      currentBlocks.forEach((b, idx) => {
-        const isEmpty = Boolean(b.is_deleted) || !(b.translated_text || "").trim();
-        if (isEmpty) {
-          deletedFramesUndoStack.push({ block: { ...b }, index: idx });
-        } else {
-          kept.push(b);
-        }
-      });
-      const removedCnt = beforeCount - kept.length;
-      if (removedCnt === 0) {
+      const hasEmpty = currentBlocks.some(b => Boolean(b.is_deleted) || !(b.translated_text || "").trim());
+      if (!hasEmpty) {
         sayMiko("На этой странице нет пустых рамок — все рамки содержат текст перевода~ 🌸");
         return;
       }
-      currentBlocks = kept;
+      pushPageHistorySnapshot();
+      currentBlocks = currentBlocks.filter(b => !(Boolean(b.is_deleted) || !(b.translated_text || "").trim()));
+      const removedCnt = beforeCount - currentBlocks.length;
+      selectedBlockIds = new Set();
       clientEditRevision++;
       if (selectedPage) {
         selectedPage.blocks = currentBlocks;
         selectedPage.has_saved_blocks = true;
       }
       closeInlineBubblePopup();
-      updateUndoRemovedFrameBtn();
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
       renderBboxPinsOnStage();
@@ -3785,27 +4319,22 @@
       cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       const beforeCount = currentBlocks.length;
-      const kept = [];
-      currentBlocks.forEach((b, idx) => {
-        if (b.is_free_text) {
-          deletedFramesUndoStack.push({ block: { ...b }, index: idx });
-        } else {
-          kept.push(b);
-        }
-      });
-      const removedCnt = beforeCount - kept.length;
-      if (removedCnt === 0) {
+      if (!currentBlocks.some(b => b.is_free_text)) {
         sayMiko("На этой странице нет рамок вне бабблов (на фоне)~ 🌸");
         return;
       }
-      currentBlocks = kept;
+      pushPageHistorySnapshot();
+      currentBlocks = currentBlocks.filter(b => !b.is_free_text);
+      const removedCnt = beforeCount - currentBlocks.length;
+      selectedBlockIds = new Set();
       clientEditRevision++;
       if (selectedPage) {
         selectedPage.blocks = currentBlocks;
         selectedPage.has_saved_blocks = true;
       }
       closeInlineBubblePopup();
-      updateUndoRemovedFrameBtn();
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
       renderBboxPinsOnStage();
@@ -3817,17 +4346,17 @@
       if (!currentBlocks || currentBlocks.length === 0) return;
       cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
-      currentBlocks.forEach((b, idx) => {
-        deletedFramesUndoStack.push({ block: { ...b }, index: idx });
-      });
+      pushPageHistorySnapshot();
       currentBlocks = [];
+      selectedBlockIds = new Set();
       clientEditRevision++;
       if (selectedPage) {
         selectedPage.blocks = currentBlocks;
         selectedPage.has_saved_blocks = true;
       }
       closeInlineBubblePopup();
-      updateUndoRemovedFrameBtn();
+      updateUndoRedoButtonsUi();
+      updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
       renderBboxPinsOnStage();
@@ -3836,8 +4365,8 @@
     }
 
     /* Feature 3: Auto-scroll & center manga page on selected bubble #N */
-    function scrollMangaStageToPin(blockId) {
-      if (!uiSettings.auto_scroll_to_bubble) return;
+    function scrollMangaStageToPin(blockId, forceCenter = false) {
+      if (!forceCenter && !uiSettings.auto_scroll_to_bubble) return;
       // Prefer pin on translated image if visible, otherwise original
       const transWrap = document.getElementById("pin-wrap-trans");
       const targetWrap = transWrap || document.getElementById("pin-wrap-orig");
@@ -3850,7 +4379,7 @@
       pin.scrollIntoView({ behavior: "smooth", block: "center", inline: "center" });
     }
 
-    function highlightBlock(blockId, shouldScrollStage = false) {
+    function highlightBlock(blockId, shouldScrollStage = false, forceCenter = false) {
       activeBlockId = blockId;
       document.querySelectorAll(".block-edit-card").forEach(el => {
         el.classList.toggle("active-block", el.dataset.blockId === String(blockId));
@@ -3858,9 +4387,19 @@
       document.querySelectorAll(".bbox-pin").forEach(el => {
         el.classList.toggle("active-pin", el.dataset.blockId === String(blockId));
       });
+      updateMergeButtonsUi();
       if (shouldScrollStage) {
-        scrollMangaStageToPin(blockId);
+        scrollMangaStageToPin(blockId, forceCenter);
       }
+    }
+
+    function onBlockCardClick(blockId, ev) {
+      if (ev && ev.target && ev.target.closest("button, select, textarea, input")) {
+        return;
+      }
+      const isShift = Boolean(ev && ev.shiftKey);
+      toggleBlockMultiSelection(blockId, isShift);
+      highlightBlock(blockId, true);
     }
 
     function focusBlockEditorCard(blockId) {
@@ -3886,12 +4425,18 @@
     /* ==================== FEATURE 2: COMPACT INLINE BUBBLE POPUP ==================== */
     function onPinClicked(blockId, pinEl, ev) {
       if (ev) ev.stopPropagation();
+      const isShift = Boolean(ev && ev.shiftKey);
+      toggleBlockMultiSelection(blockId, isShift);
       highlightBlock(blockId, false);
       // Scroll card in drawer if drawer is already open
       const dr = document.getElementById("text-drawer");
       if (dr && dr.classList.contains("open")) {
         const card = document.getElementById(`block-card-${blockId}`);
         if (card) card.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      }
+      if (isShift && selectedBlockIds.size >= 2) {
+        if (popupBlockId) populateInlinePopup(popupBlockId);
+        return;
       }
       if (uiSettings.inline_bubble_popup) {
         openInlineBubblePopup(blockId, pinEl);
@@ -3929,6 +4474,7 @@
       if (clearBtn) clearBtn.style.display = !isDel ? "inline-flex" : "none";
       if (delBtn) delBtn.style.display = "inline-flex"; // Всегда доступна кнопка полного удаления рамки!
       if (resBtn) resBtn.style.display = (isDel && blk._backup_translation) ? "inline-flex" : "none";
+      updateMergeButtonsUi();
     }
 
     function openInlineBubblePopup(blockId, anchorPinEl) {
@@ -3988,6 +4534,7 @@
       if (!popupBlockId) return;
       // При редактировании текста в окне/попапе автосохранение НЕ срабатывает!
       cancelIdleAutoSaveTimer();
+      scheduleTextHistorySnapshot();
       const blk = currentBlocks.find(x => x.id === popupBlockId);
       if (blk) {
         blk.translated_text = val;
@@ -3998,11 +4545,13 @@
       const cardTa = document.getElementById(`edit-ta-${popupBlockId}`);
       if (cardTa) cardTa.value = val;
       updatePinDomForBlock(popupBlockId);
+      updateUndoRedoButtonsUi();
     }
 
     function onPopupFontChange(val) {
       if (!popupBlockId) return;
       cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
       const blk = currentBlocks.find(x => x.id === popupBlockId);
       if (blk) {
         const parsed = parseInt(val, 10);
@@ -4117,16 +4666,19 @@
           `</select></div>`;
 
         const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>`;
+        const splitFrameBtnHtml = `<button type="button" class="btn-split-block" onclick="splitBlockById(${b.id}, event)" title="Разделить рамку #${b.id} и её текст на 2 независимых блока">✂️ Разделить рамку</button>`;
         const removeFrameBtnHtml = `<button type="button" class="btn-delete-block" onclick="removeBlockFrameCompletely(${b.id}, event)" title="Полностью удалить рамку #${b.id} с картинки и вернуть чистый оригинал">🗑 Удалить рамку</button>`;
         const deleteActionHtml = !isDel
           ? `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
               retranslateBtnHtml +
+              splitFrameBtnHtml +
               `<button type="button" class="romaji-copy-btn" onclick="clearBlockTextOnly(${b.id}, event)" title="Очистить только текст перевода внутри рамки (сама рамка останется)">🧹 Очистить текст</button>` +
               removeFrameBtnHtml +
             `</div>`
           : `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
               `<span class="deleted-status-badge">🚫 Пусто (Оригинал)</span>` +
               retranslateBtnHtml +
+              splitFrameBtnHtml +
               (b._backup_translation
                 ? `<button type="button" class="btn-restore-block" onclick="restoreBlockTranslation(${b.id}, event)">↩ Вернуть текст</button>`
                 : ``) +
@@ -4140,11 +4692,12 @@
             `</div>`
           : "";
 
+        const isMultiSel = selectedBlockIds && selectedBlockIds.size >= 2 && selectedBlockIds.has(b.id);
         return (
-          `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isDel ? "deleted-block" : ""}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="highlightBlock(${b.id}, true)">` +
+          `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isMultiSel ? "multi-selected-card" : ""} ${isDel ? "deleted-block" : ""}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="onBlockCardClick(${b.id}, event)">` +
             `<div class="block-meta-col">` +
               `<div class="block-header-line">` +
-                `<span class="block-id-badge" title="Нажмите, чтобы центрировать страницу манги на кружке #${b.id}">#${b.id} · ${typeLabel} 🎯</span>` +
+                `<span class="block-id-badge" title="Клик — центрировать страницу на кружке #${b.id}; Shift + Клик — выделить несколько рамок для объединения">#${b.id} · ${typeLabel} 🎯</span>` +
                 fsSelectHtml +
               `</div>` +
               `<div class="block-orig-text" title="Распознанный оригинальный текст">🇯🇵 ${origHtml}</div>` +
@@ -4184,6 +4737,7 @@
 
     function onBlockFontSelect(blockId, val) {
       cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (blk) {
         const parsed = parseInt(val, 10);
@@ -4204,6 +4758,7 @@
     function onBlockTextInput(blockId, val) {
       // Автосохранение НЕ должно работать при редактировании текста в окне редактора!
       cancelIdleAutoSaveTimer();
+      scheduleTextHistorySnapshot();
       const blk = currentBlocks.find(x => x.id === blockId);
       if (blk) {
         blk.translated_text = val;
@@ -4216,6 +4771,7 @@
         if (pTa && pTa.value !== val) pTa.value = val;
       }
       updatePinDomForBlock(blockId);
+      updateUndoRedoButtonsUi();
     }
 
     function onBlockTextareaKeydown(e) {
@@ -4518,6 +5074,7 @@
     async function translateManualRegionOnPage(bbox) {
       if (!selectedPage) return;
       syncInputsToCurrentBlocks();
+      pushPageHistorySnapshot();
       sayMiko(`🔍 Распознаю и принудительно перевожу обведенный тобой участок [${bbox.join(", ")}]... Секундочку~ ✨`);
 
       try {
@@ -4582,6 +5139,7 @@
       if (ev) ev.stopPropagation();
       if (!selectedPage) return;
       syncInputsToCurrentBlocks();
+      pushPageHistorySnapshot();
       sayMiko(`🔄 Принудительно перевожу блок #${blockId} через ИИ... ✍️✨`);
 
       try {
@@ -4822,6 +5380,7 @@
       if (!blockId || !currentBlocks) return;
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk) return;
+      pushPageHistorySnapshot();
       ensureBlockCleanBbox(blk);
       blk.bbox = [...blk.clean_bbox];
       blk.bbox_modified = false;
@@ -4993,9 +5552,11 @@
             frag.appendChild(ghost);
           }
 
+          const isMultiPin = selectedBlockIds && selectedBlockIds.size >= 2 && selectedBlockIds.has(b.id);
           const pin = document.createElement("div");
           pin.className = "bbox-pin" +
             (activeBlockId === b.id ? " active-pin" : "") +
+            (isMultiPin ? " multi-selected-pin" : "") +
             (isDel ? " deleted-pin" : "") +
             (isMod ? " modified-pin" : "") +
             (b._dirtyPreview && !isDel ? " dirty-preview-pin" : "") +
@@ -5115,6 +5676,7 @@
               startClientX: ev.clientX,
               startClientY: ev.clientY,
               origBbox: [...b.bbox],
+              startHistorySnapshot: cloneBlocksSnapshot(currentBlocks),
               hasMoved: false
             };
             cancelIdleAutoSaveTimer();
@@ -5127,6 +5689,9 @@
             ev.stopPropagation();
             ensureBlockCleanBbox(b);
 
+            if (wheelHistorySnapshot === null) {
+              wheelHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
+            }
             const curEst = b.font_size ? Number(b.font_size) : (b.rendered_font_size || estimateAutoFontSizeForBox(b));
             const absDelta = Math.abs(ev.deltaY);
             const mag = absDelta > 160 ? 4 : (absDelta < 35 ? 1 : 2);
@@ -5155,6 +5720,10 @@
             if (wheelSettleTimer) clearTimeout(wheelSettleTimer);
             wheelSettleTimer = setTimeout(() => {
               wheelSettleTimer = null;
+              if (wheelHistorySnapshot !== null) {
+                pushPageHistorySnapshot(wheelHistorySnapshot);
+                wheelHistorySnapshot = null;
+              }
               pin.classList.remove("wheeling-pin");
               highlightBlock(b.id, false);
               updateSingleBlockCardControls(b.id);
@@ -5257,6 +5826,10 @@
       if (!st.hasMoved) {
         onPinClicked(st.blockId, st.pinEl, ev);
         return;
+      }
+
+      if (st.startHistorySnapshot) {
+        pushPageHistorySnapshot(st.startHistorySnapshot);
       }
 
       updatePinDomForBlock(st.blockId, st.cachedTargets);
@@ -5587,14 +6160,86 @@
       await fetch("/open_folder?path=" + encodeURIComponent(currentOutputDir), { method: "POST" });
     }
 
-    /* ==================== GLOBAL KEYBOARD SHORTCUTS ==================== */
+    /* ==================== SCANLATOR SPEED WORKFLOW & GLOBAL KEYBOARD SHORTCUTS (STEP 2) ==================== */
+    let isHoldCompareActive = false;
+
+    function setHoldCompareMode(active) {
+      if (!selectedPage) return;
+      const stage = document.getElementById("viewer-stage");
+      const banner = document.getElementById("hold-compare-banner");
+      const transWrap = document.getElementById("pin-wrap-trans");
+      const transImg = transWrap ? transWrap.querySelector("img") : null;
+
+      if (active) {
+        if (isHoldCompareActive) return;
+        isHoldCompareActive = true;
+        if (stage) stage.classList.add("hold-compare-original");
+        if (banner) banner.classList.add("active");
+        if (transImg && selectedPage.source_path) {
+          if (!transImg.dataset.savedTranslatedSrc) {
+            transImg.dataset.savedTranslatedSrc = transImg.src;
+          }
+          const origCompareUrl = `/local_image?path=${encodeURIComponent(selectedPage.source_path)}`;
+          transImg.src = origCompareUrl;
+        }
+      } else {
+        if (!isHoldCompareActive) return;
+        isHoldCompareActive = false;
+        if (stage) stage.classList.remove("hold-compare-original");
+        if (banner) banner.classList.remove("active");
+        if (transImg && transImg.dataset.savedTranslatedSrc) {
+          transImg.src = transImg.dataset.savedTranslatedSrc;
+          delete transImg.dataset.savedTranslatedSrc;
+        }
+      }
+    }
+
+    function stepActiveBlockWithTab(delta) {
+      if (!currentBlocks || currentBlocks.length === 0) return;
+      syncInputsToCurrentBlocks();
+      const curId = popupBlockId || activeBlockId;
+      let curIdx = currentBlocks.findIndex(b => b.id === curId);
+      if (curIdx < 0) {
+        curIdx = delta > 0 ? -1 : 0;
+      }
+      const nextIdx = (curIdx + delta + currentBlocks.length) % currentBlocks.length;
+      const nextBlk = currentBlocks[nextIdx];
+      if (!nextBlk) return;
+
+      selectedBlockIds = new Set([nextBlk.id]);
+      highlightBlock(nextBlk.id, true, true);
+
+      const pop = document.getElementById("inline-bubble-popup");
+      const dr = document.getElementById("text-drawer");
+      const isPopOpen = pop && pop.classList.contains("open");
+      const isDrawerOpen = dr && dr.classList.contains("open");
+
+      if (isPopOpen || (!isDrawerOpen && uiSettings.inline_bubble_popup)) {
+        const pinEl = document.querySelector(`.bbox-pin[data-block-id="${nextBlk.id}"]`);
+        openInlineBubblePopup(nextBlk.id, pinEl);
+      } else {
+        focusBlockEditorCard(nextBlk.id);
+      }
+    }
+
     document.addEventListener("keydown", (e) => {
-      const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName);
+      const activeEl = document.activeElement;
+      const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes(activeEl?.tagName);
+      const modalOpen = document.getElementById("settings-modal")?.classList.contains("open");
 
       if (e.key === "Escape") {
+        if (isHoldCompareActive) {
+          setHoldCompareMode(false);
+        }
         if (isDrawRegionMode) {
           toggleDrawRegionMode(false);
           sayMiko("Режим выделения области отменен.");
+          return;
+        }
+        if (selectedBlockIds && selectedBlockIds.size >= 2) {
+          selectedBlockIds = activeBlockId ? new Set([activeBlockId]) : new Set();
+          updateMergeButtonsUi();
+          sayMiko("Множественное выделение рамок снято.");
           return;
         }
         const pop = document.getElementById("inline-bubble-popup");
@@ -5602,14 +6247,16 @@
           closeInlineBubblePopup();
           return;
         }
-        const modal = document.getElementById("settings-modal");
-        if (modal && modal.classList.contains("open")) {
+        if (modalOpen) {
           toggleSettingsModal(false);
           return;
         }
       }
 
-      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S")) {
+      if (modalOpen) return;
+
+      // Save page: Ctrl+S
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы")) {
         if (selectedPage && currentBlocks) {
           e.preventDefault();
           saveEditedPageTranslation();
@@ -5617,10 +6264,56 @@
         return;
       }
 
-      if (!inInput && (e.ctrlKey || e.metaKey) && (e.key === "z" || e.key === "Z")) {
-        if (deletedFramesUndoStack && deletedFramesUndoStack.length > 0) {
+      // Redo: Ctrl+Y or Ctrl+Shift+Z
+      if ((e.ctrlKey || e.metaKey) && (
+        e.key === "y" || e.key === "Y" || e.key === "н" || e.key === "Н" ||
+        (e.shiftKey && (e.key === "z" || e.key === "Z" || e.key === "я" || e.key === "Я"))
+      )) {
+        if (selectedPage && pageHistory.redoStack.length > 0) {
           e.preventDefault();
-          undoLastRemovedFrame();
+          redoPageAction(e);
+          return;
+        }
+      }
+
+      // Undo: Ctrl+Z (without Shift)
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z" || e.key === "я" || e.key === "Я")) {
+        const hasHistory = pageHistory.undoStack.length > 0 || pendingTextHistorySnapshot !== null;
+        if (selectedPage && hasHistory) {
+          e.preventDefault();
+          undoPageAction(e);
+          return;
+        }
+      }
+
+      // Tab / Shift+Tab: cycle through #N blocks on the page (including inside block textarea / inline popup!)
+      if (e.key === "Tab" && selectedPage && currentBlocks && currentBlocks.length > 0) {
+        const isBlockTa = activeEl && (activeEl.id === "popup-textarea" || activeEl.id?.startsWith("edit-ta-"));
+        if (!inInput || isBlockTa) {
+          e.preventDefault();
+          stepActiveBlockWithTab(e.shiftKey ? -1 : 1);
+          return;
+        }
+      }
+
+      // Hold-to-Compare Original: Space or V (when focus is NOT in an input/textarea)
+      if (!inInput && !e.ctrlKey && !e.altKey && !e.metaKey && (
+        e.code === "Space" || e.key === " " || e.key === "v" || e.key === "V" || e.key === "м" || e.key === "М"
+      )) {
+        if (selectedPage) {
+          e.preventDefault();
+          setHoldCompareMode(true);
+        }
+        return;
+      }
+
+      // Merge selected frames: M
+      if (!inInput && !e.ctrlKey && !e.altKey && !e.metaKey && (
+        e.key === "m" || e.key === "M" || e.key === "ь" || e.key === "Ь"
+      )) {
+        if (selectedBlockIds && selectedBlockIds.size >= 2) {
+          e.preventDefault();
+          mergeSelectedBlocks(e);
           return;
         }
       }
@@ -5640,17 +6333,39 @@
         return;
       }
 
-      if (!inInput) {
+      if (!inInput && !e.ctrlKey && !e.metaKey) {
         if (e.key === "[" || (e.altKey && (e.key === "b" || e.key === "B"))) {
           e.preventDefault();
           toggleLeftSidebar();
-        } else if (e.key === "ArrowLeft" || (e.altKey && e.key === "ArrowLeft")) {
+        } else if (
+          e.key === "ArrowLeft" ||
+          e.key === "PageUp" ||
+          (!e.altKey && (e.key === "a" || e.key === "A" || e.key === "ф" || e.key === "Ф"))
+        ) {
           e.preventDefault();
           stepFolderPage(-1);
-        } else if (e.key === "ArrowRight" || (e.altKey && e.key === "ArrowRight")) {
+        } else if (
+          e.key === "ArrowRight" ||
+          e.key === "PageDown" ||
+          (!e.altKey && (e.key === "d" || e.key === "D" || e.key === "в" || e.key === "В"))
+        ) {
           e.preventDefault();
           stepFolderPage(1);
         }
+      }
+    });
+
+    document.addEventListener("keyup", (e) => {
+      if (isHoldCompareActive && (
+        e.code === "Space" || e.key === " " || e.key === "v" || e.key === "V" || e.key === "м" || e.key === "М"
+      )) {
+        setHoldCompareMode(false);
+      }
+    });
+
+    window.addEventListener("blur", () => {
+      if (isHoldCompareActive) {
+        setHoldCompareMode(false);
       }
     });
 
