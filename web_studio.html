@@ -2478,17 +2478,41 @@
           </div>
 
           <div class="section-box">
-            <div class="section-title">🌸 Скачать локальные модели Shisa V2.1 / Qwen / Gemma в 1 клик (Ollama)</div>
-            <div class="section-desc">Работают полностью бесплатно и без интернета на вашей видеокарте (с авто-обходом VPN Fake-IP).</div>
+            <div class="section-title">🌸 Скачать лучшие локальные модели для манги в 1 клик (Ollama / GGUF)</div>
+            <div class="section-desc">Работают полностью бесплатно, без интернета и без облачной цензуры на вашей видеокарте (с автоматическим обходом блокировки VPN Fake-IP 198.18.x.x).</div>
             <div class="field-box">
-              <select id="sel-recommended-pull">
+              <label>Выберите локальную модель для скачивания:</label>
+              <select id="sel-recommended-pull" onchange="onRecommendedPullSelectChange()">
                 <option value="hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4) — Топ-1 для японской манги (~8.3 ГБ)</option>
                 <option value="hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M">🌸 Shisa V2.1 8B (Qwen3) — Быстрая для манги JA➔EN/RU (~5.0 ГБ)</option>
-                <option value="hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored — Без цензуры 18+ (~7.0 ГБ)</option>
+                <option value="hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored — Без цензуры для 18+ манги JA➔RU/EN (~7.0 ГБ)</option>
+                <option value="hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M">⚡ Sugoi 14B Ultra — Узкий спец. JA➔EN без цензуры (~8.5 ГБ)</option>
+                <option value="translategemma:12b">🌐 TranslateGemma 12B — Спец. переводчик Google JA/KO/ZH➔RU/EN (~7.3 ГБ)</option>
+                <option value="aya-expanse:8b">🌍 Aya Expanse 8B — Легкая мультиязычная JA/KO/ZH➔RU/EN (~5.1 ГБ)</option>
                 <option value="gemma3:12b">💎 Gemma 3 12B — Живой литературный слог RU/EN (~7.3 ГБ)</option>
                 <option value="qwen2.5:14b">🐉 Qwen 2.5 14B — Универсал JA/KO/ZH + Ромадзи (~8.4 ГБ)</option>
               </select>
             </div>
+            <div id="recommended-model-desc-box" style="font-size:12px; color:var(--text-primary); background:rgba(129, 140, 248, 0.11); border:1px solid rgba(129, 140, 248, 0.32); border-radius:10px; padding:9px 12px; line-height:1.45;">
+              <div><b style="color:var(--sakura);">🌸 Shisa V2.1 14B (Phi-4)</b> · <span style="color:var(--mint); font-weight:700;">JA ➔ EN / RU</span> · <span style="color:var(--amber);">~8.3 ГБ VRAM</span></div>
+              <div style="margin-top:3px; color:var(--text-secondary);">Флагманская билингвальная модель Shisa V2.1 (14B на базе Phi-4). Идеально понимает японский сленг, именные суффиксы (-сан/-кун/-сэмпай), полутона и контекст манги.</div>
+            </div>
+            <details class="style-retouch-details" style="margin-top:2px;">
+              <summary>
+                <span>📖 Справка по всем 8 локальным моделям (какую выбрать под вашу задачу)</span>
+                <span style="font-size:10.5px; color:var(--text-muted);">Нажмите, чтобы развернуть шпаргалку</span>
+              </summary>
+              <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px; font-size:11.5px; line-height:1.4;">
+                <div>• <b style="color:var(--sakura);">🌸 Shisa V2.1 14B (Phi-4)</b> (~8.3 ГБ, <b>JA ➔ RU/EN</b>) — главный фаворит для японской манги: лучше всех понимает контекст, отсылки, именные суффиксы и сложную разговорную речь.</div>
+                <div>• <b style="color:var(--sakura);">🌸 Shisa V2.1 8B (Qwen3)</b> (~5.0 ГБ, <b>JA ➔ RU/EN</b>) — быстрая и легкая версия Shisa V2.1 для мгновенного перевода манги на русский и английский.</div>
+                <div>• <b style="color:#fb7185;">🔥 Shisa V2 12B Uncensored</b> (~7.0 ГБ, <b>JA ➔ RU/EN, 18+</b>) — полностью сняты фильтры цензуры (Abliterated). Идеальна для взрослой 18+ манги/додзинси и автоматического обхода цензуры облачного API.</div>
+                <div>• <b style="color:var(--amber);">⚡ Sugoi 14B Ultra GGUF</b> (~8.5 ГБ, <b>только JA ➔ EN, 18+</b>) — специализированная модель от автора Sugoi Toolkit, обученная на манге и визуальных новеллах без цензуры. Эталон для перевода с японского на английский (не для русского языка).</div>
+                <div>• <b style="color:#38bdf8;">🌐 TranslateGemma 12B</b> (~7.3 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — официальный специализированный переводчик от Google на базе Gemma 3 (55 языков). Очень чистый, точный и литературный русский и английский слог для манги, манхвы и маньхуа.</div>
+                <div>• <b style="color:var(--mint);">🌍 Aya Expanse 8B</b> (~5.1 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — легкая мультиязычная модель от Cohere Labs (23 языка). Очень быстрая, почти без цензуры, отлично переводит диалоги манги, корейской манхвы и китайской маньхуа.</div>
+                <div>• <b style="color:#c084fc;">💎 Gemma 3 12B</b> (~7.3 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — базовая модель Google с живым художественным русским и английским языком.</div>
+                <div>• <b style="color:#818cf8;">🐉 Qwen 2.5 14B</b> (~8.4 ГБ, <b>JA/KO/ZH ➔ RU/EN + Ромадзи</b>) — универсал для японской манги, корейской манхвы, китайской маньхуа и точного чтения кандзи в Ромадзи.</div>
+              </div>
+            </details>
             <button class="cta-main" id="btn-pull-model" style="padding:9px 14px; font-size:12.5px;" onclick="pullRecommendedModel()">
               📥 Скачать выбранную модель и сделать активной
             </button>
@@ -3289,7 +3313,7 @@
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--amber);">🛡 Кэш и Защита от цензуры:</b><br>` +
               `Из кэша: <b>${tr.phrases_saved_by_cache || 0} / ${tr.phrases_requested_total || 0} фраз (${tr.cache_hit_rate_pct || 0}%)</b><br>` +
-              `Отказов цензуры: <b>${tr.refusals_count || 0}</b> · Санитизатор родства: <b>${tr.sanitized_retries_count || 0}</b>` +
+              `Отказов цензуры API: <b>${tr.refusals_count || 0}</b> · Локальный обход: <b>${tr.local_censorship_fallbacks_count || 0}</b>` +
             `</div>`;
         }
 
@@ -3838,6 +3862,72 @@
       }
     }
 
+    const FALLBACK_RECOMMENDED_MODELS_META = {
+      "hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M": {
+        short_name: "🌸 Shisa V2.1 14B (Phi-4)",
+        langs: "JA ➔ EN / RU",
+        size_gb: "8.3 ГБ",
+        description: "Флагманская билингвальная модель Shisa V2.1 (14B на базе Phi-4). Идеально понимает японский сленг, именные суффиксы (-сан/-кун/-сэмпай), полутона и контекст манги."
+      },
+      "hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M": {
+        short_name: "🌸 Shisa V2.1 8B (Qwen3)",
+        langs: "JA ➔ EN / RU",
+        size_gb: "5.0 ГБ",
+        description: "Легкая и очень быстрая версия Shisa V2.1 на базе Qwen3-8B. Отлично переводит японскую мангу как на английский, так и на живой русский язык (требует всего ~5 ГБ VRAM)."
+      },
+      "hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF": {
+        short_name: "🔥 Shisa V2 12B Uncensored",
+        langs: "JA ➔ RU / EN (18+ без цензуры)",
+        size_gb: "7.0 ГБ",
+        description: "Версия Shisa V2 12B (Mistral-Nemo) с полностью отключенными фильтрами цензуры (Abliterated). Лучший выбор для взрослой 18+ манги и додзинси и для авто-подхвата при цензуре облачного API."
+      },
+      "hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M": {
+        short_name: "⚡ Sugoi 14B Ultra GGUF",
+        langs: "Только JA ➔ EN (18+ без цензуры)",
+        size_gb: "8.5 ГБ",
+        description: "Специализированная модель от создателя Sugoi Toolkit (mingshiba), обученная исключительно на диалогах японской манги, аниме и визуальных новелл без цензуры. Эталон для JA➔EN, но НЕ предназначена для перевода на русский язык."
+      },
+      "translategemma:12b": {
+        short_name: "🌐 TranslateGemma 12B (Google)",
+        langs: "JA / KO / ZH ➔ RU / EN",
+        size_gb: "7.3 ГБ",
+        description: "Специализированная модель перевода от Google на базе Gemma 3 12B (обучена для 55 языков). Выдает очень чистый, точный и литературный перевод манги, манхвы и маньхуа на русский и английский языки без галлюцинаций."
+      },
+      "aya-expanse:8b": {
+        short_name: "🌍 Aya Expanse 8B (Cohere)",
+        langs: "JA / KO / ZH ➔ RU / EN",
+        size_gb: "5.1 ГБ",
+        description: "Быстрая мультиязычная модель от Cohere Labs (23 языка, включая японский, корейский, китайский и русский). Летает на видеокартах от 6–8 ГБ VRAM, почти не имеет цензуры и отлично передает живую разговорную речь."
+      },
+      "gemma3:12b": {
+        short_name: "💎 Gemma 3 12B (Google)",
+        langs: "JA / KO / ZH ➔ RU / EN",
+        size_gb: "7.3 ГБ",
+        description: "Универсальная модель от Google с естественным и выразительным художественным слогом на русском и английском языках для повседневной и романтической манги."
+      },
+      "qwen2.5:14b": {
+        short_name: "🐉 Qwen 2.5 14B (Alibaba)",
+        langs: "JA / KO / ZH ➔ RU / EN + Ромадзи",
+        size_gb: "8.4 ГБ",
+        description: "Мощная азиатская модель от Alibaba для одновременной работы с японской мангой, корейской манхвой, китайской маньхуа (культивация/сянься) и точной транслитерацией кандзи в Ромадзи."
+      }
+    };
+    let recommendedModelsCatalog = { ...FALLBACK_RECOMMENDED_MODELS_META };
+
+    function onRecommendedPullSelectChange() {
+      const sel = document.getElementById("sel-recommended-pull");
+      const box = document.getElementById("recommended-model-desc-box");
+      if (!sel || !box) return;
+      const tag = sel.value;
+      const meta = recommendedModelsCatalog[tag] || FALLBACK_RECOMMENDED_MODELS_META[tag];
+      if (!meta) return;
+      box.innerHTML =
+        `<div><b style="color:var(--sakura);">${escapeHtml(meta.short_name || meta.title || tag)}</b> · ` +
+        `<span style="color:var(--mint); font-weight:700;">${escapeHtml(meta.langs || "JA/KO/ZH ➔ RU/EN")}</span> · ` +
+        `<span style="color:var(--amber);">~${escapeHtml(meta.size_gb || "")} VRAM</span></div>` +
+        `<div style="margin-top:3px; color:var(--text-secondary);">${escapeHtml(meta.description || "")}</div>`;
+    }
+
     async function pullRecommendedModel() {
       const tag = document.getElementById("sel-recommended-pull").value;
       const btn = document.getElementById("btn-pull-model");
@@ -3931,6 +4021,29 @@
         }
         updateDeepSeekPresetCards(act);
 
+        if (Array.isArray(data.recommended_models) && data.recommended_models.length > 0) {
+          const pullSel = document.getElementById("sel-recommended-pull");
+          const prevPullVal = pullSel ? pullSel.value : "";
+          if (pullSel) pullSel.innerHTML = "";
+          data.recommended_models.forEach(rm => {
+            if (!rm || !rm.ollama_tag) return;
+            recommendedModelsCatalog[rm.ollama_tag] = {
+              short_name: rm.short_name || rm.title || rm.ollama_tag,
+              title: rm.title || rm.ollama_tag,
+              langs: rm.langs || "JA ➔ RU / EN",
+              size_gb: rm.size_gb || "",
+              description: rm.description || ""
+            };
+            if (pullSel) {
+              const opt = document.createElement("option");
+              opt.value = rm.ollama_tag;
+              opt.textContent = rm.title || rm.ollama_tag;
+              if (rm.ollama_tag === prevPullVal) opt.selected = true;
+              pullSel.appendChild(opt);
+            }
+          });
+          onRecommendedPullSelectChange();
+        }
         if (Array.isArray(data.available_fonts)) {
           availableFonts = data.available_fonts;
           populateFontFamilySelect(document.getElementById("popup-font-family"), null);

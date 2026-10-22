@@ -3651,7 +3651,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         f"• Запросов к ИИ за сессию: всего={tr.get('total_llm_requests')} (Cloud={tr.get('total_cloud_requests')}, Ollama={tr.get('total_ollama_requests')}, параллельных пачек={tr.get('parallel_batches_count')})",
         f"• Среднее время ответа ИИ: {tr.get('avg_llm_latency_sec')}с | Суммарное время ИИ: {tr.get('total_llm_time_sec')}с",
         f"• Экономия кэша: {tr.get('phrases_saved_by_cache')} из {tr.get('phrases_requested_total')} фраз ({tr.get('cache_hit_rate_pct')}%) | Отправлено в ИИ: {tr.get('phrases_sent_to_llm')} | Размер кэша: {tr.get('phrase_cache_size')}",
-        f"• Отказов цензуры (Refusals): {tr.get('refusals_count')} | Срабатываний санитизатора родства: {tr.get('sanitized_retries_count')} | Микро-допереводов: {tr.get('micro_retries_count')} | Ошибок сети: {tr.get('errors_count')}",
+        f"• Отказов цензуры API: {tr.get('refusals_count')} | Переведено локальной моделью (обход цензуры): {tr.get('local_censorship_fallbacks_count', 0)} | Санитизатор: {tr.get('sanitized_retries_count')} | Микро-допереводов: {tr.get('micro_retries_count')} | Ошибок сети: {tr.get('errors_count')}",
         f"• Статус перевода папки: status={fj.get('status')}, прогресс={fj.get('current')}/{fj.get('total')}, файл={fj.get('current_file')}, время={fj.get('elapsed_sec')}с",
     ]
 

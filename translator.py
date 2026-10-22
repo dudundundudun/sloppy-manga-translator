@@ -53,7 +53,8 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "title": "🌸 Shisa V2.1 14B (Phi-4) — Топ-1 для японской манги (~8.3 ГБ)",
         "short_name": "Shisa V2.1 14B",
         "size_gb": "8.3 ГБ",
-        "description": "Специализированная японско-английская модель Shisa V2.1 (14B). Идеально понимает сленг, именную вежливость (-сан/-кун/-сэмпай) и контекст манги.",
+        "langs": "JA ➔ EN / RU",
+        "description": "Флагманская билингвальная модель Shisa V2.1 (14B на базе Phi-4). Идеально понимает японский сленг, именные суффиксы (-сан/-кун/-сэмпай), полутона и контекст манги.",
     },
     {
         "ollama_tag": "hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M",
@@ -65,7 +66,8 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "title": "🌸 Shisa V2.1 8B (Qwen3) — Быстрая для манги JA➔EN/RU (~5.0 ГБ)",
         "short_name": "Shisa V2.1 8B",
         "size_gb": "5.0 ГБ",
-        "description": "Легкая и очень быстрая версия Shisa V2.1 на базе Qwen3-8B. Отлично переводит и на английский, и на русский язык.",
+        "langs": "JA ➔ EN / RU",
+        "description": "Легкая и очень быстрая версия Shisa V2.1 на базе Qwen3-8B. Отлично переводит японскую мангу как на английский, так и на живой русский язык (требует всего ~5 ГБ VRAM).",
     },
     {
         "ollama_tag": "hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF",
@@ -74,10 +76,50 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "hf_filename": "shisa-v2-mistral-nemo-12b-abliterated-q4_k_m.gguf",
         "hf_quant": "Q4_K_M",
         "id": "ollama::hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF",
-        "title": "🔥 Shisa V2 12B Uncensored — Без цензуры для 18+ манги (~7.0 ГБ)",
+        "title": "🔥 Shisa V2 12B Uncensored — Без цензуры для 18+ манги JA➔RU/EN (~7.0 ГБ)",
         "short_name": "Shisa V2 12B (18+)",
         "size_gb": "7.0 ГБ",
-        "description": "Версия Shisa V2 12B со снятыми фильтрами цензуры (Abliterated). Лучший выбор для взрослой 18+ манги и додзинси.",
+        "langs": "JA ➔ RU / EN (18+ без цензуры)",
+        "description": "Версия Shisa V2 12B (Mistral-Nemo) с полностью отключенными фильтрами цензуры (Abliterated). Лучший выбор для взрослой 18+ манги и додзинси и для авто-подхвата при цензуре облачного API.",
+    },
+    {
+        "ollama_tag": "hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M",
+        "local_tag": "sugoi-14b-ultra:Q4_K_M",
+        "hf_repo": "sugoitoolkit/Sugoi-14B-Ultra-GGUF",
+        "hf_filename": "Sugoi-14B-Ultra-Q4_K_M.gguf",
+        "hf_quant": "Q4_K_M",
+        "id": "ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M",
+        "title": "⚡ Sugoi 14B Ultra — Узкий спец. JA➔EN без цензуры (~8.5 ГБ)",
+        "short_name": "Sugoi 14B Ultra (JA➔EN)",
+        "size_gb": "8.5 ГБ",
+        "langs": "Только JA ➔ EN (18+ без цензуры)",
+        "description": "Специализированная модель от создателя Sugoi Toolkit (mingshiba), обученная исключительно на диалогах японской манги, аниме и визуальных новелл без цензуры. Эталон для JA➔EN, но НЕ предназначена для перевода на русский язык.",
+    },
+    {
+        "ollama_tag": "translategemma:12b",
+        "local_tag": "translategemma:12b",
+        "hf_repo": "mradermacher/translategemma-12b-it-GGUF",
+        "hf_filename": "translategemma-12b-it.Q4_K_M.gguf",
+        "hf_quant": "Q4_K_M",
+        "id": "ollama::translategemma:12b",
+        "title": "🌐 TranslateGemma 12B — Спец. переводчик Google JA/KO/ZH➔RU/EN (~7.3 ГБ)",
+        "short_name": "TranslateGemma 12B",
+        "size_gb": "7.3 ГБ",
+        "langs": "JA / KO / ZH ➔ RU / EN",
+        "description": "Специализированная модель перевода от Google на базе Gemma 3 12B (обучена для 55 языков). Выдает очень чистый, точный и литературный перевод манги, манхвы и маньхуа на русский и английский языки без галлюцинаций.",
+    },
+    {
+        "ollama_tag": "aya-expanse:8b",
+        "local_tag": "aya-expanse:8b",
+        "hf_repo": "bartowski/aya-expanse-8b-GGUF",
+        "hf_filename": "aya-expanse-8b-Q4_K_M.gguf",
+        "hf_quant": "Q4_K_M",
+        "id": "ollama::aya-expanse:8b",
+        "title": "🌍 Aya Expanse 8B — Легкая мультиязычная JA/KO/ZH➔RU/EN (~5.1 ГБ)",
+        "short_name": "Aya Expanse 8B",
+        "size_gb": "5.1 ГБ",
+        "langs": "JA / KO / ZH ➔ RU / EN",
+        "description": "Быстрая мультиязычная модель от Cohere Labs (23 языка, включая японский, корейский, китайский и русский). Летает на видеокартах от 6–8 ГБ VRAM, почти не имеет цензуры и отлично передает живую разговорную речь.",
     },
     {
         "ollama_tag": "gemma3:12b",
@@ -89,7 +131,8 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "title": "💎 Gemma 3 12B — Живой литературный русский и английский (~7.3 ГБ)",
         "short_name": "Gemma 3 12B",
         "size_gb": "7.3 ГБ",
-        "description": "Модель от Google с самым естественным и живым художественным слогом на русском и английском языках.",
+        "langs": "JA / KO / ZH ➔ RU / EN",
+        "description": "Универсальная модель от Google с естественным и выразительным художественным слогом на русском и английском языках для повседневной и романтической манги.",
     },
     {
         "ollama_tag": "qwen2.5:14b",
@@ -101,7 +144,8 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "title": "🐉 Qwen 2.5 14B — Универсал JA/KO/ZH + Ромадзи (~8.4 ГБ)",
         "short_name": "Qwen 2.5 14B",
         "size_gb": "8.4 ГБ",
-        "description": "Мощная модель для одновременной работы с японской мангой, корейской манхвой, китайской маньхуа и транслитерацией в Ромадзи.",
+        "langs": "JA / KO / ZH ➔ RU / EN + Ромадзи",
+        "description": "Мощная азиатская модель от Alibaba для одновременной работы с японской мангой, корейской манхвой, китайской маньхуа (культивация/сянься) и точной транслитерацией кандзи в Ромадзи.",
     },
 ]
 
@@ -180,10 +224,17 @@ CLOUD_PARALLEL_CHUNK_SIZE = 42
 MAX_CONCURRENT_CLOUD_REQUESTS = 3
 
 REFUSAL_PATTERNS_REGEX = re.compile(
-    r"(?i)(?:\bi\s*(?:can['\u2019]?t|cannot|am\s+unable\s+to|won['\u2019]?t|must\s+decline)\b.*"
-    r"\b(?:translat|intensif|explicit|sexual|content|request|assist|fulfill|generate|rewrite|child|minor)\b"
-    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+sexual\s+content)\b"
-    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь)|откровенн\w+\s+сексуальн\w+)\b)"
+    r"(?i)(?:\bi\s*(?:can['\u2019]?t|cannot|am\s+unable\s+to|won['\u2019]?t|must\s+decline|refuse\s+to)\b.*"
+    r"\b(?:translat|intensif|explicit|sexual|content|request|assist|fulfill|generate|rewrite|child|minor|nsfw|adult|inappropriate)\b"
+    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+sexual\s+content|violates?\s+(?:our|the)\s+policy|content_filter|data_inspection_failed)\b"
+    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь|продолжить)|откровенн\w+\s+сексуальн\w+|наруша\w+\s+правил\w+)\b"
+    r"|(?:抱歉.*(?:无法|不能).*(?:翻译|提供|生成|处理)|内容.*(?:违规|敏感|不当)))"
+)
+
+CLOUD_CENSORSHIP_ERROR_REGEX = re.compile(
+    r"(?i)(?:content_filter|content_policy|data_inspection_failed|inappropriate\s+content|"
+    r"safety\s*(?:filter|system|policy|guidelines)|moderation|nsfw|explicit\s+sexual|"
+    r"sensitive\s+content|violat(?:es|ion)\s+.*policy|unsafe\s+content)"
 )
 
 SHORT_INTERJECTIONS_RU = {
@@ -1346,6 +1397,7 @@ class OllamaTranslator:
             "phrases_sent_to_llm": 0,
             "phrases_saved_by_cache": 0,
             "refusals_count": 0,
+            "local_censorship_fallbacks_count": 0,
             "sanitized_retries_count": 0,
             "micro_retries_count": 0,
             "errors_count": 0,
@@ -1365,6 +1417,7 @@ class OllamaTranslator:
             "phrases_sent_to_llm": 0,
             "phrases_saved_by_cache": 0,
             "refusals_count": 0,
+            "local_censorship_fallbacks_count": 0,
             "sanitized_retries_count": 0,
             "micro_retries_count": 0,
             "errors_count": 0,
@@ -2358,7 +2411,8 @@ class OllamaTranslator:
                 return m["id"]
 
         for m in installed_ollama:
-            if "gemma3" in m["id"].lower() or "qwen2.5:14b" in m["id"].lower():
+            low_id = m["id"].lower()
+            if any(k in low_id for k in ("translategemma", "gemma3", "qwen2.5:14b", "aya-expanse", "sugoi")):
                 return m["id"]
 
         for m in installed_ollama:
@@ -2756,12 +2810,162 @@ class OllamaTranslator:
             retry_json,
         )
 
+    async def _resolve_local_fallback_model(self, target_lang: str = "en") -> str | None:
+        """
+        Находит лучшую локальную модель Ollama для мгновенного обхода цензуры облачного API:
+        1. Сначала проверяет уже закэшированный список установленных моделей Ollama;
+        2. Если кэш пуст (например, с запуска сразу работали через Cloud API), опрашивает локальный Ollama
+           (`/api/tags` и `ollama list`);
+        3. Приоритет выбора локальной модели для кусков с цензурой (с учетом целевого языка `target_lang`):
+           - Uncensored / Abliterated модели (`shisa-v2-12b-uncensored`, `abliterated`, `uncensored`)
+           - Для `en`: `sugoi` (`sugoi-14b-ultra`), затем `shisa`, `translategemma`, `aya-expanse`, `gemma3`, `qwen`
+           - Для `ru`: `shisa`, `translategemma`, `aya-expanse`, `gemma3`, `qwen2.5:14b`, `qwen3`, `qwen` (пропуская узкую JA->EN `sugoi`)
+           - любая установленная локальная модель в Ollama или `self.default_model`.
+        ВАЖНО: Не перезаписывает `self._resolved_model`, чтобы после перевода цензурного куска
+        переводчик сразу вернулся обратно на облачный API!
+        """
+        installed_ollama = [
+            m["id"]
+            for m in (self._cached_models or [])
+            if m.get("provider") == "ollama" and m.get("installed") == "true"
+        ]
+        if not installed_ollama:
+            try:
+                available = await self.list_available_models(force_refresh=True)
+                installed_ollama = [
+                    m["id"]
+                    for m in available
+                    if m.get("provider") == "ollama" and m.get("installed") == "true"
+                ]
+            except Exception as exc:
+                logger.debug("Не удалось обновить список моделей для локального фоллбэка: %s", exc)
+
+        if not installed_ollama:
+            cli_tags = self._list_ollama_cli_models()
+            installed_ollama = [f"ollama::{t}" for t in cli_tags if t]
+
+        t_lang = (target_lang or "en").lower().strip()
+        if installed_ollama:
+            if t_lang == "en":
+                priority_tuple = (
+                    "uncensored",
+                    "abliterated",
+                    "sugoi",
+                    "shisa",
+                    "translategemma",
+                    "aya-expanse",
+                    "gemma3",
+                    "qwen2.5:14b",
+                    "qwen3",
+                    "qwen",
+                )
+            else:
+                priority_tuple = (
+                    "uncensored",
+                    "abliterated",
+                    "shisa",
+                    "translategemma",
+                    "aya-expanse",
+                    "gemma3",
+                    "qwen2.5:14b",
+                    "qwen3",
+                    "qwen",
+                )
+            for priority_kw in priority_tuple:
+                for m_id in installed_ollama:
+                    if priority_kw in m_id.lower():
+                        return m_id
+            for m_id in installed_ollama:
+                if t_lang == "ru" and "sugoi" in m_id.lower():
+                    continue
+                return m_id
+            return installed_ollama[0]
+
+        if self.default_model:
+            clean_def = self.default_model.strip()
+            return clean_def if clean_def.startswith("ollama::") else f"ollama::{clean_def}"
+        return None
+
+    async def _translate_map_via_local_ollama(
+        self,
+        client: httpx.AsyncClient,
+        source_map: dict[str, str],
+        source_lang: str,
+        target_lang: str,
+        context_lines: list[str] | None = None,
+        glossary_entries: list[dict[str, str]] | None = None,
+        local_model_id: str | None = None,
+    ) -> dict[str, str]:
+        """
+        Переводит переданный словарь реплик `source_map` через локальную модель Ollama
+        (разбивая на компактные подгруппы по `MAX_BUBBLES_PER_BATCH_LOCAL = 12` для скорости и точности),
+        не изменяя активную облачную модель по умолчанию.
+        """
+        if not source_map or self.stop_requested:
+            return {}
+
+        loc_model = local_model_id or await self._resolve_local_fallback_model(target_lang=target_lang)
+        if not loc_model:
+            return {}
+
+        items_list = list(source_map.items())
+        sub_size = MAX_BUBBLES_PER_BATCH_LOCAL
+        sub_chunks = [
+            dict(items_list[i : i + sub_size])
+            for i in range(0, len(items_list), sub_size)
+        ]
+
+        combined_res: dict[str, str] = {}
+        t_lang = (target_lang or "en").lower().strip()
+        for sub_idx, sub_map in enumerate(sub_chunks, start=1):
+            if self.stop_requested:
+                break
+            sub_json = json.dumps(sub_map, ensure_ascii=False, separators=(",", ":"))
+            sys_p, usr_p, _ = self._get_prompts(
+                source_lang=source_lang,
+                target_lang=t_lang,
+                source_map_json=sub_json,
+                context_lines=context_lines,
+                glossary_entries=glossary_entries,
+            )
+            try:
+                loc_res = await self._call_ollama_direct(
+                    client=client,
+                    ollama_model_name=loc_model,
+                    system_prompt=sys_p,
+                    user_prompt=usr_p,
+                    persist_as_default=False,
+                )
+                loc_refused = bool(loc_res.pop("__refusal__", None))
+                if not loc_res or loc_refused:
+                    min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, sub_json)
+                    loc_res = await self._call_ollama_direct(
+                        client=client,
+                        ollama_model_name=loc_model,
+                        system_prompt=min_sys,
+                        user_prompt=min_usr,
+                        persist_as_default=False,
+                    )
+                    loc_res.pop("__refusal__", None)
+                if loc_res:
+                    combined_res.update(loc_res)
+            except Exception as loc_exc:
+                logger.warning(
+                    "Ошибка при переводе цензурного куска (%d/%d) через локальную модель %s: %s",
+                    sub_idx,
+                    len(sub_chunks),
+                    loc_model,
+                    loc_exc,
+                )
+        return combined_res
+
     async def _call_ollama_direct(
         self,
         client: httpx.AsyncClient,
         ollama_model_name: str,
         system_prompt: str,
         user_prompt: str,
+        persist_as_default: bool = True,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
         clean_name = ollama_model_name.strip()
@@ -2795,7 +2999,8 @@ class OllamaTranslator:
                     payload["model"] = loc_tag
                     resp_loc = await client.post(f"{self.base_url}/api/generate", json=payload)
                     if resp_loc.status_code == 200:
-                        self.save_config(selected_model=f"ollama::{loc_tag}")
+                        if persist_as_default:
+                            self.save_config(selected_model=f"ollama::{loc_tag}")
                         raw_output = resp_loc.json().get("response", "{}")
                         parsed_loc = self._parse_json_response(raw_output)
                         if parsed_loc:
@@ -2805,7 +3010,7 @@ class OllamaTranslator:
                 "Модель '%s' еще не скачана в Ollama — запускаю автоматическое скачивание...",
                 clean_name,
             )
-            pull_res = await self.pull_ollama_model(clean_name, set_as_default=True)
+            pull_res = await self.pull_ollama_model(clean_name, set_as_default=persist_as_default)
             if pull_res.get("status") == "completed":
                 actual_tag = str(pull_res.get("model") or clean_name)
                 payload["model"] = actual_tag
@@ -2897,6 +3102,14 @@ class OllamaTranslator:
                             headers=self._unsloth_headers(),
                             json=payload_cloud,
                         )
+                        if response.status_code in (400, 403, 422, 451):
+                            err_body = (response.text or "")[:500]
+                            if CLOUD_CENSORSHIP_ERROR_REGEX.search(err_body) or self._is_refusal_response(err_body):
+                                _el_cloud = time.perf_counter() - _t0_cloud
+                                self._last_call_was_refusal = True
+                                self.last_refusal_message = f"HTTP {response.status_code} Censorship: {err_body[:180]}"
+                                self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
+                                return {"__refusal__": self.last_refusal_message}
                         if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
                             wait_s = 1.5 * (attempt + 1)
                             logger.warning(
@@ -2913,13 +3126,20 @@ class OllamaTranslator:
                         response.raise_for_status()
                         data = response.json()
                         choices = data.get("choices", [])
-                        msg_obj = choices[0].get("message", {}) if choices else {}
+                        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                        finish_reason = str(first_choice.get("finish_reason") or "").lower().strip()
+                        msg_obj = first_choice.get("message", {}) if isinstance(first_choice.get("message"), dict) else {}
                         raw_output = str(msg_obj.get("content") or "{}")
                         _el_cloud = time.perf_counter() - _t0_cloud
                         parsed = self._parse_json_response(raw_output)
-                        if not parsed and self._is_refusal_response(raw_output):
+                        is_filter_stop = finish_reason in ("content_filter", "safety", "moderation", "sensitive")
+                        if not parsed and (is_filter_stop or self._is_refusal_response(raw_output)):
                             self._last_call_was_refusal = True
-                            self.last_refusal_message = raw_output.strip()[:240]
+                            self.last_refusal_message = (
+                                raw_output.strip()[:240]
+                                if raw_output.strip() and raw_output.strip() != "{}"
+                                else f"finish_reason={finish_reason or 'content_filter'}"
+                            )
                             self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
                             return {"__refusal__": self.last_refusal_message}
                         self._record_api_call("cloud", model_name, _el_cloud, len(parsed), "OK")
@@ -2954,19 +3174,21 @@ class OllamaTranslator:
                         break
                 if last_cloud_err is not None:
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", str(last_cloud_err))
-                    available = await self.list_available_models()
-                    ollama_candidates = [
-                        m["id"] for m in available if m["provider"] == "ollama" and m.get("installed") == "true"
-                    ]
-                    if ollama_candidates:
-                        fallback_ollama = ollama_candidates[0]
+                    fallback_ollama = await self._resolve_local_fallback_model()
+                    if fallback_ollama:
                         logger.warning(
-                            "Облачный API (%s) недоступен (%s). Автоматический подхват пачки локальной моделью %s, чтобы не пропустить страницы!",
+                            "Облачный API (%s) недоступен (%s). Временный подхват пачки локальной моделью %s (затем возврат к API)!",
                             self.unsloth_url,
                             last_cloud_err,
                             fallback_ollama,
                         )
-                        return await self._call_ollama_direct(client, fallback_ollama, system_prompt, user_prompt)
+                        return await self._call_ollama_direct(
+                            client,
+                            fallback_ollama,
+                            system_prompt,
+                            user_prompt,
+                            persist_as_default=False,
+                        )
                     raise last_cloud_err
 
             payload_full: dict[str, Any] = {
@@ -3015,20 +3237,21 @@ class OllamaTranslator:
                     return {"__refusal__": self.last_refusal_message}
                 return parsed
             except Exception as unsloth_exc:
-                available = await self.list_available_models()
-                ollama_candidates = [
-                    m["id"] for m in available if m["provider"] == "ollama" and m.get("installed") == "true"
-                ]
-                if ollama_candidates:
-                    fallback_ollama = ollama_candidates[0]
+                fallback_ollama = await self._resolve_local_fallback_model()
+                if fallback_ollama:
                     logger.warning(
-                        "Порт Unsloth (%s) вернул ошибку (%s). Автоматическое переключение на %s!",
+                        "Порт Unsloth (%s) вернул ошибку (%s). Временное переключение на локальную модель %s!",
                         self.unsloth_url,
                         unsloth_exc,
                         fallback_ollama,
                     )
-                    self._resolved_model = fallback_ollama
-                    return await self._call_ollama_direct(client, fallback_ollama, system_prompt, user_prompt)
+                    return await self._call_ollama_direct(
+                        client,
+                        fallback_ollama,
+                        system_prompt,
+                        user_prompt,
+                        persist_as_default=False,
+                    )
                 raise
 
         return await self._call_ollama_direct(client, full_model_id, system_prompt, user_prompt)
@@ -3092,61 +3315,75 @@ class OllamaTranslator:
                 return True
             return bool(re.search(r"[A-Za-zА-Яа-яЁё]", c))
 
-        local_ollama = [
-            m["id"]
-            for m in (self._cached_models or [])
-            if m.get("provider") == "ollama" and m.get("installed") == "true"
-        ]
-
-        # СЦЕНАРИЙ 1: Если облачный API вернул отказ цензуры (например, "I can't translate..."),
-        # пробуем подгруппами с санитизацией триггеров родства и нейтральным лингвистическим промптом БЕЗ context_lines.
+        # СЦЕНАРИЙ 1: Если при работе через облачный API модель наткнулась на цензуру (was_refusal=True),
+        # МГНОВЕННО переключаемся на локальную модель Ollama, переводим этот кусок через неё (с сохранением глоссария и контекста)
+        # и затем автоматически возвращаемся к переводу следующих кусков через облачный API!
         if was_refusal and not translated_map and not self.stop_requested:
-            items_list = list(source_map.items())
-            sub_size = max(10, (len(items_list) + 1) // 2) if len(items_list) <= 30 else max(12, (len(items_list) + 2) // 3)
-            sub_chunks = [dict(items_list[i : i + sub_size]) for i in range(0, len(items_list), sub_size)]
-            logger.warning(
-                "Облачный API отклонил пакет (%d блоков) из-за фильтра цензуры провайдера. "
-                "Делю пакет на %d нейтральные подгруппы с санитизацией триггеров...",
-                len(source_map),
-                len(sub_chunks),
+            local_fallback_model = (
+                await self._resolve_local_fallback_model(target_lang=t_lang)
+                if active_model.startswith("unsloth::")
+                else None
             )
-            for sc_idx, sub_map in enumerate(sub_chunks, start=1):
-                if self.stop_requested:
-                    break
-                self.diagnostics_stats["sanitized_retries_count"] += 1
-                sanitized_sub_map = {
-                    k: self._sanitize_safety_triggers_for_cloud(v) for k, v in sub_map.items()
-                }
-                sub_json = json.dumps(sanitized_sub_map, ensure_ascii=False, separators=(",", ":"))
-                min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, sub_json)
-                sub_res = await self._call_llm_json(
-                    client=client,
-                    full_model_id=active_model,
-                    system_prompt=min_sys,
-                    user_prompt=min_usr,
+            if local_fallback_model and active_model.startswith("unsloth::"):
+                self.diagnostics_stats["local_censorship_fallbacks_count"] = (
+                    int(self.diagnostics_stats.get("local_censorship_fallbacks_count") or 0) + 1
                 )
-                sub_refused = bool(sub_res.pop("__refusal__", None))
-                if sub_res:
-                    translated_map.update(sub_res)
-                elif sub_refused and local_ollama and active_model.startswith("unsloth::"):
-                    logger.warning(
-                        "Подгруппа %d/%d отклонена облачной цензурой — перевожу её локально через %s!",
-                        sc_idx,
-                        len(sub_chunks),
-                        local_ollama[0],
+                logger.warning(
+                    "🛡 [ОБХОД ЦЕНЗУРЫ API] Облачная модель '%s' отклонила кусок (%d блоков) из-за цензуры! "
+                    "Мгновенно переключаюсь на локальную модель '%s' для перевода этого куска (после него вернусь обратно на API '%s')...",
+                    active_model,
+                    len(source_map),
+                    local_fallback_model,
+                    active_model,
+                )
+                loc_chunk_map = await self._translate_map_via_local_ollama(
+                    client=client,
+                    source_map=source_map,
+                    source_lang=source_lang,
+                    target_lang=t_lang,
+                    context_lines=context_lines,
+                    glossary_entries=eff_glossary,
+                    local_model_id=local_fallback_model,
+                )
+                if loc_chunk_map:
+                    translated_map.update(loc_chunk_map)
+                    logger.info(
+                        "✅ [ОБХОД ЦЕНЗУРЫ API] Кусок с цензурой (%d/%d блоков) успешно переведен локальной моделью '%s'. "
+                        "Возвращаюсь к переводу через API '%s'!",
+                        len(loc_chunk_map),
+                        len(source_map),
+                        local_fallback_model,
+                        active_model,
                     )
-                    try:
-                        loc_res = await self._call_ollama_direct(
-                            client=client,
-                            ollama_model_name=local_ollama[0],
-                            system_prompt=min_sys,
-                            user_prompt=min_usr,
-                        )
-                        loc_res.pop("__refusal__", None)
-                        if loc_res:
-                            translated_map.update(loc_res)
-                    except Exception:
-                        pass
+
+            # Резервный вариант (только если локальный Ollama вообще не запущен или не вернул перевод):
+            if not translated_map and not self.stop_requested:
+                items_list = list(source_map.items())
+                sub_size = max(10, (len(items_list) + 1) // 2) if len(items_list) <= 30 else max(12, (len(items_list) + 2) // 3)
+                sub_chunks = [dict(items_list[i : i + sub_size]) for i in range(0, len(items_list), sub_size)]
+                logger.warning(
+                    "Локальная модель недоступна для обхода цензуры — делю пакет (%d блоков) на %d подгруппы с санитизацией триггеров...",
+                    len(source_map),
+                    len(sub_chunks),
+                )
+                for sc_idx, sub_map in enumerate(sub_chunks, start=1):
+                    if self.stop_requested:
+                        break
+                    self.diagnostics_stats["sanitized_retries_count"] += 1
+                    sanitized_sub_map = {
+                        k: self._sanitize_safety_triggers_for_cloud(v) for k, v in sub_map.items()
+                    }
+                    sub_json = json.dumps(sanitized_sub_map, ensure_ascii=False, separators=(",", ":"))
+                    min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, sub_json)
+                    sub_res = await self._call_llm_json(
+                        client=client,
+                        full_model_id=active_model,
+                        system_prompt=min_sys,
+                        user_prompt=min_usr,
+                    )
+                    sub_res.pop("__refusal__", None)
+                    if sub_res:
+                        translated_map.update(sub_res)
 
         # Сначала подставляем только точные короткие междометия по оригиналу (<= 5 символов),
         # а все длинные фразы и фразы с ошибочным Ромадзи отправляем на полноценный доперевод через ИИ!
@@ -3160,7 +3397,8 @@ class OllamaTranslator:
                     translated_map[k] = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
 
         # СЦЕНАРИЙ 2: Гарантированный доперевод ВСЕХ пропущенных или ошибочно транслитерированных (Ромадзи) блоков!
-        # Больше НЕТ искусственного порога `len(bad_keys) <= 15`, из-за которого раньше при сбое/обрыве JSON пропускались целые страницы!
+        # Если доперевод через API натыкается на цензуру (или если это остатки после цензурного куска),
+        # сразу переводим эти фразы через локальную модель Ollama и возвращаемся к API!
         if not self.stop_requested:
             bad_keys = [
                 k
@@ -3186,42 +3424,77 @@ class OllamaTranslator:
                     if self.stop_requested:
                         break
                     self.diagnostics_stats["micro_retries_count"] += 1
-                    retry_source = {
-                        k: (
-                            self._sanitize_safety_triggers_for_cloud(source_map[k])
-                            if active_model.startswith("unsloth::")
-                            else source_map[k]
-                        )
-                        for k in b_sub
-                    }
-                    retry_json = json.dumps(retry_source, ensure_ascii=False, separators=(",", ":"))
-                    min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, retry_json)
-                    try:
-                        retry_map = await self._call_llm_json(
-                            client=client,
-                            full_model_id=active_model,
-                            system_prompt=min_sys,
-                            user_prompt=min_usr,
-                        )
-                        retry_refused = bool(retry_map.pop("__refusal__", None))
-                        if retry_refused and local_ollama and active_model.startswith("unsloth::"):
-                            retry_map = await self._call_ollama_direct(
+                    raw_sub_source = {k: source_map[k] for k in b_sub}
+                    retry_map: dict[str, str] = {}
+
+                    # Если исходная пачка уже ловила цензуру API — сразу допереводим остатки локальной моделью!
+                    if was_refusal and active_model.startswith("unsloth::"):
+                        loc_model = await self._resolve_local_fallback_model(target_lang=t_lang)
+                        if loc_model:
+                            retry_map = await self._translate_map_via_local_ollama(
                                 client=client,
-                                ollama_model_name=local_ollama[0],
+                                source_map=raw_sub_source,
+                                source_lang=source_lang,
+                                target_lang=t_lang,
+                                context_lines=context_lines,
+                                glossary_entries=eff_glossary,
+                                local_model_id=loc_model,
+                            )
+
+                    if not retry_map:
+                        retry_source = {
+                            k: (
+                                self._sanitize_safety_triggers_for_cloud(source_map[k])
+                                if active_model.startswith("unsloth::")
+                                else source_map[k]
+                            )
+                            for k in b_sub
+                        }
+                        retry_json = json.dumps(retry_source, ensure_ascii=False, separators=(",", ":"))
+                        min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, retry_json)
+                        try:
+                            retry_map = await self._call_llm_json(
+                                client=client,
+                                full_model_id=active_model,
                                 system_prompt=min_sys,
                                 user_prompt=min_usr,
                             )
-                            retry_map.pop("__refusal__", None)
-                        for k in b_sub:
-                            cand_r = retry_map.get(k, "")
-                            if cand_r and _is_valid_target_translation(cand_r, source_map[k]):
-                                translated_map[k] = cand_r
-                            elif cand_r:
-                                rescued_r = self._rescue_romaji_or_interjection(cand_r, source_map[k], t_lang)
-                                if rescued_r:
-                                    translated_map[k] = rescued_r
-                    except Exception as retry_exc:
-                        logger.warning("Подгруппа доперевода (%d блоков) не удалась: %s", len(b_sub), retry_exc)
+                            retry_refused = bool(retry_map.pop("__refusal__", None))
+                            if (retry_refused or not retry_map) and active_model.startswith("unsloth::"):
+                                loc_model = await self._resolve_local_fallback_model(target_lang=t_lang)
+                                if loc_model:
+                                    if retry_refused:
+                                        self.diagnostics_stats["local_censorship_fallbacks_count"] = (
+                                            int(self.diagnostics_stats.get("local_censorship_fallbacks_count") or 0) + 1
+                                        )
+                                    logger.warning(
+                                        "🛡 [ОБХОД ЦЕНЗУРЫ API] Подгруппа из %d фраз отклонена API '%s' — "
+                                        "мгновенно перевожу её локальной моделью '%s' и возвращаюсь к API!",
+                                        len(b_sub),
+                                        active_model,
+                                        loc_model,
+                                    )
+                                    raw_json = json.dumps(raw_sub_source, ensure_ascii=False, separators=(",", ":"))
+                                    loc_sys, loc_usr = self._get_minimal_retry_prompts(t_lang, raw_json)
+                                    retry_map = await self._call_ollama_direct(
+                                        client=client,
+                                        ollama_model_name=loc_model,
+                                        system_prompt=loc_sys,
+                                        user_prompt=loc_usr,
+                                        persist_as_default=False,
+                                    )
+                                    retry_map.pop("__refusal__", None)
+                        except Exception as retry_exc:
+                            logger.warning("Подгруппа доперевода (%d блоков) не удалась: %s", len(b_sub), retry_exc)
+
+                    for k in b_sub:
+                        cand_r = retry_map.get(k, "")
+                        if cand_r and _is_valid_target_translation(cand_r, source_map[k]):
+                            translated_map[k] = cand_r
+                        elif cand_r:
+                            rescued_r = self._rescue_romaji_or_interjection(cand_r, source_map[k], t_lang)
+                            if rescued_r:
+                                translated_map[k] = rescued_r
 
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
