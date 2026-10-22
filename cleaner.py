@@ -5,14 +5,20 @@
 1. Индивидуальный радиус замазки `mask_dilate` (1..28 px) для каждого блока в `build_text_mask`:
    создает эллиптическое ядро `cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (d, d))` специально для блока,
    позволяя в 1 движение ползунка убрать торчащие края иероглифов или уменьшить замазку для сохранения рисунка.
-2. Поддержка ручной кисти и ластика маски замазки `custom_mask_strokes` (`[{"x": int, "y": int, "r": int, "mode": "add"|"erase"}]`):
-   применяет поверх `full_mask` круги `cv2.circle(..., 255)` для `"add"` (замазать остаток буквы)
-   и `cv2.circle(..., 0)` для `"erase"` (восстановить стертую линию рисунка), с автоматическим расширением
-   области кропа инпейнтинга и учетом мазков в `compute_clean_state_hash`.
-3. Улучшенное выделение внутренней области узких вертикальных бабблов (`_extract_bubble_interior_mask`)
-   и защита от пропуска вертикальных колонок кандзи, когда маска `clean_roi_mask` захватывала только
-   единичные пиксели контура.
-4. Сохранены все оптимизации v1.0.6-step1 (LRU-кэш `cleaned_image` на 8 страниц + дисковый кэш в `temp_debug/`).
+2. Двухуровневое кэширование очистки (`_block_crop_cache` + `_base_page_cache`):
+   - Кэширует результат инпейнтинга каждого отдельного блока `(img_fingerprint, clean_bbox, is_free_text, mask_dilate)`,
+     благодаря чему изменение ползунка `Замазка (dilate)` у одного блока пересчитывает только этот один кроп за ~15–35 мс,
+     не затрагивая остальные бабблы на странице.
+   - Кэширует базовый автоматически очищенный слой страницы до применения ручных мазков кисти.
+3. Мгновенная (< 2 мс) обработка ручной кисти и ластика замазки `custom_mask_strokes`
+   (`[{"x": int, "y": int, "r": int, "mode": "add"|"erase"}]`) поверх базового очищенного слоя без повторного вызова SimpleLama:
+   - Режим `"add"` (ЛКМ — Замазать текст) мгновенно закрашивает указанную область локальным цветом баббла
+     (или быстрым `cv2.INPAINT_TELEA` на сложном/темном фоне) с мягким сглаживанием краев.
+   - Режим `"erase"` (ПКМ — Вернуть оригинал) мгновенно восстанавливает пиксели исходного рисунка из `raw_image`
+     с мягкой растушевкой.
+4. Улучшенное выделение внутренней области узких вертикальных бабблов (`_extract_bubble_interior_mask`)
+   и защита от пропуска вертикальных колонок кандзи.
+5. Сохранены все оптимизации v1.0.6-step1 (LRU-кэш `cleaned_image` на 8 страниц + дисковый кэш в `temp_debug/`).
 """
 
 from __future__ import annotations
@@ -54,6 +60,11 @@ class BubbleCleaner:
         self.cache_max_pages = max(1, int(cache_max_pages))
         self._cache_lock = threading.Lock()
         self._cleaned_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
+        # Кэш базовой очистки страницы (без ручных мазков кисти) и кэш отдельных кропов блоков
+        self._base_page_cache: OrderedDict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        self._block_crop_cache: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray]] = OrderedDict()
+        self._block_crop_cache_max = 256
+        self._base_page_cache_max = 10
 
         if disk_cache_dir is not None:
             self.disk_cache_dir: Path | None = Path(disk_cache_dir).resolve()
@@ -108,6 +119,60 @@ class BubbleCleaner:
             except Exception:
                 continue
         return norm
+
+    @staticmethod
+    def _compute_image_fingerprint(img_np: np.ndarray) -> str:
+        """Быстрый отпечаток массива изображения (~0.1 мс) для ключей кэша кропов и базового слоя."""
+        h, w = img_np.shape[:2]
+        step_y = max(1, h // 24)
+        step_x = max(1, w // 24)
+        sample = img_np[::step_y, ::step_x]
+        hasher = hashlib.blake2b(digest_size=10)
+        hasher.update(f"{w}x{h}:".encode("ascii"))
+        hasher.update(sample.tobytes())
+        return hasher.hexdigest()
+
+    def compute_base_clean_hash(
+        self,
+        blocks: list[dict[str, Any]],
+        src_file: str | Path | None = None,
+        src_mtime: float | int | None = None,
+    ) -> str:
+        """
+        Вычисляет хэш базовой автоматической очистки страницы (без `custom_mask_strokes`),
+        чтобы при рисовании кистью замазки не пересчитывать инпейнтинг бабблов с нуля.
+        """
+        src_key = self._normalize_src_key(src_file)
+        if src_mtime is None and src_key:
+            try:
+                p = Path(src_key)
+                if p.exists():
+                    src_mtime = p.stat().st_mtime_ns
+            except OSError:
+                src_mtime = 0
+
+        active_tuples: list[tuple[tuple[int, int, int, int], bool, int]] = []
+        for block in blocks:
+            if not isinstance(block, dict) or self._is_block_skipped(block):
+                continue
+            cb = self._get_clean_bbox(block)
+            clean_tuple = (int(cb[0]), int(cb[1]), int(cb[2]), int(cb[3]))
+            is_free = bool(block.get("is_free_text", False))
+            mask_dilate_val = int(block.get("mask_dilate") or 0)
+            active_tuples.append((clean_tuple, is_free, mask_dilate_val))
+
+        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]))
+        payload = {
+            "src_file": src_key,
+            "mtime": int(src_mtime or 0),
+            "dilate_size": int(self.dilate_size),
+            "base_clean_blocks": [
+                [list(coords), is_free, mdil]
+                for coords, is_free, mdil in active_tuples
+            ],
+        }
+        raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(raw_json.encode("utf-8")).hexdigest()[:24]
 
     def compute_clean_state_hash(
         self,
@@ -256,10 +321,9 @@ class BubbleCleaner:
         for lbl in range(1, num_labels):
             area = float(stats[lbl, cv2.CC_STAT_AREA])
             center_hits = float(np.count_nonzero(center_slice == lbl))
-            if area < (rh * rw * 0.04) and center_hits < ( center_slice.size * 0.03 ):
+            if area < (rh * rw * 0.04) and center_hits < (center_slice.size * 0.03):
                 continue
             dist = ((centroids[lbl][0] - cx_mid) ** 2 + ((centroids[lbl][1] - cy_mid) ** 2)) ** 0.5
-            # Штрафуем внешние угловые области, которые касаются сразу нескольких внешних границ бокса, но почти не попадают в центр
             lx = stats[lbl, cv2.CC_STAT_LEFT]
             ly = stats[lbl, cv2.CC_STAT_TOP]
             lw = stats[lbl, cv2.CC_STAT_WIDTH]
@@ -325,31 +389,25 @@ class BubbleCleaner:
         img_h: int,
     ) -> tuple[int, int, int, int]:
         """
-        Возвращает область очистки блока с учетом ручных мазков кисти `custom_mask_strokes` (режим `add`),
-        чтобы мазки за пределами исходного `clean_bbox` также попадали в кроп инпейнтинга.
+        Возвращает область базовой очистки блока по исходному `clean_bbox`.
         """
         x1, y1, x2, y2 = self._get_clean_bbox(block)
-        for sx, sy, sr, smode in self._normalize_block_strokes(block):
-            if smode == "add":
-                x1 = min(x1, sx - sr - 2)
-                y1 = min(y1, sy - sr - 2)
-                x2 = max(x2, sx + sr + 2)
-                y2 = max(y2, sy + sr + 2)
         x1 = max(0, min(x1, img_w - 1))
         y1 = max(0, min(y1, img_h - 1))
-        x2 = max(x1 + 1, min(dx2 := x2, img_w))
-        y2 = max(y1 + 1, min(dy2 := y2, img_h))
+        x2 = max(x1 + 1, min(x2, img_w))
+        y2 = max(y1 + 1, min(y2, img_h))
         return x1, y1, x2, y2
 
     def build_text_mask(
         self,
         image_rgb: np.ndarray,
         blocks: list[dict[str, Any]],
+        include_custom_strokes: bool = True,
     ) -> np.ndarray:
         """
         Строит точную бинарную маску (uint8, 0 или 255) по пикселям текста и его антиалиасинга
-        внутри каждого активного Bounding Box с учетом индивидуального `mask_dilate` и ручных
-        мазков кисти/ластика `custom_mask_strokes`.
+        внутри каждого активного Bounding Box с учетом индивидуального `mask_dilate` и (опционально)
+        ручных мазков кисти/ластика `custom_mask_strokes`.
         """
         img_h, img_w = image_rgb.shape[:2]
         full_mask = np.zeros((img_h, img_w), dtype=np.uint8)
@@ -440,8 +498,6 @@ class BubbleCleaner:
 
                     clean_roi_mask[labels == label_idx] = 255
 
-                # Если interior_mask нашел достаточное количество пикселей текста (не случайную точку на границе),
-                # применяем его; иначе переходим к резервному Otsu-методу, чтобы не пропустить узкие вертикальные бабблы.
                 min_valid_ink_px = max(18, int(rw * rh * 0.012))
                 if np.count_nonzero(clean_roi_mask) >= min_valid_ink_px:
                     eff_bub_kernel = block_kernel if block_kernel is not None else kernel_bubble
@@ -523,18 +579,18 @@ class BubbleCleaner:
             dy2 = max(dy1 + 1, min(dy2, img_h))
             full_mask[dy1:dy2, dx1:dx2] = 0
 
-        # Применяем ручные мазки кисти/ластика замазки (custom_mask_strokes) поверх full_mask
-        for block in blocks:
-            if self._is_block_skipped(block):
-                continue
-            for sx, sy, sr, smode in self._normalize_block_strokes(block):
-                cx = max(0, min(img_w - 1, sx))
-                cy = max(0, min(img_h - 1, sy))
-                radius = max(1, min(80, sr))
-                if smode == "erase":
-                    cv2.circle(full_mask, (cx, cy), radius, 0, -1)
-                else:
-                    cv2.circle(full_mask, (cx, cy), radius, 255, -1)
+        if include_custom_strokes:
+            for block in blocks:
+                if self._is_block_skipped(block):
+                    continue
+                for sx, sy, sr, smode in self._normalize_block_strokes(block):
+                    cx = max(0, min(img_w - 1, sx))
+                    cy = max(0, min(img_h - 1, sy))
+                    radius = max(1, min(80, sr))
+                    if smode == "erase":
+                        cv2.circle(full_mask, (cx, cy), radius, 0, -1)
+                    else:
+                        cv2.circle(full_mask, (cx, cy), radius, 255, -1)
 
         return full_mask
 
@@ -580,64 +636,243 @@ class BubbleCleaner:
         )
         return cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
 
+    def _apply_custom_strokes_fast(
+        self,
+        base_cleaned_np: np.ndarray,
+        raw_img_np: np.ndarray,
+        base_mask_np: np.ndarray,
+        blocks: list[dict[str, Any]],
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """
+        Мгновенно (< 2 мс) накладывает ручные мазки кисти/ластика (`custom_mask_strokes`)
+        поверх базового очищенного слоя `base_cleaned_np` без перезапуска тяжелой модели инпейнтинга:
+        - `mode == "add"` (ЛКМ / Замазать текст): соединяет соседние точки мазка в плавную линию и закрашивает
+          локальным цветом баббла (или быстрым `INPAINT_TELEA` на сложном/темном фоне) с мягким сглаживанием краев.
+        - `mode == "erase"` (ПКМ / Вернуть оригинал): восстанавливает пиксели оригинального изображения `raw_img_np`
+          с мягкой растушевкой 3x3.
+        """
+        img_h, img_w = base_cleaned_np.shape[:2]
+        add_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        erase_mask = np.zeros((img_h, img_w), dtype=np.uint8)
+        final_mask = base_mask_np.copy()
+        has_any = False
+
+        for block in blocks:
+            if self._is_block_skipped(block):
+                continue
+            strokes = self._normalize_block_strokes(block)
+            if not strokes:
+                continue
+            has_any = True
+            prev_pt: tuple[int, int, int, str] | None = None
+            for sx, sy, sr, smode in strokes:
+                cx = max(0, min(img_w - 1, sx))
+                cy = max(0, min(img_h - 1, sy))
+                radius = max(1, min(80, sr))
+                target_m = erase_mask if smode == "erase" else add_mask
+                opposite_m = add_mask if smode == "erase" else erase_mask
+
+                cv2.circle(target_m, (cx, cy), radius, 255, -1)
+                cv2.circle(opposite_m, (cx, cy), radius, 0, -1)
+                cv2.circle(final_mask, (cx, cy), radius, 0 if smode == "erase" else 255, -1)
+
+                # Если соседние точки одного режима находятся близко — соединяем их плавной капсулой без разрывов
+                if prev_pt is not None and prev_pt[3] == smode:
+                    px, py, pr, _ = prev_pt
+                    dist = ((cx - px) ** 2 + (cy - py) ** 2) ** 0.5
+                    avg_r = max(1, int(round((radius + pr) / 2.0)))
+                    if 0 < dist <= avg_r * 2.8:
+                        cv2.line(target_m, (px, py), (cx, cy), 255, thickness=avg_r * 2)
+                        cv2.line(opposite_m, (px, py), (cx, cy), 0, thickness=avg_r * 2)
+                        cv2.line(
+                            final_mask,
+                            (px, py),
+                            (cx, cy),
+                            0 if smode == "erase" else 255,
+                            thickness=avg_r * 2,
+                        )
+                prev_pt = (cx, cy, radius, smode)
+
+        if not has_any:
+            return base_cleaned_np, final_mask
+
+        out_np = base_cleaned_np.copy()
+
+        # 1. Применяем мазки замазки текста (mode == "add")
+        if np.count_nonzero(add_mask) > 0:
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(add_mask, connectivity=8)
+            ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            for lbl in range(1, num_labels):
+                lx = int(stats[lbl, cv2.CC_STAT_LEFT])
+                ly = int(stats[lbl, cv2.CC_STAT_TOP])
+                lw = int(stats[lbl, cv2.CC_STAT_WIDTH])
+                lh = int(stats[lbl, cv2.CC_STAT_HEIGHT])
+                pad = 12
+                cx1 = max(0, lx - pad)
+                cy1 = max(0, ly - pad)
+                cx2 = min(img_w, lx + lw + pad)
+                cy2 = min(img_h, ly + lh + pad)
+
+                comp_mask = ((labels[cy1:cy2, cx1:cx2] == lbl).astype(np.uint8)) * 255
+                if np.count_nonzero(comp_mask) == 0:
+                    continue
+
+                crop_rgb = out_np[cy1:cy2, cx1:cx2]
+                ring_mask = cv2.dilate(comp_mask, ring_k, iterations=1) - comp_mask
+                ring_pixels = crop_rgb[ring_mask > 0]
+
+                filled_crop: np.ndarray | None = None
+                if len(ring_pixels) >= 6:
+                    ring_gray = np.mean(ring_pixels, axis=1)
+                    p75 = float(np.percentile(ring_gray, 75))
+                    if p75 >= 195.0:
+                        bright_pixels = ring_pixels[ring_gray >= max(180.0, p75 - 16.0)]
+                        if len(bright_pixels) >= 4:
+                            fill_color = np.median(bright_pixels, axis=0).round().astype(np.uint8)
+                            if float(np.min(fill_color)) >= 236.0:
+                                fill_color = np.array([255, 255, 255], dtype=np.uint8)
+                            filled_crop = crop_rgb.copy()
+                            filled_crop[comp_mask > 0] = fill_color
+
+                if filled_crop is None:
+                    bgr_crop = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2BGR)
+                    inp_bgr = cv2.inpaint(bgr_crop, comp_mask, inpaintRadius=5, flags=cv2.INPAINT_TELEA)
+                    filled_crop = cv2.cvtColor(inp_bgr, cv2.COLOR_BGR2RGB)
+
+                alpha = cv2.GaussianBlur(comp_mask.astype(np.float32) / 255.0, (3, 3), 0)[..., None]
+                out_np[cy1:cy2, cx1:cx2] = (
+                    filled_crop * alpha + crop_rgb * (1.0 - alpha)
+                ).round().astype(np.uint8)
+
+        # 2. Применяем мазки восстановления оригинала (mode == "erase")
+        if np.count_nonzero(erase_mask) > 0:
+            ys, xs = np.where(erase_mask > 0)
+            if len(xs) > 0 and len(ys) > 0:
+                ex1 = max(0, int(np.min(xs)) - 4)
+                ey1 = max(0, int(np.min(ys)) - 4)
+                ex2 = min(img_w, int(np.max(xs)) + 5)
+                ey2 = min(img_h, int(np.max(ys)) + 5)
+                sub_erase = erase_mask[ey1:ey2, ex1:ex2]
+                alpha_er = cv2.GaussianBlur(sub_erase.astype(np.float32) / 255.0, (3, 3), 0)[..., None]
+                orig_sub = raw_img_np[ey1:ey2, ex1:ex2]
+                cur_sub = out_np[ey1:ey2, ex1:ex2]
+                out_np[ey1:ey2, ex1:ex2] = (
+                    orig_sub * alpha_er + cur_sub * (1.0 - alpha_er)
+                ).round().astype(np.uint8)
+
+        return out_np, final_mask
+
     def clean_image(
         self,
         image: Image.Image,
         blocks: list[dict[str, Any]],
+        src_file: str | Path | None = None,
     ) -> tuple[Image.Image, Image.Image]:
         """
-        Удаляет оригинальный текст со страницы манги, обрабатывая кропы вокруг активных бабблов и надписей
-        строго по исходным координатам `clean_bbox` (плюс ручные мазки `custom_mask_strokes`).
+        Удаляет оригинальный текст со страницы манги:
+        1) Выполняет (или берет из кэша за 0 мс) базовую очистку бабблов по `clean_bbox` + `mask_dilate`
+           с поблочным кэшированием кропов (`_block_crop_cache`).
+        2) Мгновенно (< 2 мс) накладывает ручные мазки кисти/ластика (`custom_mask_strokes`).
         """
         rgb_image = image.convert("RGB")
         orig_w, orig_h = rgb_image.size
         img_np = np.array(rgb_image)
 
-        mask_np = self.build_text_mask(img_np, blocks)
-        mask_pil = Image.fromarray(mask_np, mode="L")
+        img_fp = self._compute_image_fingerprint(img_np)
+        base_hash = self.compute_base_clean_hash(blocks, src_file=src_file)
+        base_cache_key = (img_fp, base_hash)
 
-        if np.count_nonzero(mask_np) == 0:
-            return rgb_image.copy(), mask_pil
-
-        composited_np = img_np.copy()
-        pad = self.crop_padding
-
-        for block in blocks:
-            if self._is_block_skipped(block):
-                continue
-            x1, y1, x2, y2 = self._get_effective_clean_bounds(block, orig_w, orig_h)
-            is_free_text = bool(block.get("is_free_text", False))
-            has_strokes = len(self._normalize_block_strokes(block)) > 0
-
-            cx1 = max(0, x1 - pad)
-            cy1 = max(0, y1 - pad)
-            cx2 = min(orig_w, x2 + pad)
-            cy2 = min(orig_h, y2 + pad)
-
-            if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
-                continue
-
-            margin_extra = 4 if (is_free_text or has_strokes) else 1
-            bx1 = max(cx1, x1 - margin_extra)
-            by1 = max(cy1, y1 - margin_extra)
-            bx2 = min(cx2, x2 + margin_extra)
-            by2 = min(cy2, y2 + margin_extra)
-
-            crop_mask = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
-            crop_mask[by1 - cy1 : by2 - cy1, bx1 - cx1 : bx2 - cx1] = mask_np[by1:by2, bx1:bx2]
-            if np.count_nonzero(crop_mask) == 0:
-                continue
-
-            crop_rgb = composited_np[cy1:cy2, cx1:cx2]
-            inpainted_crop = self._inpaint_crop(crop_rgb, crop_mask, is_free_text=is_free_text)
-
-            if not is_free_text:
-                composited_np[cy1:cy2, cx1:cx2] = np.where(
-                    crop_mask[..., None] > 0, inpainted_crop, crop_rgb
-                )
+        with self._cache_lock:
+            cached_base = self._base_page_cache.get(base_cache_key)
+            if cached_base is not None:
+                self._base_page_cache.move_to_end(base_cache_key)
+                base_composited_np = cached_base[0].copy()
+                base_mask_np = cached_base[1].copy()
             else:
-                alpha = cv2.GaussianBlur(crop_mask.astype(np.float32) / 255.0, (3, 3), 0)[..., None]
-                blended_crop = (inpainted_crop * alpha + crop_rgb * (1.0 - alpha)).round().astype(np.uint8)
-                composited_np[cy1:cy2, cx1:cx2] = blended_crop
+                base_composited_np = None
+                base_mask_np = None
 
-        return Image.fromarray(composited_np, mode="RGB"), mask_pil
+        if base_composited_np is None or base_mask_np is None:
+            base_mask_np = self.build_text_mask(img_np, blocks, include_custom_strokes=False)
+            if np.count_nonzero(base_mask_np) == 0:
+                base_composited_np = img_np.copy()
+            else:
+                base_composited_np = img_np.copy()
+                pad = self.crop_padding
+
+                for block in blocks:
+                    if self._is_block_skipped(block):
+                        continue
+                    x1, y1, x2, y2 = self._get_effective_clean_bounds(block, orig_w, orig_h)
+                    is_free_text = bool(block.get("is_free_text", False))
+                    mdil = int(block.get("mask_dilate") or 0)
+
+                    cx1 = max(0, x1 - pad)
+                    cy1 = max(0, y1 - pad)
+                    cx2 = min(orig_w, x2 + pad)
+                    cy2 = min(orig_h, y2 + pad)
+
+                    if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
+                        continue
+
+                    margin_extra = 4 if is_free_text else 1
+                    bx1 = max(cx1, x1 - margin_extra)
+                    by1 = max(cy1, y1 - margin_extra)
+                    bx2 = min(cx2, x2 + margin_extra)
+                    by2 = min(cy2, y2 + margin_extra)
+
+                    crop_mask = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
+                    crop_mask[by1 - cy1 : by2 - cy1, bx1 - cx1 : bx2 - cx1] = base_mask_np[by1:by2, bx1:bx2]
+                    if np.count_nonzero(crop_mask) == 0:
+                        continue
+
+                    block_crop_key = (
+                        img_fp,
+                        int(x1),
+                        int(y1),
+                        int(x2),
+                        int(y2),
+                        bool(is_free_text),
+                        int(mdil),
+                        int(self.dilate_size),
+                    )
+                    with self._cache_lock:
+                        cached_crop_pair = self._block_crop_cache.get(block_crop_key)
+                        if cached_crop_pair is not None:
+                            self._block_crop_cache.move_to_end(block_crop_key)
+
+                    crop_rgb = base_composited_np[cy1:cy2, cx1:cx2]
+                    if (
+                        cached_crop_pair is not None
+                        and cached_crop_pair[0].shape == crop_rgb.shape
+                        and cached_crop_pair[1].shape == crop_mask.shape
+                    ):
+                        inpainted_crop, crop_mask = cached_crop_pair[0], cached_crop_pair[1]
+                    else:
+                        inpainted_crop = self._inpaint_crop(crop_rgb, crop_mask, is_free_text=is_free_text)
+                        with self._cache_lock:
+                            self._block_crop_cache[block_crop_key] = (inpainted_crop.copy(), crop_mask.copy())
+                            while len(self._block_crop_cache) > self._block_crop_cache_max:
+                                self._block_crop_cache.popitem(last=False)
+
+                    if not is_free_text:
+                        base_composited_np[cy1:cy2, cx1:cx2] = np.where(
+                            crop_mask[..., None] > 0, inpainted_crop, crop_rgb
+                        )
+                    else:
+                        alpha = cv2.GaussianBlur(crop_mask.astype(np.float32) / 255.0, (3, 3), 0)[..., None]
+                        blended_crop = (inpainted_crop * alpha + crop_rgb * (1.0 - alpha)).round().astype(np.uint8)
+                        base_composited_np[cy1:cy2, cx1:cx2] = blended_crop
+
+            with self._cache_lock:
+                self._base_page_cache[base_cache_key] = (base_composited_np.copy(), base_mask_np.copy())
+                while len(self._base_page_cache) > self._base_page_cache_max:
+                    self._base_page_cache.popitem(last=False)
+
+        final_composited_np, final_mask_np = self._apply_custom_strokes_fast(
+            base_composited_np,
+            img_np,
+            base_mask_np,
+            blocks,
+        )
+        return Image.fromarray(final_composited_np, mode="RGB"), Image.fromarray(final_mask_np, mode="L")

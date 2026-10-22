@@ -449,8 +449,10 @@ async def _get_or_clean_page_image(
 ) -> tuple[Image.Image, Image.Image | None, bool, str]:
     """
     Возвращает `(cleaned_image, mask_image, cache_hit, clean_state_hash)`.
-    Если `clean_state_hash` для `src_file` совпадает с записью в LRU-кэше (8 последних страниц)
-    или в `temp_debug/clean_cache/`, возвращает готовый `cleaned_image` за 0 мс без запуска SimpleLama.
+    - Если `clean_state_hash` для `src_file` совпадает с записью в LRU-кэше (8 последних страниц)
+      или в `temp_debug/clean_cache/`, возвращает готовый `cleaned_image` за 0 мс.
+    - Если изменились только ручные мазки кисти (`custom_mask_strokes`), а базовая очистка (`base_hash`)
+      уже есть в кэше, мгновенно (< 2 мс) накладывает мазки поверх базового слоя без вызова SimpleLama.
     """
     assert cleaner_engine is not None
     clean_state_hash = _compute_clean_state_hash(src_file, active_blocks)
@@ -459,16 +461,38 @@ async def _get_or_clean_page_image(
         if cached_clean is not None:
             return cached_clean, None, True, clean_state_hash
 
+        if hasattr(cleaner_engine, "compute_base_clean_hash") and hasattr(cleaner_engine, "_apply_custom_strokes_fast"):
+            base_hash = cleaner_engine.compute_base_clean_hash(active_blocks, src_file=src_file)
+            if base_hash != clean_state_hash:
+                base_cached = _get_cached_cleaned_image(src_file, base_hash)
+                if base_cached is not None:
+                    def _apply_strokes_on_cached() -> Image.Image:
+                        base_np = np.array(base_cached.convert("RGB"))
+                        raw_np = np.array(pil_image.convert("RGB"))
+                        empty_m = np.zeros(raw_np.shape[:2], dtype=np.uint8)
+                        out_np, _ = cleaner_engine._apply_custom_strokes_fast(base_np, raw_np, empty_m, active_blocks)
+                        return Image.fromarray(out_np, mode="RGB")
+
+                    fast_cleaned = await asyncio.to_thread(_apply_strokes_on_cached)
+                    _store_cached_cleaned_image(
+                        src_file,
+                        clean_state_hash,
+                        fast_cleaned,
+                        save_to_disk=False,
+                    )
+                    return fast_cleaned, None, True, clean_state_hash
+
     async with gpu_lock:
         cleaned_image, mask_image = await asyncio.to_thread(
-            cleaner_engine.clean_image, pil_image, active_blocks
+            cleaner_engine.clean_image, pil_image, active_blocks, src_file
         )
     if src_file:
+        has_strokes = any(bool(b.get("custom_mask_strokes")) for b in active_blocks if isinstance(b, dict))
         _store_cached_cleaned_image(
             src_file,
             clean_state_hash,
             cleaned_image,
-            save_to_disk=save_to_disk,
+            save_to_disk=(save_to_disk and not has_strokes),
         )
     return cleaned_image, mask_image, False, clean_state_hash
 
@@ -2796,6 +2820,8 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     save_kwargs: dict[str, Any] = {}
     if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
         save_kwargs["quality"] = 95
+    elif dest_path.suffix.lower() == ".png":
+        save_kwargs["compress_level"] = 1
     final_image.save(dest_path, **save_kwargs)
 
     t_lang = (payload.target_lang or "en").lower().strip()

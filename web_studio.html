@@ -1557,101 +1557,124 @@
       cursor: pointer;
     }
 
-    /* ==================== REDESIGNED TABBED SETTINGS MODAL ==================== */
+    /* ==================== REDESIGNED RESPONSIVE & RESIZABLE SETTINGS MODAL ==================== */
     .modal-backdrop {
       position: fixed;
       inset: 0;
-      background: rgba(8, 7, 14, 0.76);
+      background: rgba(8, 7, 14, 0.78);
       backdrop-filter: blur(10px);
       z-index: 60;
       display: none;
       align-items: center;
       justify-content: center;
-      padding: 16px;
+      padding: clamp(6px, 1.8vw, 18px);
+      overflow: hidden;
     }
     .modal-backdrop.open {
       display: flex;
     }
 
     .settings-modal {
-      width: 100%;
-      max-width: 780px;
-      max-height: 92vh;
+      width: min(96vw, 940px);
+      max-width: 98vw;
+      max-height: min(94dvh, calc(100vh - 16px));
+      min-width: min(320px, 95vw);
+      min-height: min(360px, 86vh);
       background: #191528;
-      border: 1px solid rgba(244, 114, 182, 0.32);
-      border-radius: 22px;
+      border: 1px solid rgba(244, 114, 182, 0.34);
+      border-radius: 20px;
       box-shadow: 0 26px 70px rgba(0, 0, 0, 0.85);
       display: flex;
       flex-direction: column;
       overflow: hidden;
+      resize: both;
+      container-type: inline-size;
+      container-name: settingsmodal;
+      transition: width 0.18s ease, height 0.18s ease;
+    }
+    .settings-modal.wide-modal {
+      width: min(98vw, 1220px);
+      height: min(95dvh, calc(100vh - 14px));
     }
 
     .modal-header {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      padding: 16px 22px 12px 22px;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: clamp(10px, 1.5vh, 15px) clamp(12px, 2vw, 22px);
       border-bottom: 1px solid var(--border-subtle);
-      background: rgba(15, 13, 24, 0.65);
+      background: rgba(15, 13, 24, 0.72);
+      flex-shrink: 0;
     }
     .modal-header-title {
-      font-size: 16px;
+      font-size: clamp(13.5px, 1.5vw, 16px);
       font-weight: 700;
       color: var(--text-primary);
       display: flex;
       align-items: center;
+      flex-wrap: wrap;
       gap: 8px;
+      min-width: 0;
     }
 
     .settings-tabs-nav {
-      display: flex;
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
       gap: 6px;
-      padding: 10px 22px;
-      background: rgba(13, 11, 21, 0.75);
+      padding: clamp(7px, 1.2vh, 10px) clamp(12px, 2vw, 20px);
+      background: rgba(13, 11, 21, 0.78);
       border-bottom: 1px solid var(--border-subtle);
-      overflow-x: auto;
       flex-shrink: 0;
     }
 
     .settings-tab-btn {
-      background: rgba(255, 255, 255, 0.04);
+      background: rgba(255, 255, 255, 0.045);
       color: var(--text-secondary);
-      border: 1px solid transparent;
-      border-radius: 11px;
-      padding: 8px 14px;
-      font-size: 12.5px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      border-radius: 10px;
+      padding: 7px 10px;
+      font-size: 12px;
       font-weight: 700;
       cursor: pointer;
       display: flex;
       align-items: center;
-      gap: 7px;
+      justify-content: center;
+      gap: 6px;
       white-space: nowrap;
-      transition: all 0.16s ease;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      min-width: 0;
+      transition: all 0.14s ease;
     }
     .settings-tab-btn:hover {
-      background: rgba(255, 255, 255, 0.08);
+      background: rgba(255, 255, 255, 0.09);
       color: #fff;
     }
     .settings-tab-btn.active {
-      background: linear-gradient(135deg, rgba(244, 114, 182, 0.25), rgba(129, 140, 248, 0.25));
+      background: linear-gradient(135deg, rgba(244, 114, 182, 0.28), rgba(129, 140, 248, 0.28));
       color: #fff;
       border-color: var(--sakura);
-      box-shadow: 0 3px 12px rgba(244, 114, 182, 0.2);
+      box-shadow: 0 3px 12px rgba(244, 114, 182, 0.22);
     }
 
     .settings-body {
       flex: 1;
+      min-height: 0;
       overflow-y: auto;
-      padding: 18px 22px;
+      overflow-x: hidden;
+      padding: clamp(12px, 1.8vh, 18px) clamp(12px, 2vw, 22px);
       display: flex;
       flex-direction: column;
-      gap: 14px;
+      gap: 12px;
     }
 
     .settings-tab-pane {
       display: none;
       flex-direction: column;
-      gap: 14px;
+      gap: 12px;
+      min-width: 0;
     }
     .settings-tab-pane.active {
       display: flex;
@@ -1661,10 +1684,10 @@
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 10px;
-      padding: 13px 22px;
+      gap: 8px;
+      padding: clamp(9px, 1.4vh, 13px) clamp(12px, 2vw, 22px);
       border-top: 1px solid var(--border-subtle);
-      background: rgba(15, 13, 24, 0.8);
+      background: rgba(15, 13, 24, 0.85);
       flex-shrink: 0;
       flex-wrap: wrap;
     }
@@ -1672,51 +1695,80 @@
     .section-box {
       background: rgba(15, 13, 24, 0.58);
       border: 1px solid rgba(244, 114, 182, 0.18);
-      border-radius: 15px;
-      padding: 14px 16px;
+      border-radius: 14px;
+      padding: clamp(10px, 1.5vw, 14px) clamp(12px, 1.8vw, 16px);
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 9px;
+      min-width: 0;
+      max-width: 100%;
     }
     .section-title {
-      font-size: 13.5px;
+      font-size: 13px;
       font-weight: 700;
       color: var(--sakura);
       display: flex;
       align-items: center;
       justify-content: space-between;
+      flex-wrap: wrap;
       gap: 8px;
+      min-width: 0;
     }
     .section-desc {
-      font-size: 11.8px;
+      font-size: 11.6px;
       color: var(--text-muted);
       line-height: 1.4;
-      margin-top: -4px;
+      margin-top: -3px;
+      word-break: break-word;
     }
 
     .form-grid {
       display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 12px;
+      grid-template-columns: repeat(auto-fit, minmax(215px, 1fr));
+      gap: 10px;
+      min-width: 0;
+    }
+
+    .glossary-add-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+      gap: 8px;
+      align-items: end;
+      min-width: 0;
+    }
+
+    .diag-summary-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+      gap: 8px;
+      font-size: 12px;
+      min-width: 0;
     }
 
     .field-box {
       display: flex;
       flex-direction: column;
       gap: 5px;
+      min-width: 0;
     }
     .field-box label {
-      font-size: 12px;
+      font-size: 11.8px;
       font-weight: 600;
       color: var(--text-secondary);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .field-box input, .field-box select {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
       background: #110e1c;
       color: #fff;
       border: 1px solid rgba(255, 255, 255, 0.15);
       border-radius: 10px;
-      padding: 8px 11px;
-      font-size: 12.5px;
+      padding: 7px 10px;
+      font-size: 12.2px;
       outline: none;
       transition: border-color 0.15s ease;
     }
@@ -1727,8 +1779,9 @@
     /* Visual Option Cards Grid (for Editor Layout & Presets) */
     .choice-cards-grid {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
-      gap: 10px;
+      grid-template-columns: repeat(auto-fit, minmax(195px, 1fr));
+      gap: 9px;
+      min-width: 0;
     }
     .choice-card {
       background: rgba(255, 255, 255, 0.03);
@@ -1924,44 +1977,133 @@
     .img-pin-wrap.mask-brush-active,
     .img-pin-wrap.mask-brush-active img,
     .img-pin-wrap.mask-brush-active .bbox-pin {
-      cursor: crosshair !important;
+      cursor: none !important;
       user-select: none !important;
+    }
+    .img-pin-wrap.mask-brush-active .bbox-pin {
+      pointer-events: none !important;
+    }
+    /* Живой 60 FPS холст для мгновенного отображения кисти замазки и восстановления оригинала */
+    .live-retouch-canvas {
+      position: absolute;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+      z-index: 11;
     }
     .mask-stroke-dot {
       position: absolute;
       border-radius: 50%;
       pointer-events: none;
-      z-index: 22;
+      z-index: 12;
       transform: translate(-50%, -50%);
+      opacity: 0.55;
+      transition: opacity 0.2s ease;
     }
     .mask-stroke-dot.mode-add {
-      background: rgba(244, 63, 94, 0.42);
-      border: 1.5px solid rgba(251, 113, 133, 0.9);
-      box-shadow: 0 0 6px rgba(244, 63, 94, 0.5);
+      background: rgba(16, 185, 129, 0.14);
+      border: 1px dashed rgba(52, 211, 153, 0.75);
     }
     .mask-stroke-dot.mode-erase {
-      background: rgba(56, 189, 248, 0.42);
-      border: 1.5px dashed rgba(125, 211, 252, 0.95);
-      box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
+      background: rgba(56, 189, 248, 0.14);
+      border: 1px dashed rgba(125, 211, 252, 0.8);
     }
     .mask-brush-cursor-ring {
       position: absolute;
       border-radius: 50%;
       pointer-events: none;
-      z-index: 30;
+      z-index: 38;
       transform: translate(-50%, -50%);
-      border: 2px solid #fb7185;
-      background: rgba(244, 63, 94, 0.22);
-      box-shadow: 0 0 8px rgba(244, 63, 94, 0.65), inset 0 0 4px rgba(255, 255, 255, 0.5);
+      border: 2px solid #10b981;
+      outline: 1.5px solid rgba(0, 0, 0, 0.88);
+      background: rgba(255, 255, 255, 0.28);
+      box-shadow: 0 0 12px rgba(16, 185, 129, 0.8), inset 0 0 0 1.5px rgba(255, 255, 255, 0.92);
       display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    .mask-brush-cursor-ring::after {
+      content: "";
+      width: 4px;
+      height: 4px;
+      border-radius: 50%;
+      background: #10b981;
+      box-shadow: 0 0 2px #000;
     }
     .mask-brush-cursor-ring.erase-mode {
       border-color: #38bdf8;
       background: rgba(56, 189, 248, 0.22);
-      box-shadow: 0 0 8px rgba(56, 189, 248, 0.65), inset 0 0 4px rgba(255, 255, 255, 0.5);
+      box-shadow: 0 0 12px rgba(56, 189, 248, 0.85), inset 0 0 0 1.5px rgba(255, 255, 255, 0.92);
+    }
+    .mask-brush-cursor-ring.erase-mode::after {
+      background: #38bdf8;
+    }
+    .mask-brush-cursor-lbl {
+      position: absolute;
+      left: calc(100% + 6px);
+      top: 50%;
+      transform: translateY(-50%);
+      background: rgba(15, 12, 24, 0.92);
+      color: #fff;
+      border: 1px solid rgba(255, 255, 255, 0.22);
+      border-radius: 6px;
+      padding: 1px 6px;
+      font-size: 10px;
+      font-weight: 700;
+      white-space: nowrap;
+      pointer-events: none;
+      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.6);
     }
     .img-pin-wrap.mask-brush-active .mask-brush-cursor-ring {
-      display: block;
+      display: flex;
+    }
+    /* Плавающая панель управления кистью замазки и ластиком */
+    .floating-brush-toolbar {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      flex-wrap: wrap;
+      gap: 8px;
+      padding: 7px 12px;
+      background: linear-gradient(135deg, rgba(22, 18, 36, 0.96), rgba(32, 24, 50, 0.96));
+      border-bottom: 1px solid rgba(52, 211, 153, 0.42);
+      box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+      z-index: 32;
+      font-size: 11.5px;
+    }
+    .floating-brush-toolbar.active {
+      display: flex;
+    }
+    .brush-mode-pill-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 8px;
+      padding: 4px 10px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: all 0.14s ease;
+    }
+    .brush-mode-pill-btn:hover {
+      background: rgba(255, 255, 255, 0.12);
+      color: #fff;
+    }
+    .brush-mode-pill-btn.active-add {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      border-color: #6ee7b7;
+      box-shadow: 0 2px 10px rgba(16, 185, 129, 0.4);
+    }
+    .brush-mode-pill-btn.active-erase {
+      background: linear-gradient(135deg, #0284c7, #2563eb);
+      color: #fff;
+      border-color: #7dd3fc;
+      box-shadow: 0 2px 10px rgba(56, 189, 248, 0.4);
     }
 
     /* Подложка для текста (Text Backing Bar) */
@@ -2077,7 +2219,21 @@
       background: rgba(44, 36, 68, 0.95);
     }
 
-    /* Responsive Media Queries */
+    /* Responsive Media & Container Queries */
+    @container settingsmodal (max-width: 680px) {
+      .settings-tabs-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .choice-cards-grid,
+      .form-grid,
+      .glossary-add-grid,
+      .diag-summary-grid {
+        grid-template-columns: 1fr;
+      }
+      .toggle-row {
+        flex-wrap: wrap;
+      }
+    }
     @media (max-width: 1100px) {
       :root {
         --left-sidebar-w: 300px;
@@ -2088,14 +2244,52 @@
       }
     }
     @media (max-width: 820px) {
-      .choice-cards-grid {
-        grid-template-columns: 1fr;
+      .settings-modal {
+        width: 98vw;
+        max-height: 96dvh;
+        border-radius: 14px;
       }
-      .form-grid {
+      .settings-tabs-nav {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+      .choice-cards-grid,
+      .form-grid,
+      .glossary-add-grid,
+      .diag-summary-grid {
         grid-template-columns: 1fr;
       }
       .block-edit-card {
         grid-template-columns: 1fr;
+      }
+    }
+    @media (max-height: 760px) {
+      .modal-backdrop {
+        padding: 6px;
+      }
+      .settings-modal {
+        max-height: calc(100dvh - 12px);
+      }
+      .modal-header {
+        padding: 8px 14px;
+      }
+      .settings-tabs-nav {
+        padding: 6px 14px;
+        gap: 4px;
+      }
+      .settings-tab-btn {
+        padding: 5px 8px;
+        font-size: 11.5px;
+      }
+      .settings-body {
+        padding: 10px 14px;
+        gap: 10px;
+      }
+      .section-box {
+        padding: 10px 12px;
+        gap: 7px;
+      }
+      .modal-footer {
+        padding: 8px 14px;
       }
     }
   </style>
@@ -2274,6 +2468,28 @@
         </div>
 
         <div class="hold-compare-banner" id="hold-compare-banner">👁 Режим сверки с оригиналом (отпустите Space / V)</div>
+        <!-- Плавающая панель быстрой кисти замазки и восстановления оригинала -->
+        <div class="floating-brush-toolbar" id="floating-brush-toolbar">
+          <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+            <span style="font-weight:800; color:var(--mint);" id="floating-brush-target-lbl">🖌 Кисть · Рамка #1</span>
+            <button type="button" class="brush-mode-pill-btn active-add" id="fbrush-mode-add" onclick="setMaskBrushToolMode('add')" title="Закрашивать остатки японского текста под цвет баббла (ЛКМ)">🧹 Замазать текст (ЛКМ)</button>
+            <button type="button" class="brush-mode-pill-btn" id="fbrush-mode-erase" onclick="setMaskBrushToolMode('erase')" title="Восстанавливать случайно задетый оригинальный рисунок манги (ПКМ или клик)">🎨 Вернуть оригинал (ПКМ)</button>
+          </div>
+          <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+            <div style="display:flex; align-items:center; gap:5px;" title="Размер кисти (можно менять через Shift + Колесико мыши или клавишами [ и ])">
+              <span style="color:var(--text-secondary);">Размер: <b id="fbrush-radius-lbl" style="color:var(--sakura);">14 px</b></span>
+              <input type="range" id="fbrush-radius-rng" min="3" max="48" step="1" value="14" style="width:90px; accent-color:var(--sakura); cursor:pointer;" oninput="setMaskBrushRadius(this.value)" />
+            </div>
+            <div style="display:flex; align-items:center; gap:4px;" title="Цвет замазки (по умолчанию Авто — автоматически берет цвет баббла под курсором)">
+              <span style="font-size:10.5px; color:var(--text-muted);">Цвет:</span>
+              <input type="color" id="fbrush-fill-color" class="color-input-mini" value="#ffffff" oninput="onBrushFillColorChange(this.value)" />
+              <button type="button" class="romaji-copy-btn" id="fbrush-auto-color-btn" onclick="resetBrushFillColorAuto()" style="border-color:var(--mint); color:var(--mint);" title="Автоматически подбирать цвет фона баббла под курсором">✨ Авто</button>
+            </div>
+            <button type="button" class="romaji-copy-btn" onclick="undoLastMaskBrushStroke()" title="Отменить последний мазок кисти (Ctrl+Z)">↩ Шаг назад</button>
+            <button type="button" class="romaji-copy-btn" id="fbrush-clear-btn" onclick="clearBlockMaskStrokes(maskBrushBlockId || activeBlockId)" title="Очистить все мазки кисти на этом блоке">🧹 Сброс</button>
+            <button type="button" class="btn-save-edit" style="padding:4px 10px; font-size:11px;" onclick="toggleMaskBrushMode(null, false)" title="Завершить работу с кистью (Esc)">✓ Готово (Esc)</button>
+          </div>
+        </div>
         <!-- True Full-Page Scrollable Stage -->
         <div class="viewer-stage zoom-fit-width split-mode" id="viewer-stage">
           <div class="empty-viewer">
@@ -2478,21 +2694,24 @@
           <button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(popupBlockId, 0, true)" title="Сбросить угол поворота на 0°">0°</button>
         </div>
       </div>
-      <!-- Экспериментальные инструменты замазки (по умолчанию скрыты, включаются в Настройках) -->
-      <div id="popup-mask-tools-wrap" style="display:none; flex-direction:column; gap:5px; margin-top:5px; padding-top:5px; border-top:1px dashed rgba(255,255,255,0.08);">
+      <!-- Быстрые инструменты Замазки (dilate) и Живой Кисти ретуши (60 FPS прямо на картинке) -->
+      <div id="popup-mask-tools-wrap" style="display:flex; flex-direction:column; gap:5px; margin-top:5px; padding-top:5px; border-top:1px dashed rgba(255,255,255,0.12);">
         <div class="style-grid-row" style="margin-bottom:0;">
-          <span style="font-size:10.5px;">🖌 Замазка (dilate): <b id="popup-dilate-lbl">Авто</b></span>
+          <span style="font-size:10.5px;" title="Радиус автоматической замазки японских букв внутри баббла (живое обновление на картинке!)">🖌 Замазка (dilate): <b id="popup-dilate-lbl" style="color:var(--mint);">Авто</b></span>
           <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
-            <input type="range" id="popup-dilate-range" min="0" max="25" step="1" value="0" style="width:110px; accent-color:var(--mint);" oninput="onBlockDilateInput(popupBlockId, this.value)" onchange="onBlockDilateCommit(popupBlockId, this.value)" title="Толщина маски очистки оригинального текста (0 = Авто)" />
+            <input type="range" id="popup-dilate-range" min="0" max="28" step="1" value="0" style="width:110px; accent-color:var(--mint); cursor:pointer;" oninput="onBlockDilateInput(popupBlockId, this.value)" onchange="onBlockDilateCommit(popupBlockId, this.value)" title="Потяните, чтобы мгновенно расширить или сузить замазку оригинального текста (0 = Авто)" />
             <button type="button" class="romaji-copy-btn" onclick="onBlockDilateCommit(popupBlockId, 0)" title="Сбросить толщину замазки на Авто">Авто</button>
           </div>
         </div>
         <div class="style-grid-row" style="margin-bottom:0;">
-          <button type="button" class="btn-mask-brush" id="popup-mask-brush-btn" onclick="toggleMaskBrushMode(popupBlockId)" title="Рисовать маску замазки прямо на картинке: ЛКМ — стереть кусок оригинала, ПКМ — восстановить задетый рисунок">🖌 Кисть замазки (ЛКМ/ПКМ)</button>
+          <div style="display:flex; align-items:center; gap:4px; flex-wrap:wrap;">
+            <button type="button" class="btn-mask-brush" id="popup-mask-brush-btn" onclick="toggleMaskBrushMode(popupBlockId)" title="Включить живую кисть ретуши прямо на картинке (ЛКМ — замазать текст, ПКМ — вернуть оригинал)">🖌 Живая кисть (B)</button>
+            <button type="button" class="romaji-copy-btn" onclick="undoLastMaskBrushStroke(popupBlockId, event)" title="Отменить последний мазок кисти">↩ Мазок</button>
+          </div>
           <div style="display:flex; align-items:center; gap:4px;">
-            <span style="font-size:10px; color:var(--text-muted);" title="Радиус кисти замазки">R:</span>
-            <input type="range" id="popup-brush-radius" min="4" max="30" step="1" value="12" style="width:58px; accent-color:var(--sakura);" oninput="setMaskBrushRadius(this.value)" title="Радиус кисти замазки (px)" />
-            <button type="button" class="romaji-copy-btn" id="popup-clear-strokes-btn" onclick="clearBlockMaskStrokes(popupBlockId)" style="display:none;" title="Очистить все ручные мазки кисти на этом блоке">🧹 Сброс мазков</button>
+            <span style="font-size:10px; color:var(--text-muted);" title="Радиус кисти (Shift+Колесико)">R: <b id="popup-brush-radius-lbl">14</b>px</span>
+            <input type="range" id="popup-brush-radius" min="3" max="48" step="1" value="14" style="width:62px; accent-color:var(--sakura); cursor:pointer;" oninput="setMaskBrushRadius(this.value)" title="Радиус кисти замазки (px)" />
+            <button type="button" class="romaji-copy-btn" id="popup-clear-strokes-btn" onclick="clearBlockMaskStrokes(popupBlockId)" style="display:none;" title="Очистить все ручные мазки кисти на этом блоке">🧹 Сброс</button>
           </div>
         </div>
       </div>
@@ -2514,13 +2733,16 @@
 
   <!-- ==================== REDESIGNED TABBED SETTINGS MODAL ==================== -->
   <div class="modal-backdrop" id="settings-modal" onclick="if(event.target===this) toggleSettingsModal(false)">
-    <div class="settings-modal">
+    <div class="settings-modal" id="settings-modal-box">
       <div class="modal-header">
         <div class="modal-header-title">
           <span>⚙️ Настройки Miko-chan Manga Studio</span>
-          <span style="font-size:11.5px; color:var(--text-muted); font-weight:500;">Все изменения удобно разложены по вкладкам</span>
+          <span style="font-size:11.5px; color:var(--text-muted); font-weight:500;">Адаптивное окно (можно растягивать за правый нижний угол)</span>
         </div>
-        <button class="pill-btn" onclick="toggleSettingsModal(false)">✕ Закрыть</button>
+        <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+          <button type="button" class="pill-btn" id="btn-settings-wide" onclick="toggleSettingsModalWide()" title="Развернуть окно настроек шире или вернуть стандартный размер">⛶ Шире</button>
+          <button type="button" class="pill-btn" onclick="toggleSettingsModal(false)">✕ Закрыть (Esc)</button>
+        </div>
       </div>
 
       <!-- Tab Bar -->
@@ -2556,7 +2778,7 @@
                 <option value="https://moduleapi.pro/v1|deepseek-v4-pro">🧠 DeepSeek Pro</option>
               </select>
             </div>
-            <div class="choice-cards-grid" style="grid-template-columns: 1fr 1fr;">
+            <div class="choice-cards-grid">
               <div class="choice-card" id="card-preset-flash" onclick="selectDeepSeekPreset('deepseek-v4-flash')">
                 <div class="choice-card-title">⚡ DeepSeek Flash</div>
                 <div class="choice-card-sub"><b>deepseek-v4-flash</b> — высокая скорость и минимальный расход токенов для больших глав.</div>
@@ -2740,10 +2962,10 @@
 
             <label class="toggle-row">
               <div class="toggle-row-text">
-                <span class="toggle-row-title">🖌 Показать экспериментальные инструменты «Замазка (dilate)» и «Кисть маски»</span>
-                <span class="toggle-row-sub">По умолчанию выключено (вместо них в редакторе доступна мгновенная <b>«🛡 Подложка текста»</b>: Овал / Плашка / Рамка). Если включить — вернет в интерфейс ползунок Замазки и кнопку Кисти маски (клавиша B).</span>
+                <span class="toggle-row-title">🖌 Показывать инструменты «Живая кисть замазки (B)» и «Замазка (dilate)»</span>
+                <span class="toggle-row-sub">Включает живую 60 FPS кисть ретуши прямо на картинке (ЛКМ — мгновенно закрасить остатки японского текста, ПКМ — вернуть оригинальный рисунок) и ползунок толщины замазки <b>dilate</b>.</span>
               </div>
-              <input id="chk-ui-enable-mask-tools" type="checkbox" onchange="onUiSettingCheckboxChange()" />
+              <input id="chk-ui-enable-mask-tools" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
             </label>
           </div>
         </div>
@@ -2846,8 +3068,8 @@
 
             <div class="field-box">
               <label>📂 Папка автосохранения манги из браузера Chrome:</label>
-              <div style="display:flex; gap:6px;">
-                <input id="inp-web-save-dir" type="text" placeholder="По умолчанию: Saved_Manga" style="flex:1;" />
+              <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                <input id="inp-web-save-dir" type="text" placeholder="По умолчанию: Saved_Manga" style="flex:1 1 200px; min-width:0;" />
                 <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="pickWebSaveDirInStudio()">📁 Выбрать</button>
                 <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="openWebSaveDirInStudio()">📂 Открыть</button>
               </div>
@@ -2913,7 +3135,7 @@
             <div class="section-desc">
               Перед отправкой каждой пачки в ИИ переводчик автоматически проверяет, какие термины из глоссария встречаются в японском тексте этой пачки, и включает их в блок <b>ОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ ТЕРМИНОВ И ИМЕН</b>.
             </div>
-            <div style="display:grid; grid-template-columns: 1.1fr 1.1fr 1fr auto auto; gap:6px; align-items:end;">
+            <div class="glossary-add-grid">
               <div class="field-box">
                 <label>Оригинал (JA/KO/ZH):</label>
                 <input id="inp-gloss-src" type="text" placeholder="七香 / ななか" />
@@ -3013,7 +3235,7 @@
 
           <div class="section-box">
             <div class="section-title">📊 Сводка по серверу, видеокарте и вызовам ИИ</div>
-            <div id="diag-summary-cards" style="display:grid; grid-template-columns:repeat(2, 1fr); gap:8px; font-size:12px;">
+            <div id="diag-summary-cards" class="diag-summary-grid">
               <div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">Загрузка метрик...</div>
             </div>
           </div>
@@ -3063,8 +3285,15 @@
     let availableFonts = [];
     let isMaskBrushMode = false;
     let maskBrushBlockId = null;
-    let maskBrushRadius = 12;
+    let maskBrushRadius = 14;
+    let maskBrushToolMode = "add"; // 'add' (Замазать текст) | 'erase' (Вернуть оригинал)
+    let brushFillColorAuto = true;
+    let brushCustomFillColor = "#ffffff";
     let activeMaskStrokeState = null;
+    let cachedOrigPageImg = null;
+    let cachedOrigPageSrc = "";
+    let dilateLiveTimer = null;
+    let dilateHistorySnapshot = null;
 
     // UI & Editor Settings State (All 5 user-requested enhancements!)
     const DEFAULT_UI_SETTINGS = {
@@ -3077,7 +3306,8 @@
       auto_save_after_idle: true,     // Auto-rerender page 2.5s after moving/resizing/wheeling bbox
       auto_save_delay_ms: 2500,       // 2.5 seconds idle delay
       compact_mascot: false,          // Compact Miko-chan card
-      enable_mask_tools: false,       // Experimental mask dilate & mask brush tools (OFF by default)
+      enable_mask_tools: true,        // Reworked 60 FPS live mask brush & dilate tools (ON by default)
+      settings_modal_wide: false,     // Expanded settings modal mode
       right_panel_width: 460,
       bottom_panel_height: 340,
       left_sidebar_width: 360
@@ -3104,7 +3334,19 @@
             uiSettings = { ...DEFAULT_UI_SETTINGS, ...parsed };
           }
         }
+        // Однократная миграция для включения переработанной живой кисти и замазки v1.0.6
+        if (!localStorage.getItem("miko_mask_tools_v2_ready")) {
+          uiSettings.enable_mask_tools = true;
+          localStorage.setItem("miko_mask_tools_v2_ready", "1");
+          localStorage.setItem("miko_ui_settings_v1", JSON.stringify(uiSettings));
+        }
       } catch (e) {}
+      applyUiSettingsToDom();
+    }
+
+    function toggleSettingsModalWide() {
+      uiSettings.settings_modal_wide = !uiSettings.settings_modal_wide;
+      saveLocalUiSettings();
       applyUiSettingsToDom();
     }
 
@@ -3228,6 +3470,16 @@
       document.querySelectorAll(".mask-tools-card-row").forEach(el => {
         el.style.display = maskToolsOn ? "flex" : "none";
       });
+
+      const modalBox = document.getElementById("settings-modal-box");
+      if (modalBox) {
+        modalBox.classList.toggle("wide-modal", Boolean(uiSettings.settings_modal_wide));
+      }
+      const btnWideModal = document.getElementById("btn-settings-wide");
+      if (btnWideModal) {
+        btnWideModal.textContent = uiSettings.settings_modal_wide ? "❐ Стандарт" : "⛶ Шире";
+        btnWideModal.classList.toggle("subtle-active", Boolean(uiSettings.settings_modal_wide));
+      }
 
       if (!maskToolsOn && typeof isMaskBrushMode !== "undefined" && isMaskBrushMode) {
         toggleMaskBrushMode(null, false);
@@ -5510,31 +5762,56 @@
       if (!blockId || !currentBlocks) return;
       const blk = currentBlocks.find(x => x.id === blockId);
       if (!blk) return;
-      const d = parseInt(dilateVal, 10);
-      blk.mask_dilate = (!isNaN(d) && d >= 1) ? Math.min(28, d) : null;
-      syncBlockStyleControlsUi(blockId);
-    }
-
-    function onBlockDilateCommit(blockId, dilateVal) {
-      if (!blockId || !currentBlocks) return;
-      const blk = currentBlocks.find(x => x.id === blockId);
-      if (!blk) return;
-      cancelIdleAutoSaveTimer();
-      pushPageHistorySnapshot();
+      if (dilateHistorySnapshot === null) {
+        dilateHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
+      }
       const d = parseInt(dilateVal, 10);
       blk.mask_dilate = (!isNaN(d) && d >= 1) ? Math.min(28, d) : null;
       blk._dirtyPreview = true;
       clientEditRevision++;
       syncBlockStyleControlsUi(blockId);
       updatePinDomForBlock(blockId);
+      previewBlockDilateOnCanvas(blk, blk.mask_dilate || 0);
+
+      if (dilateLiveTimer) clearTimeout(dilateLiveTimer);
+      dilateLiveTimer = setTimeout(() => {
+        dilateLiveTimer = null;
+        if (dilateHistorySnapshot !== null) {
+          pushPageHistorySnapshot(dilateHistorySnapshot);
+          dilateHistorySnapshot = null;
+        }
+        saveEditedPageTranslation({ isAuto: true });
+      }, 170);
+    }
+
+    function onBlockDilateCommit(blockId, dilateVal) {
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      if (dilateLiveTimer) {
+        clearTimeout(dilateLiveTimer);
+        dilateLiveTimer = null;
+      }
+      cancelIdleAutoSaveTimer();
+      if (dilateHistorySnapshot !== null) {
+        pushPageHistorySnapshot(dilateHistorySnapshot);
+        dilateHistorySnapshot = null;
+      } else {
+        pushPageHistorySnapshot();
+      }
+      const d = parseInt(dilateVal, 10);
+      blk.mask_dilate = (!isNaN(d) && d >= 1) ? Math.min(28, d) : null;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+      previewBlockDilateOnCanvas(blk, blk.mask_dilate || 0);
       sayMiko(
         blk.mask_dilate
-          ? `Толщина замазки блока #${blockId} установлена на ${blk.mask_dilate}px! Перерисовываю очистку... 🖌✨`
-          : `Толщина замазки блока #${blockId} сброшена на Авто! 🖌`
+          ? `🖌 Замазка блока #${blockId}: ${blk.mask_dilate}px — мгновенно обновляю очистку кружка! ✨`
+          : `🖌 Замазка блока #${blockId} сброшена на Авто! ✨`
       );
-      if (uiSettings.auto_save_after_idle !== false) {
-        scheduleIdleAutoSave(600);
-      }
+      saveEditedPageTranslation({ isAuto: true });
     }
 
     function syncBlockStyleControlsUi(blockId) {
@@ -5643,15 +5920,275 @@
       }
     }
 
-    function setMaskBrushRadius(val) {
-      maskBrushRadius = Math.max(3, Math.min(40, parseInt(val, 10) || 12));
+    function preloadOrigPageImageForBrush() {
+      if (!selectedPage || !selectedPage.source_path) return;
+      const origUrl = `/local_image?path=${encodeURIComponent(selectedPage.source_path)}`;
+      if (cachedOrigPageImg && cachedOrigPageSrc === origUrl && cachedOrigPageImg.complete) {
+        return;
+      }
+      cachedOrigPageSrc = origUrl;
+      const im = new Image();
+      im.crossOrigin = "anonymous";
+      im.src = origUrl;
+      cachedOrigPageImg = im;
+    }
+
+    function ensureLiveRetouchCanvas(wrap, img) {
+      if (!wrap || !img || !img.naturalWidth || !img.naturalHeight) return null;
+      let cvs = wrap.querySelector(".live-retouch-canvas");
+      if (!cvs) {
+        cvs = document.createElement("canvas");
+        cvs.className = "live-retouch-canvas";
+        wrap.appendChild(cvs);
+      }
+      if (cvs.width !== img.naturalWidth || cvs.height !== img.naturalHeight) {
+        cvs.width = img.naturalWidth;
+        cvs.height = img.naturalHeight;
+      }
+      return cvs;
+    }
+
+    function clearLiveRetouchCanvases() {
+      document.querySelectorAll(".live-retouch-canvas").forEach(cvs => {
+        const ctx = cvs.getContext("2d");
+        if (ctx) ctx.clearRect(0, 0, cvs.width, cvs.height);
+      });
+    }
+
+    function sampleLocalBubbleColor(img, imgX, imgY, rImg) {
+      if (!brushFillColorAuto && brushCustomFillColor) {
+        return brushCustomFillColor;
+      }
+      if (!img || !img.naturalWidth || !img.naturalHeight) return "#ffffff";
+      try {
+        if (!img._sampleCanvas || img._sampleSrc !== img.src) {
+          const sc = document.createElement("canvas");
+          const sw = Math.min(512, Math.max(128, Math.round(img.naturalWidth / 2)));
+          const sh = Math.min(720, Math.max(128, Math.round(img.naturalHeight / 2)));
+          sc.width = sw;
+          sc.height = sh;
+          const sctx = sc.getContext("2d", { willReadFrequently: true });
+          sctx.drawImage(img, 0, 0, sw, sh);
+          img._sampleCanvas = sc;
+          img._sampleCtx = sctx;
+          img._sampleSrc = img.src;
+        }
+        const sc = img._sampleCanvas;
+        const sctx = img._sampleCtx;
+        const sx = Math.max(2, Math.min(sc.width - 3, Math.round((imgX / img.naturalWidth) * sc.width)));
+        const sy = Math.max(2, Math.min(sc.height - 3, Math.round((imgY / img.naturalHeight) * sc.height)));
+        const sr = Math.max(3, Math.min(18, Math.round((rImg / img.naturalWidth) * sc.width) + 3));
+        const x0 = Math.max(0, sx - sr);
+        const y0 = Math.max(0, sy - sr);
+        const w0 = Math.min(sc.width - x0, sr * 2 + 1);
+        const h0 = Math.min(sc.height - y0, sr * 2 + 1);
+        const data = sctx.getImageData(x0, y0, w0, h0).data;
+        const samples = [];
+        for (let i = 0; i < data.length; i += 4) {
+          const r = data[i], g = data[i + 1], b = data[i + 2];
+          const lum = 0.299 * r + 0.587 * g + 0.114 * b;
+          samples.push({ lum, r, g, b });
+        }
+        if (samples.length > 0) {
+          samples.sort((a, b) => a.lum - b.lum);
+          const p75 = samples[Math.min(samples.length - 1, Math.floor(samples.length * 0.75))];
+          if (p75.lum >= 236) return "#ffffff";
+          if (p75.lum >= 185) {
+            return `rgb(${p75.r}, ${p75.g}, ${p75.b})`;
+          }
+        }
+      } catch (e) {}
+      return "#ffffff";
+    }
+
+    function paintLiveBrushSegmentOnStage(fromX, fromY, toX, toY, rImg, mode, fillColor) {
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        if (wrap.id === "pin-wrap-orig" && viewMode === "split") return;
+        const img = wrap.querySelector("img");
+        const cvs = ensureLiveRetouchCanvas(wrap, img);
+        if (!cvs) return;
+        const ctx = cvs.getContext("2d");
+        if (!ctx) return;
+
+        const dx = toX - fromX;
+        const dy = toY - fromY;
+        const dist = Math.hypot(dx, dy);
+
+        if (mode === "erase") {
+          ctx.save();
+          ctx.beginPath();
+          if (dist < 0.5) {
+            ctx.arc(toX, toY, rImg, 0, Math.PI * 2);
+          } else {
+            const ang = Math.atan2(dy, dx);
+            ctx.arc(fromX, fromY, rImg, ang + Math.PI / 2, ang - Math.PI / 2, false);
+            ctx.arc(toX, toY, rImg, ang - Math.PI / 2, ang + Math.PI / 2, false);
+            ctx.closePath();
+          }
+          ctx.clip();
+          const minX = Math.max(0, Math.min(fromX, toX) - rImg - 4);
+          const minY = Math.max(0, Math.min(fromY, toY) - rImg - 4);
+          const maxX = Math.min(cvs.width, Math.max(fromX, toX) + rImg + 4);
+          const maxY = Math.min(cvs.height, Math.max(fromY, toY) + rImg + 4);
+          ctx.clearRect(minX, minY, maxX - minX, maxY - minY);
+          if (cachedOrigPageImg && cachedOrigPageImg.complete && cachedOrigPageImg.naturalWidth > 0) {
+            ctx.drawImage(cachedOrigPageImg, 0, 0, cvs.width, cvs.height);
+          }
+          ctx.restore();
+        } else {
+          const col = fillColor || "#ffffff";
+          ctx.save();
+          ctx.globalCompositeOperation = "source-over";
+          ctx.strokeStyle = col;
+          ctx.fillStyle = col;
+          ctx.lineCap = "round";
+          ctx.lineJoin = "round";
+          ctx.lineWidth = rImg * 2;
+          ctx.shadowColor = col;
+          ctx.shadowBlur = 2;
+          if (dist >= 0.5) {
+            ctx.beginPath();
+            ctx.moveTo(fromX, fromY);
+            ctx.lineTo(toX, toY);
+            ctx.stroke();
+          }
+          ctx.beginPath();
+          ctx.arc(toX, toY, rImg, 0, Math.PI * 2);
+          ctx.fill();
+          ctx.restore();
+        }
+      });
+    }
+
+    function previewBlockDilateOnCanvas(blk, dilateVal) {
+      if (!blk) return;
+      ensureBlockCleanBbox(blk);
+      const [cx1, cy1, cx2, cy2] = blk.clean_bbox;
+      const bw = cx2 - cx1;
+      const bh = cy2 - cy1;
+      if (bw < 8 || bh < 8) return;
+
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        if (wrap.id === "pin-wrap-orig" && viewMode === "split") return;
+        const img = wrap.querySelector("img");
+        const cvs = ensureLiveRetouchCanvas(wrap, img);
+        if (!cvs) return;
+        const ctx = cvs.getContext("2d");
+        if (!ctx) return;
+
+        ctx.clearRect(0, 0, cvs.width, cvs.height);
+        const effD = dilateVal > 0 ? dilateVal : 9;
+        const deltaPx = (effD - 9) * 1.15;
+        const padX = Math.max(1, Math.round(bw * 0.08 - deltaPx));
+        const padY = Math.max(1, Math.round(bh * 0.05 - deltaPx));
+        const rx1 = Math.max(0, cx1 + padX);
+        const ry1 = Math.max(0, cy1 + padY);
+        const rx2 = Math.min(cvs.width, cx2 - padX);
+        const ry2 = Math.min(cvs.height, cy2 - padY);
+        const rw = Math.max(6, rx2 - rx1);
+        const rh = Math.max(6, ry2 - ry1);
+
+        ctx.save();
+        if (dilateVal >= 9) {
+          ctx.fillStyle = blk.bg_color || "#ffffff";
+          ctx.beginPath();
+          ctx.ellipse(rx1 + rw / 2, ry1 + rh / 2, rw / 2, rh / 2, 0, 0, Math.PI * 2);
+          ctx.fill();
+        }
+        ctx.strokeStyle = dilateVal > 0 ? "#10b981" : "#f472b6";
+        ctx.lineWidth = 2;
+        ctx.setLineDash([5, 4]);
+        ctx.strokeRect(rx1, ry1, rw, rh);
+        ctx.restore();
+      });
+    }
+
+    function setMaskBrushToolMode(mode) {
+      maskBrushToolMode = mode === "erase" ? "erase" : "add";
+      syncFloatingBrushToolbarUi();
+      document.querySelectorAll(".mask-brush-cursor-ring").forEach(ring => {
+        ring.classList.toggle("erase-mode", maskBrushToolMode === "erase");
+        const lbl = ring.querySelector(".mask-brush-cursor-lbl");
+        if (lbl) {
+          lbl.textContent = `${maskBrushToolMode === "erase" ? "🎨 Ориг." : "🧹 Замазка"} ${maskBrushRadius}px`;
+        }
+      });
+    }
+
+    function onBrushFillColorChange(hexCol) {
+      brushFillColorAuto = false;
+      brushCustomFillColor = hexCol || "#ffffff";
+      const autoBtn = document.getElementById("fbrush-auto-color-btn");
+      if (autoBtn) {
+        autoBtn.style.borderColor = "rgba(255,255,255,0.16)";
+        autoBtn.style.color = "var(--text-secondary)";
+      }
+    }
+
+    function resetBrushFillColorAuto() {
+      brushFillColorAuto = true;
+      brushCustomFillColor = "#ffffff";
+      const colInp = document.getElementById("fbrush-fill-color");
+      if (colInp) colInp.value = "#ffffff";
+      const autoBtn = document.getElementById("fbrush-auto-color-btn");
+      if (autoBtn) {
+        autoBtn.style.borderColor = "var(--mint)";
+        autoBtn.style.color = "var(--mint)";
+      }
+      sayMiko("✨ Включен авто-подбор цвета баббла под курсором кисти!");
+    }
+
+    function syncFloatingBrushToolbarUi() {
+      const bar = document.getElementById("floating-brush-toolbar");
+      if (bar) {
+        bar.classList.toggle("active", Boolean(isMaskBrushMode));
+      }
+      const targetId = maskBrushBlockId || activeBlockId || (currentBlocks && currentBlocks[0] ? currentBlocks[0].id : 1);
+      const blk = currentBlocks ? currentBlocks.find(x => x.id === targetId) : null;
+      const strokesCnt = (blk && Array.isArray(blk.custom_mask_strokes)) ? blk.custom_mask_strokes.length : 0;
+
+      const tLbl = document.getElementById("floating-brush-target-lbl");
+      if (tLbl) {
+        tLbl.textContent = `🖌 Кисть · Рамка #${targetId}${strokesCnt > 0 ? ` (${strokesCnt} тчк)` : ""}`;
+      }
+      const bAdd = document.getElementById("fbrush-mode-add");
+      const bErase = document.getElementById("fbrush-mode-erase");
+      if (bAdd) bAdd.classList.toggle("active-add", maskBrushToolMode === "add");
+      if (bErase) bErase.classList.toggle("active-erase", maskBrushToolMode === "erase");
+
+      const rLbl = document.getElementById("fbrush-radius-lbl");
+      if (rLbl) rLbl.textContent = `${maskBrushRadius} px`;
+      const rRng = document.getElementById("fbrush-radius-rng");
+      if (rRng && rRng.value !== String(maskBrushRadius)) rRng.value = String(maskBrushRadius);
+
+      const popRLbl = document.getElementById("popup-brush-radius-lbl");
+      if (popRLbl) popRLbl.textContent = String(maskBrushRadius);
       const popR = document.getElementById("popup-brush-radius");
       if (popR && popR.value !== String(maskBrushRadius)) popR.value = String(maskBrushRadius);
     }
 
+    function setMaskBrushRadius(val) {
+      maskBrushRadius = Math.max(3, Math.min(48, parseInt(val, 10) || 14));
+      syncFloatingBrushToolbarUi();
+      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
+        const img = wrap.querySelector("img");
+        const ring = wrap.querySelector(".mask-brush-cursor-ring");
+        if (!img || !img.naturalWidth || !ring) return;
+        const rect = wrap.getBoundingClientRect();
+        const scale = rect.width / Math.max(1, img.naturalWidth);
+        const dPx = Math.max(8, Math.round(maskBrushRadius * 2 * scale));
+        ring.style.width = dPx + "px";
+        ring.style.height = dPx + "px";
+        const lbl = ring.querySelector(".mask-brush-cursor-lbl");
+        if (lbl) {
+          lbl.textContent = `${maskBrushToolMode === "erase" ? "🎨 Ориг." : "🧹 Замазка"} ${maskBrushRadius}px`;
+        }
+      });
+    }
+
     function toggleMaskBrushMode(targetBlockId = null, forceState = null) {
       if (!selectedPage || !currentBlocks || currentBlocks.length === 0) {
-        sayMiko("Сначала выбери страницу с текстовыми рамками, чтобы использовать кисть замазки~ 🖌🌸");
+        sayMiko("Сначала выбери страницу с текстовыми рамками, чтобы использовать живую кисть замазки~ 🖌🌸");
         return;
       }
       if (isDrawRegionMode) {
@@ -5660,12 +6197,13 @@
       const resolvedId = targetBlockId || popupBlockId || activeBlockId || currentBlocks[0].id;
       const nextState = typeof forceState === "boolean"
         ? forceState
-        : !(isMaskBrushMode && maskBrushBlockId === resolvedId);
+        : !(isMaskBrushMode && (!targetBlockId || maskBrushBlockId === resolvedId));
 
       isMaskBrushMode = nextState;
       maskBrushBlockId = nextState ? resolvedId : null;
       if (nextState) {
         activeBlockId = resolvedId;
+        preloadOrigPageImageForBrush();
       }
 
       const topBtn = document.getElementById("btn-top-mask-brush");
@@ -5675,62 +6213,72 @@
       }
       document.querySelectorAll(".img-pin-wrap").forEach(w => {
         w.classList.toggle("mask-brush-active", isMaskBrushMode);
+        const img = w.querySelector("img");
+        if (isMaskBrushMode && img) ensureLiveRetouchCanvas(w, img);
       });
+      syncFloatingBrushToolbarUi();
       if (resolvedId) syncBlockStyleControlsUi(resolvedId);
       renderMaskStrokeDotsOnStage();
 
       if (isMaskBrushMode) {
         sayMiko(
-          `🖌 Кисть замазки для рамки #${maskBrushBlockId} включена! Зажми ЛКМ на картинке, чтобы затереть остатки оригинала, или ПКМ — чтобы вернуть задетый рисунок (Esc — выход)~ ✨`
+          `🖌 Живая кисть ретуши (#${maskBrushBlockId}) активна! Зажми ЛКМ и веди по картинке, чтобы мгновенно стереть остатки японских букв, или ПКМ — чтобы проявить оригинальный рисунок (Shift+Колесико — размер кисти, Esc — выход)~ ✨`
         );
       } else {
-        sayMiko("Режим кисти замазки выключен.");
+        sayMiko("Режим живой кисти ретуши завершен.");
       }
+    }
+
+    async function undoLastMaskBrushStroke(targetBlockId = null, ev = null) {
+      if (ev) ev.stopPropagation();
+      if (pageHistory && pageHistory.undoStack && pageHistory.undoStack.length > 0) {
+        clearLiveRetouchCanvases();
+        await undoPageAction(ev);
+        syncFloatingBrushToolbarUi();
+        return;
+      }
+      const bId = targetBlockId || maskBrushBlockId || popupBlockId || activeBlockId;
+      if (!bId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === bId);
+      if (!blk || !Array.isArray(blk.custom_mask_strokes) || blk.custom_mask_strokes.length === 0) {
+        sayMiko("На этом блоке еще нет мазков кисти для отмены~ 🖌");
+        return;
+      }
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+      const removeCnt = Math.min(blk.custom_mask_strokes.length, 12);
+      blk.custom_mask_strokes.splice(blk.custom_mask_strokes.length - removeCnt, removeCnt);
+      if (blk.custom_mask_strokes.length === 0) blk.custom_mask_strokes = null;
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      clearLiveRetouchCanvases();
+      syncBlockStyleControlsUi(bId);
+      syncFloatingBrushToolbarUi();
+      renderMaskStrokeDotsOnStage();
+      await saveEditedPageTranslation({ isAuto: true });
     }
 
     async function clearBlockMaskStrokes(blockId, ev) {
       if (ev) ev.stopPropagation();
-      if (!blockId || !currentBlocks) return;
-      const blk = currentBlocks.find(x => x.id === blockId);
+      const targetId = blockId || maskBrushBlockId || popupBlockId || activeBlockId;
+      if (!targetId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === targetId);
       if (!blk || !Array.isArray(blk.custom_mask_strokes) || blk.custom_mask_strokes.length === 0) return;
       cancelIdleAutoSaveTimer();
       pushPageHistorySnapshot();
       blk.custom_mask_strokes = null;
       blk._dirtyPreview = true;
       clientEditRevision++;
-      syncBlockStyleControlsUi(blockId);
+      clearLiveRetouchCanvases();
+      syncBlockStyleControlsUi(targetId);
+      syncFloatingBrushToolbarUi();
       renderMaskStrokeDotsOnStage();
-      sayMiko(`Все ручные мазки кисти для блока #${blockId} сброшены! Перерисовываю страницу... 🧹✨`);
+      sayMiko(`Все ручные мазки кисти для блока #${targetId} сброшены! Мгновенно обновляю страницу... 🧹✨`);
       await saveEditedPageTranslation({ isAuto: true });
     }
 
     function renderMaskStrokeDotsOnStage() {
       document.querySelectorAll(".mask-stroke-dot").forEach(el => el.remove());
-      if (!isMaskBrushMode || !currentBlocks) return;
-      const blk = currentBlocks.find(x => x.id === maskBrushBlockId);
-      if (!blk || !Array.isArray(blk.custom_mask_strokes) || blk.custom_mask_strokes.length === 0) return;
-
-      document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
-        const img = wrap.querySelector("img");
-        if (!img || !img.naturalWidth || !img.naturalHeight) return;
-        const nw = img.naturalWidth;
-        const nh = img.naturalHeight;
-        const clientW = img.clientWidth || img.getBoundingClientRect().width;
-        const scale = clientW / Math.max(1, nw);
-        const frag = document.createDocumentFragment();
-        blk.custom_mask_strokes.forEach(st => {
-          const dot = document.createElement("div");
-          const isErase = st.mode === "erase";
-          dot.className = "mask-stroke-dot " + (isErase ? "mode-erase" : "mode-add");
-          dot.style.left = ((st.x / nw) * 100) + "%";
-          dot.style.top = ((st.y / nh) * 100) + "%";
-          const dPx = Math.max(6, Math.round((st.r || 12) * 2 * scale));
-          dot.style.width = dPx + "px";
-          dot.style.height = dPx + "px";
-          frag.appendChild(dot);
-        });
-        wrap.appendChild(frag);
-      });
     }
 
     function syncInputsToCurrentBlocks() {
@@ -6340,11 +6888,12 @@
             `</div>` +
             `<div class="style-grid-row mask-tools-card-row" id="edit-mask-row-${b.id}" style="margin-bottom:0; display:${showMaskRow ? "flex" : "none"}; padding-top:4px; border-top:1px dashed rgba(255,255,255,0.08);">` +
               `<div style="display:flex; align-items:center; gap:4px;">` +
-                `<span style="font-size:10.5px;">🖌 Dilate: <b id="edit-dilate-lbl-${b.id}">${curDilate > 0 ? curDilate + " px" : "Авто"}</b></span>` +
-                `<input type="range" id="edit-dilate-rng-${b.id}" min="0" max="25" step="1" value="${curDilate}" style="width:75px; accent-color:var(--mint);" oninput="onBlockDilateInput(${b.id}, this.value)" onchange="onBlockDilateCommit(${b.id}, this.value)" />` +
+                `<span style="font-size:10.5px;" title="Радиус автоматической замазки букв внутри баббла">🖌 Замазка: <b id="edit-dilate-lbl-${b.id}" style="color:var(--mint);">${curDilate > 0 ? curDilate + " px" : "Авто"}</b></span>` +
+                `<input type="range" id="edit-dilate-rng-${b.id}" min="0" max="28" step="1" value="${curDilate}" style="width:78px; accent-color:var(--mint); cursor:pointer;" oninput="onBlockDilateInput(${b.id}, this.value)" onchange="onBlockDilateCommit(${b.id}, this.value)" />` +
+                `<button type="button" class="romaji-copy-btn" onclick="onBlockDilateCommit(${b.id}, 0)" title="Сбросить толщину замазки на Авто">Авто</button>` +
               `</div>` +
               `<div style="display:flex; align-items:center; gap:4px;">` +
-                `<button type="button" id="edit-brush-btn-${b.id}" class="btn-mask-brush ${(isMaskBrushMode && maskBrushBlockId === b.id) ? "active" : ""}" onclick="toggleMaskBrushMode(${b.id})">🖌 Кисть (ЛКМ/ПКМ)</button>` +
+                `<button type="button" id="edit-brush-btn-${b.id}" class="btn-mask-brush ${(isMaskBrushMode && maskBrushBlockId === b.id) ? "active" : ""}" onclick="toggleMaskBrushMode(${b.id})">🖌 Живая кисть</button>` +
                 `<button type="button" id="edit-clear-strokes-${b.id}" class="romaji-copy-btn" style="display:${curStrokesCnt > 0 ? "inline-flex" : "none"};" onclick="clearBlockMaskStrokes(${b.id}, event)">🧹 Сброс (${curStrokesCnt})</button>` +
               `</div>` +
             `</div>` +
@@ -6619,11 +7168,18 @@
       renderBboxPinsOnStage();
     }
 
-    // Ctrl + MouseWheel smooth zoom on viewer stage
+    // Ctrl + MouseWheel smooth zoom on viewer stage; Shift + MouseWheel adjusts Brush Radius when in Brush Mode
     document.addEventListener("DOMContentLoaded", () => {
       const stage = document.getElementById("viewer-stage");
       if (stage) {
         stage.addEventListener("wheel", (e) => {
+          if (isMaskBrushMode && e.shiftKey) {
+            e.preventDefault();
+            e.stopPropagation();
+            const step = e.deltaY < 0 ? 2 : -2;
+            setMaskBrushRadius(maskBrushRadius + step);
+            return;
+          }
           if (e.ctrlKey || e.metaKey) {
             e.preventDefault();
             adjustZoomPct(e.deltaY < 0 ? 12 : -12);
@@ -6632,7 +7188,45 @@
       }
     });
 
-    /* ==================== MANUAL DRAW REGION ==================== */
+    function findBestBlockForBrushPoint(imgX, imgY) {
+      if (!currentBlocks || currentBlocks.length === 0) return null;
+      // 1. Сначала проверяем текущий выбранный блок кисти, если точка внутри него или рядом (до 45px)
+      const curBlk = currentBlocks.find(b => b.id === maskBrushBlockId && !b.is_deleted);
+      if (curBlk) {
+        ensureBlockCleanBbox(curBlk);
+        const [cx1, cy1, cx2, cy2] = curBlk.clean_bbox;
+        if (imgX >= cx1 - 45 && imgX <= cx2 + 45 && imgY >= cy1 - 45 && imgY <= cy2 + 45) {
+          return curBlk;
+        }
+      }
+      // 2. Ищем блок, внутрь clean_bbox или bbox которого попал клик кисти
+      for (const b of currentBlocks) {
+        if (b.is_deleted) continue;
+        ensureBlockCleanBbox(b);
+        const [cx1, cy1, cx2, cy2] = b.clean_bbox;
+        if (imgX >= cx1 - 18 && imgX <= cx2 + 18 && imgY >= cy1 - 18 && imgY <= cy2 + 18) {
+          return b;
+        }
+      }
+      // 3. Иначе выбираем ближайший по центру блок
+      let best = curBlk || currentBlocks[0];
+      let bestDist = Infinity;
+      for (const b of currentBlocks) {
+        if (b.is_deleted) continue;
+        ensureBlockCleanBbox(b);
+        const [cx1, cy1, cx2, cy2] = b.clean_bbox;
+        const mx = (cx1 + cx2) / 2;
+        const my = (cy1 + cy2) / 2;
+        const d = Math.hypot(imgX - mx, imgY - my);
+        if (d < bestDist) {
+          bestDist = d;
+          best = b;
+        }
+      }
+      return best;
+    }
+
+    /* ==================== MANUAL DRAW REGION & 60 FPS LIVE MASK BRUSH ==================== */
     let isDrawRegionMode = false;
     let activeDrawState = null;
 
@@ -6640,6 +7234,9 @@
       if (!selectedPage) {
         sayMiko("Сначала выбери страницу манги слева, чтобы обвести на ней кружок с текстом~ 🌸");
         return;
+      }
+      if (isMaskBrushMode) {
+        toggleMaskBrushMode(null, false);
       }
       isDrawRegionMode = typeof forceState === "boolean" ? forceState : !isDrawRegionMode;
       if (isDrawRegionMode) closeInlineBubblePopup();
@@ -6662,17 +7259,24 @@
     }
 
     function attachManualDrawHandlers() {
+      preloadOrigPageImageForBrush();
       document.querySelectorAll(".img-pin-wrap").forEach(wrap => {
         wrap.classList.toggle("draw-mode-active", isDrawRegionMode);
         wrap.classList.toggle("mask-brush-active", isMaskBrushMode);
         const img = wrap.querySelector("img");
         if (img) {
           img.draggable = false;
+          if (img.complete && img.naturalWidth > 0) {
+            ensureLiveRetouchCanvas(wrap, img);
+          } else {
+            img.addEventListener("load", () => ensureLiveRetouchCanvas(wrap, img), { once: true });
+          }
         }
         let cursorRing = wrap.querySelector(".mask-brush-cursor-ring");
         if (!cursorRing) {
           cursorRing = document.createElement("div");
           cursorRing.className = "mask-brush-cursor-ring";
+          cursorRing.innerHTML = `<span class="mask-brush-cursor-lbl">🧹 14px</span>`;
           wrap.appendChild(cursorRing);
         }
         wrap.onmousemove = (ev) => {
@@ -6682,11 +7286,16 @@
           const relY = ev.clientY - rect.top;
           const scale = rect.width / Math.max(1, img.naturalWidth);
           const dPx = Math.max(8, Math.round(maskBrushRadius * 2 * scale));
+          const isEraseNow = (ev.buttons & 2) === 2 || maskBrushToolMode === "erase";
           cursorRing.style.left = relX + "px";
           cursorRing.style.top = relY + "px";
           cursorRing.style.width = dPx + "px";
           cursorRing.style.height = dPx + "px";
-          cursorRing.classList.toggle("erase-mode", (ev.buttons & 2) === 2);
+          cursorRing.classList.toggle("erase-mode", isEraseNow);
+          const lbl = cursorRing.querySelector(".mask-brush-cursor-lbl");
+          if (lbl) {
+            lbl.textContent = `${isEraseNow ? "🎨 Ориг." : "🧹 Замазка"} ${maskBrushRadius}px`;
+          }
         };
         wrap.oncontextmenu = (ev) => {
           if (isMaskBrushMode) {
@@ -6699,17 +7308,33 @@
             ev.preventDefault();
             ev.stopPropagation();
             if (!img || !img.naturalWidth || !img.naturalHeight || !currentBlocks) return;
-            const targetId = maskBrushBlockId || activeBlockId || (currentBlocks[0] && currentBlocks[0].id);
-            const blk = currentBlocks.find(x => x.id === targetId);
+
+            const rect = wrap.getBoundingClientRect();
+            const clickX = Math.round(Math.max(0, Math.min(rect.width, ev.clientX - rect.left)) * (img.naturalWidth / Math.max(1, rect.width)));
+            const clickY = Math.round(Math.max(0, Math.min(rect.height, ev.clientY - rect.top)) * (img.naturalHeight / Math.max(1, rect.height)));
+
+            const blk = findBestBlockForBrushPoint(clickX, clickY);
             if (!blk) return;
+            if (maskBrushBlockId !== blk.id) {
+              maskBrushBlockId = blk.id;
+              activeBlockId = blk.id;
+              syncFloatingBrushToolbarUi();
+              highlightBlock(blk.id, false);
+            }
+
             cancelIdleAutoSaveTimer();
-            const strokeMode = ev.button === 2 ? "erase" : "add";
+            const strokeMode = ev.button === 2 ? "erase" : maskBrushToolMode;
+            const rImg = Math.max(2, Math.round(maskBrushRadius));
+            const sampledFill = strokeMode === "add"
+              ? (blk.bg_color || sampleLocalBubbleColor(img, clickX, clickY, rImg))
+              : "#ffffff";
             const startSnap = cloneBlocksSnapshot(currentBlocks);
             activeMaskStrokeState = {
               wrap,
               img,
               block: blk,
               mode: strokeMode,
+              fillColor: sampledFill,
               startSnapshot: startSnap,
               lastX: null,
               lastY: null
@@ -6737,7 +7362,7 @@
 
     function addMaskBrushPointFromEvent(ev) {
       if (!activeMaskStrokeState) return;
-      const { wrap, img, block, mode } = activeMaskStrokeState;
+      const { wrap, img, block, mode, fillColor } = activeMaskStrokeState;
       const rect = wrap.getBoundingClientRect();
       const relX = Math.max(0, Math.min(rect.width, ev.clientX - rect.left));
       const relY = Math.max(0, Math.min(rect.height, ev.clientY - rect.top));
@@ -6747,22 +7372,35 @@
       const imgY = Math.round(relY * scaleY);
       const rImg = Math.max(2, Math.round(maskBrushRadius));
 
-      if (
-        activeMaskStrokeState.lastX !== null &&
-        Math.hypot(imgX - activeMaskStrokeState.lastX, imgY - activeMaskStrokeState.lastY) < Math.max(3, rImg * 0.35)
-      ) {
+      const prevX = activeMaskStrokeState.lastX !== null ? activeMaskStrokeState.lastX : imgX;
+      const prevY = activeMaskStrokeState.lastY !== null ? activeMaskStrokeState.lastY : imgY;
+      const dist = Math.hypot(imgX - prevX, imgY - prevY);
+
+      if (activeMaskStrokeState.lastX !== null && dist < Math.max(1.5, rImg * 0.22)) {
         return;
       }
-      activeMaskStrokeState.lastX = imgX;
-      activeMaskStrokeState.lastY = imgY;
+
+      // Мгновенно (60 FPS) отрисовываем мазок прямо на холсте поверх картинки!
+      paintLiveBrushSegmentOnStage(prevX, prevY, imgX, imgY, rImg, mode, fillColor);
 
       if (!Array.isArray(block.custom_mask_strokes)) {
         block.custom_mask_strokes = [];
       }
-      block.custom_mask_strokes.push({ x: imgX, y: imgY, r: rImg, mode });
+
+      // Интерполируем точки вдоль линии мазка, чтобы при быстром движении мыши не было пропусков
+      const stepPx = Math.max(2.5, rImg * 0.42);
+      const steps = Math.max(1, Math.ceil(dist / stepPx));
+      for (let i = 1; i <= steps; i++) {
+        const t = i / steps;
+        const ix = Math.round(prevX + (imgX - prevX) * t);
+        const iy = Math.round(prevY + (imgY - prevY) * t);
+        block.custom_mask_strokes.push({ x: ix, y: iy, r: rImg, mode });
+      }
+
+      activeMaskStrokeState.lastX = imgX;
+      activeMaskStrokeState.lastY = imgY;
       block._dirtyPreview = true;
       clientEditRevision++;
-      renderMaskStrokeDotsOnStage();
     }
 
     window.addEventListener("mousemove", (ev) => {
@@ -6795,12 +7433,10 @@
           pushPageHistorySnapshot(st.startSnapshot);
         }
         syncBlockStyleControlsUi(st.block.id);
+        syncFloatingBrushToolbarUi();
         updatePinDomForBlock(st.block.id);
-        const modeLbl = st.mode === "erase" ? "восстановление рисунка (ПКМ)" : "дотирание оригинала (ЛКМ)";
-        sayMiko(`🖌 Добавлен мазок кисти (${modeLbl}) для рамки #${st.block.id}! Применяю к маске очистки... ✨`);
-        if (uiSettings.auto_save_after_idle !== false) {
-          scheduleIdleAutoSave(600);
-        }
+        // Быстрое фоновое вшивание мазка в итоговую картинку (150 мс debounce, < 20 мс на сервере)
+        scheduleIdleAutoSave(150);
         return;
       }
       if (!activeDrawState) return;
@@ -6948,6 +7584,9 @@
         const preImg = new Image();
         preImg.onload = () => {
           transImg.src = preImg.src;
+          if (!activeMaskStrokeState) {
+            clearLiveRetouchCanvases();
+          }
           renderBboxPinsOnStage();
         };
         preImg.onerror = () => {
@@ -8155,6 +8794,16 @@
       }
 
       if (!inInput && !e.ctrlKey && !e.metaKey) {
+        if (isMaskBrushMode && (e.key === "[" || e.key === "х" || e.key === "Х")) {
+          e.preventDefault();
+          setMaskBrushRadius(maskBrushRadius - 2);
+          return;
+        }
+        if (isMaskBrushMode && (e.key === "]" || e.key === "ъ" || e.key === "Ъ")) {
+          e.preventDefault();
+          setMaskBrushRadius(maskBrushRadius + 2);
+          return;
+        }
         if (e.key === "[" || (e.altKey && (e.key === "b" || e.key === "B"))) {
           e.preventDefault();
           toggleLeftSidebar();
