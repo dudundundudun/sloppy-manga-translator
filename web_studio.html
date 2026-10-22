@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Miko-chan Manga Studio v1.0.5</title>
+  <title>Miko-chan Manga Studio v1.0.6</title>
   <style>
     :root {
       --bg-deep: #0f0d18;
@@ -1945,6 +1945,67 @@
       box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
     }
 
+    /* ==================== STEP 4: GLOSSARY & GLOBAL FIND/REPLACE UI ==================== */
+    .glossary-table-wrap {
+      max-height: 210px;
+      overflow-y: auto;
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 10px;
+      background: rgba(11, 9, 18, 0.72);
+    }
+    .glossary-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      text-align: left;
+    }
+    .glossary-table th {
+      position: sticky;
+      top: 0;
+      background: #161224;
+      color: var(--sakura);
+      font-weight: 700;
+      padding: 7px 9px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+      z-index: 2;
+    }
+    .glossary-table td {
+      padding: 6px 9px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      color: var(--text-primary);
+      vertical-align: middle;
+    }
+    .glossary-table tr:hover td {
+      background: rgba(244, 114, 182, 0.08);
+    }
+    .find-results-wrap {
+      max-height: 210px;
+      overflow-y: auto;
+      border: 1px solid rgba(129, 140, 248, 0.25);
+      border-radius: 10px;
+      background: rgba(11, 9, 18, 0.78);
+      padding: 6px;
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+    .find-result-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      padding: 7px 10px;
+      border-radius: 8px;
+      background: rgba(30, 25, 48, 0.75);
+      border: 1px solid rgba(255, 255, 255, 0.07);
+      cursor: pointer;
+      transition: all 0.14s ease;
+      font-size: 12px;
+    }
+    .find-result-row:hover {
+      border-color: var(--sakura);
+      background: rgba(44, 36, 68, 0.95);
+    }
+
     /* Responsive Media Queries */
     @media (max-width: 1100px) {
       :root {
@@ -1979,7 +2040,7 @@
       <div class="brand">
         <span class="brand-sparkle">🌸</span>
         <span>Miko-chan Manga Studio</span>
-        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.5</span>
+        <span style="font-size:11px; color:var(--text-muted); font-weight:600;">v1.0.6</span>
       </div>
     </div>
 
@@ -2002,6 +2063,10 @@
       <div class="summary-chip" id="summary-chip" onclick="openSettingsOnTab('tab-ai')" title="Нажмите для быстрой настройки ИИ, фильтрации текста и интерфейса">
         Шрифт: 12–32px · Только диалоги · ИИ: Авто
       </div>
+      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-glossary')" title="Открыть Глоссарий имен/терминов и глобальный Поиск и Замену по всей главе (Ctrl+F / Ctrl+H)">
+        <span>📖</span>
+        <span>Глоссарий / Поиск</span>
+      </button>
       <button class="icon-action-btn" onclick="openSettingsOnTab('tab-diag')" title="Открыть панель диагностики, таймингов этапов (OCR / ИИ / Рендер), живой лог и скопировать отчет для чата в 1 клик">
         <span>🩺</span>
         <span>Диагностика</span>
@@ -2354,6 +2419,7 @@
         <button type="button" class="settings-tab-btn" id="stab-btn-ui" onclick="switchSettingsTab('tab-ui')">🎨 Интерфейс и Редактор</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-filter" onclick="switchSettingsTab('tab-filter')">📊 Фильтр текста и SFX</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-font" onclick="switchSettingsTab('tab-font')">🔤 Шрифт и Сохранение</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-glossary" onclick="switchSettingsTab('tab-glossary')">📖 Глоссарий и Замена</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-diag" onclick="switchSettingsTab('tab-diag')">🩺 Диагностика и Логи</button>
       </div>
 
@@ -2647,11 +2713,138 @@
           </div>
         </div>
 
+        <!-- TAB 5: GLOSSARY & GLOBAL FIND/REPLACE (STEP 4) -->
+        <div class="settings-tab-pane" id="tab-glossary">
+          <div class="section-box">
+            <div class="section-title">
+              <span>🔎 Поиск и Замена по всей главе (Ctrl+F / Ctrl+H — 0 токенов ИИ!)</span>
+              <span id="find-replace-badge" style="font-size:11.5px; color:var(--mint);">Готов к поиску</span>
+            </div>
+            <div class="section-desc">
+              Мгновенно находите любые имена, термины или опечатки по всем переведенным страницам открытой папки и заменяйте их в 1 клик с автоматической перерисовкой затронутых страниц через кэш очищенного слоя!
+            </div>
+            <div class="form-grid">
+              <div class="field-box">
+                <label>Найти текст:</label>
+                <input id="inp-find-text" type="text" placeholder="Например: Сато / Нанака / сан..." onkeydown="if(event.key==='Enter'){event.preventDefault();runFolderFindReplace(true);}" />
+              </div>
+              <div class="field-box">
+                <label>Заменить на:</label>
+                <input id="inp-replace-text" type="text" placeholder="Новый вариант текста..." onkeydown="if(event.key==='Enter'){event.preventDefault();runFolderFindReplace(true);}" />
+              </div>
+            </div>
+            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                <select id="sel-find-search-in" class="font-override-select" style="padding:6px 10px; font-size:12px;">
+                  <option value="translated" selected>🈯 Искать в переводе (RU / EN)</option>
+                  <option value="original">🇯🇵 Искать в оригинале (JA / KO / ZH)</option>
+                </select>
+                <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; color:var(--text-secondary);">
+                  <input type="checkbox" id="chk-find-match-case" style="accent-color:var(--sakura);" />
+                  <span>Учитывать регистр</span>
+                </label>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                <button type="button" class="soft-btn" onclick="runFolderFindReplace(true)">
+                  🔎 Найти совпадения (Предпросмотр)
+                </button>
+                <button type="button" class="cta-main" id="btn-exec-find-replace" style="width:auto; padding:8px 15px; font-size:12px;" onclick="runFolderFindReplace(false)">
+                  ⚡ Заменить везде и перерисовать затронутые страницы
+                </button>
+              </div>
+            </div>
+            <div class="find-results-wrap" id="find-replace-results-list">
+              <div style="padding:10px; color:var(--text-muted); font-size:12px; text-align:center;">
+                Введите слово в поле «Найти текст» и нажмите «🔎 Найти совпадения», чтобы увидеть все реплики по страницам главы (клик по строке откроет нужную страницу и кружок #N).
+              </div>
+            </div>
+          </div>
+
+          <div class="section-box">
+            <div class="section-title">
+              <span>📖 Глоссарий имен и терминов (100% одинаковый перевод имен во всей манге)</span>
+              <div style="display:flex; gap:6px;">
+                <button type="button" class="romaji-copy-btn" onclick="fillGlossaryFromActiveBlock()" title="Подставить японский оригинал и перевод из выбранного на странице кружка #N">➕ Из активного блока</button>
+                <button type="button" class="romaji-copy-btn" onclick="loadGlossaryPanel()">🔄 Обновить</button>
+              </div>
+            </div>
+            <div class="section-desc">
+              Перед отправкой каждой пачки в ИИ переводчик автоматически проверяет, какие термины из глоссария встречаются в японском тексте этой пачки, и включает их в блок <b>ОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ ТЕРМИНОВ И ИМЕН</b>.
+            </div>
+            <div style="display:grid; grid-template-columns: 1.1fr 1.1fr 1fr auto auto; gap:6px; align-items:end;">
+              <div class="field-box">
+                <label>Оригинал (JA/KO/ZH):</label>
+                <input id="inp-gloss-src" type="text" placeholder="七香 / ななか" />
+              </div>
+              <div class="field-box">
+                <label>Перевод (RU/EN):</label>
+                <input id="inp-gloss-dst" type="text" placeholder="Нанака" />
+              </div>
+              <div class="field-box">
+                <label>Примечание (опц.):</label>
+                <input id="inp-gloss-note" type="text" placeholder="Главная героиня (ж.р.)" />
+              </div>
+              <div class="field-box">
+                <label>Область:</label>
+                <select id="sel-gloss-scope" style="padding:8px 8px;">
+                  <option value="both" selected>🌐+📁 Везде</option>
+                  <option value="global">🌐 Глобально</option>
+                  <option value="folder">📁 Только глава</option>
+                </select>
+              </div>
+              <button type="button" class="btn-save-edit" style="height:36px; padding:0 14px;" onclick="addGlossaryEntryFromInputs()">
+                ➕ Добавить
+              </button>
+            </div>
+
+            <div class="glossary-table-wrap">
+              <table class="glossary-table">
+                <thead>
+                  <tr>
+                    <th>Оригинал (src)</th>
+                    <th>Перевод (dst)</th>
+                    <th>Примечание</th>
+                    <th>Область</th>
+                    <th style="width:60px; text-align:right;">Действие</th>
+                  </tr>
+                </thead>
+                <tbody id="glossary-table-body">
+                  <tr>
+                    <td colspan="5" style="text-align:center; color:var(--text-muted); padding:14px;">Глоссарий пока пуст. Добавьте имена персонажей выше или импортируйте словарь!</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <details class="style-retouch-details">
+              <summary>
+                <span>📥 / 📤 Импорт и Экспорт глоссария (.txt Sakura / .json / .tsv)</span>
+                <span style="font-size:10.5px; color:var(--text-muted);">Формат Sakura: термин->перевод #примечание</span>
+              </summary>
+              <div style="display:flex; flex-direction:column; gap:8px; margin-top:6px;">
+                <div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:space-between;">
+                  <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('sakura')">📤 Скачать Sakura (.txt)</button>
+                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('json')">📤 Скачать (.json)</button>
+                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('tsv')">📤 Скачать (.tsv)</button>
+                  </div>
+                  <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                    <input type="file" id="inp-glossary-file" accept=".txt,.json,.tsv" style="display:none;" onchange="onGlossaryFilePicked(this)" />
+                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="document.getElementById('inp-glossary-file').click()">📂 Импорт из файла</button>
+                    <button type="button" class="btn-save-edit" style="padding:5px 12px; font-size:11.5px;" onclick="importGlossaryFromTextarea()">📥 Импортировать текст ниже</button>
+                  </div>
+                </div>
+                <textarea id="inp-glossary-io-text" placeholder="Вставьте сюда строки в формате Sakura (например: 七香->Нанака #Главная героиня), TSV или JSON и нажмите «📥 Импортировать текст ниже»..." style="width:100%; height:95px; background:#0d0b14; color:#e0e7ff; border:1px solid rgba(255,255,255,0.14); border-radius:8px; padding:8px; font-family:Consolas, monospace; font-size:11.5px; resize:vertical;"></textarea>
+              </div>
+            </details>
+          </div>
+        </div>
+
         <!-- TAB 5: DIAGNOSTICS & LOGS -->
         <div class="settings-tab-pane" id="tab-diag">
           <div class="section-box">
             <div class="section-title">
-              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.5)</span>
+              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.6)</span>
               <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер обмена!</span>
             </div>
             <div class="section-desc">
@@ -3040,7 +3233,7 @@
     }
 
     function switchSettingsTab(tabId) {
-      ["tab-ai", "tab-ui", "tab-filter", "tab-font", "tab-diag"].forEach(id => {
+      ["tab-ai", "tab-ui", "tab-filter", "tab-font", "tab-glossary", "tab-diag"].forEach(id => {
         const pane = document.getElementById(id);
         if (pane) pane.classList.toggle("active", id === tabId);
       });
@@ -3049,6 +3242,7 @@
         "tab-ui": "stab-btn-ui",
         "tab-filter": "stab-btn-filter",
         "tab-font": "stab-btn-font",
+        "tab-glossary": "stab-btn-glossary",
         "tab-diag": "stab-btn-diag"
       };
       Object.entries(btnMap).forEach(([k, btnId]) => {
@@ -3057,6 +3251,8 @@
       });
       if (tabId === "tab-diag") {
         loadDiagnosticsPanel();
+      } else if (tabId === "tab-glossary") {
+        loadGlossaryPanel();
       }
     }
 
@@ -3077,7 +3273,7 @@
           cardsEl.innerHTML =
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--sakura);">🖥 Сервер и процесс:</b><br>` +
-              `Версия: <b>v${escapeHtml(srv.version || "1.0.5")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
+              `Версия: <b>v${escapeHtml(srv.version || "1.0.6")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
               `Лог: <b>${srv.log_file_size_kb || 0} КБ</b> (logs/miko_studio.log)` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
@@ -3150,6 +3346,364 @@
       await fetch("/diagnostics/clear", { method: "POST" });
       await loadDiagnosticsPanel();
       sayMiko("Диагностические счетчики и буфер логов очищены! 🧹✨");
+    }
+
+    /* ==================== STEP 4: GLOSSARY & GLOBAL FIND/REPLACE ==================== */
+    let globalGlossaryList = [];
+    let folderGlossaryList = [];
+    let lastGlossaryData = null;
+
+    async function loadGlossaryPanel() {
+      try {
+        const q = new URLSearchParams({ target_lang: targetLang });
+        if (currentFolder) q.set("folder_path", currentFolder);
+        const res = await fetch("/glossary?" + q.toString());
+        if (!res.ok) return;
+        const data = await res.json();
+        lastGlossaryData = data;
+        globalGlossaryList = Array.isArray(data.global_glossary) ? data.global_glossary : [];
+        folderGlossaryList = Array.isArray(data.folder_glossary) ? data.folder_glossary : [];
+        renderGlossaryTable();
+        const ioTa = document.getElementById("inp-glossary-io-text");
+        if (ioTa && !ioTa.value.trim() && data.sakura_text) {
+          ioTa.value = data.sakura_text;
+        }
+      } catch (e) {
+        console.warn("Ошибка загрузки глоссария:", e);
+      }
+    }
+
+    function renderGlossaryTable() {
+      const tbody = document.getElementById("glossary-table-body");
+      if (!tbody) return;
+
+      const folderMap = new Map();
+      folderGlossaryList.forEach(item => {
+        folderMap.set(`${item.src}||${item.target_lang || "all"}`, item);
+      });
+      const globalMap = new Map();
+      globalGlossaryList.forEach(item => {
+        globalMap.set(`${item.src}||${item.target_lang || "all"}`, item);
+      });
+
+      const allKeys = Array.from(new Set([...globalMap.keys(), ...folderMap.keys()]));
+      if (allKeys.length === 0) {
+        tbody.innerHTML = `<tr><td colspan="5" style="text-align:center; color:var(--text-muted); padding:14px;">Глоссарий пока пуст. Добавьте имена персонажей выше или нажмите «➕ Из активного блока»!</td></tr>`;
+        return;
+      }
+
+      tbody.innerHTML = allKeys.map((key, idx) => {
+        const inGlobal = globalMap.has(key);
+        const inFolder = folderMap.has(key);
+        const item = inFolder ? folderMap.get(key) : globalMap.get(key);
+        const scopeBadge = (inGlobal && inFolder)
+          ? "🌐 Глоб. + 📁 Глава"
+          : (inFolder ? "📁 Глава" : "🌐 Глобальный");
+        const eSrc = escapeHtml(item.src || "");
+        const eDst = escapeHtml(item.dst || "");
+        const eNote = escapeHtml(item.note || "—");
+        return (
+          `<tr onclick="prefillGlossaryEdit(${idx})" style="cursor:pointer;" title="Кликните, чтобы изменить эту запись">` +
+            `<td style="font-weight:700; color:#e0e7ff;">${eSrc}</td>` +
+            `<td style="font-weight:700; color:var(--mint);">${eDst}</td>` +
+            `<td style="color:var(--text-muted); font-size:11px;">${eNote}</td>` +
+            `<td style="font-size:11px;">${scopeBadge}</td>` +
+            `<td style="text-align:right;">` +
+              `<button type="button" class="btn-delete-block" style="padding:2px 7px;" onclick="removeGlossaryEntryByKey('${escapeHtml(key)}', event)" title="Удалить запись из глоссария">🗑</button>` +
+            `</td>` +
+          `</tr>`
+        );
+      }).join("");
+      window._currentGlossaryKeys = allKeys.map(k => folderMap.get(k) || globalMap.get(k));
+    }
+
+    function prefillGlossaryEdit(idx) {
+      const list = window._currentGlossaryKeys || [];
+      const item = list[idx];
+      if (!item) return;
+      document.getElementById("inp-gloss-src").value = item.src || "";
+      document.getElementById("inp-gloss-dst").value = item.dst || "";
+      document.getElementById("inp-gloss-note").value = item.note || "";
+    }
+
+    function fillGlossaryFromActiveBlock() {
+      const blkId = popupBlockId || activeBlockId || (currentBlocks && currentBlocks[0] ? currentBlocks[0].id : null);
+      const blk = currentBlocks ? currentBlocks.find(b => b.id === blkId) : null;
+      if (!blk) {
+        sayMiko("Сначала выбери любой кружок #N на странице, чтобы подставить его текст в глоссарий~ 📖");
+        return;
+      }
+      document.getElementById("inp-gloss-src").value = (blk.original_text || "").trim();
+      document.getElementById("inp-gloss-dst").value = (blk.translated_text || "").trim();
+      document.getElementById("inp-gloss-note").focus();
+      sayMiko(`Подставила текст из блока #${blk.id} в поля глоссария! При необходимости оставь только имя персонажа и нажми «➕ Добавить»~ ✨`);
+    }
+
+    async function addGlossaryEntryFromInputs() {
+      const src = (document.getElementById("inp-gloss-src").value || "").trim();
+      const dst = (document.getElementById("inp-gloss-dst").value || "").trim();
+      const note = (document.getElementById("inp-gloss-note").value || "").trim();
+      const scope = document.getElementById("sel-gloss-scope").value || "both";
+      if (!src || !dst) {
+        sayMiko("Заполни оба поля: «Оригинал (JA/KO/ZH)» и «Перевод (RU/EN)»~ 📖");
+        return;
+      }
+
+      const entry = { src, dst, note, target_lang: "all" };
+      const nextGlobal = [...globalGlossaryList];
+      const nextFolder = [...folderGlossaryList];
+
+      if (scope === "global" || scope === "both") {
+        const idx = nextGlobal.findIndex(x => x.src === src);
+        if (idx >= 0) nextGlobal[idx] = entry;
+        else nextGlobal.push(entry);
+      }
+      if ((scope === "folder" || scope === "both") && currentFolder) {
+        const idx = nextFolder.findIndex(x => x.src === src);
+        if (idx >= 0) nextFolder[idx] = entry;
+        else nextFolder.push(entry);
+      }
+
+      const res = await fetch("/glossary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          global_glossary: nextGlobal,
+          folder_glossary: nextFolder,
+          folder_path: currentFolder || null,
+          target_lang: targetLang
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        globalGlossaryList = data.global_glossary || [];
+        folderGlossaryList = data.folder_glossary || [];
+        renderGlossaryTable();
+        document.getElementById("inp-gloss-src").value = "";
+        document.getElementById("inp-gloss-dst").value = "";
+        document.getElementById("inp-gloss-note").value = "";
+        const ioTa = document.getElementById("inp-glossary-io-text");
+        if (ioTa) ioTa.value = data.sakura_text || "";
+        sayMiko(`Термин «${src} ➔ ${dst}» добавлен в глоссарий! ИИ будет переводить его строго так на всех страницах~ 📖✨`);
+      }
+    }
+
+    async function removeGlossaryEntryByKey(key, ev) {
+      if (ev) ev.stopPropagation();
+      const [srcPart] = String(key).split("||");
+      const nextGlobal = globalGlossaryList.filter(x => x.src !== srcPart);
+      const nextFolder = folderGlossaryList.filter(x => x.src !== srcPart);
+      const res = await fetch("/glossary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          global_glossary: nextGlobal,
+          folder_glossary: nextFolder,
+          folder_path: currentFolder || null,
+          target_lang: targetLang
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        globalGlossaryList = data.global_glossary || [];
+        folderGlossaryList = data.folder_glossary || [];
+        renderGlossaryTable();
+        const ioTa = document.getElementById("inp-glossary-io-text");
+        if (ioTa) ioTa.value = data.sakura_text || "";
+        sayMiko(`Термин «${srcPart}» удален из глоссария.`);
+      }
+    }
+
+    async function importGlossaryFromTextarea() {
+      const rawText = (document.getElementById("inp-glossary-io-text").value || "").trim();
+      if (!rawText) {
+        sayMiko("Вставь строки словаря (в формате Sakura `термин->перевод #примечание`, TSV или JSON) в текстовое поле ниже~ 📥");
+        return;
+      }
+      const scope = document.getElementById("sel-gloss-scope").value || "both";
+      const res = await fetch("/glossary", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          folder_path: currentFolder || null,
+          target_lang: targetLang,
+          import_text: rawText,
+          import_scope: scope,
+          merge_import: true
+        })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        globalGlossaryList = data.global_glossary || [];
+        folderGlossaryList = data.folder_glossary || [];
+        renderGlossaryTable();
+        document.getElementById("inp-glossary-io-text").value = data.sakura_text || "";
+        sayMiko(`Успешно импортировано терминов в глоссарий: ${data.imported_count || 0} шт.! 📖🌸`);
+      }
+    }
+
+    function onGlossaryFilePicked(inputEl) {
+      const file = inputEl?.files?.[0];
+      if (!file) return;
+      const reader = new FileReader();
+      reader.onload = async () => {
+        const content = String(reader.result || "");
+        const ioTa = document.getElementById("inp-glossary-io-text");
+        if (ioTa) ioTa.value = content;
+        await importGlossaryFromTextarea();
+        inputEl.value = "";
+      };
+      reader.readAsText(file, "utf-8");
+    }
+
+    async function exportGlossaryFormat(fmt) {
+      await loadGlossaryPanel();
+      if (!lastGlossaryData) return;
+      let content = "";
+      let ext = "txt";
+      if (fmt === "json") {
+        content = JSON.stringify(lastGlossaryData.merged_glossary || [], null, 2);
+        ext = "json";
+      } else if (fmt === "tsv") {
+        content = lastGlossaryData.tsv_text || "";
+        ext = "tsv";
+      } else {
+        content = lastGlossaryData.sakura_text || "";
+        ext = "txt";
+      }
+      const ioTa = document.getElementById("inp-glossary-io-text");
+      if (ioTa) ioTa.value = content;
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `miko_glossary_${targetLang}.${ext}`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      sayMiko(`Глоссарий экспортирован в файл miko_glossary_${targetLang}.${ext}! 📤✨`);
+    }
+
+    async function runFolderFindReplace(dryRun = true) {
+      const findText = (document.getElementById("inp-find-text").value || "").trim();
+      const replaceText = document.getElementById("inp-replace-text").value || "";
+      const searchIn = document.getElementById("sel-find-search-in").value || "translated";
+      const matchCase = Boolean(document.getElementById("chk-find-match-case").checked);
+      const badge = document.getElementById("find-replace-badge");
+      const listEl = document.getElementById("find-replace-results-list");
+      const execBtn = document.getElementById("btn-exec-find-replace");
+
+      if (!currentFolder) {
+        sayMiko("Сначала открой папку с главой манги слева, чтобы искать и заменять текст по всей главе~ 📁🌸");
+        if (listEl) {
+          listEl.innerHTML = `<div style="padding:10px; color:var(--amber); text-align:center;">Сначала выберите папку с главой манги в левой панели.</div>`;
+        }
+        return;
+      }
+      if (!findText) {
+        sayMiko("Введи слово или имя для поиска в поле «Найти текст»~ 🔎");
+        return;
+      }
+
+      if (!dryRun && execBtn) {
+        execBtn.disabled = true;
+        execBtn.textContent = "⏳ Заменяю и перерисовываю страницы...";
+      }
+      if (badge) {
+        badge.textContent = dryRun ? "🔎 Поиск по главе..." : "⚡ Замена и перерисовка...";
+      }
+
+      try {
+        const res = await fetch("/folder_find_replace", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            folder_path: currentFolder,
+            target_lang: targetLang,
+            find_text: findText,
+            replace_text: replaceText,
+            match_case: matchCase,
+            search_in: searchIn,
+            dry_run: Boolean(dryRun),
+            uppercase: document.getElementById("chk-uppercase").checked,
+            min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ошибка поиска/замены: ${data.detail || "неизвестная ошибка"}`);
+          return;
+        }
+
+        const matches = data.matches || [];
+        if (badge) {
+          badge.textContent = dryRun
+            ? `Найдено: ${data.matches_count} совп. на ${data.affected_pages_count} стр. (${data.processing_time_sec}с)`
+            : `✅ Заменено: ${data.matches_count} реплик, перерисовано: ${data.rerendered_pages_count} стр. (${data.processing_time_sec}с)`;
+        }
+
+        if (matches.length === 0) {
+          listEl.innerHTML = `<div style="padding:12px; color:var(--text-muted); text-align:center;">Совпадений по запросу «<b>${escapeHtml(findText)}</b>» в переведенных страницах главы не найдено.</div>`;
+          sayMiko(`По запросу «${findText}» совпадений в главе не найдено~ 🔎`);
+          return;
+        }
+
+        listEl.innerHTML = matches.map(m => {
+          const eRel = escapeHtml(m.page_rel_path || "");
+          const eOrig = escapeHtml(m.original_text || "—");
+          const eBefore = escapeHtml(m.before_text || "");
+          const eAfter = escapeHtml(m.after_text || "");
+          const diffHtml = (m.before_text !== m.after_text && replaceText !== "")
+            ? `<span style="color:var(--rose); text-decoration:line-through;">${eBefore}</span> ➔ <b style="color:var(--mint);">${eAfter}</b>`
+            : `<b style="color:var(--text-primary);">${eBefore}</b>`;
+          return (
+            `<div class="find-result-row" onclick="jumpToFindMatch('${eRel}', ${Number(m.block_id) || 1})" title="Кликните, чтобы открыть страницу ${eRel} и перейти к кружку #${m.block_id}">` +
+              `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">` +
+                `<span style="font-weight:700; color:var(--sakura);">📄 Стр. #${m.page_index || "?"} (${eRel}) · Кружок #${m.block_id}</span>` +
+                `<span style="font-size:11px; color:var(--indigo);">🇯🇵 ${eOrig}</span>` +
+              `</div>` +
+              `<div style="line-height:1.35;">${diffHtml}</div>` +
+            `</div>`
+          );
+        }).join("");
+
+        if (!dryRun) {
+          await inspectCurrentFolder();
+          sayMiko(
+            `⚡ Глобальная автозамена завершена за ${data.processing_time_sec}с (0 токенов ИИ)! Обновлено реплик: ${data.matches_count}, перерисовано страниц: ${data.rerendered_pages_count}~ 🌸✨`
+          );
+        } else {
+          sayMiko(
+            `🔎 Найдено совпадений: ${data.matches_count} на ${data.affected_pages_count} стр.! Кликни по любой строке для перехода к кружку или нажми «⚡ Заменить везде»~`
+          );
+        }
+      } catch (e) {
+        sayMiko(`Ошибка при поиске и замене: ${e.message}`);
+      } finally {
+        if (execBtn) {
+          execBtn.disabled = false;
+          execBtn.textContent = "⚡ Заменить везде и перерисовать затронутые страницы";
+        }
+      }
+    }
+
+    function jumpToFindMatch(relPath, blockId) {
+      toggleSettingsModal(false);
+      if (!folderPages || folderPages.length === 0) return;
+      const targetPage = folderPages.find(p => p.rel_path === relPath);
+      if (!targetPage) return;
+      selectPage(targetPage);
+      setTimeout(() => {
+        highlightBlock(blockId, true, true);
+        if (uiSettings.inline_bubble_popup) {
+          const pinEl = document.querySelector(`.bbox-pin[data-block-id="${blockId}"]`);
+          openInlineBubblePopup(blockId, pinEl);
+        } else {
+          focusBlockEditorCard(blockId);
+        }
+      }, 180);
     }
 
     function openSettingsOnTab(tabId) {
@@ -6996,6 +7550,23 @@
           e.preventDefault();
           saveEditedPageTranslation();
         }
+        return;
+      }
+
+      // Global Find & Replace / Glossary: Ctrl+F or Ctrl+H
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (
+        e.key === "f" || e.key === "F" || e.key === "а" || e.key === "А" ||
+        e.key === "h" || e.key === "H" || e.key === "р" || e.key === "Р"
+      )) {
+        e.preventDefault();
+        openSettingsOnTab("tab-glossary");
+        setTimeout(() => {
+          const findInp = document.getElementById("inp-find-text");
+          if (findInp) {
+            findInp.focus();
+            findInp.select();
+          }
+        }, 60);
         return;
       }
 

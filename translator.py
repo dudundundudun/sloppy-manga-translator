@@ -1,5 +1,13 @@
 """
-Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.5).
+Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.6).
+
+Изменения v1.0.6 (Шаг 4):
+1. Глобальный глоссарий в `config.json` (`glossary: list[dict[str, str]]` с полями `src`, `dst`, `note`, `target_lang`)
+   и локальный глоссарий главы в `.translation_state.json` (`manifest["glossary"]`).
+2. Импорт и экспорт глоссария в форматах `.json`, `.tsv` и текстовом формате Sakura (`исходный_термин->перевод #примечание`).
+3. Автоматическая фильтрация глоссария (`Matching`) в `OllamaTranslator._get_prompts`: перед отправкой пачки фраз
+   отбираются только те термины, чей `src` встречается в `source_map_json` текущей пачки, и добавляются в системный промпт
+   в блок `ОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ ТЕРМИНОВ И ИМЕН` (100% консистентность имен без перегрузки контекста).
 
 Изменения v1.0.0:
 1. Автоматический обход ошибки `redirect target not allowed: us.aws.cdn.hf.co resolves to non-public 198.18.x.x`
@@ -1047,6 +1055,212 @@ def japanese_to_romaji_local(text: str) -> str:
     return rom[:1].upper() + rom[1:] if rom else ""
 
 
+
+
+def normalize_glossary_entries(entries: Any) -> list[dict[str, str]]:
+    """
+    Нормализует список записей глоссария к формату:
+    `[{"src": str, "dst": str, "note": str, "target_lang": str}]`
+    с дедупликацией по `(src, target_lang)`.
+    """
+    if not isinstance(entries, list):
+        return []
+    normalized: list[dict[str, str]] = []
+    index_by_key: dict[tuple[str, str], int] = {}
+
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        src = str(item.get("src") or item.get("source") or item.get("orig") or "").strip()
+        dst = str(item.get("dst") or item.get("target") or item.get("trans") or item.get("translation") or "").strip()
+        if not src or not dst:
+            continue
+        note = str(item.get("note") or item.get("comment") or item.get("info") or "").strip()
+        t_lang = str(item.get("target_lang") or item.get("lang") or "all").strip().lower()
+        if t_lang not in ("all", "ru", "en", "romaji"):
+            t_lang = "all"
+
+        dedup_key = (src, t_lang)
+        entry_dict = {
+            "src": src,
+            "dst": dst,
+            "note": note,
+            "target_lang": t_lang,
+        }
+        if dedup_key in index_by_key:
+            normalized[index_by_key[dedup_key]] = entry_dict
+        else:
+            index_by_key[dedup_key] = len(normalized)
+            normalized.append(entry_dict)
+
+    return normalized
+
+
+def parse_glossary_text_or_json(
+    raw_content: str,
+    default_target_lang: str = "all",
+) -> list[dict[str, str]]:
+    """
+    Парсит глоссарий из:
+    - JSON массива/объекта (`.json`);
+    - TSV таблицы (`src\tdst\tnote`);
+    - текстового формата Sakura (`исходный_термин->перевод #примечание`, а также `=>`, `➔`, `=`).
+    """
+    text = (raw_content or "").strip()
+    if not text:
+        return []
+
+    def_lang = (default_target_lang or "all").strip().lower()
+    if def_lang not in ("all", "ru", "en", "romaji"):
+        def_lang = "all"
+
+    # 1. Пробуем JSON
+    if text.startswith("[") or text.startswith("{"):
+        try:
+            parsed = json.loads(text)
+            if isinstance(parsed, list):
+                return normalize_glossary_entries(parsed)
+            if isinstance(parsed, dict):
+                if isinstance(parsed.get("glossary"), list):
+                    return normalize_glossary_entries(parsed["glossary"])
+                dict_entries: list[dict[str, str]] = []
+                for k, v in parsed.items():
+                    if isinstance(v, str) and k.strip() and v.strip():
+                        dict_entries.append({"src": k.strip(), "dst": v.strip(), "note": "", "target_lang": def_lang})
+                    elif isinstance(v, dict):
+                        dict_entries.append({
+                            "src": str(v.get("src") or k).strip(),
+                            "dst": str(v.get("dst") or v.get("target") or "").strip(),
+                            "note": str(v.get("note") or "").strip(),
+                            "target_lang": str(v.get("target_lang") or def_lang).strip().lower(),
+                        })
+                return normalize_glossary_entries(dict_entries)
+        except Exception:
+            pass
+
+    # 2. Построчный разбор Sakura (`src->dst #note`) и TSV (`src\tdst\tnote`)
+    parsed_entries: list[dict[str, str]] = []
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#") or line.startswith("//"):
+            continue
+
+        # Если TSV (табуляция)
+        if "\t" in line:
+            parts = [p.strip() for p in line.split("\t")]
+            if len(parts) >= 2 and parts[0].lower() not in ("src", "source", "оригинал"):
+                src_p = parts[0]
+                dst_p = parts[1]
+                note_p = parts[2] if len(parts) >= 3 else ""
+                lang_p = parts[3].lower() if len(parts) >= 4 and parts[3] else def_lang
+                if src_p and dst_p:
+                    parsed_entries.append({
+                        "src": src_p,
+                        "dst": dst_p,
+                        "note": note_p,
+                        "target_lang": lang_p,
+                    })
+                continue
+
+        # Отделяем комментарий `#примечание` в конце строки (формат Sakura)
+        note_part = ""
+        main_part = line
+        if "#" in line:
+            hash_idx = line.find("#")
+            if hash_idx > 0:
+                main_part = line[:hash_idx].strip()
+                note_part = line[hash_idx + 1 :].strip()
+
+        for sep in ("->", "=>", "➔", "→", "="):
+            if sep in main_part:
+                lhs, rhs = main_part.split(sep, 1)
+                src_s = lhs.strip()
+                dst_s = rhs.strip()
+                if src_s and dst_s:
+                    parsed_entries.append({
+                        "src": src_s,
+                        "dst": dst_s,
+                        "note": note_part,
+                        "target_lang": def_lang,
+                    })
+                break
+
+    return normalize_glossary_entries(parsed_entries)
+
+
+def export_glossary_to_sakura_text(entries: list[dict[str, str]]) -> str:
+    """Экспортирует глоссарий в текстовый формат Sakura: `исходный_термин->перевод #примечание`."""
+    norm = normalize_glossary_entries(entries)
+    lines: list[str] = []
+    for item in norm:
+        src = item["src"]
+        dst = item["dst"]
+        note = item.get("note", "").strip()
+        if note:
+            lines.append(f"{src}->{dst} #{note}")
+        else:
+            lines.append(f"{src}->{dst}")
+    return "\n".join(lines)
+
+
+def export_glossary_to_tsv(entries: list[dict[str, str]]) -> str:
+    """Экспортирует глоссарий в формат TSV (`src\tdst\tnote\ttarget_lang`)."""
+    norm = normalize_glossary_entries(entries)
+    lines: list[str] = ["src\tdst\tnote\ttarget_lang"]
+    for item in norm:
+        lines.append(
+            f"{item['src']}\t{item['dst']}\t{item.get('note', '')}\t{item.get('target_lang', 'all')}"
+        )
+    return "\n".join(lines)
+
+
+def merge_glossaries(
+    global_glossary: list[dict[str, str]] | None,
+    folder_glossary: list[dict[str, str]] | None,
+) -> list[dict[str, str]]:
+    """Объединяет глобальный глоссарий и локальный глоссарий главы (записи главы имеют приоритет)."""
+    combined: list[dict[str, str]] = []
+    if isinstance(global_glossary, list):
+        combined.extend(global_glossary)
+    if isinstance(folder_glossary, list):
+        combined.extend(folder_glossary)
+    return normalize_glossary_entries(combined)
+
+
+def filter_matching_glossary_entries(
+    entries: list[dict[str, str]] | None,
+    text_blob: str,
+    target_lang: str = "en",
+) -> list[dict[str, str]]:
+    """
+    Отбирает только те записи глоссария (`Matching`), чей `src` реально встречается
+    в `text_blob` (например, в `source_map_json` текущей пачки), и чей `target_lang`
+    совпадает с целевым языком или равен `'all'`.
+    """
+    if not entries or not text_blob:
+        return []
+    t_lang = (target_lang or "en").strip().lower()
+    norm_entries = normalize_glossary_entries(entries)
+
+    matched: list[dict[str, str]] = []
+    seen_src: set[str] = set()
+    # Сначала проверяем точные совпадения по target_lang, затем 'all'
+    for pass_exact in (True, False):
+        for item in norm_entries:
+            item_lang = item.get("target_lang", "all")
+            if pass_exact and item_lang != t_lang:
+                continue
+            if not pass_exact and item_lang != "all":
+                continue
+            src = item["src"]
+            if src in seen_src:
+                continue
+            if src in text_blob:
+                seen_src.add(src)
+                matched.append(item)
+    return matched
+
+
 class OllamaTranslator:
     """Универсальный клиент пакетного перевода манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные API."""
 
@@ -1118,6 +1332,7 @@ class OllamaTranslator:
         }
         self.recent_context_lines: list[str] = []
         self.phrase_cache: dict[str, str] = {}
+        self.glossary: list[dict[str, str]] = []
         self.stop_requested: bool = False
         self._last_call_was_refusal: bool = False
         self.last_refusal_message: str = ""
@@ -1209,6 +1424,7 @@ class OllamaTranslator:
             "avg_llm_latency_sec": avg_lat,
             "cache_hit_rate_pct": cache_rate,
             "phrase_cache_size": len(self.phrase_cache),
+            "glossary_size": len(self.glossary),
             "selected_model": self._resolved_model or "auto",
             "api_url": self.unsloth_url,
             "masked_api_key": masked_key,
@@ -1301,6 +1517,8 @@ class OllamaTranslator:
                     self.batch_pages = max(1, min(25, int(data["batch_pages"])))
                 if isinstance(data.get("ui_settings"), dict):
                     self.ui_settings.update(data["ui_settings"])
+                if isinstance(data.get("glossary"), list):
+                    self.glossary = normalize_glossary_entries(data["glossary"])
             except Exception as exc:
                 logger.warning("Не удалось прочитать config.json: %s", exc)
 
@@ -1321,6 +1539,7 @@ class OllamaTranslator:
         uppercase: bool | None = None,
         batch_pages: int | None = None,
         ui_settings: dict[str, Any] | None = None,
+        glossary: list[dict[str, str]] | None = None,
     ) -> dict[str, Any]:
         if unsloth_url is not None and unsloth_url.strip():
             self.unsloth_url = self._normalize_api_base_url(unsloth_url)
@@ -1375,6 +1594,9 @@ class OllamaTranslator:
         if isinstance(ui_settings, dict):
             self.ui_settings.update(ui_settings)
 
+        if glossary is not None and isinstance(glossary, list):
+            self.glossary = normalize_glossary_entries(glossary)
+
         self._cache_timestamp = 0.0
 
         cfg: dict[str, Any] = {
@@ -1393,6 +1615,7 @@ class OllamaTranslator:
             "uppercase": self.uppercase,
             "batch_pages": self.batch_pages,
             "ui_settings": self.ui_settings,
+            "glossary": self.glossary,
         }
         try:
             self.config_path.write_text(
@@ -2380,20 +2603,43 @@ class OllamaTranslator:
         target_lang: str,
         source_map_json: str,
         context_lines: list[str] | None = None,
+        glossary_entries: list[dict[str, str]] | None = None,
     ) -> tuple[str, str, str]:
         src_en = SOURCE_LANG_NAMES_EN.get(source_lang, "comic")
         src_ru = SOURCE_LANG_NAMES_RU.get(source_lang, "комикса")
         t_lang = target_lang.lower().strip()
 
-        context_block_ru = ""
-        context_block_en = ""
+        matched_glossary = filter_matching_glossary_entries(
+            glossary_entries,
+            source_map_json,
+            target_lang=t_lang,
+        )
+        glossary_block_ru = ""
+        glossary_block_en = ""
+        if matched_glossary:
+            g_lines: list[str] = []
+            for g_item in matched_glossary:
+                note_s = f" ({g_item['note']})" if g_item.get("note") else ""
+                g_lines.append(f"- {g_item['src']} -> {g_item['dst']}{note_s}")
+            joined_g = "\n".join(g_lines)
+            glossary_block_ru = (
+                "\nОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ ТЕРМИНОВ И ИМЕН (используй СТРОГО этот перевод для указанных имен и терминов):\n"
+                f"{joined_g}"
+            )
+            glossary_block_en = (
+                "\nОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ ТЕРМИНОВ И ИМЕН / MANDATORY GLOSSARY OF TERMS AND NAMES (strictly use these exact translations):\n"
+                f"{joined_g}"
+            )
+
+        context_block_ru = glossary_block_ru
+        context_block_en = glossary_block_en
         if context_lines:
             joined_ctx = "\n".join(f"- {line}" for line in context_lines[-6:])
-            context_block_ru = (
-                "\nГЛОССАРИЙ И КОНТЕКСТ (сохраняй такое же написание имен, не включай эти строки в ответ):\n"
+            context_block_ru += (
+                "\nГЛОССАРИЙ И КОНТЕКСТ ПРЕДЫДУЩИХ СТРАНИЦ (сохраняй такое же написание имен, не включай эти строки в ответ):\n"
                 f"{joined_ctx}"
             )
-            context_block_en = (
+            context_block_en += (
                 "\nNAME GLOSSARY & CONTEXT (keep identical character name spelling, do NOT include in output):\n"
                 f"{joined_ctx}"
             )
@@ -2795,6 +3041,7 @@ class OllamaTranslator:
         target_lang: str,
         active_model: str,
         context_lines: list[str] | None = None,
+        glossary_entries: list[dict[str, str]] | None = None,
     ) -> dict[str, str]:
         if self.stop_requested or not chunk_blocks:
             return {}
@@ -2804,11 +3051,13 @@ class OllamaTranslator:
         }
         # Компактный JSON без отступов экономит 150-300 входных токенов на каждой пачке
         source_map_json = json.dumps(source_map, ensure_ascii=False, separators=(",", ":"))
+        eff_glossary = merge_glossaries(self.glossary, glossary_entries)
         system_prompt, user_prompt, _ = self._get_prompts(
             source_lang=source_lang,
             target_lang=target_lang,
             source_map_json=source_map_json,
             context_lines=context_lines,
+            glossary_entries=eff_glossary,
         )
 
         translated_map = await self._call_llm_json(
@@ -3004,6 +3253,7 @@ class OllamaTranslator:
         external_cache: dict[str, str] | None = None,
         use_cache: bool = True,
         skip_sighs: bool | None = None,
+        glossary_entries: list[dict[str, str]] | None = None,
     ) -> list[dict[str, Any]]:
         if not blocks or self.stop_requested:
             return []
@@ -3147,6 +3397,7 @@ class OllamaTranslator:
                             target_lang=target_lang,
                             active_model=active_model,
                             context_lines=ctx_snapshot,
+                            glossary_entries=glossary_entries,
                         )
                     except Exception as sub_exc:
                         logger.error(
@@ -3185,6 +3436,7 @@ class OllamaTranslator:
                         target_lang=target_lang,
                         active_model=active_model,
                         context_lines=running_context if running_context else None,
+                        glossary_entries=glossary_entries,
                     )
                 except Exception as chunk_exc:
                     logger.error(

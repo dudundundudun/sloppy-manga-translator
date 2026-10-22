@@ -1,7 +1,7 @@
 """
-FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.6-step3).
+FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.6).
 
-Изменения v1.0.6-step3:
+Изменения v1.0.6:
 - Расширение схемы `TextBlock` полями профессиональной верстки и локальной ретуши маски:
   `font_family`, `text_color`, `stroke_color`, `stroke_width`, `align`, `angle`,
   `style_preset`, `mask_dilate`, `custom_mask_strokes` (с полной обратной совместимостью).
@@ -66,7 +66,17 @@ from pydantic import BaseModel, Field
 from cleaner import BubbleCleaner
 from ocr_engine import MangaOCREngine
 from renderer import MangaRenderer
-from translator import CLOUD_API_PRESETS, RECOMMENDED_LOCAL_MODELS, OllamaTranslator, japanese_to_romaji_local
+from translator import (
+    CLOUD_API_PRESETS,
+    RECOMMENDED_LOCAL_MODELS,
+    OllamaTranslator,
+    export_glossary_to_sakura_text,
+    export_glossary_to_tsv,
+    japanese_to_romaji_local,
+    merge_glossaries,
+    normalize_glossary_entries,
+    parse_glossary_text_or_json,
+)
 
 from collections import OrderedDict, deque
 import hashlib
@@ -483,7 +493,7 @@ async def lifespan(app: FastAPI):
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.5)", flush=True)
+    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.6)", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -506,7 +516,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.5",
+    version="1.0.6",
     lifespan=lifespan,
 )
 
@@ -851,7 +861,7 @@ def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
                 return data
         except Exception as exc:
             logger.warning("Не удалось прочитать %s: %s", manifest_path, exc)
-    return {"pages": {}, "rolling_context": [], "phrase_cache": {}}
+    return {"pages": {}, "rolling_context": [], "phrase_cache": {}, "glossary": []}
 
 
 def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
@@ -965,6 +975,7 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
             }
         )
 
+    folder_glossary = normalize_glossary_entries(manifest.get("glossary", []))
     return {
         "status": "ok",
         "source_dir": str(source_dir),
@@ -973,6 +984,7 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
         "total_pages": len(images),
         "translated_pages": translated_count,
         "remaining_pages": max(0, len(images) - translated_count),
+        "folder_glossary": folder_glossary,
         "pages": pages_info,
     }
 
@@ -1207,6 +1219,7 @@ async def process_single_pil_image(
     context_lines: list[str] | None = None,
     external_cache: dict[str, str] | None = None,
     src_file: Path | str | None = None,
+    glossary_entries: list[dict[str, str]] | None = None,
 ) -> tuple[Image.Image, Image.Image, Image.Image, list[dict[str, Any]], str, str]:
     assert ocr_engine is not None
     assert translator_engine is not None
@@ -1253,6 +1266,7 @@ async def process_single_pil_image(
         context_lines=context_lines,
         external_cache=external_cache,
         skip_sighs=eff_skip_sighs,
+        glossary_entries=glossary_entries,
     )
     _llm_sec = round(time.perf_counter() - _t0_llm, 2)
 
@@ -1534,6 +1548,7 @@ async def _run_folder_translation_job(
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
                 try:
+                    folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -1542,6 +1557,7 @@ async def _run_folder_translation_job(
                         context_lines=rolling_context if rolling_context else None,
                         external_cache=phrase_cache,
                         skip_sighs=eff_skip_sighs,
+                        glossary_entries=folder_glossary_entries,
                     )
                     for eb in enriched_combined:
                         translated_by_gid[int(eb["id"])] = str(eb.get("translated_text") or "").strip()
@@ -1786,7 +1802,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.5 Server Running</h1>")
+    return HTMLResponse(content="<h1>Manga Translator v1.0.6 Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -1827,7 +1843,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.5",
+        "version": "1.0.6",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -1851,6 +1867,8 @@ async def health_check() -> dict[str, Any]:
         "uppercase": translator_engine.uppercase if translator_engine else True,
         "batch_pages": translator_engine.batch_pages if translator_engine else 12,
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
+        "glossary": translator_engine.glossary if translator_engine else [],
+        "glossary_count": len(translator_engine.glossary) if translator_engine else 0,
         "pull_state": translator_engine.pull_state if translator_engine else {},
         "supported_source_langs": ["auto", "ja", "ko", "zh"],
         "default_target_lang": "en",
@@ -2397,6 +2415,7 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
         context_lines=context_lines,
         external_cache=phrase_cache,
         src_file=src_file,
+        glossary_entries=normalize_glossary_entries(manifest.get("glossary", [])) if manifest else None,
     )
 
     if not blocks:
@@ -3249,7 +3268,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "1.0.5",
+            "version": "1.0.6",
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -3273,6 +3292,333 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     }
 
 
+
+
+class GlossarySaveRequest(BaseModel):
+    global_glossary: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Полный список записей глобального глоссария (config.json)",
+    )
+    folder_glossary: list[dict[str, Any]] | None = Field(
+        default=None,
+        description="Полный список записей локального глоссария выбранной главы (.translation_state.json)",
+    )
+    folder_path: str | None = Field(
+        default=None,
+        description="Путь к исходной папке главы для сохранения локального глоссария",
+    )
+    target_lang: str = Field(default="en")
+    import_text: str | None = Field(
+        default=None,
+        description="Сырой текст для импорта (.json, .tsv или формат Sakura `термин->перевод #примечание`)",
+    )
+    import_scope: str = Field(
+        default="both",
+        description="Куда импортировать записи из import_text: 'global', 'folder' или 'both'",
+    )
+    merge_import: bool = Field(
+        default=True,
+        description="Если True — объединить импортируемые записи с существующими; если False — заменить",
+    )
+
+
+class FolderFindReplaceRequest(BaseModel):
+    folder_path: str = Field(description="Путь к папке главы манги")
+    target_lang: str = Field(default="en")
+    find_text: str = Field(description="Искомая подстрока (например, имя персонажа или термин)")
+    replace_text: str = Field(default="", description="Текст замены")
+    match_case: bool = Field(default=False, description="Учитывать ли регистр символов при поиске и замене")
+    search_in: str = Field(
+        default="translated",
+        description="Где искать: 'translated' (в переведенном тексте) или 'original' (в японском/корейском оригинале)",
+    )
+    dry_run: bool = Field(
+        default=False,
+        description="Если True — только найти и вернуть список всех совпадений без изменения файлов",
+    )
+    uppercase: bool = Field(default=True)
+    min_font_size: int = Field(default=12)
+    max_font_size: int = Field(default=32)
+
+
+@app.get("/glossary")
+async def get_glossary_endpoint(
+    folder_path: str | None = Query(default=None),
+    target_lang: str = Query(default="en"),
+) -> dict[str, Any]:
+    """Возвращает глобальный глоссарий (из config.json), локальный глоссарий папки и их объединение + экспорт в Sakura/TSV."""
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    global_list = normalize_glossary_entries(translator_engine.glossary)
+    folder_list: list[dict[str, str]] = []
+    resolved_output_dir: str | None = None
+
+    if folder_path and folder_path.strip():
+        src_dir = _unwrap_output_folder_if_needed(Path(folder_path.strip()).resolve())
+        if src_dir.exists() and src_dir.is_dir():
+            out_dir = get_output_dir_for_folder(src_dir, target_lang)
+            resolved_output_dir = str(out_dir)
+            manifest = _load_folder_manifest(out_dir)
+            folder_list = normalize_glossary_entries(manifest.get("glossary", []))
+
+    merged = merge_glossaries(global_list, folder_list)
+    return {
+        "status": "ok",
+        "global_glossary": global_list,
+        "folder_glossary": folder_list,
+        "merged_glossary": merged,
+        "output_dir": resolved_output_dir,
+        "sakura_text": export_glossary_to_sakura_text(merged),
+        "tsv_text": export_glossary_to_tsv(merged),
+    }
+
+
+@app.post("/glossary")
+async def save_glossary_endpoint(payload: GlossarySaveRequest) -> dict[str, Any]:
+    """Сохраняет или импортирует глобальный (`config.json`) и папочный (`.translation_state.json`) глоссарий."""
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    t_lang = (payload.target_lang or "en").strip().lower()
+    global_list = (
+        normalize_glossary_entries(payload.global_glossary)
+        if payload.global_glossary is not None
+        else normalize_glossary_entries(translator_engine.glossary)
+    )
+
+    folder_list: list[dict[str, str]] = []
+    out_dir: Path | None = None
+    manifest: dict[str, Any] | None = None
+
+    if payload.folder_path and payload.folder_path.strip():
+        src_dir = _unwrap_output_folder_if_needed(Path(payload.folder_path.strip()).resolve())
+        if src_dir.exists() and src_dir.is_dir():
+            out_dir = get_output_dir_for_folder(src_dir, t_lang)
+            manifest = _load_folder_manifest(out_dir)
+            folder_list = (
+                normalize_glossary_entries(payload.folder_glossary)
+                if payload.folder_glossary is not None
+                else normalize_glossary_entries(manifest.get("glossary", []))
+            )
+    elif payload.folder_glossary is not None:
+        folder_list = normalize_glossary_entries(payload.folder_glossary)
+
+    imported_count = 0
+    if payload.import_text and payload.import_text.strip():
+        imported_items = parse_glossary_text_or_json(payload.import_text, default_target_lang="all")
+        imported_count = len(imported_items)
+        scope = (payload.import_scope or "both").strip().lower()
+        if scope in ("global", "both"):
+            global_list = (
+                merge_glossaries(global_list, imported_items)
+                if payload.merge_import
+                else normalize_glossary_entries(imported_items)
+            )
+        if scope in ("folder", "both") and out_dir is not None:
+            folder_list = (
+                merge_glossaries(folder_list, imported_items)
+                if payload.merge_import
+                else normalize_glossary_entries(imported_items)
+            )
+
+    translator_engine.save_config(glossary=global_list)
+
+    if out_dir is not None and manifest is not None:
+        manifest["glossary"] = folder_list
+        _save_folder_manifest(out_dir, manifest)
+
+    merged = merge_glossaries(global_list, folder_list)
+    return {
+        "status": "ok",
+        "imported_count": imported_count,
+        "global_glossary": global_list,
+        "folder_glossary": folder_list,
+        "merged_glossary": merged,
+        "sakura_text": export_glossary_to_sakura_text(merged),
+        "tsv_text": export_glossary_to_tsv(merged),
+    }
+
+
+@app.post("/folder_find_replace")
+async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dict[str, Any]:
+    """
+    Глобальный Поиск и Замена (`Ctrl+F` / `Ctrl+H`) по всем переведенным страницам папки без расхода токенов ИИ.
+    - При `dry_run=True` мгновенно сканирует `.translation_state.json` и возвращает список всех совпадений.
+    - При `dry_run=False` заменяет текст во всех совпавших блоках, обновляет `phrase_cache` и перерисовывает
+      только затронутые страницы через кэш очищенного слоя `cleaned_image` (0 мс на SimpleLama) и `renderer_engine.render_blocks`.
+    """
+    if cleaner_engine is None or renderer_engine is None or translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    find_q = (payload.find_text or "").strip()
+    if not find_q:
+        raise HTTPException(status_code=400, detail="Поле 'find_text' не может быть пустым.")
+
+    raw_folder = (payload.folder_path or "").strip()
+    if not raw_folder:
+        raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
+
+    source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+
+    t_lang = (payload.target_lang or "en").strip().lower()
+    if t_lang not in VALID_TARGET_LANGS:
+        t_lang = "en"
+
+    output_dir = get_output_dir_for_folder(source_dir, t_lang)
+    manifest = _load_folder_manifest(output_dir)
+    pages_meta = manifest.get("pages")
+    if not isinstance(pages_meta, dict) or not pages_meta:
+        return {
+            "status": "ok",
+            "dry_run": payload.dry_run,
+            "matches_count": 0,
+            "affected_pages_count": 0,
+            "rerendered_pages_count": 0,
+            "processing_time_sec": 0.0,
+            "matches": [],
+        }
+
+    if not isinstance(manifest.get("phrase_cache"), dict):
+        manifest["phrase_cache"] = {}
+
+    start_ts = time.perf_counter()
+    flags = 0 if payload.match_case else re.IGNORECASE
+    pattern = re.compile(re.escape(find_q), flags=flags)
+    search_in = "original" if str(payload.search_in).lower().strip() == "original" else "translated"
+    repl_str = payload.replace_text if payload.replace_text is not None else ""
+
+    all_images = collect_images_in_folder(source_dir)
+    page_index_by_rel: dict[str, int] = {}
+    src_path_by_rel: dict[str, Path] = {}
+    for idx, img_p in enumerate(all_images, start=1):
+        rel_n = _normalize_rel_path(img_p.relative_to(source_dir))
+        page_index_by_rel[rel_n] = idx
+        src_path_by_rel[rel_n] = img_p
+
+    matches: list[dict[str, Any]] = []
+    affected_rel_paths: list[str] = []
+
+    for rel_norm, p_meta in pages_meta.items():
+        if not isinstance(p_meta, dict):
+            continue
+        blocks_list = p_meta.get("blocks")
+        if not isinstance(blocks_list, list):
+            continue
+
+        page_modified = False
+        for b in blocks_list:
+            if not isinstance(b, dict):
+                continue
+            _ensure_block_clean_bbox(b)
+            orig_txt = str(b.get("original_text") or "")
+            trans_txt = str(b.get("translated_text") or "")
+
+            haystack = orig_txt if search_in == "original" else trans_txt
+            if not haystack or not pattern.search(haystack):
+                continue
+
+            if search_in == "translated":
+                new_trans_txt = pattern.sub(lambda _: repl_str, trans_txt)
+            else:
+                # Если ищем по японскому/корейскому оригиналу, а заменяем перевод:
+                if pattern.search(trans_txt):
+                    new_trans_txt = pattern.sub(lambda _: repl_str, trans_txt)
+                elif repl_str:
+                    new_trans_txt = repl_str
+                else:
+                    new_trans_txt = trans_txt
+
+            matches.append(
+                {
+                    "page_rel_path": rel_norm,
+                    "page_index": page_index_by_rel.get(rel_norm, 0),
+                    "block_id": int(b.get("id") or 1),
+                    "original_text": orig_txt,
+                    "before_text": trans_txt,
+                    "after_text": new_trans_txt,
+                }
+            )
+
+            if not payload.dry_run and new_trans_txt != trans_txt:
+                b["translated_text"] = new_trans_txt
+                b["is_deleted"] = not bool(new_trans_txt.strip())
+                if orig_txt.strip() and new_trans_txt.strip():
+                    manifest["phrase_cache"][f"{t_lang}||{orig_txt.strip()}"] = new_trans_txt.strip()
+                    translator_engine.phrase_cache[f"{t_lang}||{orig_txt.strip()}"] = new_trans_txt.strip()
+                page_modified = True
+
+        if page_modified:
+            p_meta["updated_at"] = int(time.time())
+            affected_rel_paths.append(rel_norm)
+
+    rerendered_count = 0
+    if not payload.dry_run and affected_rel_paths:
+        _save_folder_manifest(output_dir, manifest)
+
+        for rel_norm in affected_rel_paths:
+            src_file = src_path_by_rel.get(rel_norm) or (source_dir / rel_norm)
+            if not src_file.exists() or not src_file.is_file():
+                continue
+            dest_path = output_dir / rel_norm
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+            p_meta = pages_meta[rel_norm]
+            p_blocks = [
+                _ensure_block_clean_bbox(b)
+                for b in (p_meta.get("blocks") or [])
+                if isinstance(b, dict)
+            ]
+            active_blocks = [
+                b for b in p_blocks if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()
+            ]
+            with Image.open(src_file) as raw_im:
+                pil_image = _pil_to_rgb_clean(raw_im)
+
+            if not active_blocks:
+                final_image = pil_image.copy()
+            else:
+                cleaned_image, _, _, _ = await _get_or_clean_page_image(
+                    pil_image,
+                    active_blocks,
+                    src_file=src_file,
+                    save_to_disk=True,
+                )
+                use_upper = bool(p_meta.get("uppercase", payload.uppercase))
+                min_fs = int(p_meta.get("min_font_size") or payload.min_font_size or 12)
+                max_fs = int(p_meta.get("max_font_size") or payload.max_font_size or 32)
+                final_image = await asyncio.to_thread(
+                    renderer_engine.render_blocks,
+                    cleaned_image,
+                    active_blocks,
+                    use_upper,
+                    max_fs,
+                    min_fs,
+                )
+
+            save_kwargs: dict[str, Any] = {}
+            if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
+                save_kwargs["quality"] = 95
+            final_image.save(dest_path, **save_kwargs)
+            p_meta["blocks"] = p_blocks
+            rerendered_count += 1
+
+        _save_folder_manifest(output_dir, manifest)
+
+    elapsed = round(time.perf_counter() - start_ts, 3)
+    affected_pages_unique = len({m["page_rel_path"] for m in matches})
+    return {
+        "status": "ok",
+        "dry_run": payload.dry_run,
+        "matches_count": len(matches),
+        "affected_pages_count": affected_pages_unique,
+        "rerendered_pages_count": rerendered_count,
+        "processing_time_sec": elapsed,
+        "matches": matches,
+    }
+
+
 @app.get("/diagnostics")
 async def get_diagnostics_endpoint() -> dict[str, Any]:
     """Возвращает полный диагностический слепок сервера, GPU/VRAM, таймингов этапов, запросов к ИИ и логов."""
@@ -3289,7 +3635,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
     fj = d["folder_job"]
 
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.5 ===",
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.6 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -3397,10 +3743,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.5":
+                if running_ver != "1.0.6":
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.5...",
+                        f"Останавливаю старый процесс для запуска v1.0.6...",
                         flush=True,
                     )
                     try:
@@ -3425,5 +3771,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.5 на 127.0.0.1:5000...", flush=True)
+    print("Запуск локального сервера Manga Translator v1.0.6 на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)
