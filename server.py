@@ -213,6 +213,14 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     else:
         clean_bbox = list(bbox)
     block["clean_bbox"] = clean_bbox
+    tb_raw = block.get("text_bbox")
+    if isinstance(tb_raw, (list, tuple)) and len(tb_raw) >= 4:
+        try:
+            block["text_bbox"] = [int(round(float(x))) for x in tb_raw[:4]]
+        except Exception:
+            block["text_bbox"] = None
+    else:
+        block.setdefault("text_bbox", None)
     block["bbox_modified"] = bool(block.get("bbox_modified", False)) or (clean_bbox != bbox)
     cw = clean_bbox[2] - clean_bbox[0]
     ch = clean_bbox[3] - clean_bbox[1]
@@ -629,6 +637,10 @@ class TextBlock(BaseModel):
         default=None,
         description="Исходные координаты оригинального текста для инпейнтинга (не смещаются при перетаскивании рамки перевода)",
     )
+    text_bbox: list[int] | None = Field(
+        default=None,
+        description="Точный внутренний контур букв внутри баббла (от двухконтурного детектора RT-DETR-v2 / TightInkCrop)",
+    )
     bbox_modified: bool = Field(
         default=False,
         description="Если True, пользователь вручную передвинул или изменил размер рамки перевода мышкой",
@@ -841,6 +853,11 @@ class ManualRegionTranslateRequest(BaseModel):
     lang: str = Field(default="auto")
     target_lang: str = Field(default="en")
     ollama_model: str | None = Field(default=None)
+    use_vlm_ocr: bool = Field(
+        default=False,
+        description="Принудительно использовать снайперский VLM-OCR (Vision-модель) для чтения сложного рукописного текста/SFX/обложки",
+    )
+    vlm_model: str | None = Field(default=None, description="Явное имя Vision-модели для VLM-OCR (опционально)")
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
@@ -859,6 +876,11 @@ class RetranslateSingleBlockRequest(BaseModel):
     lang: str = Field(default="auto")
     target_lang: str = Field(default="en")
     ollama_model: str | None = Field(default=None)
+    use_vlm_ocr: bool = Field(
+        default=False,
+        description="Если True, заново распознает оригинал блока через снайперский VLM-OCR (Vision-модель) перед переводом",
+    )
+    vlm_model: str | None = Field(default=None, description="Явное имя Vision-модели для VLM-OCR (опционально)")
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
@@ -1893,8 +1915,14 @@ async def health_check() -> dict[str, Any]:
         if (cleaner_engine is not None and cleaner_engine.lama_model is not None)
         else "OpenCV INPAINT_TELEA"
     )
-    has_multilang_engine = bool(ocr_engine and hasattr(ocr_engine, "_check_easyocr"))
-    easyocr_ok = bool(ocr_engine._check_easyocr()) if has_multilang_engine else False
+    has_multilang_engine = bool(
+        ocr_engine and (hasattr(ocr_engine, "_check_multilang_ocr") or hasattr(ocr_engine, "_check_easyocr"))
+    )
+    easyocr_ok = bool(
+        ocr_engine._check_multilang_ocr()
+        if (ocr_engine and hasattr(ocr_engine, "_check_multilang_ocr"))
+        else (ocr_engine._check_easyocr() if (ocr_engine and hasattr(ocr_engine, "_check_easyocr")) else False)
+    )
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
@@ -2941,6 +2969,11 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
             pil_image,
             clamped_bbox,
             payload.lang,
+            payload.use_vlm_ocr,
+            payload.vlm_model,
+            translator_engine.ollama_url if translator_engine else "http://127.0.0.1:11434",
+            translator_engine.unsloth_url if translator_engine else None,
+            translator_engine.unsloth_api_key if translator_engine else None,
         )
 
     orig_text = (payload.custom_original_text or recognized_text or "").strip()
@@ -3101,18 +3134,24 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
 
     orig_t = str(target_blk.get("original_text") or "").strip()
     det_lang = payload.lang if payload.lang in ("ja", "ko", "zh") else "ja"
-    if not orig_t or orig_t == "[Выделенная область]":
-        ocr_coords = target_blk.get("clean_bbox") or target_blk["bbox"]
+    if payload.use_vlm_ocr or not orig_t or orig_t == "[Выделенная область]":
+        ocr_coords = target_blk.get("text_bbox") or target_blk.get("clean_bbox") or target_blk["bbox"]
         async with gpu_lock:
             rec_t, det_lang, _ = await asyncio.to_thread(
                 ocr_engine.recognize_manual_region,
                 pil_image,
                 ocr_coords,
                 payload.lang,
+                payload.use_vlm_ocr,
+                payload.vlm_model,
+                translator_engine.ollama_url if translator_engine else "http://127.0.0.1:11434",
+                translator_engine.unsloth_url if translator_engine else None,
+                translator_engine.unsloth_api_key if translator_engine else None,
             )
         if rec_t:
             orig_t = rec_t
             target_blk["original_text"] = orig_t
+            target_blk["romaji_text"] = japanese_to_romaji_local(orig_t)
 
     if orig_t:
         active_mod = await translator_engine.resolve_model(payload.ollama_model)
@@ -3340,6 +3379,31 @@ def _build_diagnostics_payload() -> dict[str, Any]:
             **gpu_data,
             "inpaint_backend": inpaint_backend,
             "easyocr_installed": easyocr_ok,
+            "detector_backend": (
+                ocr_engine.get_detector_backend_name()
+                if (ocr_engine is not None and hasattr(ocr_engine, "get_detector_backend_name"))
+                else "YOLOv8m"
+            ),
+            "ja_ocr_backend": (
+                ocr_engine.get_ja_ocr_backend_name()
+                if (ocr_engine is not None and hasattr(ocr_engine, "get_ja_ocr_backend_name"))
+                else "MangaOCR FP16"
+            ),
+            "ko_zh_ocr_backend": (
+                ocr_engine.get_multilang_ocr_backend_name()
+                if (ocr_engine is not None and hasattr(ocr_engine, "get_multilang_ocr_backend_name"))
+                else "HayaiOCR v2.5 Nova + SmartLineSplit"
+            ),
+            "vlm_ocr_backend": (
+                ocr_engine.get_vlm_ocr_backend_name()
+                if (ocr_engine is not None and hasattr(ocr_engine, "get_vlm_ocr_backend_name"))
+                else "Sniper VLM-OCR (Ollama Vision / Cloud Vision)"
+            ),
+            "last_detection_stats": (
+                dict(ocr_engine.last_detection_stats)
+                if (ocr_engine is not None and hasattr(ocr_engine, "last_detection_stats"))
+                else {}
+            ),
         },
         "translator": trans_diag,
         "folder_job": folder_job_state,
@@ -3699,7 +3763,11 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         f"• Папка проекта: {srv.get('base_dir')}",
         f"• Лог-файл: {srv.get('log_file_path')} ({srv.get('log_file_size_kb')} КБ)",
         f"• Видеокарта: {gpu.get('device_name', 'CPU')} | VRAM занято: {gpu.get('vram_allocated_mb', 0)} / {gpu.get('vram_total_mb', 0)} МБ (резерв: {gpu.get('vram_reserved_mb', 0)} МБ)",
-        f"• Очистка бабблов: {gpu.get('inpaint_backend')} | EasyOCR установлен: {gpu.get('easyocr_installed')}",
+        f"• Детектор текста/бабблов: {gpu.get('detector_backend', 'YOLOv8m')}",
+        f"• Движок OCR (Японский JA): {gpu.get('ja_ocr_backend', 'MangaOCR FP16')}",
+        f"• Движок OCR (Корейский KO / Китайский ZH): {gpu.get('ko_zh_ocr_backend', 'HayaiOCR v2.5 Nova + SmartLineSplit')}",
+        f"• Снайперский VLM-OCR (SFX / Обложки): {gpu.get('vlm_ocr_backend', 'Sniper VLM-OCR (Ollama Vision / Cloud Vision)')}",
+        f"• Очистка бабблов: {gpu.get('inpaint_backend')} | Мультиязычный OCR активен: {gpu.get('easyocr_installed')}",
         "",
         "--- 🤖 НАСТРОЙКИ И СТАТИСТИКА ИИ / КЭША ---",
         f"• Активная модель: {tr.get('selected_model')} | API URL: {tr.get('api_url')} | Ключ: {tr.get('masked_api_key') or 'нет'}",

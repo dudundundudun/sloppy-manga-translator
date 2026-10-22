@@ -464,6 +464,27 @@ class BubbleCleaner:
             if rh < 6 or rw < 6:
                 continue
 
+            # Если двухконтурный детектор (Шаг 1: RT-DETR-v2 / TightInkCrop) передал точный `text_bbox`,
+            # используем его с защитным запасом +10px для отсечения линий рисунка/рамки баббла по краям `clean_bbox`
+            tb_roi_bounds: tuple[int, int, int, int] | None = None
+            raw_tb = block.get("text_bbox")
+            if (
+                not bool(block.get("bbox_modified", False))
+                and isinstance(raw_tb, (list, tuple))
+                and len(raw_tb) >= 4
+            ):
+                try:
+                    tx1, ty1, tx2, ty2 = [int(round(float(v))) for v in raw_tb[:4]]
+                    if (tx2 - tx1) >= 8 and (ty2 - ty1) >= 8:
+                        r_tx1 = max(0, (tx1 - ix1) - 10)
+                        r_ty1 = max(0, (ty1 - iy1) - 10)
+                        r_tx2 = min(rw, (tx2 - ix1) + 10)
+                        r_ty2 = min(rh, (ty2 - iy1) + 10)
+                        if (r_tx2 - r_tx1) >= 8 and (r_ty2 - r_ty1) >= 8:
+                            tb_roi_bounds = (r_tx1, r_ty1, r_tx2, r_ty2)
+                except Exception:
+                    tb_roi_bounds = None
+
             p75 = float(np.percentile(roi_gray, 75))
             median_val = float(np.median(roi_gray))
 
@@ -495,6 +516,10 @@ class BubbleCleaner:
                         continue
                     if border_touches == 1 and (comp_w > rw * 0.82 or comp_h > rh * 0.82):
                         continue
+                    if border_touches >= 1 and tb_roi_bounds is not None:
+                        tbx1, tby1, tbx2, tby2 = tb_roi_bounds
+                        if (comp_x + comp_w) < tbx1 or comp_x > tbx2 or (comp_y + comp_h) < tby1 or comp_y > tby2:
+                            continue
 
                     clean_roi_mask[labels == label_idx] = 255
 
@@ -545,6 +570,10 @@ class BubbleCleaner:
                         border_touches == 1 and (comp_w > rw * 0.72 or comp_h > rh * 0.72)
                     ):
                         continue
+                    if tb_roi_bounds is not None:
+                        tbx1, tby1, tbx2, tby2 = tb_roi_bounds
+                        if (comp_x + comp_w) < tbx1 or comp_x > tbx2 or (comp_y + comp_h) < tby1 or comp_y > tby2:
+                            continue
 
                 clean_roi_mask[labels == label_idx] = 255
 

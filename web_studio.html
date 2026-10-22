@@ -2460,6 +2460,7 @@
             <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения рамок мышкой или колесиком">⏳ Авто-сохранение...</span>
             <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (перетаскивайте рамки мышкой, тяните за края/углы для изменения размера текста или крутите колесико мыши)">📌 Рамки #N</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице, чтобы принудительно добавить его в перевод">➕ Обвести</button>
+            <button class="pill-btn" id="btn-vlm-draw-toggle" onclick="toggleVlmForManualDraw()" title="Снайперский режим 👁 VLM-OCR: при обведении области «➕ Обвести» сразу читать сложные рукописные SFX, стилизованные шрифты и цветные обложки через Vision-модель (GLM-OCR / Qwen2.5-VL / Gemma3 / Cloud Vision)">👁 VLM-OCR</button>
             <button class="pill-btn" id="btn-top-mask-brush" style="display:none;" onclick="toggleMaskBrushMode()" title="Кисть ретуши замазки: ЛКМ — дотереть остатки оригинала, ПКМ — восстановить задетый рисунок (Горячая клавиша: B)">🖌 Кисть маски</button>
             <button class="pill-btn" id="btn-toggle-drawer" onclick="openPageEditor()" title="Открыть или скрыть панель редактора текста">✏️ Редактор (0)</button>
             <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
@@ -2720,7 +2721,8 @@
     <div class="inline-popup-footer">
       <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
         <button type="button" class="btn-save-edit" style="padding:5px 11px; font-size:11.5px;" onclick="saveFromInlinePopup()" title="Сохранить и перерисовать страницу (Ctrl+Enter или Ctrl+S)">💾 Применить</button>
-        <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
+        <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event, false)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
+        <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event, true)" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;" title="Снайперский 👁 VLM-OCR: заново прочитать сложный рукописный шрифт, SFX или цветную надпись через Vision-модель и сразу перевести">👁 VLM-OCR</button>
         <button type="button" class="btn-split-block" id="popup-split-btn" onclick="splitFromInlinePopup(event)" title="Разделить эту рамку и её текст на 2 независимых блока">✂️ Разделить рамку</button>
         <button type="button" class="btn-merge-blocks" id="popup-merge-btn" onclick="mergeSelectedBlocks(event)" title="Объединить выделенные через Shift+Клик рамки в один блок (M)">🔗 Объединить рамки (M)</button>
         <button type="button" class="romaji-copy-btn" id="popup-clear-btn" onclick="clearTextFromInlinePopup(event)" title="Очистить только текст перевода внутри рамки (оставить саму рамку и оригинал на картинке)">🧹 Текст</button>
@@ -2823,6 +2825,8 @@
                 <option value="aya-expanse:8b">🌍 Aya Expanse 8B — Легкая мультиязычная JA/KO/ZH➔RU/EN (~5.1 ГБ)</option>
                 <option value="gemma3:12b">💎 Gemma 3 12B — Живой литературный слог RU/EN (~7.3 ГБ)</option>
                 <option value="qwen2.5:14b">🐉 Qwen 2.5 14B — Универсал JA/KO/ZH + Ромадзи (~8.4 ГБ)</option>
+                <option value="glm-ocr:latest">👁 GLM-OCR 0.9B (Vision) — Снайперский OCR для сложных SFX и обложек (~1.9 ГБ)</option>
+                <option value="qwen2.5vl:7b">👁 Qwen 2.5 VL 7B (Vision) — Мультимодальный VLM-OCR для сложных шрифтов (~5.0 ГБ)</option>
               </select>
             </div>
             <div id="recommended-model-desc-box" style="font-size:12px; color:var(--text-primary); background:rgba(129, 140, 248, 0.11); border:1px solid rgba(129, 140, 248, 0.32); border-radius:10px; padding:9px 12px; line-height:1.45;">
@@ -3692,8 +3696,12 @@
               `Лог: <b>${srv.log_file_size_kb || 0} КБ</b> (logs/miko_studio.log)` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
-              `<b style="color:var(--mint);">🎮 GPU и Очистка:</b><br>` +
+              `<b style="color:var(--mint);">🎮 GPU, Детекция и Очистка:</b><br>` +
               `${escapeHtml(gpu.device_name || "CPU")} · VRAM: <b>${gpu.vram_allocated_mb || 0} / ${gpu.vram_total_mb || 0} МБ</b><br>` +
+              `Детектор: <b>${escapeHtml(gpu.detector_backend || "YOLOv8m")}</b><br>` +
+              `OCR (JA): <b>${escapeHtml(gpu.ja_ocr_backend || "MangaOCR FP16")}</b><br>` +
+              `OCR (KO/ZH): <b>${escapeHtml(gpu.ko_zh_ocr_backend || "HayaiOCR v2.5 Nova + SmartLineSplit")}</b><br>` +
+              `VLM-OCR (SFX): <b>${escapeHtml(gpu.vlm_ocr_backend || "Sniper VLM-OCR (Ollama / Cloud Vision)")}</b><br>` +
               `Инпейнт: ${escapeHtml(gpu.inpaint_backend || "—")}` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
@@ -4301,6 +4309,18 @@
         langs: "JA / KO / ZH ➔ RU / EN + Ромадзи",
         size_gb: "8.4 ГБ",
         description: "Мощная азиатская модель от Alibaba для одновременной работы с японской мангой, корейской манхвой, китайской маньхуа (культивация/сянься) и точной транслитерацией кандзи в Ромадзи."
+      },
+      "glm-ocr:latest": {
+        short_name: "👁 GLM-OCR 0.9B (Vision OCR)",
+        langs: "Vision OCR: JA / KO / ZH / EN (SFX и обложки)",
+        size_gb: "1.9 ГБ",
+        description: "Специализированная компактная Vision-OCR модель (0.9B, #1 на OmniDocBench V1.5) для снайперского чтения рукописных звуковых эффектов (SFX), изогнутых логотипов и цветных обложек при выделении «➕ Обвести» или по кнопке «👁 VLM-OCR»."
+      },
+      "qwen2.5vl:7b": {
+        short_name: "👁 Qwen 2.5 VL 7B (Vision OCR)",
+        langs: "Vision OCR + Перевод: JA / KO / ZH",
+        size_gb: "5.0 ГБ",
+        description: "Мощная визуально-языковая модель Alibaba Qwen 2.5 VL 7B. Безошибочно читает стилизованные каллиграфические шрифты, декоративные плашки, вертикальные и наклонные SFX на японском, корейском и китайском языках."
       }
     };
     let recommendedModelsCatalog = { ...FALLBACK_RECOMMENDED_MODELS_META };
@@ -6707,9 +6727,9 @@
       if (popupBlockId) populateInlinePopup(popupBlockId);
     }
 
-    async function retranslateFromInlinePopup(ev) {
+    async function retranslateFromInlinePopup(ev, useVlmOcr = false) {
       if (!popupBlockId) return;
-      await retranslateSingleBlockById(popupBlockId, ev);
+      await retranslateSingleBlockById(popupBlockId, ev, useVlmOcr);
       if (popupBlockId) populateInlinePopup(popupBlockId);
     }
 
@@ -6781,7 +6801,8 @@
           ).join("") +
           `</select></div>`;
 
-        const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>`;
+        const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event, false)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>` +
+          `<button type="button" class="btn-retranslate-block" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;" onclick="retranslateSingleBlockById(${b.id}, event, true)" title="Снайперский 👁 VLM-OCR: заново распознать сложный рукописный текст, SFX или обложку через Vision-модель и сразу перевести">👁 VLM-OCR</button>`;
         const splitFrameBtnHtml = `<button type="button" class="btn-split-block" onclick="splitBlockById(${b.id}, event)" title="Разделить рамку #${b.id} и её текст на 2 независимых блока">✂️ Разделить рамку</button>`;
         const removeFrameBtnHtml = `<button type="button" class="btn-delete-block" onclick="removeBlockFrameCompletely(${b.id}, event)" title="Полностью удалить рамку #${b.id} с картинки и вернуть чистый оригинал">🗑 Удалить рамку</button>`;
         const deleteActionHtml = !isDel
@@ -7228,7 +7249,22 @@
 
     /* ==================== MANUAL DRAW REGION & 60 FPS LIVE MASK BRUSH ==================== */
     let isDrawRegionMode = false;
+    let useVlmForManualDraw = false;
     let activeDrawState = null;
+
+    function toggleVlmForManualDraw(forceState) {
+      useVlmForManualDraw = typeof forceState === "boolean" ? forceState : !useVlmForManualDraw;
+      const btn = document.getElementById("btn-vlm-draw-toggle");
+      if (btn) {
+        btn.classList.toggle("subtle-active", useVlmForManualDraw);
+        btn.textContent = useVlmForManualDraw ? "👁 VLM-OCR: ВКЛ" : "👁 VLM-OCR";
+      }
+      sayMiko(
+        useVlmForManualDraw
+          ? "👁 Снайперский режим VLM-OCR включен! Теперь при выделении «➕ Обвести» сложные рукописные SFX, шрифты и обложки сразу читаются через Vision-модель~ ✨"
+          : "Режим «➕ Обвести» использует быстрый каскадный OCR с автоматическим фоллбэком на 👁 VLM-OCR для сложных SFX."
+      );
+    }
 
     function toggleDrawRegionMode(forceState) {
       if (!selectedPage) {
@@ -7467,7 +7503,11 @@
       if (!selectedPage) return;
       syncInputsToCurrentBlocks();
       pushPageHistorySnapshot();
-      sayMiko(`🔍 Распознаю и принудительно перевожу обведенный тобой участок [${bbox.join(", ")}]... Секундочку~ ✨`);
+      sayMiko(
+        useVlmForManualDraw
+          ? `👁 Снайперский VLM-OCR читает сложный шрифт/SFX на участке [${bbox.join(", ")}] и переводит его... Секундочку~ ✨`
+          : `🔍 Распознаю и принудительно перевожу обведенный тобой участок [${bbox.join(", ")}]... Секундочку~ ✨`
+      );
 
       try {
         const res = await fetch("/translate_manual_region", {
@@ -7481,6 +7521,7 @@
             lang: document.getElementById("sel-source-lang").value,
             target_lang: targetLang,
             ollama_model: document.getElementById("sel-model").value,
+            use_vlm_ocr: Boolean(useVlmForManualDraw),
             uppercase: document.getElementById("chk-uppercase").checked,
             min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
             max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
@@ -7527,12 +7568,16 @@
       }
     }
 
-    async function retranslateSingleBlockById(blockId, ev) {
+    async function retranslateSingleBlockById(blockId, ev, useVlmOcr = false) {
       if (ev) ev.stopPropagation();
       if (!selectedPage) return;
       syncInputsToCurrentBlocks();
       pushPageHistorySnapshot();
-      sayMiko(`🔄 Принудительно перевожу блок #${blockId} через ИИ... ✍️✨`);
+      sayMiko(
+        useVlmOcr
+          ? `👁 Снайперский VLM-OCR заново читает оригинал блока #${blockId} (рукописный шрифт / SFX) и переводит через ИИ... ✨`
+          : `🔄 Принудительно перевожу блок #${blockId} через ИИ... ✍️✨`
+      );
 
       try {
         const res = await fetch("/retranslate_single_block", {
@@ -7546,6 +7591,7 @@
             lang: document.getElementById("sel-source-lang").value,
             target_lang: targetLang,
             ollama_model: document.getElementById("sel-model").value,
+            use_vlm_ocr: Boolean(useVlmOcr),
             uppercase: document.getElementById("chk-uppercase").checked,
             min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
             max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,

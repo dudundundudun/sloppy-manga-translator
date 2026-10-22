@@ -147,6 +147,32 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "langs": "JA / KO / ZH ➔ RU / EN + Ромадзи",
         "description": "Мощная азиатская модель от Alibaba для одновременной работы с японской мангой, корейской манхвой, китайской маньхуа (культивация/сянься) и точной транслитерацией кандзи в Ромадзи.",
     },
+    {
+        "ollama_tag": "glm-ocr:latest",
+        "local_tag": "glm-ocr:latest",
+        "hf_repo": "zai-org/GLM-OCR",
+        "hf_filename": "",
+        "hf_quant": "F16",
+        "id": "ollama::glm-ocr:latest",
+        "title": "👁 GLM-OCR 0.9B (Vision) — Снайперский OCR для сложных рукописных SFX и обложек (~1.9 ГБ)",
+        "short_name": "GLM-OCR 0.9B (VLM-OCR)",
+        "size_gb": "1.9 ГБ",
+        "langs": "Vision OCR: JA / KO / ZH / EN (SFX и обложки)",
+        "description": "Специализированная компактная Vision-OCR модель (0.9B, #1 на OmniDocBench V1.5) для снайперского чтения рукописных звуковых эффектов (SFX), изогнутых логотипов и цветных обложек при выделении «➕ Обвести» или по кнопке «👁 VLM-OCR».",
+    },
+    {
+        "ollama_tag": "qwen2.5vl:7b",
+        "local_tag": "qwen2.5vl:7b",
+        "hf_repo": "Qwen/Qwen2.5-VL-7B-Instruct-GGUF",
+        "hf_filename": "",
+        "hf_quant": "Q4_K_M",
+        "id": "ollama::qwen2.5vl:7b",
+        "title": "👁 Qwen 2.5 VL 7B (Vision) — Мультимодальный VLM-OCR для сложных шрифтов JA/KO/ZH (~5.0 ГБ)",
+        "short_name": "Qwen 2.5 VL 7B (VLM-OCR)",
+        "size_gb": "5.0 ГБ",
+        "langs": "Vision OCR + Перевод: JA / KO / ZH",
+        "description": "Мощная визуально-языковая модель Alibaba Qwen 2.5 VL 7B. Безошибочно читает стилизованные каллиграфические шрифты, декоративные плашки, вертикальные и наклонные SFX на японском, корейском и китайском языках.",
+    },
 ]
 
 CLOUD_API_PRESETS: list[dict[str, str]] = [
