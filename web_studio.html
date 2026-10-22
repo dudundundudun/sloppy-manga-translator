@@ -2465,6 +2465,7 @@
             <button class="pill-btn" id="btn-toggle-drawer" onclick="openPageEditor()" title="Открыть или скрыть панель редактора текста">✏️ Редактор (0)</button>
             <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
             <button class="pill-btn" onclick="openOutputFolder()" title="Открыть папку с готовым переводом в Проводнике">📂 Папка</button>
+            <button class="pill-btn" onclick="viewChapterTranslationReport(true)" title="Открыть подробный диагностический отчет перевода текущей главы (TRANSLATION_REPORT.txt — модели, параметры, воронка блоков, почему не переведены страницы/текст, отказы API)">📋 Отчет главы</button>
           </div>
         </div>
 
@@ -3222,6 +3223,12 @@
               <button type="button" class="cta-main" style="width:auto; padding:9px 16px; font-size:12.5px;" onclick="copyDiagnosticsReportToClipboard()">
                 📋 Скопировать отчет для чата (в 1 клик)
               </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px; border-color:rgba(52, 211, 153, 0.45); color:#6ee7b7;" onclick="viewChapterTranslationReport(false)" title="Загрузить ниже полный отчет TRANSLATION_REPORT.txt из папки переведенной манги">
+                📑 Отчет главы (TRANSLATION_REPORT.txt)
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openChapterReportInNotepad()" title="Открыть файл TRANSLATION_REPORT.txt из папки переведенной манги напрямую в Блокноте Windows">
+                📝 Открыть в Блокноте
+              </button>
               <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="loadDiagnosticsPanel()">
                 🔄 Обновить
               </button>
@@ -3769,6 +3776,59 @@
       await fetch("/diagnostics/clear", { method: "POST" });
       await loadDiagnosticsPanel();
       sayMiko("Диагностические счетчики и буфер логов очищены! 🧹✨");
+    }
+
+    async function viewChapterTranslationReport(openModalFirst = false) {
+      if (openModalFirst) {
+        openSettingsOnTab("tab-diag");
+      }
+      const folderParam = currentFolder || (selectedPage && selectedPage.source_path ? selectedPage.source_path.replace(/[\\/][^\\/]+$/, "") : "");
+      if (!folderParam) {
+        sayMiko("Сначала выбери папку с мангой слева, чтобы я сформировала диагностический отчет главы TRANSLATION_REPORT.txt~ 📋🌸");
+        return;
+      }
+      try {
+        const q = new URLSearchParams({ folder_path: folderParam, target_lang: targetLang });
+        const res = await fetch("/folder_report?" + q.toString());
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Не удалось загрузить отчет главы: ${data.detail || "ошибка"}`);
+          return;
+        }
+        const repTa = document.getElementById("diag-report-textarea");
+        if (repTa && data.report_text) {
+          repTa.value = data.report_text;
+          repTa.scrollTop = 0;
+        }
+        try {
+          await navigator.clipboard.writeText(data.report_text || "");
+          const badge = document.getElementById("diag-copy-badge");
+          if (badge) {
+            badge.textContent = "✅ Отчет главы (TRANSLATION_REPORT.txt) загружен и скопирован!";
+            badge.style.display = "inline";
+            setTimeout(() => { badge.style.display = "none"; }, 4500);
+          }
+        } catch (e) {}
+        sayMiko(`📑 Подробный отчет главы сохранен в «${data.report_path}» и показан в окне ниже (также скопирован в буфер обмена)! ✨`);
+      } catch (e) {
+        sayMiko(`Ошибка чтения отчета главы: ${e.message}`);
+      }
+    }
+
+    async function openChapterReportInNotepad() {
+      const folderParam = currentFolder || (selectedPage && selectedPage.source_path ? selectedPage.source_path.replace(/[\\/][^\\/]+$/, "") : "");
+      if (!folderParam) {
+        sayMiko("Сначала выбери папку с мангой слева~ 📋🌸");
+        return;
+      }
+      const q = new URLSearchParams({ folder_path: folderParam, target_lang: targetLang });
+      const res = await fetch("/open_folder_report?" + q.toString(), { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        sayMiko(`Открыла файл отчета «${data.report_path}» в Блокноте Windows! 📝🌸`);
+      } else {
+        sayMiko(`Не удалось открыть файл отчета: ${data.detail || "ошибка"}`);
+      }
     }
 
     /* ==================== STEP 4: GLOSSARY & GLOBAL FIND/REPLACE ==================== */

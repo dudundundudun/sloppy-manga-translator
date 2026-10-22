@@ -266,6 +266,7 @@ class MangaOCREngine:
 
         self._page_ocr_cache: dict[tuple[int, int, int, int, str], str] = {}
         self._last_detected_lang: str = "ja"
+        self.last_page_diagnostics: dict[str, Any] = {}
         self.last_detection_stats: dict[str, Any] = {
             "detector_backend": "YOLOv8m + TightInkCrop",
             "rtdetr_active": False,
@@ -1830,6 +1831,50 @@ class MangaOCREngine:
         return False
 
     @classmethod
+    def classify_filter_reason(
+        cls,
+        text: str,
+        is_free_text: bool = False,
+        text_filter_mode: str = "dialogue_only",
+        skip_sighs: bool = True,
+        skip_sfx: bool = True,
+        min_text_length: int = 2,
+    ) -> tuple[str, str] | None:
+        """
+        Возвращает `(reason_code, reason_label_ru)`, если блок должен быть отсеян фильтром объема текста,
+        либо `None`, если блок должен быть сохранен для перевода.
+        """
+        core = STRIP_PUNCT_REGEX.sub("", (text or "").strip())
+        if not core:
+            return ("empty_punct", "Только знаки препинания / пустая строка")
+
+        mode = (text_filter_mode or "dialogue_only").lower().strip()
+        eff_skip_sighs = bool(skip_sighs) or mode in ("dialogue_only", "bubbles_no_sighs", "long_only")
+        eff_skip_sfx = bool(skip_sfx) or mode in ("dialogue_only", "bubbles_no_sighs", "bubbles_only", "long_only")
+        eff_min_len = max(1, int(min_text_length or 1))
+        if mode == "long_only":
+            eff_min_len = max(eff_min_len, 4)
+        elif mode == "all" and not skip_sighs and not skip_sfx and min_text_length <= 1:
+            eff_min_len = 1
+
+        if mode in ("dialogue_only", "bubbles_only", "long_only") and is_free_text:
+            return ("free_text_disabled", f"Надпись вне баббла (отключено в профиле {mode})")
+
+        # Одиночный кандзи внутри баббла (например 何 / 誰 / 嘘 / 嫌 / 悪) — это полноценное слово, никогда не отбрасываем при min_len <= 2!
+        has_kanji = bool(HANZI_REGEX.search(core))
+        effective_char_len = len(core) + (1 if (has_kanji and len(core) == 1 and eff_min_len <= 2) else 0)
+        if effective_char_len < eff_min_len:
+            return ("min_length", f"Короткий текст ({len(core)} симв. < порога {eff_min_len})")
+
+        if eff_skip_sighs and cls.is_sigh_or_interjection(text):
+            return ("sigh", "Короткий вздох/стон (skip_sighs=True)")
+
+        if eff_skip_sfx and cls.is_sfx_or_onomatopoeia(text, is_free_text=is_free_text):
+            return ("sfx", "Звуковой спецэффект / SFX (skip_sfx=True)")
+
+        return None
+
+    @classmethod
     def should_filter_out_block(
         cls,
         text: str,
@@ -1843,35 +1888,17 @@ class MangaOCREngine:
         Проверяет, нужно ли пропустить (не замазывать и не переводить) данный текстовый блок
         согласно настройкам объема перевода.
         """
-        core = STRIP_PUNCT_REGEX.sub("", (text or "").strip())
-        if not core:
-            return True
-
-        mode = (text_filter_mode or "dialogue_only").lower().strip()
-        eff_skip_sighs = bool(skip_sighs) or mode in ("dialogue_only", "bubbles_no_sighs", "long_only")
-        eff_skip_sfx = bool(skip_sfx) or mode in ("dialogue_only", "bubbles_no_sighs", "bubbles_only", "long_only")
-        eff_min_len = max(1, int(min_text_length or 1))
-        if mode == "long_only":
-            eff_min_len = max(eff_min_len, 4)
-        elif mode == "all" and not skip_sighs and not skip_sfx and min_text_length <= 1:
-            eff_min_len = 1
-
-        if mode in ("dialogue_only", "bubbles_only", "long_only") and is_free_text:
-            return True
-
-        # Одиночный кандзи внутри баббла (например 何 / 誰 / 嘘 / 嫌 / 悪) — это полноценное слово, никогда не отбрасываем при min_len <= 2!
-        has_kanji = bool(HANZI_REGEX.search(core))
-        effective_char_len = len(core) + (1 if (has_kanji and len(core) == 1 and eff_min_len <= 2) else 0)
-        if effective_char_len < eff_min_len:
-            return True
-
-        if eff_skip_sighs and cls.is_sigh_or_interjection(text):
-            return True
-
-        if eff_skip_sfx and cls.is_sfx_or_onomatopoeia(text, is_free_text=is_free_text):
-            return True
-
-        return False
+        return (
+            cls.classify_filter_reason(
+                text=text,
+                is_free_text=is_free_text,
+                text_filter_mode=text_filter_mode,
+                skip_sighs=skip_sighs,
+                skip_sfx=skip_sfx,
+                min_text_length=min_text_length,
+            )
+            is not None
+        )
 
     @staticmethod
     def _is_vertical_text_crop(crop_rgb: np.ndarray) -> bool:
@@ -2184,11 +2211,14 @@ class MangaOCREngine:
                 pass
             return kana_chars, ja_hanzi_chars
 
-        # 1. Быстрая проверка японского для вертикальной верстки (классическая японская манга — ~35 мс, 0 лишних моделей!)
+        # 1. Быстрая проверка японского (классическая японская манга и обложки с хираганой/катаканой — ~35 мс, без лишней подгрузки EasyOCR!)
         _evaluate_ja()
         ja_total = kana_chars + ja_hanzi_chars
         kana_ratio = kana_chars / max(1, ja_total)
         if vertical_votes > horizontal_votes and kana_chars >= 2 and kana_ratio >= 0.20:
+            self._last_detected_lang = "ja"
+            return "ja"
+        if self._ja_nar_available and self._hayai_model is None and kana_chars >= 3 and kana_ratio >= 0.25:
             self._last_detected_lang = "ja"
             return "ja"
         if not self._check_multilang_ocr():
@@ -3559,7 +3589,28 @@ class MangaOCREngine:
                 raw_detections.extend(free_detections)
 
         if not raw_detections:
-            return [], (self._last_detected_lang if req_lang == "auto" else req_lang)
+            det_lang_empty = self._last_detected_lang if req_lang == "auto" else req_lang
+            self.last_page_diagnostics = {
+                "raw_candidates_count": 0,
+                "yolo_bubbles": int(self.last_detection_stats.get("yolo_bubbles", 0)),
+                "rtdetr_bubbles": int(self.last_detection_stats.get("rtdetr_bubbles", 0)),
+                "rtdetr_text_bubbles": int(self.last_detection_stats.get("rtdetr_text_bubbles", 0)),
+                "rtdetr_free_texts": int(self.last_detection_stats.get("rtdetr_free_texts", 0)),
+                "split_multi_bubbles": int(self.last_detection_stats.get("split_multi_bubbles", 0)),
+                "rescued_orphan_text_bubbles": int(self.last_detection_stats.get("rescued_orphan_text_bubbles", 0)),
+                "no_ink_count": 0,
+                "hallucinated_count": 0,
+                "empty_ocr_count": 0,
+                "filtered_count": 0,
+                "filtered_items": [],
+                "restored_by_empty_guard_count": 0,
+                "kept_blocks_count": 0,
+                "free_text_kept_count": 0,
+                "detected_lang": det_lang_empty,
+                "zero_reason_code": "no_bubbles_detected",
+                "zero_reason_ru": "На странице не обнаружено речевых облачков или текстовых рамок (обложка, чистый арт или страница без диалогов)",
+            }
+            return [], det_lang_empty
 
         resolved_lang = (
             self.detect_page_language(rgb_image, raw_detections)
@@ -3576,8 +3627,13 @@ class MangaOCREngine:
 
         output_blocks: list[dict[str, Any]] = []
         filtered_bubble_SamePage_fallback: list[dict[str, Any]] = []
+        filtered_items_diag: list[dict[str, Any]] = []
         block_id = 1
         skipped_by_filter = 0
+        no_ink_count = 0
+        hallucinated_count = 0
+        empty_ocr_count = 0
+        restored_by_empty_guard_count = 0
 
         # Пакетное GPU-распознавание всех бабблов страницы (для ja через manga-ocr-nar-small/MangaOCR,
         # для ko/zh через HayaiOCR v2.5 Nova + SmartLineSplit + RapidOCR/EasyOCR) строго по `_get_ocr_bbox(det)`!
@@ -3619,6 +3675,8 @@ class MangaOCREngine:
                 )
             for (c_key, ink_px, is_f), b_txt in zip(batch_candidates_meta, batch_texts):
                 if self._is_hallucinated_ocr_text(b_txt, ink_px, is_free_text=is_f):
+                    if b_txt and b_txt.strip():
+                        hallucinated_count += 1
                     self._page_ocr_cache[c_key] = ""
                 else:
                     self._page_ocr_cache[c_key] = b_txt
@@ -3631,12 +3689,13 @@ class MangaOCREngine:
             cache_key = (x1, y1, x2, y2, resolved_lang)
 
             raw_crop_np = img_np[oy1:oy2, ox1:ox2]
+            has_ink, ink_pixels = self._has_meaningful_ink(raw_crop_np, is_free_text=is_free)
+            if not has_ink and ocr_coords != [x1, y1, x2, y2]:
+                raw_crop_np = img_np[y1:y2, x1:x2]
+                has_ink, ink_pixels = self._has_meaningful_ink(raw_crop_np, is_free_text=is_free)
+
             if cache_key in self._page_ocr_cache:
                 recognized_text = self._page_ocr_cache[cache_key]
-                has_ink, ink_pixels = self._has_meaningful_ink(raw_crop_np, is_free_text=is_free)
-                if not has_ink and ocr_coords != [x1, y1, x2, y2]:
-                    raw_crop_np = img_np[y1:y2, x1:x2]
-                    has_ink, ink_pixels = self._has_meaningful_ink(raw_crop_np, is_free_text=is_free)
                 if not has_ink or self._is_hallucinated_ocr_text(recognized_text, ink_pixels, is_free_text=is_free):
                     recognized_text = ""
                 # Если на поджатом text_bbox получилась пустая строка, пробуем полный bbox баббла
@@ -3668,17 +3727,32 @@ class MangaOCREngine:
                     )
 
             if not recognized_text:
+                if not has_ink:
+                    no_ink_count += 1
+                else:
+                    empty_ocr_count += 1
                 continue
 
-            if self.should_filter_out_block(
+            filter_reason = self.classify_filter_reason(
                 recognized_text,
                 is_free_text=is_free,
                 text_filter_mode=mode,
                 skip_sighs=skip_sighs,
                 skip_sfx=skip_sfx,
                 min_text_length=min_text_length,
-            ):
+            )
+            if filter_reason is not None:
+                r_code, r_label = filter_reason
                 skipped_by_filter += 1
+                filtered_items_diag.append(
+                    {
+                        "bbox": [x1, y1, x2, y2],
+                        "text": recognized_text,
+                        "reason_code": r_code,
+                        "reason_ru": r_label,
+                        "is_free_text": is_free,
+                    }
+                )
                 if not is_free and not self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False):
                     filtered_bubble_SamePage_fallback.append(
                         {
@@ -3693,15 +3767,14 @@ class MangaOCREngine:
                         }
                     )
                 logger.debug(
-                    "Блок [%d,%d,%d,%d] '%s' пропущен фильтром объема текста (mode=%s, skip_sighs=%s, skip_sfx=%s)",
+                    "Блок [%d,%d,%d,%d] '%s' пропущен фильтром объема текста (%s, mode=%s)",
                     x1,
                     y1,
                     x2,
                     y2,
                     recognized_text,
+                    r_label,
                     mode,
-                    skip_sighs,
-                    skip_sfx,
                 )
                 continue
 
@@ -3726,6 +3799,11 @@ class MangaOCREngine:
             kept_bubbles = sum(1 for b in output_blocks if not b.get("is_free_text"))
             total_bubbles = kept_bubbles + len(filtered_bubble_SamePage_fallback)
             if kept_bubbles == 0 or (kept_bubbles <= 2 and len(filtered_bubble_SamePage_fallback) >= kept_bubbles):
+                restored_by_empty_guard_count = len(filtered_bubble_SamePage_fallback)
+                restored_bboxes = {tuple(b["bbox"]) for b in filtered_bubble_SamePage_fallback}
+                filtered_items_diag = [
+                    it for it in filtered_items_diag if tuple(it["bbox"]) not in restored_bboxes
+                ]
                 logger.info(
                     "Защита от пропусков страницы: возвращено %d коротких реплик в бабблах (оставалось %d из %d).",
                     len(filtered_bubble_SamePage_fallback),
@@ -3747,6 +3825,41 @@ class MangaOCREngine:
                 skipped_by_filter,
                 len(output_blocks),
             )
+
+        zero_reason_code = ""
+        zero_reason_ru = ""
+        if len(output_blocks) == 0:
+            if len(filtered_items_diag) > 0:
+                samples = ", ".join(f"«{it[text]}» ({it[reason_ru]})" for it in filtered_items_diag[:5])
+                zero_reason_code = "all_filtered_out"
+                zero_reason_ru = f"Весь распознанный текст ({len(filtered_items_diag)} шт.) отсеян фильтром настроек: {samples}"
+            elif no_ink_count >= len(raw_detections):
+                zero_reason_code = "no_ink_in_bubbles"
+                zero_reason_ru = f"Детектор нашел контуры ({len(raw_detections)} шт.), но внутри нет читаемого текста/чернил"
+            else:
+                zero_reason_code = "empty_ocr_or_noise"
+                zero_reason_ru = f"Детектор нашел области ({len(raw_detections)} шт.), но OCR отсеял их как шум/рисунок без букв (без чернил: {no_ink_count}, шум: {hallucinated_count})"
+
+        self.last_page_diagnostics = {
+            "raw_candidates_count": len(raw_detections),
+            "yolo_bubbles": int(self.last_detection_stats.get("yolo_bubbles", 0)),
+            "rtdetr_bubbles": int(self.last_detection_stats.get("rtdetr_bubbles", 0)),
+            "rtdetr_text_bubbles": int(self.last_detection_stats.get("rtdetr_text_bubbles", 0)),
+            "rtdetr_free_texts": int(self.last_detection_stats.get("rtdetr_free_texts", 0)),
+            "split_multi_bubbles": int(self.last_detection_stats.get("split_multi_bubbles", 0)),
+            "rescued_orphan_text_bubbles": int(self.last_detection_stats.get("rescued_orphan_text_bubbles", 0)),
+            "no_ink_count": no_ink_count,
+            "hallucinated_count": hallucinated_count,
+            "empty_ocr_count": empty_ocr_count,
+            "filtered_count": len(filtered_items_diag),
+            "filtered_items": filtered_items_diag[:35],
+            "restored_by_empty_guard_count": restored_by_empty_guard_count,
+            "kept_blocks_count": len(output_blocks),
+            "free_text_kept_count": sum(1 for b in output_blocks if b.get("is_free_text")),
+            "detected_lang": resolved_lang,
+            "zero_reason_code": zero_reason_code,
+            "zero_reason_ru": zero_reason_ru,
+        }
 
         self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
         self._page_ocr_cache.clear()

@@ -1352,6 +1352,7 @@ class OllamaTranslator:
         config_path: str | Path | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.ollama_url = self.base_url
         self.unsloth_url = self._normalize_api_base_url(unsloth_url)
         self.unsloth_api_key = unsloth_api_key or os.getenv("UNSLOTH_API_KEY", "")
         self.default_model = default_model or os.getenv(
@@ -1413,6 +1414,7 @@ class OllamaTranslator:
         self.stop_requested: bool = False
         self._last_call_was_refusal: bool = False
         self.last_refusal_message: str = ""
+        self.last_local_fallback_model: str = ""
         self.diagnostics_stats: dict[str, Any] = {
             "session_started_at": int(time.time()),
             "total_llm_requests": 0,
@@ -1426,10 +1428,18 @@ class OllamaTranslator:
             "local_censorship_fallbacks_count": 0,
             "sanitized_retries_count": 0,
             "micro_retries_count": 0,
+            "network_retries_count": 0,
+            "cloud_to_local_error_fallbacks_count": 0,
+            "romaji_leaks_caught_count": 0,
+            "cjk_leaks_caught_count": 0,
+            "dict_interjections_used_count": 0,
+            "sighs_skipped_count": 0,
+            "untranslated_blocks_count": 0,
             "errors_count": 0,
             "total_llm_time_sec": 0.0,
         }
         self.recent_api_calls: list[dict[str, Any]] = []
+        self.recent_translation_incidents: list[dict[str, Any]] = []
         self._load_saved_config()
 
     def reset_diagnostics(self) -> None:
@@ -1446,10 +1456,39 @@ class OllamaTranslator:
             "local_censorship_fallbacks_count": 0,
             "sanitized_retries_count": 0,
             "micro_retries_count": 0,
+            "network_retries_count": 0,
+            "cloud_to_local_error_fallbacks_count": 0,
+            "romaji_leaks_caught_count": 0,
+            "cjk_leaks_caught_count": 0,
+            "dict_interjections_used_count": 0,
+            "sighs_skipped_count": 0,
+            "untranslated_blocks_count": 0,
             "errors_count": 0,
             "total_llm_time_sec": 0.0,
         }
         self.recent_api_calls.clear()
+        self.recent_translation_incidents.clear()
+
+    def _record_incident(
+        self,
+        incident_type: str,
+        model: str,
+        summary_ru: str,
+        details: str = "",
+        affected_count: int = 0,
+    ) -> None:
+        entry = {
+            "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "timestamp": int(time.time()),
+            "incident_type": incident_type,
+            "model": model,
+            "summary_ru": summary_ru,
+            "details": (details or "")[:260],
+            "affected_count": affected_count,
+        }
+        self.recent_translation_incidents.append(entry)
+        if len(self.recent_translation_incidents) > 120:
+            self.recent_translation_incidents = self.recent_translation_incidents[-120:]
 
     def _record_api_call(
         self,
@@ -1515,7 +1554,9 @@ class OllamaTranslator:
             "batch_pages": self.batch_pages,
             "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
             "cloud_parallel_chunk_size": CLOUD_PARALLEL_CHUNK_SIZE,
+            "last_local_fallback_model": self.last_local_fallback_model,
             "recent_api_calls": list(reversed(self.recent_api_calls[-30:])),
+            "recent_translation_incidents": list(reversed(self.recent_translation_incidents[-50:])),
         }
 
     @staticmethod
@@ -3139,6 +3180,15 @@ class OllamaTranslator:
                                 return {"__refusal__": self.last_refusal_message}
                         if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
                             wait_s = 1.5 * (attempt + 1)
+                            self.diagnostics_stats["network_retries_count"] = (
+                                int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
+                            )
+                            self._record_incident(
+                                "CLOUD_HTTP_RETRY",
+                                model_name,
+                                f"Облачный шлюз вернул HTTP {response.status_code} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
+                                details=(response.text or "")[:180],
+                            )
                             logger.warning(
                                 "Облачный шлюз (%s) вернул HTTP %s для '%s' (попытка %d/%d) — повтор через %.1fс...",
                                 self.unsloth_url,
@@ -3184,6 +3234,15 @@ class OllamaTranslator:
                         last_cloud_err = net_exc
                         if attempt < max_attempts - 1:
                             wait_s = 1.5 * (attempt + 1)
+                            self.diagnostics_stats["network_retries_count"] = (
+                                int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
+                            )
+                            self._record_incident(
+                                "CLOUD_NETWORK_RETRY",
+                                model_name,
+                                f"Сетевой сбой {type(net_exc).__name__} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
+                                details=str(net_exc),
+                            )
                             logger.warning(
                                 "Сбой соединения с '%s' (%s: %s, попытка %d/%d) — повтор через %.1fс (0 лишних токенов)...",
                                 model_name,
@@ -3203,6 +3262,16 @@ class OllamaTranslator:
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", str(last_cloud_err))
                     fallback_ollama = await self._resolve_local_fallback_model()
                     if fallback_ollama:
+                        self.last_local_fallback_model = fallback_ollama
+                        self.diagnostics_stats["cloud_to_local_error_fallbacks_count"] = (
+                            int(self.diagnostics_stats.get("cloud_to_local_error_fallbacks_count") or 0) + 1
+                        )
+                        self._record_incident(
+                            "CLOUD_ERROR_LOCAL_FALLBACK",
+                            model_name,
+                            f"Облачный API недоступен ({type(last_cloud_err).__name__}), пачка перехвачена локальной моделью {fallback_ollama}",
+                            details=str(last_cloud_err),
+                        )
                         logger.warning(
                             "Облачный API (%s) недоступен (%s). Временный подхват пачки локальной моделью %s (затем возврат к API)!",
                             self.unsloth_url,
@@ -3292,6 +3361,7 @@ class OllamaTranslator:
         active_model: str,
         context_lines: list[str] | None = None,
         glossary_entries: list[dict[str, str]] | None = None,
+        provenance_out: dict[str, dict[str, str]] | None = None,
     ) -> dict[str, str]:
         if self.stop_requested or not chunk_blocks:
             return {}
@@ -3317,6 +3387,7 @@ class OllamaTranslator:
             user_prompt=user_prompt,
         )
         was_refusal = bool(translated_map.pop("__refusal__", None))
+        refusal_reason_snapshot = self.last_refusal_message if was_refusal else ""
 
         t_lang = target_lang.lower().strip()
         if t_lang == "ru":
@@ -3342,16 +3413,33 @@ class OllamaTranslator:
                 return True
             return bool(re.search(r"[A-Za-zА-Яа-яЁё]", c))
 
+        chunk_prov: dict[str, dict[str, str]] = {}
+        for k_init, v_init in translated_map.items():
+            if v_init and _is_valid_target_translation(v_init, source_map.get(k_init, "")):
+                chunk_prov[k_init] = {
+                    "source": "llm",
+                    "note": f"Переведено основной моделью ({active_model})",
+                }
+
         # СЦЕНАРИЙ 1: Если при работе через облачный API модель наткнулась на цензуру (was_refusal=True),
         # МГНОВЕННО переключаемся на локальную модель Ollama, переводим этот кусок через неё (с сохранением глоссария и контекста)
         # и затем автоматически возвращаемся к переводу следующих кусков через облачный API!
         if was_refusal and not translated_map and not self.stop_requested:
+            sample_phrases = ", ".join(f"«{v[:18]}»" for v in list(source_map.values())[:3])
+            self._record_incident(
+                "CLOUD_CENSORSHIP_REFUSAL",
+                active_model,
+                f"Облачная модель отклонила пачку ({len(source_map)} фраз) из-за цензуры/фильтра ({sample_phrases})",
+                details=refusal_reason_snapshot,
+                affected_count=len(source_map),
+            )
             local_fallback_model = (
                 await self._resolve_local_fallback_model(target_lang=t_lang)
                 if active_model.startswith("unsloth::")
                 else None
             )
             if local_fallback_model and active_model.startswith("unsloth::"):
+                self.last_local_fallback_model = local_fallback_model
                 self.diagnostics_stats["local_censorship_fallbacks_count"] = (
                     int(self.diagnostics_stats.get("local_censorship_fallbacks_count") or 0) + 1
                 )
@@ -3374,6 +3462,19 @@ class OllamaTranslator:
                 )
                 if loc_chunk_map:
                     translated_map.update(loc_chunk_map)
+                    for k_loc, v_loc in loc_chunk_map.items():
+                        if v_loc:
+                            chunk_prov[k_loc] = {
+                                "source": "llm_local_bypass",
+                                "note": f"Переведено локальной моделью ({local_fallback_model}) после отказа цензуры API ({active_model})",
+                            }
+                    self._record_incident(
+                        "LOCAL_CENSORSHIP_BYPASS_OK",
+                        local_fallback_model,
+                        f"Локальная модель успешно перевела цензурный кусок ({len(loc_chunk_map)}/{len(source_map)} фраз) вместо {active_model}",
+                        details=f"Причина отказа облака: {refusal_reason_snapshot}",
+                        affected_count=len(loc_chunk_map),
+                    )
                     logger.info(
                         "✅ [ОБХОД ЦЕНЗУРЫ API] Кусок с цензурой (%d/%d блоков) успешно переведен локальной моделью '%s'. "
                         "Возвращаюсь к переводу через API '%s'!",
@@ -3388,6 +3489,13 @@ class OllamaTranslator:
                 items_list = list(source_map.items())
                 sub_size = max(10, (len(items_list) + 1) // 2) if len(items_list) <= 30 else max(12, (len(items_list) + 2) // 3)
                 sub_chunks = [dict(items_list[i : i + sub_size]) for i in range(0, len(items_list), sub_size)]
+                self._record_incident(
+                    "SANITIZED_CLOUD_RETRY",
+                    active_model,
+                    f"Локальный Ollama недоступен для обхода цензуры — пачка ({len(source_map)} фраз) разбита на {len(sub_chunks)} подгруппы с санитизацией триггеров",
+                    details=refusal_reason_snapshot,
+                    affected_count=len(source_map),
+                )
                 logger.warning(
                     "Локальная модель недоступна для обхода цензуры — делю пакет (%d блоков) на %d подгруппы с санитизацией триггеров...",
                     len(source_map),
@@ -3411,6 +3519,12 @@ class OllamaTranslator:
                     sub_res.pop("__refusal__", None)
                     if sub_res:
                         translated_map.update(sub_res)
+                        for k_san, v_san in sub_res.items():
+                            if v_san:
+                                chunk_prov[k_san] = {
+                                    "source": "llm_sanitized_retry",
+                                    "note": f"Переведено через API ({active_model}) после санитизации триггеров цензуры",
+                                }
 
         # Сначала подставляем только точные короткие междометия по оригиналу (<= 5 символов),
         # а все длинные фразы и фразы с ошибочным Ромадзи отправляем на полноценный доперевод через ИИ!
@@ -3420,20 +3534,63 @@ class OllamaTranslator:
                 norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
                 if norm_orig in interj_dict and len(norm_orig) <= 5:
                     translated_map[k] = interj_dict[norm_orig]
+                    self.diagnostics_stats["dict_interjections_used_count"] = (
+                        int(self.diagnostics_stats.get("dict_interjections_used_count") or 0) + 1
+                    )
+                    chunk_prov[k] = {
+                        "source": "interjection_dict",
+                        "note": "Переведено по встроенному словарю коротких междометий",
+                    }
                 elif t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
                     translated_map[k] = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
+                    chunk_prov[k] = {
+                        "source": "romaji_local",
+                        "note": "Локальная транслитерация каны в Ромадзи",
+                    }
 
         # СЦЕНАРИЙ 2: Гарантированный доперевод ВСЕХ пропущенных или ошибочно транслитерированных (Ромадзи) блоков!
         # Если доперевод через API натыкается на цензуру (или если это остатки после цензурного куска),
         # сразу переводим эти фразы через локальную модель Ollama и возвращаемся к API!
+        bad_reason_by_k: dict[str, str] = {}
         if not self.stop_requested:
-            bad_keys = [
-                k
-                for k in source_map
-                if not _is_valid_target_translation(translated_map.get(k, ""), source_map[k])
-                and bool(CJK_REGEX.search(source_map[k]))
-            ]
+            bad_keys: list[str] = []
+            for k in source_map:
+                cand_v1 = translated_map.get(k, "")
+                orig_v1 = source_map[k]
+                if not _is_valid_target_translation(cand_v1, orig_v1) and bool(CJK_REGEX.search(orig_v1)):
+                    bad_keys.append(k)
+                    if not cand_v1 or not cand_v1.strip():
+                        bad_reason_by_k[k] = "пропущен ключ / пустой ответ ИИ"
+                    elif self._contains_cjk(cand_v1):
+                        bad_reason_by_k[k] = f"остались CJK-символы в ответе («{cand_v1[:24]}»)"
+                        self.diagnostics_stats["cjk_leaks_caught_count"] = (
+                            int(self.diagnostics_stats.get("cjk_leaks_caught_count") or 0) + 1
+                        )
+                    elif t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", cand_v1):
+                        bad_reason_by_k[k] = f"ответ без кириллицы / транслит («{cand_v1[:24]}»)"
+                        self.diagnostics_stats["romaji_leaks_caught_count"] = (
+                            int(self.diagnostics_stats.get("romaji_leaks_caught_count") or 0) + 1
+                        )
+                    elif t_lang == "en" and self._is_romaji_leak(cand_v1, orig_v1, "en"):
+                        bad_reason_by_k[k] = f"утечка Ромадзи вместо перевода («{cand_v1[:24]}»)"
+                        self.diagnostics_stats["romaji_leaks_caught_count"] = (
+                            int(self.diagnostics_stats.get("romaji_leaks_caught_count") or 0) + 1
+                        )
+                    else:
+                        bad_reason_by_k[k] = "невалидный ответ ИИ"
+
             if bad_keys:
+                sample_bad = "; ".join(
+                    f"#{bk} «{source_map[bk][:16]}» ({bad_reason_by_k.get(bk, )})"
+                    for bk in bad_keys[:3]
+                )
+                self._record_incident(
+                    "MICRO_RETRY_TRIGGERED",
+                    active_model,
+                    f"Запущен микро-доперевод для {len(bad_keys)} пропущенных/невалидных фраз",
+                    details=sample_bad,
+                    affected_count=len(bad_keys),
+                )
                 retry_chunk_size = 8 if not active_model.startswith("unsloth::") else 14
                 bad_sublists = [
                     bad_keys[i : i + retry_chunk_size]
@@ -3453,11 +3610,16 @@ class OllamaTranslator:
                     self.diagnostics_stats["micro_retries_count"] += 1
                     raw_sub_source = {k: source_map[k] for k in b_sub}
                     retry_map: dict[str, str] = {}
+                    used_local_for_sub = False
+                    loc_model_used_name = ""
 
                     # Если исходная пачка уже ловила цензуру API — сразу допереводим остатки локальной моделью!
                     if was_refusal and active_model.startswith("unsloth::"):
                         loc_model = await self._resolve_local_fallback_model(target_lang=t_lang)
                         if loc_model:
+                            self.last_local_fallback_model = loc_model
+                            loc_model_used_name = loc_model
+                            used_local_for_sub = True
                             retry_map = await self._translate_map_via_local_ollama(
                                 client=client,
                                 source_map=raw_sub_source,
@@ -3469,6 +3631,7 @@ class OllamaTranslator:
                             )
 
                     if not retry_map:
+                        used_local_for_sub = False
                         retry_source = {
                             k: (
                                 self._sanitize_safety_triggers_for_cloud(source_map[k])
@@ -3490,6 +3653,9 @@ class OllamaTranslator:
                             if (retry_refused or not retry_map) and active_model.startswith("unsloth::"):
                                 loc_model = await self._resolve_local_fallback_model(target_lang=t_lang)
                                 if loc_model:
+                                    self.last_local_fallback_model = loc_model
+                                    loc_model_used_name = loc_model
+                                    used_local_for_sub = True
                                     if retry_refused:
                                         self.diagnostics_stats["local_censorship_fallbacks_count"] = (
                                             int(self.diagnostics_stats.get("local_censorship_fallbacks_count") or 0) + 1
@@ -3518,10 +3684,22 @@ class OllamaTranslator:
                         cand_r = retry_map.get(k, "")
                         if cand_r and _is_valid_target_translation(cand_r, source_map[k]):
                             translated_map[k] = cand_r
+                            chunk_prov[k] = {
+                                "source": "llm_local_bypass" if used_local_for_sub else "llm_micro_retry",
+                                "note": (
+                                    f"Допереведено локальной моделью ({loc_model_used_name}) после: {bad_reason_by_k.get(k, пропуск)}"
+                                    if used_local_for_sub
+                                    else f"Допереведено со 2-й попытки ИИ (после: {bad_reason_by_k.get(k, пропуск)})"
+                                ),
+                            }
                         elif cand_r:
                             rescued_r = self._rescue_romaji_or_interjection(cand_r, source_map[k], t_lang)
                             if rescued_r:
                                 translated_map[k] = rescued_r
+                                chunk_prov[k] = {
+                                    "source": "romaji_rescue_dict",
+                                    "note": f"Спасено словарем частых фраз манги (после: {bad_reason_by_k.get(k, пропуск)})",
+                                }
 
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
@@ -3536,10 +3714,42 @@ class OllamaTranslator:
                 rescued_final = self._rescue_romaji_or_interjection(raw_val, orig_val, t_lang)
                 if rescued_final:
                     cleaned_val = rescued_final
+                    chunk_prov[k] = {
+                        "source": "romaji_rescue_dict",
+                        "note": "Восстановлено по встроенному словарю фраз манги",
+                    }
                 elif t_lang == "romaji":
                     cleaned_val = self._clean_translated_text(japanese_to_romaji_local(orig_val), target_lang="romaji")
+                    chunk_prov[k] = {
+                        "source": "romaji_local",
+                        "note": "Локальная транслитерация в Хэпбёрн-ромадзи",
+                    }
+                else:
+                    fail_reason = bad_reason_by_k.get(
+                        k,
+                        "ИИ-модель вернула пустой или невалидный ответ",
+                    )
+                    if was_refusal and refusal_reason_snapshot:
+                        fail_reason += f" (Отказ API: {refusal_reason_snapshot[:80]})"
+                    chunk_prov[k] = {
+                        "source": "untranslated_error",
+                        "note": f"Не удалось перевести: {fail_reason}",
+                    }
+                    self.diagnostics_stats["untranslated_blocks_count"] = (
+                        int(self.diagnostics_stats.get("untranslated_blocks_count") or 0) + 1
+                    )
+                    self._record_incident(
+                        "UNTRANSLATED_BLOCK",
+                        active_model,
+                        f"Блок #{k} «{orig_val[:28]}» остался без перевода",
+                        details=fail_reason,
+                        affected_count=1,
+                    )
 
             final_map[k] = cleaned_val
+
+        if provenance_out is not None:
+            provenance_out.update(chunk_prov)
 
         return final_map
 
@@ -3572,6 +3782,7 @@ class OllamaTranslator:
             self.phrase_cache.update(external_cache)
 
         translated_map: dict[str, str] = {}
+        block_prov: dict[str, dict[str, str]] = {}
         unique_to_translate: list[dict[str, Any]] = []
         seen_orig_in_batch: dict[str, str] = {}
         duplicate_links: dict[str, str] = {}
@@ -3583,10 +3794,18 @@ class OllamaTranslator:
             k = str(block["id"])
             if block.get("is_deleted"):
                 translated_map[k] = ""
+                block_prov[k] = {
+                    "source": "deleted_by_user",
+                    "note": "Блок удален пользователем в редакторе",
+                }
                 continue
             orig_raw = (block.get("original_text") or "").strip()
             if not orig_raw:
                 translated_map[k] = ""
+                block_prov[k] = {
+                    "source": "empty_orig",
+                    "note": "Пустой исходный текст",
+                }
                 continue
 
             # 1. Обработка коротких одиночных междометий/вздохов
@@ -3594,10 +3813,24 @@ class OllamaTranslator:
             if eff_skip_sighs and norm_orig in PURE_SIGH_KEYS_JA:
                 translated_map[k] = ""
                 cached_hits += 1
+                self.diagnostics_stats["sighs_skipped_count"] = (
+                    int(self.diagnostics_stats.get("sighs_skipped_count") or 0) + 1
+                )
+                block_prov[k] = {
+                    "source": "skipped_sigh_orig",
+                    "note": f"Короткий вздох/стон «{orig_raw}» намеренно пропущен (skip_sighs=True)",
+                }
                 continue
             if norm_orig in interj_dict and len(norm_orig) <= 4:
                 translated_map[k] = interj_dict[norm_orig]
                 cached_hits += 1
+                self.diagnostics_stats["dict_interjections_used_count"] = (
+                    int(self.diagnostics_stats.get("dict_interjections_used_count") or 0) + 1
+                )
+                block_prov[k] = {
+                    "source": "interjection_dict",
+                    "note": "Мгновенный перевод по словарю коротких междометий",
+                }
                 continue
 
             # 2. Проверка локального кэша уже переведенных фраз (с защитой от старых записей с Ромадзи вместо перевода!)
@@ -3616,6 +3849,10 @@ class OllamaTranslator:
                 else:
                     translated_map[k] = cached_cand
                     cached_hits += 1
+                    block_prov[k] = {
+                        "source": "cache",
+                        "note": "Взято из локального кэша уже переведенных фраз (0 токенов)",
+                    }
                     continue
 
             # 3. Дедупликация одинаковых реплик внутри многостраничной пачки (отправляем в API только 1 раз!)
@@ -3661,7 +3898,6 @@ class OllamaTranslator:
 
         # Для облачного API при большом числе фраз (>42 блоков, например с 12 страниц)
         # делим их на 2–3 параллельных подзапроса по ~40 фраз и отправляем ОДНОВРЕМЕННО через asyncio.gather!
-        # Это сокращает время генерации ответа с 50–55 секунд до 14–18 секунд и исключает пропуски ключей в конце длинного JSON.
         if is_cloud_call and len(unique_to_translate) > CLOUD_PARALLEL_CHUNK_SIZE:
             num_parallel = min(
                 MAX_CONCURRENT_CLOUD_REQUESTS,
@@ -3682,15 +3918,15 @@ class OllamaTranslator:
             sem = asyncio.Semaphore(MAX_CONCURRENT_CLOUD_REQUESTS)
             ctx_snapshot = list(running_context) if running_context else None
 
-            async def _run_sub(idx: int, sub_c: list[dict[str, Any]]) -> dict[str, str]:
-                # Небольшая ступенька (0.35с) между стартом потоков, чтобы шлюз не сбрасывал одновременные TLS-рукопожатия
+            async def _run_sub(idx: int, sub_c: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
                 if idx > 0:
                     await asyncio.sleep(idx * 0.35)
+                sub_prov: dict[str, dict[str, str]] = {}
                 async with sem:
                     if self.stop_requested:
-                        return {}
+                        return {}, sub_prov
                     try:
-                        return await self._translate_batch_chunk(
+                        sub_map = await self._translate_batch_chunk(
                             client=client,
                             chunk_blocks=sub_c,
                             source_lang=source_lang,
@@ -3698,8 +3934,17 @@ class OllamaTranslator:
                             active_model=active_model,
                             context_lines=ctx_snapshot,
                             glossary_entries=glossary_entries,
+                            provenance_out=sub_prov,
                         )
+                        return sub_map, sub_prov
                     except Exception as sub_exc:
+                        self._record_incident(
+                            "PARALLEL_STREAM_ERROR",
+                            active_model,
+                            f"Сбой в параллельном потоке #{idx + 1}/{len(parallel_chunks)} ({len(sub_c)} фраз)",
+                            details=str(sub_exc),
+                            affected_count=len(sub_c),
+                        )
                         logger.error(
                             "Ошибка в параллельном потоке #%d/%d (%d фраз): %s — соседние потоки и кэш сохранены!",
                             idx + 1,
@@ -3707,11 +3952,17 @@ class OllamaTranslator:
                             len(sub_c),
                             sub_exc,
                         )
-                        return {}
+                        for b_err in sub_c:
+                            sub_prov[str(b_err["id"])] = {
+                                "source": "untranslated_error",
+                                "note": f"Ошибка параллельного потока #{idx + 1}: {sub_exc}",
+                            }
+                        return {}, sub_prov
 
             sub_results = await asyncio.gather(*(_run_sub(i, sc) for i, sc in enumerate(parallel_chunks)))
-            for sc, chunk_map in zip(parallel_chunks, sub_results):
+            for sc, (chunk_map, sub_prov) in zip(parallel_chunks, sub_results):
                 translated_map.update(chunk_map)
+                block_prov.update(sub_prov)
                 for b in sc:
                     k = str(b["id"])
                     orig_raw = (b.get("original_text") or "").strip()
@@ -3728,6 +3979,7 @@ class OllamaTranslator:
                 if self.stop_requested:
                     break
                 chunk = unique_to_translate[start_idx : start_idx + batch_limit]
+                sub_prov: dict[str, dict[str, str]] = {}
                 try:
                     chunk_map = await self._translate_batch_chunk(
                         client=client,
@@ -3737,15 +3989,29 @@ class OllamaTranslator:
                         active_model=active_model,
                         context_lines=running_context if running_context else None,
                         glossary_entries=glossary_entries,
+                        provenance_out=sub_prov,
                     )
                 except Exception as chunk_exc:
+                    self._record_incident(
+                        "CHUNK_TRANSLATION_ERROR",
+                        active_model,
+                        f"Сбой перевода подгруппы ({len(chunk)} фраз)",
+                        details=str(chunk_exc),
+                        affected_count=len(chunk),
+                    )
                     logger.error(
                         "Ошибка перевода подгруппы (%d фраз): %s — переводы из кэша и словаря сохранены!",
                         len(chunk),
                         chunk_exc,
                     )
                     chunk_map = {}
+                    for b_err in chunk:
+                        sub_prov[str(b_err["id"])] = {
+                            "source": "untranslated_error",
+                            "note": f"Ошибка подгруппы: {chunk_exc}",
+                        }
                 translated_map.update(chunk_map)
+                block_prov.update(sub_prov)
 
                 for b in chunk:
                     k = str(b["id"])
@@ -3753,7 +4019,6 @@ class OllamaTranslator:
                     t_val = chunk_map.get(k, "")
                     if t_val and orig_raw:
                         self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
-                        # В контекст добавляем только содержательные реплики (не короткие вздохи), чтобы экономить токены
                         if len(orig_raw) >= 4 and len(t_val) >= 4:
                             pair_str = f"{orig_raw} => {t_val}"
                             if pair_str not in running_context:
@@ -3762,7 +4027,19 @@ class OllamaTranslator:
 
         # Заполняем дубликаты внутри пачки
         for dup_k, master_k in duplicate_links.items():
-            translated_map[dup_k] = translated_map.get(master_k, "")
+            dup_val = translated_map.get(master_k, "")
+            translated_map[dup_k] = dup_val
+            if dup_val:
+                block_prov[dup_k] = {
+                    "source": "batch_dedup",
+                    "note": f"Повтор идентичной фразы внутри пачки (из блока #{master_k}, 0 токенов)",
+                }
+            else:
+                master_prov = block_prov.get(master_k, {})
+                block_prov[dup_k] = {
+                    "source": master_prov.get("source", "untranslated_error"),
+                    "note": master_prov.get("note", "Не переведено (дубликат непереведенной фразы)"),
+                }
 
         if t_lang in ("en", "ru"):
             self.recent_context_lines = list(running_context[-6:])
@@ -3774,15 +4051,27 @@ class OllamaTranslator:
             key = str(block["id"])
             orig_raw = (block.get("original_text") or "").strip()
             translated_text = translated_map.get(key, "").strip()
+            prov_info = block_prov.get(key, {})
+            t_source = str(prov_info.get("source") or ("llm" if translated_text else "untranslated_error"))
+            t_note = str(prov_info.get("note") or "")
+
             if eff_skip_sighs and translated_text and is_translated_sigh_text(translated_text, orig_raw):
                 logger.debug(
                     "Перевод '%s' (ориг. '%s') пропущен как короткий вздох (skip_sighs=True).",
                     translated_text,
                     orig_raw,
                 )
+                self.diagnostics_stats["sighs_skipped_count"] = (
+                    int(self.diagnostics_stats.get("sighs_skipped_count") or 0) + 1
+                )
+                t_source = "skipped_sigh_trans"
+                t_note = f"Перевод «{translated_text}» (ориг. «{orig_raw}») скрыт как короткий вздох (skip_sighs=True)"
                 translated_text = ""
+
             block_copy = dict(block)
             block_copy["translated_text"] = translated_text
+            block_copy["translation_source"] = t_source
+            block_copy["skip_reason"] = "" if translated_text else t_note
             if t_lang == "romaji":
                 block_copy["romaji_text"] = translated_text
             else:

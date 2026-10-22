@@ -172,6 +172,7 @@ VALID_SOURCE_LANGS = {"auto", "ja", "ko", "zh"}
 VALID_TARGET_LANGS = {"en", "ru", "romaji"}
 OUTPUT_FOLDER_SUFFIXES = ("_EN", "_RU", "_ROMAJI", "temp_debug")
 MANIFEST_FILENAME = ".translation_state.json"
+REPORT_FILENAME = "TRANSLATION_REPORT.txt"
 
 ocr_engine: MangaOCREngine | None = None
 translator_engine: OllamaTranslator | None = None
@@ -301,6 +302,9 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
         block["custom_mask_strokes"] = norm_strokes if norm_strokes else None
     else:
         block["custom_mask_strokes"] = None
+
+    block.setdefault("translation_source", None)
+    block.setdefault("skip_reason", None)
 
     return block
 
@@ -708,6 +712,14 @@ class TextBlock(BaseModel):
         default=None,
         description="Ручные мазки кисти/ластика замазки: [{'x': int, 'y': int, 'r': int, 'mode': 'add'|'erase'}]",
     )
+    translation_source: str | None = Field(
+        default=None,
+        description="Источник перевода блока (llm, llm_local_bypass, llm_micro_retry, cache, batch_dedup, interjection_dict, skipped_sigh_orig, skipped_sigh_trans, untranslated_error)",
+    )
+    skip_reason: str | None = Field(
+        default=None,
+        description="Причина пропуска или отсутствия перевода для данного блока",
+    )
 
 
 class TranslateResponse(BaseModel):
@@ -935,10 +947,23 @@ def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
+                data.setdefault("pages", {})
+                data.setdefault("rolling_context", [])
+                data.setdefault("phrase_cache", {})
+                data.setdefault("glossary", [])
+                data.setdefault("run_history", [])
+                data.setdefault("batches_log", [])
                 return data
         except Exception as exc:
             logger.warning("Не удалось прочитать %s: %s", manifest_path, exc)
-    return {"pages": {}, "rolling_context": [], "phrase_cache": {}, "glossary": []}
+    return {
+        "pages": {},
+        "rolling_context": [],
+        "phrase_cache": {},
+        "glossary": [],
+        "run_history": [],
+        "batches_log": [],
+    }
 
 
 def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
@@ -951,6 +976,746 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
         )
     except Exception as exc:
         logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
+
+
+def _generate_and_save_folder_report(
+    output_dir: Path,
+    manifest: dict[str, Any] | None = None,
+    source_dir: Path | None = None,
+    target_lang: str | None = None,
+    run_status_label: str = "",
+) -> str:
+    """
+    Формирует и сохраняет в папку переведенной манги (`<output_dir>/TRANSLATION_REPORT.txt`)
+    подробный диагностический отчет и бенчмарк-журнал перевода главы:
+    1. Паспорт главы и полный стек использованных нейросетей (Детектор, OCR JA/KO/ZH, VLM-OCR,
+       основная и резервная ИИ-модель, движок очистки LaMa/OpenCV, GPU/VRAM).
+    2. Активные параметры фильтрации и верстки (для удобного сравнения между запусками).
+    3. Сводная воронка страниц и текстовых блоков (сколько найдено, отсеяно фильтром, переведено ИИ,
+       перехвачено локальной моделью, взято из кэша, пропущено как вздох или не переведено из-за ошибки).
+    4. Таблица истории запусков (бенчмарк разных моделей и параметров на этой папке).
+    5. Журнал работы облачной и локальной ИИ-модели (отказы цензуры content_filter, сетевые ретраи,
+       утечки Ромадзи/CJK и микро-допереводы).
+    6. Детальный разбор пропусков: какие страницы остались без перевода (0 блоков) и почему,
+       какие отдельные блоки не были переведены или были отсеяны фильтром (с оригинальным текстом).
+    7. Чек-лист контроля качества верстки (тесные бабблы с минимальным кеглем, низкий confidence)
+       и автоматические рекомендации по улучшению параметров.
+    8. Постраничная сводная таблица по всем страницам папки и хронология пачек.
+    """
+    try:
+        output_dir = Path(output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    if manifest is None:
+        manifest = _load_folder_manifest(output_dir)
+
+    if source_dir is None:
+        saved_src = manifest.get("source_dir")
+        if saved_src and Path(str(saved_src)).exists():
+            source_dir = Path(str(saved_src)).resolve()
+        else:
+            source_dir = _unwrap_output_folder_if_needed(output_dir)
+    else:
+        source_dir = _unwrap_output_folder_if_needed(Path(source_dir).resolve())
+
+    t_lang = (target_lang or manifest.get("target_lang") or "ru").lower().strip()
+    if output_dir.name.upper().endswith("_RU"):
+        t_lang = "ru"
+    elif output_dir.name.upper().endswith("_EN"):
+        t_lang = "en"
+    elif output_dir.name.upper().endswith("_ROMAJI"):
+        t_lang = "romaji"
+
+    pages_meta: dict[str, Any] = manifest.get("pages", {}) if isinstance(manifest.get("pages"), dict) else {}
+    run_history: list[dict[str, Any]] = manifest.get("run_history", []) if isinstance(manifest.get("run_history"), list) else []
+    batches_log: list[dict[str, Any]] = manifest.get("batches_log", []) if isinstance(manifest.get("batches_log"), list) else []
+    folder_glossary = normalize_glossary_entries(manifest.get("glossary", []))
+    global_glossary = normalize_glossary_entries(translator_engine.glossary if translator_engine else [])
+    merged_glossary = merge_glossaries(global_glossary, folder_glossary)
+
+    all_src_images: list[Path] = []
+    if source_dir and source_dir.exists() and source_dir.is_dir():
+        try:
+            all_src_images = collect_images_in_folder(source_dir)
+        except Exception:
+            all_src_images = []
+
+    rel_paths_ordered: list[str] = []
+    if all_src_images:
+        for img_p in all_src_images:
+            try:
+                rel_paths_ordered.append(_normalize_rel_path(img_p.relative_to(source_dir)))
+            except Exception:
+                rel_paths_ordered.append(img_p.name)
+    for k_rel in sorted(pages_meta.keys()):
+        if k_rel not in rel_paths_ordered:
+            rel_paths_ordered.append(k_rel)
+
+    total_pages_in_folder = len(rel_paths_ordered)
+    translated_pages_cnt = 0
+    pages_with_blocks_cnt = 0
+    zero_block_pages: list[dict[str, Any]] = []
+    error_pages: list[dict[str, Any]] = []
+
+    tot_raw_candidates = 0
+    tot_yolo_bubbles = 0
+    tot_rtdetr_bubbles = 0
+    tot_rtdetr_text_bubbles = 0
+    tot_split_multi = 0
+    tot_rescued_orphan = 0
+    tot_no_ink = 0
+    tot_hallucinated = 0
+    tot_empty_ocr = 0
+    tot_filtered_ocr = 0
+    tot_restored_empty_guard = 0
+    filter_reasons_counter: dict[str, int] = {
+        "sigh": 0,
+        "sfx": 0,
+        "min_length": 0,
+        "free_text_disabled": 0,
+        "empty_punct": 0,
+    }
+    all_filtered_ocr_records: list[dict[str, Any]] = []
+
+    tot_kept_blocks = 0
+    tot_bubble_blocks = 0
+    tot_free_blocks = 0
+    tot_translated_ok = 0
+    source_counter: dict[str, int] = {
+        "llm": 0,
+        "llm_local_bypass": 0,
+        "llm_sanitized_retry": 0,
+        "llm_micro_retry": 0,
+        "cache": 0,
+        "batch_dedup": 0,
+        "interjection_dict": 0,
+        "romaji_rescue_dict": 0,
+        "romaji_local": 0,
+        "manual_edit": 0,
+        "skipped_sigh_orig": 0,
+        "skipped_sigh_trans": 0,
+        "deleted_by_user": 0,
+        "untranslated_error": 0,
+    }
+
+    untranslated_error_blocks: list[dict[str, Any]] = []
+    skipped_post_ocr_blocks: list[dict[str, Any]] = []
+    cramped_min_font_blocks: list[dict[str, Any]] = []
+    low_conf_blocks: list[dict[str, Any]] = []
+    per_page_rows: list[dict[str, Any]] = []
+    detected_langs_freq: dict[str, int] = {}
+    models_used_set: list[str] = []
+
+    default_min_fs = int(translator_engine.min_font_size if translator_engine else 12)
+
+    for idx_p, rel_norm in enumerate(rel_paths_ordered, start=1):
+        p_meta = pages_meta.get(rel_norm, {}) if isinstance(pages_meta.get(rel_norm), dict) else {}
+        dest_p = output_dir / rel_norm
+        is_done = is_page_already_translated(dest_p, page_meta=p_meta if p_meta else None, target_lang=t_lang)
+        if is_done:
+            translated_pages_cnt += 1
+
+        p_det_lang = str(p_meta.get("detected_lang") or "ja")
+        if p_det_lang:
+            detected_langs_freq[p_det_lang] = detected_langs_freq.get(p_det_lang, 0) + 1
+        p_model = str(p_meta.get("model") or "").strip()
+        if p_model and p_model not in models_used_set:
+            models_used_set.append(p_model)
+
+        p_min_fs = int(p_meta.get("min_font_size") or default_min_fs)
+        ocr_diag = p_meta.get("ocr_diag", {}) if isinstance(p_meta.get("ocr_diag"), dict) else {}
+        ocr_err = str(p_meta.get("ocr_error") or "").strip()
+        if ocr_err:
+            error_pages.append({"index": idx_p, "rel_path": rel_norm, "error": ocr_err})
+
+        p_blocks = p_meta.get("blocks", []) if isinstance(p_meta.get("blocks"), list) else []
+        raw_cand = int(ocr_diag.get("raw_candidates_count", len(p_blocks)))
+        tot_raw_candidates += raw_cand
+        tot_yolo_bubbles += int(ocr_diag.get("yolo_bubbles", 0))
+        tot_rtdetr_bubbles += int(ocr_diag.get("rtdetr_bubbles", 0))
+        tot_rtdetr_text_bubbles += int(ocr_diag.get("rtdetr_text_bubbles", 0))
+        tot_split_multi += int(ocr_diag.get("split_multi_bubbles", 0))
+        tot_rescued_orphan += int(ocr_diag.get("rescued_orphan_text_bubbles", 0))
+        tot_no_ink += int(ocr_diag.get("no_ink_count", 0))
+        tot_hallucinated += int(ocr_diag.get("hallucinated_count", 0))
+        tot_empty_ocr += int(ocr_diag.get("empty_ocr_count", 0))
+        tot_restored_empty_guard += int(ocr_diag.get("restored_by_empty_guard_count", 0))
+
+        filt_items = ocr_diag.get("filtered_items", []) if isinstance(ocr_diag.get("filtered_items"), list) else []
+        p_filt_cnt = int(ocr_diag.get("filtered_count", len(filt_items)))
+        tot_filtered_ocr += p_filt_cnt
+        for fi in filt_items:
+            if not isinstance(fi, dict):
+                continue
+            rc = str(fi.get("reason_code") or "sigh")
+            filter_reasons_counter[rc] = filter_reasons_counter.get(rc, 0) + 1
+            all_filtered_ocr_records.append(
+                {
+                    "page_index": idx_p,
+                    "rel_path": rel_norm,
+                    "bbox": fi.get("bbox"),
+                    "text": str(fi.get("text") or ""),
+                    "reason_code": rc,
+                    "reason_ru": str(fi.get("reason_ru") or rc),
+                }
+            )
+
+        p_kept = len(p_blocks)
+        tot_kept_blocks += p_kept
+        p_trans_ok = 0
+        p_skipped_sigh = 0
+        p_untranslated_err = 0
+        p_fonts: list[int] = []
+        p_sources_short: list[str] = []
+
+        for b in p_blocks:
+            if not isinstance(b, dict):
+                continue
+            bid = int(b.get("id") or 1)
+            is_free = bool(b.get("is_free_text", False))
+            if is_free:
+                tot_free_blocks += 1
+            else:
+                tot_bubble_blocks += 1
+
+            orig_t = str(b.get("original_text") or "").strip()
+            trans_t = str(b.get("translated_text") or "").strip()
+            is_del = bool(b.get("is_deleted", False))
+            tsrc = str(b.get("translation_source") or "").strip()
+            s_reason = str(b.get("skip_reason") or "").strip()
+            conf_val = float(b.get("confidence") or 1.0)
+            r_fs = b.get("font_size") or b.get("rendered_font_size")
+
+            if conf_val < 0.35:
+                low_conf_blocks.append(
+                    {
+                        "page_index": idx_p,
+                        "rel_path": rel_norm,
+                        "block_id": bid,
+                        "confidence": round(conf_val, 2),
+                        "original_text": orig_t,
+                        "translated_text": trans_t,
+                    }
+                )
+
+            if trans_t and not is_del:
+                p_trans_ok += 1
+                tot_translated_ok += 1
+                if not tsrc or tsrc in ("untranslated_error", "skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user"):
+                    tsrc = "llm"
+                source_counter[tsrc] = source_counter.get(tsrc, 0) + 1
+                if tsrc not in p_sources_short:
+                    p_sources_short.append(tsrc)
+                if r_fs is not None:
+                    try:
+                        fs_int = int(r_fs)
+                        p_fonts.append(fs_int)
+                        if fs_int <= p_min_fs and len(trans_t) >= 18:
+                            cramped_min_font_blocks.append(
+                                {
+                                    "page_index": idx_p,
+                                    "rel_path": rel_norm,
+                                    "block_id": bid,
+                                    "font_size": fs_int,
+                                    "min_font_size": p_min_fs,
+                                    "bbox": b.get("bbox"),
+                                    "original_text": orig_t,
+                                    "translated_text": trans_t,
+                                }
+                            )
+                    except (ValueError, TypeError):
+                        pass
+            else:
+                if is_del and tsrc not in ("skipped_sigh_orig", "skipped_sigh_trans"):
+                    tsrc = tsrc if tsrc in ("skipped_sigh_orig", "skipped_sigh_trans") else "deleted_by_user"
+                if not tsrc:
+                    if ocr_engine and ocr_engine.is_sigh_or_interjection(orig_t):
+                        tsrc = "skipped_sigh_orig"
+                        s_reason = f"Короткий вздох «{orig_t}» (skip_sighs=True)"
+                    else:
+                        tsrc = "untranslated_error"
+                        s_reason = "Пустой перевод (пропуск ИИ или обрыв генерации)"
+
+                source_counter[tsrc] = source_counter.get(tsrc, 0) + 1
+                if tsrc in ("skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user"):
+                    p_skipped_sigh += 1
+                    skipped_post_ocr_blocks.append(
+                        {
+                            "page_index": idx_p,
+                            "rel_path": rel_norm,
+                            "block_id": bid,
+                            "bbox": b.get("bbox"),
+                            "original_text": orig_t,
+                            "source": tsrc,
+                            "reason": s_reason or "Намеренно пропущен (вздох / удален пользователем)",
+                        }
+                    )
+                else:
+                    p_untranslated_err += 1
+                    untranslated_error_blocks.append(
+                        {
+                            "page_index": idx_p,
+                            "rel_path": rel_norm,
+                            "block_id": bid,
+                            "bbox": b.get("bbox"),
+                            "original_text": orig_t,
+                            "reason": s_reason or "Модель не вернула валидный перевод",
+                        }
+                    )
+
+        if p_trans_ok > 0:
+            pages_with_blocks_cnt += 1
+        else:
+            z_reason = str(ocr_diag.get("zero_reason_ru") or "").strip()
+            if ocr_err:
+                z_reason = f"Ошибка OCR на странице: {ocr_err}"
+            elif not p_meta and not is_done:
+                z_reason = "Страница еще не обрабатывалась переводчиком (ожидает очереди)"
+            elif not z_reason:
+                if p_kept > 0 and p_skipped_sigh == p_kept:
+                    z_reason = f"Все распознанные реплики ({p_kept} шт.) оказались короткими вздохами и были скрыты (skip_sighs=True)"
+                elif p_kept > 0 and p_untranslated_err > 0:
+                    z_reason = f"Найдено {p_kept} блоков, но ИИ не вернул для них перевод (см. Раздел 6Б)"
+                elif p_filt_cnt > 0:
+                    z_reason = f"Весь найденный текст ({p_filt_cnt} шт.) отфильтрован как вздохи/SFX"
+                else:
+                    z_reason = "На странице не обнаружено речевых облачков с текстом (обложка, иллюстрация или страница без слов)"
+            zero_block_pages.append(
+                {
+                    "index": idx_p,
+                    "rel_path": rel_norm,
+                    "is_translated": is_done,
+                    "raw_candidates": raw_cand,
+                    "filtered_count": p_filt_cnt,
+                    "kept_blocks": p_kept,
+                    "reason": z_reason,
+                }
+            )
+
+        if ocr_err:
+            status_cell = "❌ ОШИБКА"
+        elif not p_meta and not is_done:
+            status_cell = "⏳ ЖДЕТ"
+        elif p_untranslated_err > 0:
+            status_cell = f"⚠️ ПРОПУСК ({p_untranslated_err})"
+        elif p_trans_ok == 0:
+            status_cell = "⚪ 0 БЛОКОВ"
+        else:
+            status_cell = "✅ ОК"
+
+        fs_cell = f"{min(p_fonts)}..{max(p_fonts)}" if p_fonts else "—"
+        note_parts: list[str] = []
+        if "llm_local_bypass" in p_sources_short:
+            note_parts.append("🛡Обход цензуры (Ollama)")
+        if "llm_micro_retry" in p_sources_short:
+            note_parts.append("🔄Доперевод 2-й проход")
+        if p_filt_cnt > 0:
+            note_parts.append(f"Фильтр отсеял: {p_filt_cnt}")
+        if p_skipped_sigh > 0:
+            note_parts.append(f"Вздохи/удал.: {p_skipped_sigh}")
+        if p_trans_ok == 0 and zero_block_pages:
+            note_parts.append(zero_block_pages[-1]["reason"][:58])
+
+        per_page_rows.append(
+            {
+                "index": idx_p,
+                "rel_path": rel_norm,
+                "status": status_cell,
+                "lang": p_det_lang.upper(),
+                "raw_cand": raw_cand,
+                "filtered": p_filt_cnt,
+                "kept": p_kept,
+                "trans_ok": p_trans_ok,
+                "untrans_err": p_untranslated_err,
+                "fs_range": fs_cell,
+                "note": "; ".join(note_parts) if note_parts else "Штатно",
+            }
+        )
+
+    d_payload = _build_diagnostics_payload()
+    gpu_info = d_payload.get("gpu", {})
+    tr_info = d_payload.get("translator", {})
+    srv_info = d_payload.get("server", {})
+
+    dominant_lang = (
+        max(detected_langs_freq.items(), key=lambda kv: kv[1])[0]
+        if detected_langs_freq
+        else str(folder_job_state.get("detected_lang") or "ja")
+    )
+    lang_names_full = {
+        "ja": "JA (Японская манга)",
+        "ko": "KO (Корейская манхва / вебтун)",
+        "zh": "ZH (Китайская маньхуа)",
+    }
+    target_names_full = {
+        "ru": "RU (Русский язык)",
+        "en": "EN (Английский язык)",
+        "romaji": "ROMAJI (Транслитерация Хэпбёрн)",
+    }
+
+    active_llm = (
+        models_used_set[-1]
+        if models_used_set
+        else str(tr_info.get("selected_model") or "auto")
+    )
+    local_fb_llm = str(
+        tr_info.get("last_local_fallback_model")
+        or (translator_engine.default_model if translator_engine else "shisa-v2.1-14b")
+    )
+    report_path = output_dir / REPORT_FILENAME
+
+    eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params()
+    cur_min_fs = int(translator_engine.min_font_size if translator_engine else 12)
+    cur_max_fs = int(translator_engine.max_font_size if translator_engine else 32)
+    cur_upper = bool(translator_engine.uppercase if translator_engine else True)
+    cur_batch_p = int(translator_engine.batch_pages if translator_engine else 12)
+
+    last_run = run_history[-1] if run_history else {}
+    status_header = (
+        run_status_label
+        or str(last_run.get("status_label") or "")
+        or f"Готово {translated_pages_cnt} из {total_pages_in_folder} стр."
+    )
+
+    lines: list[str] = [
+        "========================================================================================",
+        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v1.0.7",
+        "========================================================================================",
+        f"• Исходная папка манги     : {source_dir}",
+        f"• Папка готового перевода  : {output_dir}",
+        f"• Файл этого отчета        : {report_path}",
+        f"• Дата обновления отчета   : {time.strftime('%Y-%m-%d %H:%M:%S')}",
+        f"• Статус перевода главы    : {status_header}",
+        "",
+        "----------------------------------------------------------------------------------------",
+        "  🤖 1. ЗАДЕЙСТВОВАННЫЕ МОДЕЛИ, НЕЙРОСЕТИ И АППАРАТНОЕ УСКОРЕНИЕ",
+        "----------------------------------------------------------------------------------------",
+        f"• Основная ИИ-модель (LLM)     : {active_llm}",
+        f"• Шлюз облачного API           : {tr_info.get('api_url', '—')} (ключ: {tr_info.get('masked_api_key') or 'локальный режим'})",
+        f"• Локальная модель (фоллбэк)   : {local_fb_llm} (авто-обход цензуры API и сбоев сети)",
+        f"• Детектор бабблов и рамок     : {gpu_info.get('detector_backend', 'Hybrid RT-DETR-v2 + YOLOv8m')}",
+        f"• OCR (Японский JA)            : {gpu_info.get('ja_ocr_backend', 'Hybrid manga-ocr-nar-small + MangaOCR FP16')}",
+        f"• OCR (Корейский KO / Кит. ZH) : {gpu_info.get('ko_zh_ocr_backend', 'HayaiOCR v2.5 Nova + SmartLineSplit')}",
+        f"• Снайперский VLM-OCR (SFX)    : {gpu_info.get('vlm_ocr_backend', 'Sniper VLM-OCR')}",
+        f"• Нейросетевая очистка (Inpaint): {gpu_info.get('inpaint_backend', 'SimpleLama GPU')} + CleanCache (0 мс при правках)",
+        f"• Видеокарта и окружение       : {gpu_info.get('device_name', 'CPU')} (VRAM: {gpu_info.get('vram_allocated_mb', 0)} / {gpu_info.get('vram_total_mb', 0)} МБ) | PyTorch {gpu_info.get('torch_version')} | Python {srv_info.get('python_version')}",
+        "",
+        "----------------------------------------------------------------------------------------",
+        "  ⚙️ 2. ПАРАМЕТРЫ ПЕРЕВОДА, ФИЛЬТРАЦИИ И ВЕРСТКИ (ДЛЯ СРАВНЕНИЯ ЗАПУСКОВ)",
+        "----------------------------------------------------------------------------------------",
+        f"• Направление перевода         : {lang_names_full.get(dominant_lang, dominant_lang)} ➔ {target_names_full.get(t_lang, t_lang.upper())}",
+        f"• Профиль фильтрации текста    : {eff_mode}",
+        f"• Пропуск коротких вздохов     : {'ВКЛ (skip_sighs=True)' if eff_skip_sighs else 'ВЫКЛ (переводить все вздохи)'}",
+        f"• Пропуск звуковых эффектов    : {'ВКЛ (skip_sfx=True)' if eff_skip_sfx else 'ВЫКЛ (переводить SFX)'}",
+        f"• Текст вне бабблов (на фоне)  : {'ВКЛ (detect_free_text=True)' if eff_free else 'ВЫКЛ (защита рисунка фона от замазки)'}",
+        f"• Мин. длина текста для OCR    : {eff_min_len} симв. (min_text_length={eff_min_len})",
+        f"• Размер шрифта и регистр      : {cur_min_fs} px .. {cur_max_fs} px | Заглавные буквы (UPPERCASE): {'ВКЛ' if cur_upper else 'ВЫКЛ'}",
+        f"• Пакетный режим (batch_pages) : {cur_batch_p} стр. в пачке | Лимит облака: {tr_info.get('cloud_batch_limit', 260)} фраз (параллельный чанк: {tr_info.get('cloud_parallel_chunk_size', 42)} фраз)",
+        f"• Активный глоссарий           : {len(merged_glossary)} терминов (Глобальный: {len(global_glossary)}, Локальный главы: {len(folder_glossary)})",
+    ]
+    if merged_glossary:
+        g_preview = ", ".join(f"{g['src']}->{g['dst']}" for g in merged_glossary[:10])
+        if len(merged_glossary) > 10:
+            g_preview += f" ... (+еще {len(merged_glossary) - 10})"
+        lines.append(f"  └─ Термины глоссария         : {g_preview}")
+
+    pct_ok = round((tot_translated_ok / max(1, tot_kept_blocks)) * 100.0, 1) if tot_kept_blocks > 0 else 100.0
+    intentional_skips = (
+        source_counter.get("skipped_sigh_orig", 0)
+        + source_counter.get("skipped_sigh_trans", 0)
+        + source_counter.get("deleted_by_user", 0)
+    )
+    untranslated_errs_cnt = len(untranslated_error_blocks)
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  📊 3. СВОДНАЯ ВОРОНКА СТРАНИЦ, ТЕКСТОВЫХ БЛОКОВ И ТАЙМИНГОВ ГЛАВЫ",
+            "----------------------------------------------------------------------------------------",
+            "[Страницы главы]",
+            f"  • Всего страниц в папке            : {total_pages_in_folder} стр.",
+            f"  • Переведено и сохранено на диск   : {translated_pages_cnt} стр.",
+            f"  • Страниц с переведенным текстом   : {pages_with_blocks_cnt} стр.",
+            f"  • Страниц без перевода (0 блоков)  : {len(zero_block_pages)} стр. (подробные причины см. в Разделе 6А)",
+            f"  • Страниц со сбоем чтения (OCR)    : {len(error_pages)} стр.",
+            "",
+            "[Сквозная воронка текстовых блоков от детекции до рендера]",
+            f"  1) Найдено контуров детекторами    : {tot_raw_candidates} шт. (YOLOv8m: {tot_yolo_bubbles}, RT-DETR-v2 бабблы: {tot_rtdetr_bubbles}, точные text_bbox: {tot_rtdetr_text_bubbles}; разделено сдвоенных: {tot_split_multi}, спасено безрамочных: {tot_rescued_orphan})",
+            f"  2) Отброшено пустых / без чернил   : {tot_no_ink + tot_hallucinated + tot_empty_ocr} шт. (нет букв внутри рамки: {tot_no_ink}, отсеяно анти-галлюцинацией/шум: {tot_hallucinated + tot_empty_ocr})",
+            f"  3) Отсеяно фильтром настроек OCR   : {tot_filtered_ocr} шт. (вздохи skip_sighs: {filter_reasons_counter.get('sigh', 0)}, спецэффекты skip_sfx: {filter_reasons_counter.get('sfx', 0)}, короткие <{eff_min_len} симв.: {filter_reasons_counter.get('min_length', 0)}, текст на фоне: {filter_reasons_counter.get('free_text_disabled', 0)})",
+            f"  4) Возвращено защитой пустых стр.  : {tot_restored_empty_guard} шт. (короткие бабблы сохранены, чтобы страница не осталась без перевода)",
+            f"  5) Принято блоков к переводу       : {tot_kept_blocks} шт. (облачка диалогов: {tot_bubble_blocks}, надписи на фоне: {tot_free_blocks})",
+            f"  6) ✅ УСПЕШНО ПЕРЕВЕДЕНО НА СТР.   : {tot_translated_ok} из {tot_kept_blocks} шт. ({pct_ok}%)",
+            f"       ├─ Основной ИИ-моделью с 1-й попытки    : {source_counter.get('llm', 0)} шт.",
+            f"       ├─ Локальной моделью (обход цензуры API): {source_counter.get('llm_local_bypass', 0)} шт.",
+            f"       ├─ Доперевод ИИ со 2-й попытки (ретрай) : {source_counter.get('llm_micro_retry', 0) + source_counter.get('llm_sanitized_retry', 0)} шт.",
+            f"       ├─ Из кэша фраз и повторов (0 токенов)  : {source_counter.get('cache', 0) + source_counter.get('batch_dedup', 0)} шт.",
+            f"       └─ По встроенному словарю междометий    : {source_counter.get('interjection_dict', 0) + source_counter.get('romaji_rescue_dict', 0) + source_counter.get('romaji_local', 0)} шт.",
+            f"  7) ⚪ Намеренно оставлено без пер. : {intentional_skips} шт. (вздохи в оригинале: {source_counter.get('skipped_sigh_orig', 0)}, вздохи после перевода: {source_counter.get('skipped_sigh_trans', 0)}, удалено вручную: {source_counter.get('deleted_by_user', 0)})",
+            f"  8) ❌ НЕ ПЕРЕВЕДЕНО (сбой / пропуск): {untranslated_errs_cnt} шт.",
+        ]
+    )
+
+    if last_run:
+        r_tot = float(last_run.get("total_sec") or 0.0)
+        r_ocr = float(last_run.get("ocr_sec") or 0.0)
+        r_llm = float(last_run.get("llm_sec") or 0.0)
+        r_ren = float(last_run.get("render_sec") or 0.0)
+        r_spp = float(last_run.get("sec_per_page") or 0.0)
+        nz = max(0.01, (r_ocr + r_llm + r_ren) if (r_ocr + r_llm + r_ren) > 0 else r_tot)
+        lines.extend(
+            [
+                "",
+                "[Тайминги последнего пакетного прогона]",
+                f"  • Общее время прогона              : {r_tot:.2f} сек (средняя скорость: {r_spp:.2f} сек/стр.)",
+                f"  • Этап 1 — Детекция и OCR (GPU)    : {r_ocr:.2f} сек ({int(round(r_ocr / nz * 100))}%)",
+                f"  • Этап 2 — ИИ-перевод (LLM/API)    : {r_llm:.2f} сек ({int(round(r_llm / nz * 100))}%)",
+                f"  • Этап 3 — Очистка LaMa и Верстка  : {r_ren:.2f} сек ({int(round(r_ren / nz * 100))}%)",
+            ]
+        )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  🏆 4. ИСТОРИЯ ЗАПУСКОВ НА ЭТОЙ ПАПКЕ (СРАВНЕНИЕ МОДЕЛЕЙ И ПАРАМЕТРОВ)",
+            "----------------------------------------------------------------------------------------",
+        ]
+    )
+    if not run_history:
+        lines.append("  (Записи пакетных прогонов появятся после запуска перевода папки; текущие данные собраны по страницам)")
+    else:
+        lines.append(
+            "  №  | Дата и время        | Модель ИИ                        | Фильтр          | Пакет | Стр. | Перев.бл | Фильтр. | Ошиб.бл | Отказ API | Скор.   | Тайминг (OCR / ИИ / Рендер)"
+        )
+        lines.append("  " + "-" * 166)
+        for r_idx, rh in enumerate(run_history[-15:], start=1):
+            m_short = str(rh.get("model") or "auto")
+            if len(m_short) > 32:
+                m_short = m_short[:29] + "..."
+            f_short = str(rh.get("filter_mode") or "dialogue_only")[:15]
+            lines.append(
+                f"  {r_idx:<2d} | {str(rh.get('time', '—')):<19s} | {m_short:<32s} | {f_short:<15s} | "
+                f"{int(rh.get('batch_pages', 12)):>3d}c. | {int(rh.get('pages_processed', 0)):>4d} | "
+                f"{int(rh.get('blocks_translated', 0)):>8d} | {int(rh.get('blocks_filtered', 0)):>7d} | "
+                f"{int(rh.get('blocks_untranslated', 0)):>7d} | {int(rh.get('refusals_count', 0)):>9d} | "
+                f"{float(rh.get('sec_per_page', 0.0)):>5.2f}с | "
+                f"OCR={float(rh.get('ocr_sec', 0.0)):.1f}с, ИИ={float(rh.get('llm_sec', 0.0)):.1f}с, Ренд={float(rh.get('render_sec', 0.0)):.1f}с (Всего {float(rh.get('total_sec', 0.0)):.1f}с)"
+            )
+
+    incidents = tr_info.get("recent_translation_incidents") or []
+    api_calls = tr_info.get("recent_api_calls") or []
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  ☁️ 5. ЖУРНАЛ РАБОТЫ ИИ: КОГДА И ПОЧЕМУ НЕ СРАБОТАЛА ОБЛАЧНАЯ МОДЕЛЬ / ДОПЕРЕВОДЫ",
+            "----------------------------------------------------------------------------------------",
+            f"• Всего запросов к ИИ за сессию      : {tr_info.get('total_llm_requests', 0)} (Облако: {tr_info.get('total_cloud_requests', 0)}, Локальный Ollama: {tr_info.get('total_ollama_requests', 0)}, Параллельных пачек: {tr_info.get('parallel_batches_count', 0)})",
+            f"• Среднее время ответа ИИ            : {tr_info.get('avg_llm_latency_sec', 0.0)} сек (суммарно в ИИ: {tr_info.get('total_llm_time_sec', 0.0)} сек)",
+            f"• Экономия токенов за счет кэша      : {tr_info.get('phrases_saved_by_cache', 0)} из {tr_info.get('phrases_requested_total', 0)} фраз ({tr_info.get('cache_hit_rate_pct', 0.0)}%) взято без вызовов API",
+            f"• Отказов цензуры облачного API      : {tr_info.get('refusals_count', 0)} раз (перехвачено локальной моделью Ollama: {tr_info.get('local_censorship_fallbacks_count', 0)}, санитизировано триггеров: {tr_info.get('sanitized_retries_count', 0)})",
+            f"• Сетевых повторов (HTTP 429/502/Таймаут): {tr_info.get('network_retries_count', 0)} | Аварийных переключений на Ollama: {tr_info.get('cloud_to_local_error_fallbacks_count', 0)}",
+            f"• Поймано и исправлено брака ИИ      : утечек Ромадзи/латиницы={tr_info.get('romaji_leaks_caught_count', 0)}, остаточных иероглифов CJK={tr_info.get('cjk_leaks_caught_count', 0)}, микро-допереводов={tr_info.get('micro_retries_count', 0)}",
+            "",
+        ]
+    )
+
+    if not incidents:
+        lines.append("  ✅ Инцидентов ИИ не зафиксировано: все запросы к модели прошли с 1-й попытки без цензуры и сетевых сбоев.")
+    else:
+        lines.append(f"  [Подробный журнал инцидентов и авто-восстановлений ИИ ({len(incidents)} событий)]:")
+        for inc in incidents[:30]:
+            det_s = f" | Детали: {inc.get('details')}" if inc.get("details") else ""
+            lines.append(
+                f"  • [{inc.get('time')}] [{inc.get('incident_type')}] Модель: {inc.get('model')} — {inc.get('summary_ru')}{det_s}"
+            )
+
+    if api_calls:
+        lines.append("")
+        lines.append(f"  [Последние прямые вызовы LLM API ({min(15, len(api_calls))} из {len(api_calls)})]:")
+        for ac in api_calls[:15]:
+            note_s = f" | Причина/Примечание: {ac.get('note')}" if ac.get("note") else ""
+            lines.append(
+                f"  • [{ac.get('time')}] {ac.get('provider')}::{ac.get('model')} | Статус: {ac.get('status')} | "
+                f"Время: {ac.get('elapsed_sec')}с | Ключей получено: {ac.get('returned_keys')}{note_s}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  🔍 6. РАЗБОР ПРОПУСКОВ: ПОЧЕМУ НЕ БЫЛИ ПЕРЕВЕДЕНЫ СТРАНИЦЫ ИЛИ ОТДЕЛЬНЫЙ ТЕКСТ",
+            "----------------------------------------------------------------------------------------",
+            f"  6А. Страницы без переведенного текста (0 переведенных блоков: {len(zero_block_pages)} стр.):",
+        ]
+    )
+    if not zero_block_pages:
+        lines.append("      ✅ На всех страницах главы есть переведенные диалоги (нет пустых страниц).")
+    else:
+        for zp in zero_block_pages:
+            lines.append(
+                f"      • Стр. #{zp['index']:03d} ({zp['rel_path']}) — Кандидатов детектора: {zp['raw_candidates']}, "
+                f"Отсеяно фильтром: {zp['filtered_count']} ➔ Причина: {zp['reason']}"
+            )
+
+    lines.append("")
+    lines.append(
+        f"  6Б. Текстовые блоки, которые НЕ удалось перевести из-за ошибки/пропуска ИИ ({len(untranslated_error_blocks)} шт.):"
+    )
+    if not untranslated_error_blocks:
+        lines.append("      ✅ 0 потерянных блоков! Все принятые к переводу реплики успешно переведены.")
+    else:
+        for ub in untranslated_error_blocks[:50]:
+            lines.append(
+                f"      • ❌ Стр. #{ub['page_index']:03d} ({ub['rel_path']}), Кружок #{ub['block_id']} {ub.get('bbox')}: "
+                f"Оригинал «{ub['original_text']}» — Причина: {ub['reason']}"
+            )
+
+    lines.append("")
+    lines.append(
+        f"  6В. Блоки, намеренно оставленные в оригинале после OCR (короткие вздохи / удаленные вручную: {len(skipped_post_ocr_blocks)} шт.):"
+    )
+    if not skipped_post_ocr_blocks:
+        lines.append("      (Таких блоков нет)")
+    else:
+        for sb in skipped_post_ocr_blocks[:40]:
+            lines.append(
+                f"      • ⚪ Стр. #{sb['page_index']:03d} ({sb['rel_path']}), Кружок #{sb['block_id']}: "
+                f"Оригинал «{sb['original_text']}» — {sb['reason']}"
+            )
+
+    lines.append("")
+    lines.append(
+        f"  6Г. Распознанный текст, отсеянный фильтром на этапе OCR (вздохи, SFX, короткие символы: {len(all_filtered_ocr_records)} шт.):"
+    )
+    if not all_filtered_ocr_records:
+        lines.append("      (На этапе OCR фильтр не отсеял ни одной текстовой области)")
+    else:
+        for fr in all_filtered_ocr_records[:60]:
+            lines.append(
+                f"      • 🛡 Стр. #{fr['page_index']:03d} ({fr['rel_path']}) {fr.get('bbox')}: "
+                f"«{fr['text']}» — Отсеяно: {fr['reason_ru']}"
+            )
+        if len(all_filtered_ocr_records) > 60:
+            lines.append(f"      ... и еще {len(all_filtered_ocr_records) - 60} отфильтрованных мелких звуков/вздохов.")
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  💡 7. КОНТРОЛЬ КАЧЕСТВА ВЕРСТКИ (УЗКИЕ БАББЛЫ) И АВТО-РЕКОМЕНДАЦИИ",
+            "----------------------------------------------------------------------------------------",
+            f"  7А. Кружки с минимальным размером шрифта (кегль уперся в {cur_min_fs} px — возможна теснота текста: {len(cramped_min_font_blocks)} шт.):",
+        ]
+    )
+    if not cramped_min_font_blocks:
+        lines.append("      ✅ Все реплики комфортно поместились в бабблы без сжатия до минимального предела шрифта.")
+    else:
+        for cb_item in cramped_min_font_blocks[:25]:
+            lines.append(
+                f"      • 🔎 Стр. #{cb_item['page_index']:03d} ({cb_item['rel_path']}), Кружок #{cb_item['block_id']} "
+                f"(шрифт {cb_item['font_size']}px): «{cb_item['translated_text'][:55]}»"
+            )
+
+    lines.append("")
+    lines.append(f"  7Б. Области с низкой уверенностью детектора (< 0.35: {len(low_conf_blocks)} шт.):")
+    if not low_conf_blocks:
+        lines.append("      ✅ Все текстовые рамки распознаны с высокой уверенностью детектора (>= 0.35).")
+    else:
+        for lcb in low_conf_blocks[:20]:
+            lines.append(
+                f"      • Стр. #{lcb['page_index']:03d} ({lcb['rel_path']}), Кружок #{lcb['block_id']} "
+                f"(conf={lcb['confidence']}): «{lcb['original_text'][:30]}» ➔ «{lcb['translated_text'][:35]}»"
+            )
+
+    lines.append("")
+    lines.append("  7В. Автоматические рекомендации по оптимизации параметров для этой главы:")
+    recs: list[str] = []
+    if untranslated_errs_cnt > 0:
+        recs.append(
+            f"⚠️ Обнаружено {untranslated_errs_cnt} непереведенных блоков (см. Раздел 6Б). Откройте указанные страницы в веб-студии и нажмите «🔄 Перевести ИИ» в карточке нужного кружка."
+        )
+    if int(tr_info.get("refusals_count") or 0) > 0:
+        if int(tr_info.get("local_censorship_fallbacks_count") or 0) > 0:
+            recs.append(
+                f"🛡 Облачный API отклонил {tr_info.get('refusals_count')} пачек из-за цензуры, но локальная модель ({local_fb_llm}) успешно перехватила и перевела их. Для полностью бесцензурного локального перевода 18+ глав рекомендуем выбрать модель «🔥 Shisa V2 12B Uncensored»."
+            )
+        else:
+            recs.append(
+                f"⚠️ Облачный API отклонял запросы из-за цензуры ({tr_info.get('refusals_count')} раз), а локальная модель в Ollama не была запущена. Скачайте во вкладке Настройки модель «🔥 Shisa V2 12B Uncensored» для мгновенного авто-обхода цензуры!"
+            )
+    if len(cramped_min_font_blocks) >= 4:
+        recs.append(
+            f"🔤 В {len(cramped_min_font_blocks)} узких бабблах шрифт уменьшился до порога {cur_min_fs}px. Вы можете снизить «Минимальный размер шрифта» до 10px в настройках или слегка расширить рамки указанных кружков мышкой."
+        )
+    if filter_reasons_counter.get("sigh", 0) >= 8:
+        recs.append(
+            f"💬 Фильтр skip_sighs=True бережно пропустил {filter_reasons_counter.get('sigh', 0)} коротких вздохов/охов без замазки рисунка. Если вы хотите переводить даже короткие стоны («Ах!», «Мм!»), переключите профиль фильтра на «🗨 Все облачка диалогов (bubbles_only)»."
+        )
+    if not recs:
+        recs.append(
+            "✨ Текущие параметры фильтрации, шрифта и выбранная модель отработали оптимально — корректировка настроек не требуется!"
+        )
+    for r_line in recs:
+        lines.append(f"      • {r_line}")
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            f"  📄 8. ПОСТРАНИЧНАЯ СВОДНАЯ ТАБЛИЦА ({len(per_page_rows)} СТРАНИЦ)",
+            "----------------------------------------------------------------------------------------",
+            "  #    | Файл страницы              | Статус          | Яз. | Канд. | Фильтр | Блоков | Перев. | Ошиб. | Шрифт (px) | Примечания по странице",
+            "  " + "-" * 138,
+        ]
+    )
+    for row in per_page_rows:
+        fname_disp = row["rel_path"]
+        if len(fname_disp) > 26:
+            fname_disp = "..." + fname_disp[-23:]
+        lines.append(
+            f"  #{row['index']:03d} | {fname_disp:<26s} | {row['status']:<15s} | {row['lang']:<3s} | "
+            f"{row['raw_cand']:>5d} | {row['filtered']:>6d} | {row['kept']:>6d} | "
+            f"{row['trans_ok']:>6d} | {row['untrans_err']:>5d} | {row['fs_range']:<10s} | {row['note']}"
+        )
+
+    if batches_log:
+        lines.extend(
+            [
+                "",
+                "----------------------------------------------------------------------------------------",
+                f"  📦 9. ХРОНОЛОГИЯ ПАКЕТНОЙ ОБРАБОТКИ ({len(batches_log)} ПАЧЕК)",
+                "----------------------------------------------------------------------------------------",
+            ]
+        )
+        for b_item in batches_log[-30:]:
+            lines.append(
+                f"  • [{b_item.get('time', '—')}] {b_item.get('label')} | Файлы: {b_item.get('files_range', '—')} | "
+                f"Блоков: {b_item.get('blocks_count', 0)} (перев.: {b_item.get('translated_count', 0)}, отфильтр.: {b_item.get('filtered_count', 0)}) | "
+                f"OCR={b_item.get('ocr_sec', 0)}с, ИИ={b_item.get('llm_sec', 0)}с, Рендер={b_item.get('render_sec', 0)}с "
+                f"=> ВСЕГО={b_item.get('total_sec', 0)}с ({b_item.get('sec_per_page', 0)}с/стр) | Модель: {b_item.get('model', active_llm)}"
+            )
+
+    lines.extend(
+        [
+            "",
+            "========================================================================================",
+            "  КОНЕЦ ДИАГНОСТИЧЕСКОГО ОТЧЕТА ГЛАВЫ (АВТОСОХРАНЕНО В ПАПКУ ПЕРЕВОДА)",
+            "========================================================================================",
+            "",
+        ]
+    )
+
+    report_text = "\n".join(lines)
+    try:
+        report_path.write_text(report_text, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Не удалось записать диагностический отчет %s: %s", report_path, exc)
+    return report_text
 
 
 def is_page_already_translated(
@@ -1438,10 +2203,16 @@ async def _run_folder_translation_job(
     pages_per_batch = max(1, min(25, int(batch_pages or 12)))
 
     manifest = _load_folder_manifest(output_dir)
+    manifest["source_dir"] = str(source_dir)
+    manifest["target_lang"] = target_lang
     if not isinstance(manifest.get("pages"), dict):
         manifest["pages"] = {}
     if not isinstance(manifest.get("phrase_cache"), dict):
         manifest["phrase_cache"] = {}
+    if not isinstance(manifest.get("run_history"), list):
+        manifest["run_history"] = []
+    if not isinstance(manifest.get("batches_log"), list):
+        manifest["batches_log"] = []
     t_lang_norm = (target_lang or "en").lower().strip()
     raw_rolling = list(manifest.get("rolling_context") or [])[-12:]
     rolling_context: list[str] = []
@@ -1508,6 +2279,13 @@ async def _run_folder_translation_job(
 
     try:
         done_in_run = 0
+        run_ocr_sec_total = 0.0
+        run_llm_sec_total = 0.0
+        run_render_sec_total = 0.0
+        run_blocks_translated = 0
+        run_blocks_filtered = 0
+        run_blocks_untranslated = 0
+        refusals_before_run = int(translator_engine.diagnostics_stats.get("refusals_count") or 0)
         active_mod = await translator_engine.resolve_model(ollama_model)
         chapter_detected_lang: str | None = lang if lang in ("ja", "ko", "zh") else None
         eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
@@ -1576,6 +2354,7 @@ async def _run_folder_translation_job(
                             eff_skip_sfx,
                             eff_min_len,
                         )
+                        p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
                     if chapter_detected_lang is None and det_lang in ("ja", "ko", "zh"):
                         chapter_detected_lang = det_lang
                     batch_detected_lang = det_lang
@@ -1600,13 +2379,31 @@ async def _run_folder_translation_job(
                             "blocks": p_blocks,
                             "global_ids": page_global_ids,
                             "detected_lang": det_lang,
+                            "ocr_diag": p_ocr_diag,
                             "ok": True,
                         }
                     )
                 except Exception as ocr_exc:
                     logger.exception("Ошибка OCR при чтении файла %s: %s", img_path, ocr_exc)
                     shutil.copy2(img_path, dest_path)
-                    scanned_pages.append({"img_path": img_path, "dest_path": dest_path, "rel_norm": rel_norm, "ok": False})
+                    manifest["pages"][rel_norm] = {
+                        "blocks_count": 0,
+                        "free_text_count": 0,
+                        "detected_lang": batch_detected_lang,
+                        "model": active_mod,
+                        "ocr_error": str(ocr_exc),
+                        "updated_at": int(time.time()),
+                        "blocks": [],
+                    }
+                    scanned_pages.append(
+                        {
+                            "img_path": img_path,
+                            "dest_path": dest_path,
+                            "rel_norm": rel_norm,
+                            "ocr_error": str(ocr_exc),
+                            "ok": False,
+                        }
+                    )
 
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
@@ -1619,6 +2416,8 @@ async def _run_folder_translation_job(
             # Шаг 2: Параллельный ИИ-перевод пачки (автоматически делится на 2-3 параллельных потока в translator.py!)
             _llm_t0 = time.perf_counter()
             translated_by_gid: dict[int, str] = {}
+            source_by_gid: dict[int, str] = {}
+            skip_reason_by_gid: dict[int, str] = {}
             if combined_blocks:
                 folder_job_state["current_file"] = (
                     f"☁️ [2/3 ИИ-перевод пачки: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
@@ -1637,7 +2436,10 @@ async def _run_folder_translation_job(
                         glossary_entries=folder_glossary_entries,
                     )
                     for eb in enriched_combined:
-                        translated_by_gid[int(eb["id"])] = str(eb.get("translated_text") or "").strip()
+                        gid_eb = int(eb["id"])
+                        translated_by_gid[gid_eb] = str(eb.get("translated_text") or "").strip()
+                        source_by_gid[gid_eb] = str(eb.get("translation_source") or "")
+                        skip_reason_by_gid[gid_eb] = str(eb.get("skip_reason") or "")
                 except Exception as llm_exc:
                     logger.exception("Ошибка пакетного ИИ-перевода пачки страниц: %s", llm_exc)
 
@@ -1645,16 +2447,25 @@ async def _run_folder_translation_job(
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
                 _save_folder_manifest(output_dir, manifest)
+                _generate_and_save_folder_report(
+                    output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label="⏸ Остановлено на паузе"
+                )
                 return
 
             _batch_llm_sec = round(time.perf_counter() - _llm_t0, 2)
 
-            # Проверяем, не остались ли на каких-то страницах пачки непереведенные бабблы (например, из-за сбоя/пропуска ключей)
+            # Проверяем, не остались ли на каких-то страницах пачки непереведенные бабблы из-за сбоя/пропуска ключей
+            # (пропуская те, которые были намеренно оставлены пустыми как вздохи при skip_sighs=True!)
             missing_combined: list[dict[str, Any]] = []
             for cb in combined_blocks:
                 gid_c = int(cb["id"])
                 cur_tr = translated_by_gid.get(gid_c, "").strip()
-                if not cur_tr and str(cb.get("original_text") or "").strip():
+                cur_src = source_by_gid.get(gid_c, "")
+                if (
+                    not cur_tr
+                    and str(cb.get("original_text") or "").strip()
+                    and cur_src not in ("skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user")
+                ):
                     missing_combined.append(cb)
 
             if missing_combined and not _folder_stop_requested:
@@ -1675,9 +2486,14 @@ async def _run_folder_translation_job(
                         skip_sighs=False,
                     )
                     for rb in rescued_list:
+                        gid_r = int(rb["id"])
                         r_txt = str(rb.get("translated_text") or "").strip()
                         if r_txt:
-                            translated_by_gid[int(rb["id"])] = r_txt
+                            translated_by_gid[gid_r] = r_txt
+                            source_by_gid[gid_r] = str(rb.get("translation_source") or "llm_micro_retry")
+                            skip_reason_by_gid[gid_r] = ""
+                        elif rb.get("skip_reason"):
+                            skip_reason_by_gid[gid_r] = str(rb.get("skip_reason"))
                 except Exception as rescue_exc:
                     logger.warning("Доперевод оставшихся блоков пачки не удался: %s", rescue_exc)
 
@@ -1691,6 +2507,8 @@ async def _run_folder_translation_job(
                 for b, gid in zip(p_blocks, gids):
                     t_txt = translated_by_gid.get(gid, "")
                     b["translated_text"] = t_txt
+                    b["translation_source"] = source_by_gid.get(gid) or ("llm" if t_txt else "untranslated_error")
+                    b["skip_reason"] = "" if t_txt else skip_reason_by_gid.get(gid, "")
                     _ensure_block_clean_bbox(b)
                     orig_t = (b.get("original_text") or "").strip()
                     if orig_t:
@@ -1777,6 +2595,7 @@ async def _run_folder_translation_job(
                         "uppercase": uppercase,
                         "min_font_size": min_font_size,
                         "max_font_size": max_font_size,
+                        "ocr_diag": sp_item.get("ocr_diag", {}),
                         "updated_at": int(time.time()),
                         "blocks": p_blocks,
                     }
@@ -1843,6 +2662,49 @@ async def _run_folder_translation_job(
                 },
             )
 
+            batch_trans_cnt = sum(1 for v in translated_by_gid.values() if v and v.strip())
+            batch_filt_cnt = sum(
+                int((sp.get("ocr_diag") or {}).get("filtered_count") or 0)
+                for sp in scanned_pages
+                if sp.get("ok")
+            )
+            batch_untrans_cnt = sum(
+                1
+                for cb in combined_blocks
+                if not translated_by_gid.get(int(cb["id"]), "").strip()
+                and source_by_gid.get(int(cb["id"]), "") not in ("skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user")
+            )
+            run_ocr_sec_total = round(run_ocr_sec_total + _batch_ocr_sec, 2)
+            run_llm_sec_total = round(run_llm_sec_total + _batch_llm_sec, 2)
+            run_render_sec_total = round(run_render_sec_total + _batch_render_sec, 2)
+            run_blocks_translated += batch_trans_cnt
+            run_blocks_filtered += batch_filt_cnt
+            run_blocks_untranslated += batch_untrans_cnt
+
+            first_rel = page_batch[0][3] if page_batch else ""
+            last_rel = page_batch[-1][3] if page_batch else ""
+            files_range_str = f"{first_rel} .. {last_rel}" if first_rel != last_rel else first_rel
+            manifest["batches_log"].append(
+                {
+                    "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                    "label": f"Пачка #{_batch_num} ({len(page_batch)} стр.)",
+                    "files_range": files_range_str,
+                    "pages_count": len(page_batch),
+                    "blocks_count": len(combined_blocks),
+                    "translated_count": batch_trans_cnt,
+                    "filtered_count": batch_filt_cnt,
+                    "untranslated_count": batch_untrans_cnt,
+                    "detected_lang": batch_detected_lang,
+                    "target_lang": target_lang,
+                    "model": active_mod,
+                    "ocr_sec": _batch_ocr_sec,
+                    "llm_sec": _batch_llm_sec,
+                    "render_sec": _batch_render_sec,
+                    "total_sec": _batch_total_sec,
+                    "sec_per_page": _sec_per_page,
+                }
+            )
+            manifest["batches_log"] = manifest["batches_log"][-60:]
             manifest["rolling_context"] = rolling_context
             manifest["phrase_cache"] = phrase_cache
             _save_folder_manifest(output_dir, manifest)
@@ -1850,12 +2712,58 @@ async def _run_folder_translation_job(
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                _generate_and_save_folder_report(
+                    output_dir,
+                    manifest,
+                    source_dir=source_dir,
+                    target_lang=target_lang,
+                    run_status_label=f"⏸ Остановлено на паузе ({folder_job_state['current']}/{len(image_paths)} стр. готово)",
+                )
                 return
 
         total_elapsed = round(time.perf_counter() - start_ts, 2)
         folder_job_state["status"] = "completed"
         folder_job_state["elapsed_sec"] = total_elapsed
         folder_job_state["current_file"] = "Готово!"
+
+        refusals_in_run = max(
+            0, int(translator_engine.diagnostics_stats.get("refusals_count") or 0) - refusals_before_run
+        )
+        manifest["run_history"].append(
+            {
+                "time": time.strftime("%Y-%m-%d %H:%M:%S"),
+                "timestamp": int(time.time()),
+                "status_label": f"✅ Завершен успешно (переведено в прогоне: {done_in_run} стр., было готово: {skipped_count} стр.)",
+                "model": active_mod,
+                "fallback_model": translator_engine.last_local_fallback_model or "",
+                "filter_mode": eff_mode,
+                "skip_sighs": eff_skip_sighs,
+                "skip_sfx": eff_skip_sfx,
+                "detect_free_text": eff_free,
+                "min_text_length": eff_min_len,
+                "batch_pages": pages_per_batch,
+                "pages_processed": done_in_run,
+                "pages_skipped_existing": skipped_count,
+                "blocks_translated": run_blocks_translated,
+                "blocks_filtered": run_blocks_filtered,
+                "blocks_untranslated": run_blocks_untranslated,
+                "refusals_count": refusals_in_run,
+                "ocr_sec": run_ocr_sec_total,
+                "llm_sec": run_llm_sec_total,
+                "render_sec": run_render_sec_total,
+                "total_sec": total_elapsed,
+                "sec_per_page": round(total_elapsed / max(1, done_in_run), 2),
+            }
+        )
+        manifest["run_history"] = manifest["run_history"][-25:]
+        _save_folder_manifest(output_dir, manifest)
+        _generate_and_save_folder_report(
+            output_dir,
+            manifest,
+            source_dir=source_dir,
+            target_lang=target_lang,
+            run_status_label=f"✅ Завершен успешно за {total_elapsed}с (переведено: {done_in_run} стр., ранее готово: {skipped_count} стр.)",
+        )
 
         if open_when_done and os.name == "nt" and output_dir.exists():
             try:
@@ -1867,10 +2775,16 @@ async def _run_folder_translation_job(
         folder_job_state["status"] = "stopped"
         folder_job_state["current_file"] = "Пауза"
         _save_folder_manifest(output_dir, manifest)
+        _generate_and_save_folder_report(
+            output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label="⏸ Остановлено пользователем"
+        )
     except Exception as exc:
         logger.exception("Критическая ошибка пакетного перевода папки")
         folder_job_state["status"] = "error"
         folder_job_state["error"] = str(exc)
+        _generate_and_save_folder_report(
+            output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label=f"❌ Ошибка: {exc}"
+        )
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -2268,6 +3182,8 @@ def _save_web_translated_page(
         if orig_t and rom_t:
             manifest["phrase_cache"][f"romaji||{orig_t}"] = rom_t
 
+    manifest["source_dir"] = str(source_chapter_dir)
+    manifest["target_lang"] = target_lang
     manifest["pages"][filename] = {
         "blocks_count": len(blocks),
         "free_text_count": sum(1 for b in blocks if b.get("is_free_text")),
@@ -2276,11 +3192,15 @@ def _save_web_translated_page(
         "uppercase": uppercase,
         "min_font_size": min_font_size,
         "max_font_size": max_font_size,
+        "ocr_diag": dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {}) if ocr_engine else {},
         "page_url": page_url,
         "updated_at": int(time.time()),
         "blocks": blocks,
     }
     _save_folder_manifest(output_chapter_dir, manifest)
+    _generate_and_save_folder_report(
+        output_chapter_dir, manifest, source_dir=source_chapter_dir, target_lang=target_lang
+    )
     logger.info("Веб-страница манги автоматически сохранена на ПК: %s", dest_file_path)
     return str(dest_file_path)
 
@@ -2513,6 +3433,8 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
     if output_dir is not None and manifest is not None and rel_norm:
         if not isinstance(manifest.get("pages"), dict):
             manifest["pages"] = {}
+        manifest["source_dir"] = str(source_dir) if source_dir else ""
+        manifest["target_lang"] = target_lang
         manifest["pages"][rel_norm] = {
             "blocks_count": len(blocks),
             "free_text_count": free_cnt,
@@ -2521,6 +3443,7 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
             "uppercase": payload.uppercase,
             "min_font_size": payload.min_font_size,
             "max_font_size": payload.max_font_size,
+            "ocr_diag": dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {}) if ocr_engine else {},
             "updated_at": int(time.time()),
             "blocks": blocks,
         }
@@ -2528,6 +3451,13 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
             manifest["rolling_context"] = list(translator_engine.recent_context_lines[-12:])
         manifest["phrase_cache"] = phrase_cache
         _save_folder_manifest(output_dir, manifest)
+        await asyncio.to_thread(
+            _generate_and_save_folder_report,
+            output_dir,
+            manifest,
+            source_dir,
+            target_lang,
+        )
 
     translated_b64 = (
         encode_pil_to_data_url(final_image, fmt=payload.image_format)
@@ -2886,6 +3816,13 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     )
     manifest["pages"][rel_norm] = prev_meta
     _save_folder_manifest(output_dir, manifest)
+    await asyncio.to_thread(
+        _generate_and_save_folder_report,
+        output_dir,
+        manifest,
+        source_dir,
+        t_lang,
+    )
 
     translated_image_url: str | None = (
         f"/local_image?path={quote(str(dest_path))}&t={int(time.time() * 1000)}"
@@ -2971,7 +3908,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
             payload.lang,
             payload.use_vlm_ocr,
             payload.vlm_model,
-            translator_engine.ollama_url if translator_engine else "http://127.0.0.1:11434",
+            getattr(translator_engine, "base_url", "http://127.0.0.1:11434") if translator_engine else "http://127.0.0.1:11434",
             translator_engine.unsloth_url if translator_engine else None,
             translator_engine.unsloth_api_key if translator_engine else None,
         )
@@ -3077,6 +4014,13 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
     )
     manifest["pages"][rel_norm] = prev_meta
     _save_folder_manifest(output_dir, manifest)
+    await asyncio.to_thread(
+        _generate_and_save_folder_report,
+        output_dir,
+        manifest,
+        source_dir,
+        t_lang,
+    )
 
     translated_b64 = (
         encode_pil_to_data_url(final_image, fmt=payload.image_format)
@@ -3144,7 +4088,7 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
                 payload.lang,
                 payload.use_vlm_ocr,
                 payload.vlm_model,
-                translator_engine.ollama_url if translator_engine else "http://127.0.0.1:11434",
+                getattr(translator_engine, "base_url", "http://127.0.0.1:11434") if translator_engine else "http://127.0.0.1:11434",
                 translator_engine.unsloth_url if translator_engine else None,
                 translator_engine.unsloth_api_key if translator_engine else None,
             )
@@ -3204,6 +4148,13 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     prev_meta["updated_at"] = int(time.time())
     manifest["pages"][rel_norm] = prev_meta
     _save_folder_manifest(output_dir, manifest)
+    await asyncio.to_thread(
+        _generate_and_save_folder_report,
+        output_dir,
+        manifest,
+        source_dir,
+        t_lang,
+    )
 
     translated_b64 = (
         encode_pil_to_data_url(final_image, fmt=payload.image_format)
@@ -3737,6 +4688,72 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
         "rerendered_pages_count": rerendered_count,
         "processing_time_sec": elapsed,
         "matches": matches,
+    }
+
+
+@app.get("/folder_report")
+async def get_folder_report_endpoint(
+    folder_path: str | None = Query(default=None, description="Путь к исходной или переведенной папке главы"),
+    target_lang: str = Query(default="en", description="Целевой язык: en, ru или romaji"),
+) -> dict[str, Any]:
+    """
+    Генерирует (или обновляет на диске) и возвращает содержимое диагностического отчета главы
+    `<output_dir>/TRANSLATION_REPORT.txt`.
+    """
+    t_lang = (target_lang or "en").strip().lower()
+    if t_lang not in VALID_TARGET_LANGS:
+        t_lang = "en"
+
+    raw_folder = (folder_path or folder_job_state.get("source_dir") or folder_job_state.get("output_dir") or "").strip()
+    if not raw_folder:
+        raise HTTPException(
+            status_code=400,
+            detail="Сначала выберите папку с мангой слева, чтобы сформировать отчет по главе.",
+        )
+
+    cand_dir = Path(raw_folder).resolve()
+    if not cand_dir.exists() or not cand_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Папка не найдена: {cand_dir}")
+
+    src_dir = _unwrap_output_folder_if_needed(cand_dir)
+    out_dir = get_output_dir_for_folder(src_dir, t_lang)
+    manifest = _load_folder_manifest(out_dir)
+    report_text = await asyncio.to_thread(
+        _generate_and_save_folder_report,
+        out_dir,
+        manifest,
+        src_dir,
+        t_lang,
+    )
+    report_file = out_dir / REPORT_FILENAME
+    return {
+        "status": "ok",
+        "source_dir": str(src_dir),
+        "output_dir": str(out_dir),
+        "report_path": str(report_file),
+        "report_text": report_text,
+    }
+
+
+@app.post("/open_folder_report")
+async def open_folder_report_endpoint(
+    folder_path: str | None = Query(default=None),
+    target_lang: str = Query(default="en"),
+) -> dict[str, str]:
+    """
+    Обновляет `<output_dir>/TRANSLATION_REPORT.txt` и открывает его в стандартном текстовом редакторе (Блокноте) Windows.
+    """
+    res = await get_folder_report_endpoint(folder_path=folder_path, target_lang=target_lang)
+    report_file = Path(res["report_path"])
+    if os.name == "nt" and hasattr(os, "startfile") and report_file.exists():
+        try:
+            os.startfile(str(report_file))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "report_path": str(report_file),
+        "output_dir": res["output_dir"],
     }
 
 
