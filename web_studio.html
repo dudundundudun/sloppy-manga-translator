@@ -1944,6 +1944,77 @@
       border: 1.5px dashed rgba(125, 211, 252, 0.95);
       box-shadow: 0 0 6px rgba(56, 189, 248, 0.5);
     }
+    .mask-brush-cursor-ring {
+      position: absolute;
+      border-radius: 50%;
+      pointer-events: none;
+      z-index: 30;
+      transform: translate(-50%, -50%);
+      border: 2px solid #fb7185;
+      background: rgba(244, 63, 94, 0.22);
+      box-shadow: 0 0 8px rgba(244, 63, 94, 0.65), inset 0 0 4px rgba(255, 255, 255, 0.5);
+      display: none;
+    }
+    .mask-brush-cursor-ring.erase-mode {
+      border-color: #38bdf8;
+      background: rgba(56, 189, 248, 0.22);
+      box-shadow: 0 0 8px rgba(56, 189, 248, 0.65), inset 0 0 4px rgba(255, 255, 255, 0.5);
+    }
+    .img-pin-wrap.mask-brush-active .mask-brush-cursor-ring {
+      display: block;
+    }
+
+    /* Подложка для текста (Text Backing Bar) */
+    .bg-style-bar {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 5px;
+      background: rgba(16, 185, 129, 0.08);
+      border: 1px solid rgba(52, 211, 153, 0.28);
+      border-radius: 8px;
+      padding: 4px 7px;
+      flex-wrap: wrap;
+    }
+    .bg-style-lbl {
+      font-size: 11px;
+      font-weight: 700;
+      color: var(--mint);
+      white-space: nowrap;
+      display: flex;
+      align-items: center;
+      gap: 3px;
+    }
+    .bg-style-pills {
+      display: inline-flex;
+      gap: 3px;
+      flex-wrap: wrap;
+      flex: 1;
+      justify-content: flex-end;
+    }
+    .bg-style-btn {
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-secondary);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      border-radius: 6px;
+      padding: 2px 7px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.13s ease;
+      white-space: nowrap;
+    }
+    .bg-style-btn:hover {
+      background: rgba(52, 211, 153, 0.2);
+      color: #fff;
+      border-color: var(--mint);
+    }
+    .bg-style-btn.active {
+      background: linear-gradient(135deg, #10b981, #059669);
+      color: #fff;
+      border-color: #6ee7b7;
+      box-shadow: 0 2px 8px rgba(16, 185, 129, 0.35);
+    }
 
     /* ==================== STEP 4: GLOSSARY & GLOBAL FIND/REPLACE UI ==================== */
     .glossary-table-wrap {
@@ -2195,7 +2266,7 @@
             <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения рамок мышкой или колесиком">⏳ Авто-сохранение...</span>
             <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (перетаскивайте рамки мышкой, тяните за края/углы для изменения размера текста или крутите колесико мыши)">📌 Рамки #N</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице, чтобы принудительно добавить его в перевод">➕ Обвести</button>
-            <button class="pill-btn" id="btn-top-mask-brush" onclick="toggleMaskBrushMode()" title="Кисть ретуши замазки: ЛКМ — дотереть остатки оригинала, ПКМ — восстановить задетый рисунок (Горячая клавиша: B)">🖌 Кисть маски</button>
+            <button class="pill-btn" id="btn-top-mask-brush" style="display:none;" onclick="toggleMaskBrushMode()" title="Кисть ретуши замазки: ЛКМ — дотереть остатки оригинала, ПКМ — восстановить задетый рисунок (Горячая клавиша: B)">🖌 Кисть маски</button>
             <button class="pill-btn" id="btn-toggle-drawer" onclick="openPageEditor()" title="Открыть или скрыть панель редактора текста">✏️ Редактор (0)</button>
             <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
             <button class="pill-btn" onclick="openOutputFolder()" title="Открыть папку с готовым переводом в Проводнике">📂 Папка</button>
@@ -2245,6 +2316,9 @@
           <div class="editor-actions">
             <button class="btn-restore-block" id="btn-drawer-draw-region" onclick="toggleDrawRegionMode()" title="Выделить мышкой на картинке любой кружок или текст, который модель пропустила, и перевести его">
               ➕ Обвести текст
+            </button>
+            <button class="btn-restore-block" id="btn-page-all-bg" onclick="togglePageAllBlocksBgStyle()" title="Включить или выключить непрозрачную белую подложку под текстом сразу для всех рамок на этой странице (чтобы японский текст нигде не просвечивал)">
+              🛡 Подложка на все рамки
             </button>
             <button class="btn-merge-blocks" id="btn-merge-blocks" onclick="mergeSelectedBlocks(event)" title="Объединить выделенные через Shift+Клик рамки в один общий блок (Горячая клавиша: M)">
               🔗 Объединить рамки (M)
@@ -2319,10 +2393,36 @@
     </div>
 
     <textarea id="popup-textarea" class="inline-popup-textarea" placeholder="Введите перевод для этого кружка (или оставьте пустым для сохранения оригинала)..." oninput="onPopupTextareaInput(this.value)" onkeydown="onPopupTextareaKeydown(event)"></textarea>
+    <div style="display:flex; align-items:center; justify-content:space-between; gap:4px; flex-wrap:wrap; margin-top:-2px;">
+      <span style="font-size:10.5px; color:var(--text-muted);" title="Быстрая вставка спецсимволов манги (отрисовываются векторно без квадратиков на любом шрифте!)">Символы:</span>
+      <div style="display:inline-flex; gap:3px; flex-wrap:wrap;">
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '♥', true)" title="Вставить закрашенное сердечко ♥">♥</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '♡', true)" title="Вставить контурное сердечко ♡">♡</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '★', true)" title="Вставить закрашенную звездочку ★">★</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '☆', true)" title="Вставить контурную звездочку ☆">☆</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '✦', true)" title="Вставить искру/блеск ✦">✦</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '♪', true)" title="Вставить ноту ♪">♪</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '♫', true)" title="Вставить двойную ноту ♫">♫</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '~', true)" title="Вставить волну ~">~</button>
+        <button type="button" class="romaji-copy-btn" onclick="insertSymbolIntoBlock(popupBlockId, '—', true)" title="Вставить длинное тире —">—</button>
+      </div>
+    </div>
+
+    <!-- Быстрая панель Подложки под текстом в 1 клик (чтобы японский оригинал не просвечивал) -->
+    <div class="bg-style-bar" id="popup-bg-bar">
+      <span class="bg-style-lbl" title="Непрозрачная подложка под переведенным текстом — мгновенно закрывает просвечивающий японский текст без артефактов">🛡 Подложка:</span>
+      <div class="bg-style-pills" id="popup-bg-pills">
+        <button type="button" class="bg-style-btn active" data-bg="none" onclick="setBlockBgStyle(popupBlockId, 'none', event)" title="Без подложки (только текст и контурная обводка)">Выкл</button>
+        <button type="button" class="bg-style-btn" data-bg="bubble" onclick="setBlockBgStyle(popupBlockId, 'bubble', event)" title="Овальная/капсульная заливка внутри баббла — закрывает весь вертикальный японский столбик от верха до низа облачка!">🥚 Овал</button>
+        <button type="button" class="bg-style-btn" data-bg="text_box" onclick="setBlockBgStyle(popupBlockId, 'text_box', event)" title="Аккуратная скругленная плашка прямо под строками переведенного текста">💊 По тексту</button>
+        <button type="button" class="bg-style-btn" data-bg="full_box" onclick="setBlockBgStyle(popupBlockId, 'full_box', event)" title="Заливка всей прямоугольной рамки #N целиком">▭ Рамка</button>
+      </div>
+      <input type="color" id="popup-bg-color" class="color-input-mini" value="#ffffff" oninput="onBlockStylePropChange(popupBlockId, 'bg_color', this.value, event)" title="Цвет подложки (по умолчанию чисто-белый #FFFFFF)" />
+    </div>
 
     <details class="style-retouch-details" id="popup-style-details">
       <summary>
-        <span>🎨 Стиль, Поворот и Кисть замазки</span>
+        <span>🎨 Стиль, Шрифт и Поворот</span>
         <span id="popup-style-summary-badge" style="font-size:10px; color:var(--text-muted); font-weight:600;">Диалог · 0°</span>
       </summary>
       <div class="style-preset-pills" id="popup-preset-pills">
@@ -2365,25 +2465,35 @@
         </select>
       </div>
       <div class="style-grid-row">
+        <span style="font-size:10.5px;">📏 Запас подложки: <b id="popup-bg-pad-lbl">0 px</b></span>
+        <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
+          <input type="range" id="popup-bg-pad-range" min="-16" max="28" step="1" value="0" style="width:110px; accent-color:var(--mint);" oninput="onBlockBgPadInput(popupBlockId, this.value)" title="Расширить или сузить размер подложки вокруг текста" />
+          <button type="button" class="romaji-copy-btn" onclick="onBlockBgPadInput(popupBlockId, 0, true)" title="Сбросить отступ подложки на 0 px">0 px</button>
+        </div>
+      </div>
+      <div class="style-grid-row" style="margin-bottom:0;">
         <span style="font-size:10.5px;">🔄 Поворот: <b id="popup-angle-lbl">0°</b></span>
         <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
           <input type="range" id="popup-angle-range" min="-45" max="45" step="1" value="0" style="width:110px; accent-color:var(--sakura);" oninput="onBlockAngleInput(popupBlockId, this.value)" />
           <button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(popupBlockId, 0, true)" title="Сбросить угол поворота на 0°">0°</button>
         </div>
       </div>
-      <div class="style-grid-row">
-        <span style="font-size:10.5px;">🖌 Замазка (dilate): <b id="popup-dilate-lbl">Авто</b></span>
-        <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
-          <input type="range" id="popup-dilate-range" min="0" max="25" step="1" value="0" style="width:110px; accent-color:var(--mint);" oninput="onBlockDilateInput(popupBlockId, this.value)" onchange="onBlockDilateCommit(popupBlockId, this.value)" title="Толщина маски очистки оригинального текста (0 = Авто)" />
-          <button type="button" class="romaji-copy-btn" onclick="onBlockDilateCommit(popupBlockId, 0)" title="Сбросить толщину замазки на Авто">Авто</button>
+      <!-- Экспериментальные инструменты замазки (по умолчанию скрыты, включаются в Настройках) -->
+      <div id="popup-mask-tools-wrap" style="display:none; flex-direction:column; gap:5px; margin-top:5px; padding-top:5px; border-top:1px dashed rgba(255,255,255,0.08);">
+        <div class="style-grid-row" style="margin-bottom:0;">
+          <span style="font-size:10.5px;">🖌 Замазка (dilate): <b id="popup-dilate-lbl">Авто</b></span>
+          <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
+            <input type="range" id="popup-dilate-range" min="0" max="25" step="1" value="0" style="width:110px; accent-color:var(--mint);" oninput="onBlockDilateInput(popupBlockId, this.value)" onchange="onBlockDilateCommit(popupBlockId, this.value)" title="Толщина маски очистки оригинального текста (0 = Авто)" />
+            <button type="button" class="romaji-copy-btn" onclick="onBlockDilateCommit(popupBlockId, 0)" title="Сбросить толщину замазки на Авто">Авто</button>
+          </div>
         </div>
-      </div>
-      <div class="style-grid-row" style="margin-bottom:0; padding-top:3px; border-top:1px dashed rgba(255,255,255,0.08);">
-        <button type="button" class="btn-mask-brush" id="popup-mask-brush-btn" onclick="toggleMaskBrushMode(popupBlockId)" title="Рисовать маску замазки прямо на картинке: ЛКМ — стереть кусок оригинала, ПКМ — восстановить задетый рисунок">🖌 Кисть замазки (ЛКМ/ПКМ)</button>
-        <div style="display:flex; align-items:center; gap:4px;">
-          <span style="font-size:10px; color:var(--text-muted);" title="Радиус кисти замазки">R:</span>
-          <input type="range" id="popup-brush-radius" min="4" max="30" step="1" value="12" style="width:58px; accent-color:var(--sakura);" oninput="setMaskBrushRadius(this.value)" title="Радиус кисти замазки (px)" />
-          <button type="button" class="romaji-copy-btn" id="popup-clear-strokes-btn" onclick="clearBlockMaskStrokes(popupBlockId)" style="display:none;" title="Очистить все ручные мазки кисти на этом блоке">🧹 Сброс мазков</button>
+        <div class="style-grid-row" style="margin-bottom:0;">
+          <button type="button" class="btn-mask-brush" id="popup-mask-brush-btn" onclick="toggleMaskBrushMode(popupBlockId)" title="Рисовать маску замазки прямо на картинке: ЛКМ — стереть кусок оригинала, ПКМ — восстановить задетый рисунок">🖌 Кисть замазки (ЛКМ/ПКМ)</button>
+          <div style="display:flex; align-items:center; gap:4px;">
+            <span style="font-size:10px; color:var(--text-muted);" title="Радиус кисти замазки">R:</span>
+            <input type="range" id="popup-brush-radius" min="4" max="30" step="1" value="12" style="width:58px; accent-color:var(--sakura);" oninput="setMaskBrushRadius(this.value)" title="Радиус кисти замазки (px)" />
+            <button type="button" class="romaji-copy-btn" id="popup-clear-strokes-btn" onclick="clearBlockMaskStrokes(popupBlockId)" style="display:none;" title="Очистить все ручные мазки кисти на этом блоке">🧹 Сброс мазков</button>
+          </div>
         </div>
       </div>
     </details>
@@ -2626,6 +2736,14 @@
                 <span class="toggle-row-sub">Уменьшает высоту карточки Мико-тян в левой панели, чтобы помещалось больше страниц в списке главы</span>
               </div>
               <input id="chk-ui-compact-mascot" type="checkbox" onchange="onUiSettingCheckboxChange()" />
+            </label>
+
+            <label class="toggle-row">
+              <div class="toggle-row-text">
+                <span class="toggle-row-title">🖌 Показать экспериментальные инструменты «Замазка (dilate)» и «Кисть маски»</span>
+                <span class="toggle-row-sub">По умолчанию выключено (вместо них в редакторе доступна мгновенная <b>«🛡 Подложка текста»</b>: Овал / Плашка / Рамка). Если включить — вернет в интерфейс ползунок Замазки и кнопку Кисти маски (клавиша B).</span>
+              </div>
+              <input id="chk-ui-enable-mask-tools" type="checkbox" onchange="onUiSettingCheckboxChange()" />
             </label>
           </div>
         </div>
@@ -2959,6 +3077,7 @@
       auto_save_after_idle: true,     // Auto-rerender page 2.5s after moving/resizing/wheeling bbox
       auto_save_delay_ms: 2500,       // 2.5 seconds idle delay
       compact_mascot: false,          // Compact Miko-chan card
+      enable_mask_tools: false,       // Experimental mask dilate & mask brush tools (OFF by default)
       right_panel_width: 460,
       bottom_panel_height: 340,
       left_sidebar_width: 360
@@ -3096,6 +3215,24 @@
       const chkMascot = document.getElementById("chk-ui-compact-mascot");
       if (chkMascot) chkMascot.checked = Boolean(uiSettings.compact_mascot);
 
+      const maskToolsOn = Boolean(uiSettings.enable_mask_tools);
+      const chkMaskTools = document.getElementById("chk-ui-enable-mask-tools");
+      if (chkMaskTools) chkMaskTools.checked = maskToolsOn;
+
+      const btnTopBrush = document.getElementById("btn-top-mask-brush");
+      if (btnTopBrush) btnTopBrush.style.display = maskToolsOn ? "inline-flex" : "none";
+
+      const popMaskWrap = document.getElementById("popup-mask-tools-wrap");
+      if (popMaskWrap) popMaskWrap.style.display = maskToolsOn ? "flex" : "none";
+
+      document.querySelectorAll(".mask-tools-card-row").forEach(el => {
+        el.style.display = maskToolsOn ? "flex" : "none";
+      });
+
+      if (!maskToolsOn && typeof isMaskBrushMode !== "undefined" && isMaskBrushMode) {
+        toggleMaskBrushMode(null, false);
+      }
+
       if (!autoOn) {
         cancelIdleAutoSaveTimer();
       }
@@ -3139,6 +3276,8 @@
       const chkAutoSaveBox = document.getElementById("chk-ui-auto-save-box");
       if (chkAutoSaveBox) uiSettings.auto_save_after_idle = chkAutoSaveBox.checked;
       uiSettings.compact_mascot = document.getElementById("chk-ui-compact-mascot").checked;
+      const chkMask = document.getElementById("chk-ui-enable-mask-tools");
+      if (chkMask) uiSettings.enable_mask_tools = chkMask.checked;
       if (!uiSettings.inline_bubble_popup) {
         closeInlineBubblePopup();
       }
@@ -5082,14 +5221,161 @@
       selEl.innerHTML = optsHtml;
     }
 
+    const BG_STYLE_LABELS = {
+      none: "Выкл",
+      bubble: "🥚 Овал",
+      text_box: "💊 По тексту",
+      full_box: "▭ Рамка"
+    };
+
     function formatBlockStyleSummary(b) {
       if (!b) return "Диалог · 0°";
       const pName = (STYLE_PRESET_LABELS[b.style_preset || "dialogue"] || "💬 Диалог").replace(/^[^\s]+\s/, "");
       const ang = Math.round(Number(b.angle || 0));
-      const dil = b.mask_dilate ? ` · Замазка ${b.mask_dilate}px` : "";
+      const bgMode = b.bg_style || "none";
+      const bgStr = bgMode !== "none" ? ` · ${BG_STYLE_LABELS[bgMode] || "Подложка"}` : "";
+      const showMaskInfo = Boolean(uiSettings.enable_mask_tools);
+      const dil = (showMaskInfo && b.mask_dilate) ? ` · Замазка ${b.mask_dilate}px` : "";
       const strokesCnt = Array.isArray(b.custom_mask_strokes) ? b.custom_mask_strokes.length : 0;
-      const stStr = strokesCnt > 0 ? ` · 🖌${strokesCnt}` : "";
-      return `${pName} · ${ang}°${dil}${stStr}`;
+      const stStr = (showMaskInfo && strokesCnt > 0) ? ` · 🖌${strokesCnt}` : "";
+      return `${pName}${bgStr} · ${ang}°${dil}${stStr}`;
+    }
+
+    function insertSymbolIntoBlock(blockId, sym, fromPopup = false, ev = null) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+
+      const ta = fromPopup
+        ? document.getElementById("popup-textarea")
+        : document.getElementById(`edit-ta-${blockId}`);
+
+      if (ta) {
+        const start = typeof ta.selectionStart === "number" ? ta.selectionStart : ta.value.length;
+        const end = typeof ta.selectionEnd === "number" ? ta.selectionEnd : ta.value.length;
+        const val = ta.value || "";
+        const nextVal = val.slice(0, start) + sym + val.slice(end);
+        ta.value = nextVal;
+        if (fromPopup) {
+          onPopupTextareaInput(nextVal);
+        } else {
+          onBlockTextInput(blockId, nextVal);
+        }
+        ta.focus();
+        const nextPos = start + sym.length;
+        try { ta.setSelectionRange(nextPos, nextPos); } catch (e) {}
+      } else {
+        const nextVal = (blk.translated_text || "") + sym;
+        onBlockTextInput(blockId, nextVal);
+      }
+    }
+
+    function setBlockBgStyle(blockId, bgStyle, ev) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      cancelIdleAutoSaveTimer();
+      pushPageHistorySnapshot();
+      blk.bg_style = bgStyle || "none";
+      if (blk.bg_style !== "none" && !blk.bg_color) {
+        blk.bg_color = "#ffffff";
+      }
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+      const modeTitle = BG_STYLE_LABELS[blk.bg_style] || blk.bg_style;
+      sayMiko(
+        blk.bg_style === "none"
+          ? `Подложка для блока #${blockId} выключена! Обновляю страницу... ✨`
+          : `🛡 Включена подложка «${modeTitle}» для блока #${blockId} — японский текст под переводом полностью закрыт! ✨`
+      );
+      if (uiSettings.auto_save_after_idle !== false) {
+        scheduleIdleAutoSave(450);
+      }
+    }
+
+    let bgPadHistorySnapshot = null;
+    let bgPadSettleTimer = null;
+
+    function onBlockBgPadInput(blockId, padVal, immediateCommit = false) {
+      if (!blockId || !currentBlocks) return;
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk) return;
+      if (bgPadHistorySnapshot === null) {
+        bgPadHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
+      }
+      const pVal = Math.max(-16, Math.min(28, Math.round(Number(padVal) || 0)));
+      blk.bg_padding = pVal === 0 ? null : pVal;
+      if ((blk.bg_style || "none") === "none" && pVal !== 0) {
+        blk.bg_style = "bubble";
+      }
+      blk._dirtyPreview = true;
+      clientEditRevision++;
+      syncBlockStyleControlsUi(blockId);
+      updatePinDomForBlock(blockId);
+
+      if (bgPadSettleTimer) clearTimeout(bgPadSettleTimer);
+      const finishPad = () => {
+        bgPadSettleTimer = null;
+        if (bgPadHistorySnapshot !== null) {
+          pushPageHistorySnapshot(bgPadHistorySnapshot);
+          bgPadHistorySnapshot = null;
+        }
+        if (uiSettings.auto_save_after_idle !== false) {
+          scheduleIdleAutoSave(550);
+        }
+      };
+      if (immediateCommit) {
+        finishPad();
+      } else {
+        bgPadSettleTimer = setTimeout(finishPad, 220);
+      }
+    }
+
+    async function togglePageAllBlocksBgStyle() {
+      if (!selectedPage || !currentBlocks || currentBlocks.length === 0) {
+        sayMiko("Сначала открой страницу с текстовыми рамками~ 🌸");
+        return;
+      }
+      cancelIdleAutoSaveTimer();
+      syncInputsToCurrentBlocks();
+      pushPageHistorySnapshot();
+
+      const activeList = currentBlocks.filter(b => !b.is_deleted && (b.translated_text || "").trim());
+      if (activeList.length === 0) return;
+
+      const allHaveBubble = activeList.every(b => b.bg_style === "bubble");
+      const allHaveTextBox = activeList.every(b => b.bg_style === "text_box");
+      const nextStyle = allHaveBubble ? "text_box" : (allHaveTextBox ? "none" : "bubble");
+
+      currentBlocks.forEach(b => {
+        b.bg_style = nextStyle;
+        if (nextStyle !== "none" && !b.bg_color) {
+          b.bg_color = "#ffffff";
+        }
+        b._dirtyPreview = true;
+      });
+      clientEditRevision++;
+      renderBlocksEditor();
+      renderBboxPinsOnStage();
+      if (popupBlockId) populateInlinePopup(popupBlockId);
+
+      const labelMap = {
+        bubble: "🥚 Овал баббла (перекрывает вертикальный японский текст целиком)",
+        text_box: "💊 Плашка по тексту",
+        none: "Выкл (без подложки)"
+      };
+      sayMiko(`🛡 Подложка для всех рамок на странице переключена: ${labelMap[nextStyle]}! Перерисовываю страницу... ✨`);
+      await saveEditedPageTranslation({ isAuto: true });
     }
 
     function applyBlockStylePreset(blockId, presetName, ev) {
@@ -5174,6 +5460,7 @@
       blk.text_color = null;
       blk.stroke_color = null;
       blk.stroke_width = null;
+      blk.bg_color = null;
       blk._dirtyPreview = true;
       clientEditRevision++;
       syncBlockStyleControlsUi(blockId);
@@ -5257,10 +5544,23 @@
       const preset = blk.style_preset || "dialogue";
       const align = blk.align || "center";
       const angle = Math.round(Number(blk.angle || 0));
+      const bgStyle = blk.bg_style || "none";
+      const bgPad = blk.bg_padding ? Number(blk.bg_padding) : 0;
       const dilate = blk.mask_dilate ? Number(blk.mask_dilate) : 0;
       const strokesCnt = Array.isArray(blk.custom_mask_strokes) ? blk.custom_mask_strokes.length : 0;
 
       // Sync card controls
+      ["none", "bubble", "text_box", "full_box"].forEach(bgKey => {
+        const bgBtn = document.getElementById(`edit-bg-${blockId}-${bgKey}`);
+        if (bgBtn) bgBtn.classList.toggle("active", bgKey === bgStyle);
+      });
+      const cardBgCol = document.getElementById(`edit-bg-color-${blockId}`);
+      if (cardBgCol) cardBgCol.value = blk.bg_color || "#ffffff";
+      const cardBgPadLbl = document.getElementById(`edit-bg-pad-lbl-${blockId}`);
+      if (cardBgPadLbl) cardBgPadLbl.textContent = `${bgPad > 0 ? "+" + bgPad : bgPad} px`;
+      const cardBgPadRng = document.getElementById(`edit-bg-pad-rng-${blockId}`);
+      if (cardBgPadRng) cardBgPadRng.value = String(bgPad);
+
       const cardBadge = document.getElementById(`card-style-badge-${blockId}`);
       if (cardBadge) cardBadge.textContent = summaryTxt;
       const cardFont = document.getElementById(`edit-font-family-${blockId}`);
@@ -5306,6 +5606,17 @@
         document.querySelectorAll("#popup-preset-pills .style-preset-btn").forEach(btn => {
           btn.classList.toggle("active", btn.dataset.preset === preset);
         });
+        document.querySelectorAll("#popup-bg-pills .bg-style-btn").forEach(btn => {
+          btn.classList.toggle("active", btn.dataset.bg === bgStyle);
+        });
+        const popBgCol = document.getElementById("popup-bg-color");
+        if (popBgCol) popBgCol.value = blk.bg_color || "#ffffff";
+        const popBgPadLbl = document.getElementById("popup-bg-pad-lbl");
+        if (popBgPadLbl) popBgPadLbl.textContent = `${bgPad > 0 ? "+" + bgPad : bgPad} px`;
+        const popBgPadRng = document.getElementById("popup-bg-pad-range");
+        if (popBgPadRng) popBgPadRng.value = String(bgPad);
+        const popMaskWrap = document.getElementById("popup-mask-tools-wrap");
+        if (popMaskWrap) popMaskWrap.style.display = uiSettings.enable_mask_tools ? "flex" : "none";
         const popTextCol = document.getElementById("popup-text-color");
         if (popTextCol) popTextCol.value = blk.text_color || "#0f0f0f";
         const popStrokeCol = document.getElementById("popup-stroke-color");
@@ -5420,7 +5731,6 @@
         });
         wrap.appendChild(frag);
       });
-      renderMaskStrokeDotsOnStage();
     }
 
     function syncInputsToCurrentBlocks() {
@@ -5953,18 +6263,45 @@
         const curPreset = b.style_preset || "dialogue";
         const curAlign = b.align || "center";
         const curAngle = Math.round(Number(b.angle || 0));
+        const curBgStyle = b.bg_style || "none";
+        const curBgPad = b.bg_padding ? Number(b.bg_padding) : 0;
         const curDilate = b.mask_dilate ? Number(b.mask_dilate) : 0;
         const curStrokesCnt = Array.isArray(b.custom_mask_strokes) ? b.custom_mask_strokes.length : 0;
         const curFontFam = b.font_family || "";
+        const showMaskRow = Boolean(uiSettings.enable_mask_tools);
         const fontOptionsHtml = `<option value="" ${curFontFam === "" ? "selected" : ""}>Шрифт: По умолчанию</option>` +
           (Array.isArray(availableFonts) ? availableFonts : []).map(
             f => `<option value="${escapeHtml(f.id || f.name)}" ${curFontFam === (f.id || f.name) ? "selected" : ""}>${escapeHtml(f.name || f.id)}</option>`
           ).join("");
 
+        const symQuickRowHtml =
+          `<div style="display:flex; align-items:center; justify-content:space-between; gap:4px; flex-wrap:wrap; margin-top:2px;" onclick="event.stopPropagation()">` +
+            `<span style="font-size:10px; color:var(--text-muted);" title="Быстрая вставка спецсимволов (рисуются векторно без квадратиков!)">Символы:</span>` +
+            `<div style="display:inline-flex; gap:3px; flex-wrap:wrap;">` +
+              ["♥", "♡", "★", "☆", "✦", "♪", "♫", "~", "—"].map(sym =>
+                `<button type="button" class="romaji-copy-btn" style="padding:1px 6px;" onclick="insertSymbolIntoBlock(${b.id}, '${sym}', false, event)" title="Вставить ${sym}">${sym}</button>`
+              ).join("") +
+            `</div>` +
+          `</div>`;
+
+        const bgQuickBarHtml =
+          symQuickRowHtml +
+          `<div class="bg-style-bar" onclick="event.stopPropagation()" style="margin-top:3px;">` +
+            `<span class="bg-style-lbl" title="Непрозрачная заливка под текстом перевода, чтобы японский текст гарантированно не просвечивал">🛡 Подложка:</span>` +
+            `<div class="bg-style-pills">` +
+              `<button type="button" id="edit-bg-${b.id}-none" class="bg-style-btn ${curBgStyle === "none" ? "active" : ""}" onclick="setBlockBgStyle(${b.id}, 'none', event)" title="Без подложки">Выкл</button>` +
+              `<button type="button" id="edit-bg-${b.id}-bubble" class="bg-style-btn ${curBgStyle === "bubble" ? "active" : ""}" onclick="setBlockBgStyle(${b.id}, 'bubble', event)" title="Овальная подложка на весь баббл — закрывает вертикальный японский столбик целиком!">🥚 Овал</button>` +
+              `<button type="button" id="edit-bg-${b.id}-text_box" class="bg-style-btn ${curBgStyle === "text_box" ? "active" : ""}" onclick="setBlockBgStyle(${b.id}, 'text_box', event)" title="Аккуратная плашка прямо под строками текста">💊 По тексту</button>` +
+              `<button type="button" id="edit-bg-${b.id}-full_box" class="bg-style-btn ${curBgStyle === "full_box" ? "active" : ""}" onclick="setBlockBgStyle(${b.id}, 'full_box', event)" title="Заливка всей рамки #N целиком">▭ Рамка</button>` +
+            `</div>` +
+            `<input type="color" id="edit-bg-color-${b.id}" class="color-input-mini" value="${escapeHtml(b.bg_color || "#ffffff")}" oninput="onBlockStylePropChange(${b.id}, 'bg_color', this.value, event)" title="Цвет подложки (по умолчанию белый #FFFFFF)" />` +
+          `</div>`;
+
         const styleDetailsHtml =
+          bgQuickBarHtml +
           `<details class="style-retouch-details" onclick="event.stopPropagation()">` +
             `<summary>` +
-              `<span>🎨 Стиль и Замазка</span>` +
+              `<span>🎨 Стиль, Шрифт и Поворот</span>` +
               `<span id="card-style-badge-${b.id}" style="font-size:10px; color:var(--text-muted); font-weight:600;">${escapeHtml(formatBlockStyleSummary(b))}</span>` +
             `</summary>` +
             `<div class="style-preset-pills">` +
@@ -5990,11 +6327,18 @@
               `</div>` +
               `<div style="display:flex; align-items:center; gap:4px;">` +
                 `<span style="font-size:10.5px;">🔄 <b id="edit-angle-lbl-${b.id}">${curAngle}°</b></span>` +
-                `<input type="range" id="edit-angle-rng-${b.id}" min="-45" max="45" step="1" value="${curAngle}" style="width:75px; accent-color:var(--sakura);" oninput="onBlockAngleInput(${b.id}, this.value)" />` +
+                `<input type="range" id="edit-angle-rng-${b.id}" min="-45" max="45" step="1" value="${curAngle}" style="width:68px; accent-color:var(--sakura);" oninput="onBlockAngleInput(${b.id}, this.value)" />` +
                 `<button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(${b.id}, 0, true)">0°</button>` +
               `</div>` +
             `</div>` +
-            `<div class="style-grid-row" style="margin-bottom:0;">` +
+            `<div class="style-grid-row" style="margin-bottom:${showMaskRow ? "5px" : "0"};">` +
+              `<span style="font-size:10.5px;">📏 Запас подложки: <b id="edit-bg-pad-lbl-${b.id}">${curBgPad > 0 ? "+" + curBgPad : curBgPad} px</b></span>` +
+              `<div style="display:flex; align-items:center; gap:4px;">` +
+                `<input type="range" id="edit-bg-pad-rng-${b.id}" min="-16" max="28" step="1" value="${curBgPad}" style="width:80px; accent-color:var(--mint);" oninput="onBlockBgPadInput(${b.id}, this.value)" />` +
+                `<button type="button" class="romaji-copy-btn" onclick="onBlockBgPadInput(${b.id}, 0, true)">0 px</button>` +
+              `</div>` +
+            `</div>` +
+            `<div class="style-grid-row mask-tools-card-row" id="edit-mask-row-${b.id}" style="margin-bottom:0; display:${showMaskRow ? "flex" : "none"}; padding-top:4px; border-top:1px dashed rgba(255,255,255,0.08);">` +
               `<div style="display:flex; align-items:center; gap:4px;">` +
                 `<span style="font-size:10.5px;">🖌 Dilate: <b id="edit-dilate-lbl-${b.id}">${curDilate > 0 ? curDilate + " px" : "Авто"}</b></span>` +
                 `<input type="range" id="edit-dilate-rng-${b.id}" min="0" max="25" step="1" value="${curDilate}" style="width:75px; accent-color:var(--mint);" oninput="onBlockDilateInput(${b.id}, this.value)" onchange="onBlockDilateCommit(${b.id}, this.value)" />` +
@@ -6325,6 +6669,25 @@
         if (img) {
           img.draggable = false;
         }
+        let cursorRing = wrap.querySelector(".mask-brush-cursor-ring");
+        if (!cursorRing) {
+          cursorRing = document.createElement("div");
+          cursorRing.className = "mask-brush-cursor-ring";
+          wrap.appendChild(cursorRing);
+        }
+        wrap.onmousemove = (ev) => {
+          if (!isMaskBrushMode || !img || !img.naturalWidth) return;
+          const rect = wrap.getBoundingClientRect();
+          const relX = ev.clientX - rect.left;
+          const relY = ev.clientY - rect.top;
+          const scale = rect.width / Math.max(1, img.naturalWidth);
+          const dPx = Math.max(8, Math.round(maskBrushRadius * 2 * scale));
+          cursorRing.style.left = relX + "px";
+          cursorRing.style.top = relY + "px";
+          cursorRing.style.width = dPx + "px";
+          cursorRing.style.height = dPx + "px";
+          cursorRing.classList.toggle("erase-mode", (ev.buttons & 2) === 2);
+        };
         wrap.oncontextmenu = (ev) => {
           if (isMaskBrushMode) {
             ev.preventDefault();
@@ -6820,6 +7183,25 @@
           liveEl.style.textAlign = blk.align || "center";
           if (blk.text_color) liveEl.style.color = blk.text_color;
           else liveEl.style.color = "#0f0f0f";
+          const bgMode = blk.bg_style || "none";
+          const bgCol = blk.bg_color || "#ffffff";
+          if (bgMode === "bubble") {
+            liveEl.style.background = bgCol;
+            liveEl.style.borderRadius = "999px";
+            liveEl.style.inset = "4% 8%";
+          } else if (bgMode === "full_box") {
+            liveEl.style.background = bgCol;
+            liveEl.style.borderRadius = "6px";
+            liveEl.style.inset = "0px";
+          } else if (bgMode === "text_box") {
+            liveEl.style.background = bgCol;
+            liveEl.style.borderRadius = "8px";
+            liveEl.style.inset = "10% 6%";
+          } else {
+            liveEl.style.background = "";
+            liveEl.style.borderRadius = "";
+            liveEl.style.inset = "2px";
+          }
         }
         if (resetBtn) {
           resetBtn.style.display = (isMod || blk.font_size) ? "inline-block" : "none";
@@ -6832,7 +7214,7 @@
       let ghost = target.ghost !== undefined
         ? target.ghost
         : wrap.querySelector(`.clean-bbox-ghost[data-block-id="${blk.id}"]`);
-      if (isMod && !isDel) {
+      if (isMod && !isDel && uiSettings.enable_mask_tools) {
         const [cx1, cy1, cx2, cy2] = blk.clean_bbox;
         if (!ghost) {
           ghost = document.createElement("div");
@@ -6937,7 +7319,7 @@
           const showSaveBtn = autoOff || Boolean(b._dirtyPreview);
           const isUnsaved = Boolean(b._dirtyPreview) && (autoOff || !idleAutoSaveTimer);
 
-          if (isMod && !isDel) {
+          if (isMod && !isDel && uiSettings.enable_mask_tools) {
             const [cx1, cy1, cx2, cy2] = b.clean_bbox;
             const ghost = document.createElement("div");
             ghost.className = "clean-bbox-ghost";
@@ -6973,6 +7355,15 @@
             .join("");
 
           const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
+          const bgMode = b.bg_style || "none";
+          const bgCol = escapeHtml(b.bg_color || "#ffffff");
+          const liveBgCss = bgMode === "bubble"
+            ? `background:${bgCol}; border-radius:999px; inset:4% 8%;`
+            : (bgMode === "full_box"
+              ? `background:${bgCol}; border-radius:6px; inset:0px;`
+              : (bgMode === "text_box"
+                ? `background:${bgCol}; border-radius:8px; inset:10% 6%;`
+                : ""));
           pin.innerHTML =
             `<span class="bbox-pin-badge">${formatPinBadgeText(b)}</span>` +
             `<div class="bbox-pin-actions">` +
@@ -6980,7 +7371,7 @@
               `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${b.id} к оригиналу">↺</button>` +
               `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Полностью удалить рамку #${b.id} с картинки">🗑</button>` +
             `</div>` +
-            `<div class="bbox-live-text" style="font-size:${cssFs}px; ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
+            `<div class="bbox-live-text" style="font-size:${cssFs}px; ${liveBgCss} ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
             handlesHtml;
 
           const saveBtn = pin.querySelector(".bbox-pin-save");
@@ -7726,8 +8117,8 @@
         return;
       }
 
-      // Toggle Mask Brush mode: B
-      if (!inInput && !e.ctrlKey && !e.altKey && !e.metaKey && (
+      // Toggle Mask Brush mode: B (only when experimental mask tools are enabled in Settings)
+      if (uiSettings.enable_mask_tools && !inInput && !e.ctrlKey && !e.altKey && !e.metaKey && (
         e.key === "b" || e.key === "B" || e.key === "и" || e.key === "И"
       )) {
         if (selectedPage && currentBlocks && currentBlocks.length > 0) {

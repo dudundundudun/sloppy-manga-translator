@@ -248,6 +248,25 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
         else "dialogue"
     )
 
+    bg_style_val = str(block.get("bg_style") or "none").strip().lower()
+    if bg_style_val in ("text_box", "pill", "box", "text", "lines"):
+        block["bg_style"] = "text_box"
+    elif bg_style_val in ("bubble", "ellipse", "oval", "capsule"):
+        block["bg_style"] = "bubble"
+    elif bg_style_val in ("full_box", "rect", "frame", "full"):
+        block["bg_style"] = "full_box"
+    else:
+        block["bg_style"] = "none"
+
+    block.setdefault("bg_color", None)
+    if block.get("bg_padding") is not None:
+        try:
+            block["bg_padding"] = max(-24, min(48, int(block["bg_padding"])))
+        except (ValueError, TypeError):
+            block["bg_padding"] = None
+    else:
+        block["bg_padding"] = None
+
     if block.get("mask_dilate") is not None:
         try:
             md_val = int(block["mask_dilate"])
@@ -632,6 +651,18 @@ class TextBlock(BaseModel):
     style_preset: str = Field(
         default="dialogue",
         description="Пресет оформления блока: 'dialogue', 'thought', 'shout', 'whisper', 'narration', 'sfx'",
+    )
+    bg_style: str = Field(
+        default="none",
+        description="Режим подложки под текстом: 'none' (выкл), 'text_box' (плашка по тексту), 'bubble' (овал внутри баббла), 'full_box' (вся рамка)",
+    )
+    bg_color: str | None = Field(
+        default=None,
+        description="Цвет подложки под текстом в формате HEX (#RRGGBB). Если None — авто (#FFFFFF для светлых бабблов)",
+    )
+    bg_padding: int | None = Field(
+        default=None,
+        description="Дополнительный отступ/расширение подложки текста в пикселях (-24..+48)",
     )
     mask_dilate: int | None = Field(
         default=None,

@@ -1,5 +1,5 @@
 """
-Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (Шаг 3, v1.0.6).
+Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (v1.0.6).
 
 Изменения v1.0.6:
 1. Индивидуальный радиус замазки `mask_dilate` (1..28 px) для каждого блока в `build_text_mask`:
@@ -9,7 +9,10 @@
    применяет поверх `full_mask` круги `cv2.circle(..., 255)` для `"add"` (замазать остаток буквы)
    и `cv2.circle(..., 0)` для `"erase"` (восстановить стертую линию рисунка), с автоматическим расширением
    области кропа инпейнтинга и учетом мазков в `compute_clean_state_hash`.
-3. Сохранены все оптимизации v1.0.6-step1 (LRU-кэш `cleaned_image` на 8 страниц + дисковый кэш в `temp_debug/`).
+3. Улучшенное выделение внутренней области узких вертикальных бабблов (`_extract_bubble_interior_mask`)
+   и защита от пропуска вертикальных колонок кандзи, когда маска `clean_roi_mask` захватывала только
+   единичные пиксели контура.
+4. Сохранены все оптимизации v1.0.6-step1 (LRU-кэш `cleaned_image` на 8 страниц + дисковый кэш в `temp_debug/`).
 """
 
 from __future__ import annotations
@@ -231,6 +234,7 @@ class BubbleCleaner:
         """
         Находит внутреннюю светлую область speech bubble (внутри черного контура облачка),
         отсекая внешние углы бокса за пределами рамки баббла.
+        Поддерживает узкие вертикальные бабблы, где плотный столбик кандзи делит светлый фон на части.
         """
         rh, rw = roi_gray.shape[:2]
         wall_thresh = max(145, int(bg_level - 55))
@@ -244,26 +248,41 @@ class BubbleCleaner:
         best_label = -1
         best_score = -1.0
 
-        c_x1, c_x2 = int(rw * 0.22), max(int(rw * 0.22) + 1, int(rw * 0.78))
-        c_y1, c_y2 = int(rh * 0.22), max(int(rh * 0.22) + 1, int(rh * 0.78))
+        c_x1, c_x2 = int(rw * 0.20), max(int(rw * 0.20) + 1, int(rw * 0.80))
+        c_y1, c_y2 = int(rh * 0.16), max(int(rh * 0.16) + 1, int(rh * 0.84))
         center_slice = labels[c_y1:c_y2, c_x1:c_x2]
 
+        selected_labels: list[int] = []
         for lbl in range(1, num_labels):
             area = float(stats[lbl, cv2.CC_STAT_AREA])
-            if area < (rh * rw * 0.08):
-                continue
             center_hits = float(np.count_nonzero(center_slice == lbl))
+            if area < (rh * rw * 0.04) and center_hits < ( center_slice.size * 0.03 ):
+                continue
             dist = ((centroids[lbl][0] - cx_mid) ** 2 + ((centroids[lbl][1] - cy_mid) ** 2)) ** 0.5
-            score = center_hits * 3.0 + area - dist * 4.0
+            # Штрафуем внешние угловые области, которые касаются сразу нескольких внешних границ бокса, но почти не попадают в центр
+            lx = stats[lbl, cv2.CC_STAT_LEFT]
+            ly = stats[lbl, cv2.CC_STAT_TOP]
+            lw = stats[lbl, cv2.CC_STAT_WIDTH]
+            lh = stats[lbl, cv2.CC_STAT_HEIGHT]
+            edge_touches = sum([lx <= 0, ly <= 0, (lx + lw) >= rw, (ly + lh) >= rh])
+            corner_penalty = 0.0
+            if edge_touches >= 2 and center_hits < area * 0.25:
+                corner_penalty = area * 0.75
+
+            score = center_hits * 3.5 + area - dist * 4.0 - corner_penalty
             if score > best_score:
                 best_score = score
                 best_label = lbl
+            if center_hits >= max(8.0, center_slice.size * 0.06) and edge_touches <= 2:
+                selected_labels.append(lbl)
 
         if best_label == -1:
             return light_pixels
 
         interior = np.zeros_like(light_pixels)
         interior[labels == best_label] = 255
+        for lbl in selected_labels:
+            interior[labels == lbl] = 255
 
         inv = cv2.bitwise_not(interior)
         n_inv, lbl_inv, st_inv, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
@@ -318,8 +337,8 @@ class BubbleCleaner:
                 y2 = max(y2, sy + sr + 2)
         x1 = max(0, min(x1, img_w - 1))
         y1 = max(0, min(y1, img_h - 1))
-        x2 = max(x1 + 1, min(x2, img_w))
-        y2 = max(y1 + 1, min(y2, img_h))
+        x2 = max(x1 + 1, min(dx2 := x2, img_w))
+        y2 = max(y1 + 1, min(dy2 := y2, img_h))
         return x1, y1, x2, y2
 
     def build_text_mask(
@@ -421,10 +440,12 @@ class BubbleCleaner:
 
                     clean_roi_mask[labels == label_idx] = 255
 
-                if np.count_nonzero(clean_roi_mask) > 0:
+                # Если interior_mask нашел достаточное количество пикселей текста (не случайную точку на границе),
+                # применяем его; иначе переходим к резервному Otsu-методу, чтобы не пропустить узкие вертикальные бабблы.
+                min_valid_ink_px = max(18, int(rw * rh * 0.012))
+                if np.count_nonzero(clean_roi_mask) >= min_valid_ink_px:
                     eff_bub_kernel = block_kernel if block_kernel is not None else kernel_bubble
                     dilated_roi = cv2.dilate(clean_roi_mask, eff_bub_kernel, iterations=1)
-                    # Если пользователь вручную увеличил mask_dilate, позволяем замазать края чуть шире interior_mask
                     if block_kernel is None or custom_dilate <= 12:
                         dilated_roi = cv2.bitwise_and(dilated_roi, interior_mask)
                     full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)

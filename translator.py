@@ -2646,7 +2646,8 @@ class OllamaTranslator:
         # Раньше здесь было `in ("romaji", "en")`, из-за чего непереведенный японский текст превращался в Ромадзи!
         if t_lang == "romaji" and KANA_ANY_REGEX.search(text):
             text = kana_to_romaji(text)
-        normalized = text.translate(FULLWIDTH_PUNCT_MAP)
+        from renderer import normalize_manga_special_symbols
+        normalized = normalize_manga_special_symbols(text).translate(FULLWIDTH_PUNCT_MAP)
         no_cjk = CJK_REGEX.sub("", normalized)
         no_sym = CJK_SYMBOLS_REGEX.sub("", no_cjk)
         return re.sub(r"\s+", " ", no_sym).strip()
