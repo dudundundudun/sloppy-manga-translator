@@ -2455,6 +2455,15 @@
             </div>
           </div>
 
+          <!-- Quick Overflow / Bubble Fit Mode Switcher (Variants Shrink / B / C) -->
+          <div class="toolbar-section">
+            <div class="zoom-pill" title="Режим вписывания длинного текста в узкие бабблы (переключается в 1 клик и сразу перерисовывает страницу)">
+              <button class="zoom-btn active" id="tb-ovf-shrink" onclick="setOverflowMode('shrink', true)" title="Стандарт: вписывать текст строго внутрь баббла (уменьшать шрифт до минимального порога)">📐 В рамку</button>
+              <button class="zoom-btn" id="tb-ovf-overflow" onclick="setOverflowMode('overflow', true)" title="Вариант Б: крупный шрифт без сжатия — разрешить тексту свободно выходить за рамки узкого баббла с плотной белой обводкой">🔓 За рамки (Б)</button>
+              <button class="zoom-btn" id="tb-ovf-expand_bubble" onclick="setOverflowMode('expand_bubble', true)" title="Вариант В: крупный шрифт без сжатия — автоматически расширять и перерисовывать белую капсулу баббла под размер текста">💬 Авто-баббл (В)</button>
+            </div>
+          </div>
+
           <!-- Interactive Tools -->
           <div class="toolbar-section">
             <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения рамок мышкой или колесиком">⏳ Авто-сохранение...</span>
@@ -3073,6 +3082,29 @@
               </div>
               <input id="chk-uppercase" type="checkbox" checked />
             </label>
+
+            <div class="field-box" style="margin-top:6px;">
+              <label>💬 Режим длинного текста в узких бабблах (дублирует кнопки на верхней панели):</label>
+              <select id="sel-overflow-mode" onchange="setOverflowMode(this.value, false)">
+                <option value="shrink" selected>📐 Стандарт (В рамку) — уменьшать шрифт до минимального порога внутри баббла</option>
+                <option value="overflow">🔓 Вариант Б (Выход за рамки) — не мельчить шрифт, разрешить тексту выходить за контур баббла с плотной обводкой</option>
+                <option value="expand_bubble">💬 Вариант В (Авто-перерисовка баббла) — не мельчить шрифт, автоматически рисовать расширенный баббл под весь текст</option>
+              </select>
+            </div>
+            <div class="choice-cards-grid" style="margin-top:4px;">
+              <div class="choice-card selected" id="card-ovf-shrink" onclick="setOverflowMode('shrink', true)">
+                <div class="choice-card-title">📐 В рамку (Стандарт)</div>
+                <div class="choice-card-sub">Текст строго внутри исходной рамки баббла, уменьшается до мин. размера шрифта.</div>
+              </div>
+              <div class="choice-card" id="card-ovf-overflow" onclick="setOverflowMode('overflow', true)">
+                <div class="choice-card-title">🔓 Вариант Б: За рамки</div>
+                <div class="choice-card-sub">Шрифт остается крупным (не ниже мин. порога), длинный текст свободно выходит за края баббла с белой обводкой.</div>
+              </div>
+              <div class="choice-card" id="card-ovf-expand_bubble" onclick="setOverflowMode('expand_bubble', true)">
+                <div class="choice-card-title">💬 Вариант В: Авто-баббл</div>
+                <div class="choice-card-sub">Шрифт остается крупным, а узкий баббл автоматически перерисовывается (расширяется) белой капсулой с рамкой под текст.</div>
+              </div>
+            </div>
           </div>
 
           <div class="section-box">
@@ -3312,6 +3344,8 @@
   <script>
     let targetLang = localStorage.getItem("miko_target_lang_v1") || "en";
     if (!["en", "ru", "romaji"].includes(targetLang)) targetLang = "en";
+    let overflowMode = localStorage.getItem("miko_overflow_mode_v1") || "shrink";
+    if (!["shrink", "overflow", "expand_bubble"].includes(overflowMode)) overflowMode = "shrink";
     let currentFolder = "";
     let currentOutputDir = "";
     let folderPages = [];
@@ -3589,6 +3623,7 @@
       document.getElementById("inp-max-font").value = 32;
       document.getElementById("inp-batch-pages").value = 12;
       document.getElementById("chk-uppercase").checked = true;
+      setOverflowMode("shrink", false);
       document.getElementById("chk-skip-existing").checked = true;
       updateSummaryChip();
       sayMiko("Все настройки интерфейса, фильтрации и шрифта сброшены к рекомендуемым значениям по умолчанию! ✨");
@@ -3684,9 +3719,11 @@
         all: "Весь текст"
       };
       const filterLbl = modeLabels[mode] || "Только диалоги";
+      const ovfLabels = { shrink: "📐 В рамку", overflow: "🔓 За рамки (Б)", expand_bubble: "💬 Авто-баббл (В)" };
+      const ovfLbl = ovfLabels[overflowMode] || "📐 В рамку";
       const shortMod = activeModelLabel.length > 24 ? activeModelLabel.slice(0, 22) + "…" : activeModelLabel;
       document.getElementById("summary-chip").textContent =
-        `Шрифт: ${minF}–${maxF}px · ${filterLbl} · ИИ: ${shortMod}`;
+        `Шрифт: ${minF}–${maxF}px · ${ovfLbl} · ${filterLbl} · ИИ: ${shortMod}`;
     }
 
     function switchSettingsTab(tabId) {
@@ -4142,7 +4179,9 @@
             dry_run: Boolean(dryRun),
             uppercase: document.getElementById("chk-uppercase").checked,
             min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
-            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32
+            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            overflow_mode: overflowMode,
+            overflow_mode: overflowMode
           })
         });
         const data = await res.json();
@@ -4511,6 +4550,11 @@
         if (typeof data.uppercase === "boolean") {
           document.getElementById("chk-uppercase").checked = data.uppercase;
         }
+        if (data.overflow_mode && ["shrink", "overflow", "expand_bubble"].includes(data.overflow_mode)) {
+          overflowMode = data.overflow_mode;
+          try { localStorage.setItem("miko_overflow_mode_v1", overflowMode); } catch (e) {}
+        }
+        syncOverflowModeUi();
         if (data.batch_pages) {
           document.getElementById("inp-batch-pages").value = data.batch_pages;
         }
@@ -4648,6 +4692,9 @@
       const detectFreeText = document.getElementById("chk-free-text").checked;
       const minTextLen = parseInt(document.getElementById("inp-min-text-len").value, 10) || 2;
       const uppercase = document.getElementById("chk-uppercase").checked;
+      const selOvf = document.getElementById("sel-overflow-mode")?.value || overflowMode || "shrink";
+      overflowMode = selOvf;
+      syncOverflowModeUi();
       const batchPages = parseInt(document.getElementById("inp-batch-pages").value, 10) || 12;
 
       onUiSettingCheckboxChange();
@@ -4669,6 +4716,7 @@
           min_font_size: minF,
           max_font_size: maxF,
           uppercase: uppercase,
+          overflow_mode: overflowMode,
           batch_pages: batchPages,
           ui_settings: uiSettings
         })
@@ -7141,6 +7189,7 @@
         uppercase: document.getElementById("chk-uppercase").checked,
         min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
         max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+        overflow_mode: overflowMode,
         return_image: true,
         prefer_url: true,
         image_format: "webp",
@@ -7230,6 +7279,47 @@
       document.getElementById("vmode-trans").classList.toggle("active", mode === "translated");
       document.getElementById("vmode-orig").classList.toggle("active", mode === "original");
       renderViewer();
+    }
+
+    function syncOverflowModeUi() {
+      const m = ["shrink", "overflow", "expand_bubble"].includes(overflowMode) ? overflowMode : "shrink";
+      overflowMode = m;
+      ["shrink", "overflow", "expand_bubble"].forEach(k => {
+        const tbBtn = document.getElementById("tb-ovf-" + k);
+        if (tbBtn) tbBtn.classList.toggle("active", k === m);
+        const cardEl = document.getElementById("card-ovf-" + k);
+        if (cardEl) cardEl.classList.toggle("selected", k === m);
+      });
+      const selEl = document.getElementById("sel-overflow-mode");
+      if (selEl && selEl.value !== m) selEl.value = m;
+      updateSummaryChip();
+    }
+
+    async function setOverflowMode(mode, persistAndRerender = true) {
+      const m = ["shrink", "overflow", "expand_bubble"].includes(mode) ? mode : "shrink";
+      overflowMode = m;
+      try { localStorage.setItem("miko_overflow_mode_v1", m); } catch (e) {}
+      syncOverflowModeUi();
+      const modeNames = {
+        shrink: "📐 В рамку (стандартное вписывание внутри баббла)",
+        overflow: "🔓 Вариант Б: Выход текста за рамки баббла (крупный шрифт + плотная белая обводка)",
+        expand_bubble: "💬 Вариант В: Авто-перерисовка и расширение баббла под размер текста"
+      };
+      if (persistAndRerender) {
+        try {
+          await fetch("/settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({ overflow_mode: m })
+          });
+        } catch (e) {}
+        if (selectedPage && currentBlocks && currentBlocks.length > 0) {
+          sayMiko(`Режим верстки переключен на «${modeNames[m]}» — перерисовываю открытую страницу... ✨`);
+          await saveEditedPageTranslation({ isAuto: true });
+        } else {
+          sayMiko(`Режим верстки бабблов: ${modeNames[m]} 🌸`);
+        }
+      }
     }
 
     function setZoomMode(mode) {
@@ -7630,6 +7720,7 @@
             uppercase: document.getElementById("chk-uppercase").checked,
             min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
             max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            overflow_mode: overflowMode,
             return_image: true,
             image_format: "webp",
             blocks: currentBlocks || []
@@ -7700,6 +7791,7 @@
             uppercase: document.getElementById("chk-uppercase").checked,
             min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
             max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            overflow_mode: overflowMode,
             return_image: true,
             image_format: "webp",
             blocks: currentBlocks || []
@@ -8599,6 +8691,7 @@
         uppercase: document.getElementById("chk-uppercase").checked,
         min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
         max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+        overflow_mode: overflowMode,
         detect_free_text: document.getElementById("chk-free-text").checked,
         text_filter_mode: document.getElementById("sel-text-filter-mode").value,
         skip_sighs: document.getElementById("chk-skip-sighs").checked,
@@ -8655,6 +8748,7 @@
         uppercase: document.getElementById("chk-uppercase").checked,
         min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
         max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+        overflow_mode: overflowMode,
         detect_free_text: document.getElementById("chk-free-text").checked,
         text_filter_mode: document.getElementById("sel-text-filter-mode").value,
         skip_sighs: document.getElementById("chk-skip-sighs").checked,

@@ -144,6 +144,8 @@ class MikoMangaStudioGUI:
         self.var_min_font = tk.IntVar(value=12)
         self.var_max_font = tk.IntVar(value=32)
         self.var_uppercase = tk.BooleanVar(value=True)
+        self.var_overflow_mode = tk.StringVar(value="shrink")
+        self.var_overflow_label = tk.StringVar(value="📐 В рамку (Стандарт)")
         self.var_text_filter_label = tk.StringVar(value=list(TEXT_FILTER_MODE_MAP.keys())[0])
         self.var_skip_sighs = tk.BooleanVar(value=True)
         self.var_skip_sfx = tk.BooleanVar(value=True)
@@ -180,6 +182,14 @@ class MikoMangaStudioGUI:
                 self.var_min_font.set(int(data.get("min_font_size", 12)))
                 self.var_max_font.set(int(data.get("max_font_size", 32)))
                 self.var_uppercase.set(bool(data.get("uppercase", True)))
+                ovf_m = str(data.get("overflow_mode", "shrink")).strip().lower()
+                if ovf_m not in ("shrink", "overflow", "expand_bubble"):
+                    ovf_m = "shrink"
+                self.var_overflow_mode.set(ovf_m)
+                for olbl, ocode in OVERFLOW_MODE_MAP.items():
+                    if ocode == ovf_m:
+                        self.var_overflow_label.set(olbl)
+                        break
                 self.var_detect_free_text.set(bool(data.get("detect_free_text", False)))
                 self.var_skip_sighs.set(bool(data.get("skip_sighs", True)))
                 self.var_skip_sfx.set(bool(data.get("skip_sfx", True)))
@@ -210,7 +220,9 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "uppercase": bool(self.var_uppercase.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
@@ -668,6 +680,25 @@ class MikoMangaStudioGUI:
             b.pack(side=tk.LEFT, padx=3)
             self.view_mode_btns[v_code] = b
 
+        self.overflow_mode_btns: dict[str, tk.Button] = {}
+        for o_code, o_label in (
+            ("shrink", "📐 В рамку"),
+            ("overflow", "🔓 За рамки (Б)"),
+            ("expand_bubble", "💬 Авто-баббл (В)"),
+        ):
+            ob = tk.Button(
+                viewer_bar,
+                text=o_label,
+                bd=0,
+                padx=8,
+                pady=5,
+                font=("Segoe UI", 8, "bold"),
+                cursor="hand2",
+                command=lambda m=o_code: self._set_overflow_mode(m),
+            )
+            ob.pack(side=tk.LEFT, padx=2)
+            self.overflow_mode_btns[o_code] = ob
+
         tk.Button(
             viewer_bar,
             text="📂 Открыть папку перевода",
@@ -751,6 +782,7 @@ class MikoMangaStudioGUI:
 
         self._set_target_lang(self.target_lang, refresh=False)
         self._set_view_mode("split")
+        self._set_overflow_mode(self.var_overflow_mode.get(), rerender=False)
         self._update_summary_chip()
 
     def _toggle_fullscreen(self) -> None:
@@ -817,6 +849,26 @@ class MikoMangaStudioGUI:
         self._save_gui_settings()
         if refresh and self.current_folder:
             self._refresh_folder_inspection_async()
+
+    def _set_overflow_mode(self, mode: str, rerender: bool = True) -> None:
+        if mode not in ("shrink", "overflow", "expand_bubble"):
+            mode = "shrink"
+        self.var_overflow_mode.set(mode)
+        for olbl, ocode in OVERFLOW_MODE_MAP.items():
+            if ocode == mode:
+                self.var_overflow_label.set(olbl)
+                break
+        for code, btn in getattr(self, "overflow_mode_btns", {}).items():
+            if code == mode:
+                btn.config(bg=ACCENT_MINT, fg="#ffffff")
+            else:
+                btn.config(bg=BG_INNER, fg=FG_SECONDARY)
+        self._save_gui_settings()
+        self._update_summary_chip()
+        if rerender:
+            self._apply_model_async()
+            if self.selected_page and self.last_blocks:
+                self._auto_save_edited_blocks_now()
 
     def _set_view_mode(self, mode: str) -> None:
         self.view_mode = mode
@@ -1178,6 +1230,24 @@ class MikoMangaStudioGUI:
         f_row2.pack(fill=tk.X, pady=2)
         tk.Label(f_row2, text="Максимальный шрифт (px):", bg=BG_BENTO, fg=FG_SECONDARY).pack(side=tk.LEFT)
         ttk.Spinbox(f_row2, from_=12, to=72, textvariable=self.var_max_font, width=8).pack(side=tk.RIGHT)
+
+        f_row_ovf = tk.Frame(pad, bg=BG_BENTO)
+        f_row_ovf.pack(fill=tk.X, pady=2)
+        tk.Label(f_row_ovf, text="Режим узких бабблов:", bg=BG_BENTO, fg=FG_SECONDARY).pack(side=tk.LEFT)
+        cb_ovf = ttk.Combobox(
+            f_row_ovf,
+            textvariable=self.var_overflow_label,
+            values=list(OVERFLOW_MODE_MAP.keys()),
+            state="readonly",
+            width=28,
+        )
+        cb_ovf.pack(side=tk.RIGHT)
+
+        def _on_ovf_selected(_event: Any = None) -> None:
+            m = OVERFLOW_MODE_MAP.get(self.var_overflow_label.get(), "shrink")
+            self._set_overflow_mode(m, rerender=False)
+
+        cb_ovf.bind("<<ComboboxSelected>>", _on_ovf_selected)
 
         tk.Checkbutton(
             pad,
@@ -1626,8 +1696,10 @@ class MikoMangaStudioGUI:
                 "source_dir": str(self.current_folder) if self.current_folder else None,
                 "target_lang": self.target_lang,
                 "uppercase": bool(self.var_uppercase.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
                 "min_font_size": int(self.var_min_font.get()),
                 "max_font_size": int(self.var_max_font.get()),
+                "overflow_mode": self.var_overflow_mode.get(),
                 "return_image": True,
                 "image_format": "webp",
                 "blocks": edited_blocks,
@@ -2191,8 +2263,10 @@ class MikoMangaStudioGUI:
             "source_dir": str(self.current_folder) if self.current_folder else None,
             "target_lang": self.target_lang,
             "uppercase": bool(self.var_uppercase.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "return_image": True,
             "image_format": "webp",
             "blocks": self.last_blocks,
@@ -2401,8 +2475,10 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "return_image": True,
             "image_format": "webp",
             "blocks": self.last_blocks,
@@ -2464,8 +2540,10 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "detect_free_text": bool(self.var_detect_free_text.get()),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
@@ -2558,8 +2636,10 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
+            "overflow_mode": self.var_overflow_mode.get(),
             "detect_free_text": bool(self.var_detect_free_text.get()),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),

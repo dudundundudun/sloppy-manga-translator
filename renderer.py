@@ -249,6 +249,7 @@ class MangaRenderer:
         box_padding_ratio: float = 0.10,
         line_spacing: int = 3,
         uppercase_comic_style: bool = True,
+        overflow_mode: str = "shrink",
     ) -> None:
         self.fonts_dir = Path(fonts_dir)
         self.fonts_dir.mkdir(parents=True, exist_ok=True)
@@ -257,6 +258,7 @@ class MangaRenderer:
         self.box_padding_ratio = box_padding_ratio
         self.line_spacing = line_spacing
         self.uppercase_comic_style = uppercase_comic_style
+        self.overflow_mode = self._normalize_overflow_mode(overflow_mode)
 
         self.font_path = self._resolve_font_path()
         self.fallback_font_paths: list[str] = [
@@ -768,6 +770,15 @@ class MangaRenderer:
         return None
 
     @staticmethod
+    def _normalize_overflow_mode(raw_mode: Any) -> str:
+        s = str(raw_mode or "shrink").strip().lower()
+        if s in ("overflow", "out", "outside", "variant_b", "b"):
+            return "overflow"
+        if s in ("expand_bubble", "redraw_bubble", "expand", "redraw", "variant_c", "c", "v"):
+            return "expand_bubble"
+        return "shrink"
+
+    @staticmethod
     def _normalize_bg_style(raw_style: Any) -> str:
         s = str(raw_style or "none").strip().lower()
         if s in ("text_box", "pill", "box", "text", "lines"):
@@ -992,7 +1003,9 @@ class MangaRenderer:
         font_family_path: str | None = None,
         style_preset: str = "dialogue",
         align: str = "center",
-    ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int]:
+        overflow_mode: str = "shrink",
+        max_expand_w: int | None = None,
+    ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int, bool]:
         preset = (style_preset or "dialogue").lower().strip()
         if preset in ("narration", "sfx"):
             force_rectangular = True
@@ -1082,13 +1095,16 @@ class MangaRenderer:
         # Проход 1: бинарный поиск без переносов слов (allow_hyphenation=False)
         best_no_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=False)
         if best_no_hyph is not None:
-            return best_no_hyph
+            return (*best_no_hyph, True)
 
         # Проход 2: бинарный поиск с разрешенными переносами длинных слов (allow_hyphenation=True)
-        hyph_start = max(min_lim, min(start_size, max(28 if unconstrained_size else 22, min_lim)))
-        best_with_hyph = _binary_search_best_fit(min_lim, hyph_start, allow_hyphenation=True)
-        if best_with_hyph is not None:
-            return best_with_hyph
+        # В режимах overflow (Вариант Б) и expand_bubble (Вариант В) не дробим слова дефисами в узком столбике,
+        # если текст все равно выйдет за рамки или расширит баббл!
+        if overflow_mode == "shrink":
+            hyph_start = max(min_lim, min(start_size, max(28 if unconstrained_size else 22, min_lim)))
+            best_with_hyph = _binary_search_best_fit(min_lim, hyph_start, allow_hyphenation=True)
+            if best_with_hyph is not None:
+                return (*best_with_hyph, True)
 
         min_font = self._get_font(min_lim, font_family_path=font_family_path)
         min_spacing = self._get_line_spacing(min_lim, style_preset=preset)
@@ -1098,6 +1114,23 @@ class MangaRenderer:
             style_preset=preset,
             stroke_width_override=stroke_width_override,
         )
+        if overflow_mode in ("overflow", "expand_bubble"):
+            # Рассчитываем комфортную ширину переноса строк, чтобы длинный текст не превращался в узкую «колбасу»
+            full_line_px = max(1.0, self._measure_line_width(draw, text, min_font))
+            line_h_est = max(min_lim + 2, int(min_lim * 1.18))
+            ideal_w = int(math.sqrt(full_line_px * line_h_est * 1.35))
+            upper_w = max_expand_w if (max_expand_w and max_expand_w > target_w) else max(target_w * 2, 260)
+            wrap_limit = max(target_w, min(upper_w, max(ideal_w, int(target_w * 1.45), int(min_lim * 7.5))))
+            wrapped = self._wrap_text_pixel(
+                draw,
+                text,
+                min_font,
+                wrap_limit,
+                allow_hyphenation=False,
+                elliptical_shaping=False,
+            )
+            return wrapped, min_font, min_stroke, min_spacing, min_lim, False
+
         wrap_limit = max(target_w, int(min_lim * 2.5)) if min_lim == max_lim else target_w
         wrapped = self._wrap_text_pixel(
             draw,
@@ -1107,7 +1140,7 @@ class MangaRenderer:
             allow_hyphenation=(min_lim != max_lim),
             elliptical_shaping=False,
         )
-        return wrapped, min_font, min_stroke, min_spacing, min_lim
+        return wrapped, min_font, min_stroke, min_spacing, min_lim, False
 
     @staticmethod
     def _compute_perceptual_luminance(roi: np.ndarray) -> float:
@@ -1160,6 +1193,7 @@ class MangaRenderer:
         max_font_size: int | None = None,
         min_font_size: int | None = None,
         stroke_width_override: int | None = None,
+        overflow_mode: str | None = None,
     ) -> Image.Image:
         canvas = cleaned_image.convert("RGB").copy()
         draw = ImageDraw.Draw(canvas)
@@ -1171,6 +1205,7 @@ class MangaRenderer:
         font_cap = int(max_font_size) if (max_font_size and max_font_size >= 8) else self.max_font_size
         if font_min > font_cap:
             font_min, font_cap = font_cap, font_min
+        global_overflow_mode = self._normalize_overflow_mode(overflow_mode if overflow_mode is not None else self.overflow_mode)
 
         for block in blocks:
             if bool(block.get("is_deleted", False)):
@@ -1260,7 +1295,14 @@ class MangaRenderer:
             else:
                 eff_stroke_override = stroke_width_override
 
-            wrapped_text, font, stroke_w, dyn_spacing, chosen_fs = self._fit_text_to_box(
+            block_overflow_mode = (
+                self._normalize_overflow_mode(block.get("overflow_mode"))
+                if block.get("overflow_mode")
+                else global_overflow_mode
+            )
+            max_exp_w = max(safe_w, min(img_w - 16, max(int(box_w * 2.2), 280)))
+
+            wrapped_text, font, stroke_w, dyn_spacing, chosen_fs, fit_ok = self._fit_text_to_box(
                 draw=draw,
                 text=text,
                 target_w=safe_w,
@@ -1274,6 +1316,8 @@ class MangaRenderer:
                 font_family_path=font_family_path,
                 style_preset=style_preset,
                 align=align,
+                overflow_mode=block_overflow_mode,
+                max_expand_w=max_exp_w,
             )
             block["rendered_font_size"] = chosen_fs
 
@@ -1309,6 +1353,25 @@ class MangaRenderer:
             text_fill = custom_text_rgb if custom_text_rgb is not None else default_text_fill
             stroke_fill = custom_stroke_rgb if custom_stroke_rgb is not None else default_stroke_fill
 
+            # Первичный замер габаритов текста для проверки выхода за рамки баббла
+            prelim_bbox = draw.multiline_textbbox(
+                (0, 0),
+                wrapped_text,
+                font=font,
+                spacing=dyn_spacing,
+                align=align,
+                stroke_width=stroke_w,
+            )
+            prelim_tw = prelim_bbox[2] - prelim_bbox[0]
+            prelim_th = prelim_bbox[3] - prelim_bbox[1]
+            is_overflowing_box = (not fit_ok) or (prelim_tw > safe_w + 2) or (prelim_th > safe_h + 2)
+            block["is_overflowing"] = bool(is_overflowing_box)
+
+            # Вариант Б (overflow): если текст выходит за рамки баббла и не задана ручная обводка,
+            # усиливаем контрастную обводку (минимум 4px), чтобы буквы идеально читались поверх контура баббла!
+            if block_overflow_mode == "overflow" and is_overflowing_box and eff_stroke_override is None:
+                stroke_w = max(stroke_w, 4)
+
             needs_rich_symbols = self._needs_special_rendering(font, wrapped_text)
             rich_layer: Image.Image | None = None
             if needs_rich_symbols:
@@ -1334,6 +1397,27 @@ class MangaRenderer:
                 )
                 tw = t_bbox[2] - t_bbox[0]
                 th = t_bbox[3] - t_bbox[1]
+
+            # Вариант В (expand_bubble): если текст не помещается в исходный баббл (и это не свободный SFX на фоне),
+            # автоматически перерисовываем/расширяем капсулу баббла с аккуратным контуром под размер текста!
+            if block_overflow_mode == "expand_bubble" and is_overflowing_box and not is_free_text and bg_style == "none":
+                cx_box = (rx1 + rx2) / 2.0
+                cy_box = (y1 + y2) / 2.0
+                pad_exp_x = max(10, int(chosen_fs * 0.65) + bg_pad_adj)
+                pad_exp_y = max(8, int(chosen_fs * 0.55) + bg_pad_adj)
+                bx1 = max(2, int(round(min(rx1, cx_box - tw / 2.0 - pad_exp_x))))
+                bx2 = min(img_w - 2, int(round(max(rx2, cx_box + tw / 2.0 + pad_exp_x))))
+                by1 = max(2, int(round(min(y1, cy_box - th / 2.0 - pad_exp_y))))
+                by2 = min(img_h - 2, int(round(max(y2, cy_box + th / 2.0 + pad_exp_y))))
+                rad = max(12, int(min(bx2 - bx1, by2 - by1) * (0.18 if style_preset == "narration" else 0.44)))
+                border_col = (25, 25, 25) if bg_fill[0] >= 128 else (230, 230, 230)
+                draw.rounded_rectangle(
+                    [bx1, by1, bx2, by2],
+                    radius=rad,
+                    fill=bg_fill,
+                    outline=border_col,
+                    width=2,
+                )
 
             # Отрисовка подложки для режимов "bubble" (Овал баббла) и "full_box" (Вся рамка)
             if bg_style == "bubble":

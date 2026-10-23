@@ -1394,6 +1394,7 @@ class OllamaTranslator:
         self.min_font_size: int = 12
         self.max_font_size: int = 32
         self.uppercase: bool = True
+        self.overflow_mode: str = "shrink"
         self.batch_pages: int = 12
         self.ui_settings: dict[str, Any] = {
             "editor_dock_mode": "right",
@@ -1551,6 +1552,7 @@ class OllamaTranslator:
             "skip_sfx": self.skip_sfx,
             "detect_free_text": self.detect_free_text,
             "min_text_length": self.min_text_length,
+            "overflow_mode": self.overflow_mode,
             "batch_pages": self.batch_pages,
             "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
             "cloud_parallel_chunk_size": CLOUD_PARALLEL_CHUNK_SIZE,
@@ -1633,6 +1635,8 @@ class OllamaTranslator:
                     self.max_font_size = max(12, min(72, int(data["max_font_size"])))
                 if "uppercase" in data and data["uppercase"] is not None:
                     self.uppercase = bool(data["uppercase"])
+                if data.get("overflow_mode") and str(data["overflow_mode"]).strip().lower() in ("shrink", "overflow", "expand_bubble"):
+                    self.overflow_mode = str(data["overflow_mode"]).strip().lower()
                 if "batch_pages" in data and data["batch_pages"] is not None:
                     self.batch_pages = max(1, min(25, int(data["batch_pages"])))
                 if isinstance(data.get("ui_settings"), dict):
@@ -1657,6 +1661,7 @@ class OllamaTranslator:
         min_font_size: int | None = None,
         max_font_size: int | None = None,
         uppercase: bool | None = None,
+        overflow_mode: str | None = None,
         batch_pages: int | None = None,
         ui_settings: dict[str, Any] | None = None,
         glossary: list[dict[str, str]] | None = None,
@@ -1708,6 +1713,9 @@ class OllamaTranslator:
         if uppercase is not None:
             self.uppercase = bool(uppercase)
 
+        if overflow_mode is not None and str(overflow_mode).strip().lower() in ("shrink", "overflow", "expand_bubble"):
+            self.overflow_mode = str(overflow_mode).strip().lower()
+
         if batch_pages is not None:
             self.batch_pages = max(1, min(25, int(batch_pages)))
 
@@ -1733,6 +1741,7 @@ class OllamaTranslator:
             "min_font_size": self.min_font_size,
             "max_font_size": self.max_font_size,
             "uppercase": self.uppercase,
+            "overflow_mode": self.overflow_mode,
             "batch_pages": self.batch_pages,
             "ui_settings": self.ui_settings,
             "glossary": self.glossary,
@@ -3581,7 +3590,7 @@ class OllamaTranslator:
 
             if bad_keys:
                 sample_bad = "; ".join(
-                    f"#{bk} «{source_map[bk][:16]}» ({bad_reason_by_k.get(bk, )})"
+                    f"#{bk} «{source_map[bk][:16]}» ({bad_reason_by_k.get(bk, 'пропуск')})"
                     for bk in bad_keys[:3]
                 )
                 self._record_incident(
@@ -3687,9 +3696,9 @@ class OllamaTranslator:
                             chunk_prov[k] = {
                                 "source": "llm_local_bypass" if used_local_for_sub else "llm_micro_retry",
                                 "note": (
-                                    f"Допереведено локальной моделью ({loc_model_used_name}) после: {bad_reason_by_k.get(k, пропуск)}"
+                                    f"Допереведено локальной моделью ({loc_model_used_name}) после: {bad_reason_by_k.get(k, 'пропуск')}"
                                     if used_local_for_sub
-                                    else f"Допереведено со 2-й попытки ИИ (после: {bad_reason_by_k.get(k, пропуск)})"
+                                    else f"Допереведено со 2-й попытки ИИ (после: {bad_reason_by_k.get(k, 'пропуск')})"
                                 ),
                             }
                         elif cand_r:
@@ -3698,7 +3707,7 @@ class OllamaTranslator:
                                 translated_map[k] = rescued_r
                                 chunk_prov[k] = {
                                     "source": "romaji_rescue_dict",
-                                    "note": f"Спасено словарем частых фраз манги (после: {bad_reason_by_k.get(k, пропуск)})",
+                                    "note": f"Спасено словарем частых фраз манги (после: {bad_reason_by_k.get(k, 'пропуск')})",
                                 }
 
         final_map: dict[str, str] = {}

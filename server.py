@@ -547,7 +547,10 @@ async def lifespan(app: FastAPI):
     cleaner_engine = BubbleCleaner(use_lama=True, dilate_size=7, cache_max_pages=8, disk_cache_dir=TEMP_DIR / "clean_cache")
 
     print("  [3/4] Инициализация шрифтового движка и клиента Ollama/Cloud API...", flush=True)
-    renderer_engine = MangaRenderer(fonts_dir=BASE_DIR / "fonts")
+    renderer_engine = MangaRenderer(
+        fonts_dir=BASE_DIR / "fonts",
+        overflow_mode=getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink",
+    )
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
@@ -597,6 +600,10 @@ class TranslateRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12, description="Минимальный размер шрифта (px)")
     max_font_size: int = Field(default=32, description="Максимальный размер шрифта (px)")
+    overflow_mode: str | None = Field(
+        default=None,
+        description="Режим вписывания длинного текста: 'shrink' (сжимать до мин. шрифта), 'overflow' (Вариант Б: выход за рамки баббла), 'expand_bubble' (Вариант В: авто-расширение/перерисовка баббла)",
+    )
     detect_free_text: bool | None = Field(
         default=None,
         description="Переводить также текст вне speech bubbles (надписи на фоне, мысли, заголовки)",
@@ -707,6 +714,14 @@ class TextBlock(BaseModel):
         default=None,
         description="Дополнительный отступ/расширение подложки текста в пикселях (-24..+48)",
     )
+    overflow_mode: str | None = Field(
+        default=None,
+        description="Индивидуальный режим переполнения для блока: 'shrink', 'overflow' или 'expand_bubble'",
+    )
+    is_overflowing: bool | None = Field(
+        default=None,
+        description="True, если текст не поместился в исходную рамку при минимальном размере шрифта",
+    )
     mask_dilate: int | None = Field(
         default=None,
         description="Индивидуальная толщина маски очистки для этого блока (1..28 px). Если None — авто",
@@ -755,6 +770,8 @@ class FolderTranslateRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    overflow_mode: str | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
@@ -783,6 +800,8 @@ class PageFileTranslateRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    overflow_mode: str | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
@@ -806,6 +825,7 @@ class ServerSettingsRequest(BaseModel):
     min_font_size: int | None = Field(default=None)
     max_font_size: int | None = Field(default=None)
     uppercase: bool | None = Field(default=None)
+    overflow_mode: str | None = Field(default=None)
     batch_pages: int | None = Field(default=None)
     ui_settings: dict[str, Any] | None = Field(default=None)
 
@@ -851,6 +871,8 @@ class SaveEditedPageRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     prefer_url: bool = Field(
         default=True,
@@ -876,6 +898,8 @@ class ManualRegionTranslateRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
     custom_original_text: str | None = Field(default=None)
@@ -899,6 +923,8 @@ class RetranslateSingleBlockRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
     blocks: list[TextBlock] = Field(default_factory=list)
@@ -1373,6 +1399,7 @@ def _generate_and_save_folder_report(
     cur_min_fs = int(translator_engine.min_font_size if translator_engine else 12)
     cur_max_fs = int(translator_engine.max_font_size if translator_engine else 32)
     cur_upper = bool(translator_engine.uppercase if translator_engine else True)
+    cur_overflow = str(getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
     cur_batch_p = int(translator_engine.batch_pages if translator_engine else 12)
 
     last_run = run_history[-1] if run_history else {}
@@ -1382,6 +1409,11 @@ def _generate_and_save_folder_report(
         or f"Готово {translated_pages_cnt} из {total_pages_in_folder} стр."
     )
 
+    overflow_names_ru = {
+        "shrink": "Стандарт (внутри рамки до мин. шрифта)",
+        "overflow": "Вариант Б — Выход текста за рамки баббла (с обводкой)",
+        "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
+    }
     lines: list[str] = [
         "========================================================================================",
         "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v1.0.7",
@@ -1415,6 +1447,7 @@ def _generate_and_save_folder_report(
         f"• Текст вне бабблов (на фоне)  : {'ВКЛ (detect_free_text=True)' if eff_free else 'ВЫКЛ (защита рисунка фона от замазки)'}",
         f"• Мин. длина текста для OCR    : {eff_min_len} симв. (min_text_length={eff_min_len})",
         f"• Размер шрифта и регистр      : {cur_min_fs} px .. {cur_max_fs} px | Заглавные буквы (UPPERCASE): {'ВКЛ' if cur_upper else 'ВЫКЛ'}",
+        f"• Режим узких бабблов          : {overflow_names_ru.get(cur_overflow, cur_overflow)} (overflow_mode={cur_overflow})",
         f"• Пакетный режим (batch_pages) : {cur_batch_p} стр. в пачке | Лимит облака: {tr_info.get('cloud_batch_limit', 260)} фраз (параллельный чанк: {tr_info.get('cloud_parallel_chunk_size', 42)} фраз)",
         f"• Активный глоссарий           : {len(merged_glossary)} терминов (Глобальный: {len(global_glossary)}, Локальный главы: {len(folder_glossary)})",
     ]
@@ -2056,6 +2089,7 @@ async def process_single_pil_image(
     uppercase: bool = True,
     min_font_size: int = 12,
     max_font_size: int = 32,
+    overflow_mode: str | None = None,
     detect_free_text: bool | None = None,
     text_filter_mode: str | None = None,
     skip_sighs: bool | None = None,
@@ -2134,6 +2168,7 @@ async def process_single_pil_image(
     if mask_image is None:
         mask_image = Image.new("L", pil_image.size, 0)
 
+    eff_overflow = overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
     final_image = await asyncio.to_thread(
         renderer_engine.render_blocks,
         cleaned_image,
@@ -2141,6 +2176,8 @@ async def process_single_pil_image(
         uppercase,
         max_font_size,
         min_font_size,
+        None,
+        eff_overflow,
     )
     _render_sec = round(time.perf_counter() - _t0_render, 2)
     _total_sec = round(time.perf_counter() - _t0_all, 2)
@@ -2193,6 +2230,7 @@ async def _run_folder_translation_job(
     skip_sighs: bool | None = None,
     skip_sfx: bool | None = None,
     min_text_length: int | None = None,
+    overflow_mode: str | None = None,
 ) -> None:
     global _folder_stop_requested
     assert ocr_engine is not None
@@ -2549,12 +2587,15 @@ async def _run_folder_translation_job(
                 else:
                     cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, blocks_in)
                     _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
+                eff_overflow = overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
                 final_im = renderer_engine.render_blocks(
                     cleaned_im,
                     blocks_in,
                     uppercase,
                     max_font_size,
                     min_font_size,
+                    None,
+                    eff_overflow,
                 )
                 ext = dst_p.suffix.lower()
                 if ext == ".webp":
@@ -2598,6 +2639,7 @@ async def _run_folder_translation_job(
                         "uppercase": uppercase,
                         "min_font_size": min_font_size,
                         "max_font_size": max_font_size,
+                        "overflow_mode": overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink"),
                         "ocr_diag": sp_item.get("ocr_diag", {}),
                         "updated_at": int(time.time()),
                         "blocks": p_blocks,
@@ -2865,6 +2907,7 @@ async def health_check() -> dict[str, Any]:
         "min_font_size": translator_engine.min_font_size if translator_engine else 12,
         "max_font_size": translator_engine.max_font_size if translator_engine else 32,
         "uppercase": translator_engine.uppercase if translator_engine else True,
+        "overflow_mode": getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink",
         "batch_pages": translator_engine.batch_pages if translator_engine else 12,
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
         "glossary": translator_engine.glossary if translator_engine else [],
@@ -2958,9 +3001,12 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         min_font_size=payload.min_font_size,
         max_font_size=payload.max_font_size,
         uppercase=payload.uppercase,
+        overflow_mode=payload.overflow_mode,
         batch_pages=payload.batch_pages,
         ui_settings=payload.ui_settings,
     )
+    if renderer_engine is not None and payload.overflow_mode:
+        renderer_engine.overflow_mode = renderer_engine._normalize_overflow_mode(payload.overflow_mode)
     models = await translator_engine.list_available_models(force_refresh=True)
     active = await translator_engine.resolve_model()
     return {
@@ -2981,6 +3027,7 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "min_font_size": saved["min_font_size"],
         "max_font_size": saved["max_font_size"],
         "uppercase": saved["uppercase"],
+        "overflow_mode": saved.get("overflow_mode", "shrink"),
         "batch_pages": saved["batch_pages"],
         "ui_settings": saved["ui_settings"],
         "models": models,
@@ -3248,6 +3295,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
                 uppercase=payload.uppercase,
                 min_font_size=payload.min_font_size,
                 max_font_size=payload.max_font_size,
+                overflow_mode=payload.overflow_mode,
                 detect_free_text=payload.detect_free_text,
                 text_filter_mode=payload.text_filter_mode,
                 skip_sighs=payload.skip_sighs,
@@ -3413,6 +3461,7 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
         uppercase=payload.uppercase,
         min_font_size=payload.min_font_size,
         max_font_size=payload.max_font_size,
+        overflow_mode=payload.overflow_mode,
         detect_free_text=payload.detect_free_text,
         text_filter_mode=payload.text_filter_mode,
         skip_sighs=payload.skip_sighs,
@@ -3769,6 +3818,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
             src_file=src_file,
             save_to_disk=True,
         )
+        eff_overflow = payload.overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
         final_image = await asyncio.to_thread(
             renderer_engine.render_blocks,
             cleaned_image,
@@ -3776,6 +3826,8 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
             payload.uppercase,
             payload.max_font_size,
             payload.min_font_size,
+            None,
+            eff_overflow,
         )
 
     save_kwargs: dict[str, Any] = {}
@@ -3981,6 +4033,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
             src_file=src_file,
             save_to_disk=True,
         )
+        eff_overflow = payload.overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
         final_image = await asyncio.to_thread(
             renderer_engine.render_blocks,
             cleaned_image,
@@ -3988,6 +4041,8 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
             payload.uppercase,
             payload.max_font_size,
             payload.min_font_size,
+            None,
+            eff_overflow,
         )
 
     save_kwargs: dict[str, Any] = {}
@@ -4127,6 +4182,7 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
             src_file=src_file,
             save_to_disk=True,
         )
+        eff_overflow = payload.overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
         final_image = await asyncio.to_thread(
             renderer_engine.render_blocks,
             cleaned_image,
@@ -4134,6 +4190,8 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
             payload.uppercase,
             payload.max_font_size,
             payload.min_font_size,
+            None,
+            eff_overflow,
         )
 
     save_kwargs: dict[str, Any] = {}
@@ -4249,6 +4307,7 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
             min_font_size=payload.min_font_size,
             max_font_size=payload.max_font_size,
             detect_free_text=payload.detect_free_text,
+            overflow_mode=payload.overflow_mode,
             skip_existing=payload.skip_existing,
             force_retranslate=payload.force_retranslate,
             open_when_done=payload.open_when_done,
@@ -4426,6 +4485,7 @@ class FolderFindReplaceRequest(BaseModel):
     uppercase: bool = Field(default=True)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
 
 
 @app.get("/glossary")
@@ -4675,6 +4735,7 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
                 use_upper = bool(p_meta.get("uppercase", payload.uppercase))
                 min_fs = int(p_meta.get("min_font_size") or payload.min_font_size or 12)
                 max_fs = int(p_meta.get("max_font_size") or payload.max_font_size or 32)
+                eff_overflow = payload.overflow_mode or str(p_meta.get("overflow_mode") or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink"))
                 final_image = await asyncio.to_thread(
                     renderer_engine.render_blocks,
                     cleaned_image,
@@ -4682,6 +4743,8 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
                     use_upper,
                     max_fs,
                     min_fs,
+                    None,
+                    eff_overflow,
                 )
 
             save_kwargs: dict[str, Any] = {}
@@ -4787,6 +4850,11 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
     tr = d["translator"]
     fj = d["folder_job"]
 
+    overflow_names_ru = {
+        "shrink": "Стандарт (внутри рамки до мин. шрифта)",
+        "overflow": "Вариант Б — Выход текста за рамки баббла (с обводкой)",
+        "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
+    }
     lines: list[str] = [
         "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.6 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
@@ -5348,6 +5416,11 @@ def _generate_ux_usage_report(store: dict[str, Any] | None = None) -> tuple[str,
     mouse_pct = round((mouse_clicks / mouse_vs_key_total) * 100.0, 1)
     key_pct = round((hotkey_presses / mouse_vs_key_total) * 100.0, 1)
 
+    overflow_names_ru = {
+        "shrink": "Стандарт (внутри рамки до мин. шрифта)",
+        "overflow": "Вариант Б — Выход текста за рамки баббла (с обводкой)",
+        "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
+    }
     lines: list[str] = [
         "========================================================================================",
         "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v1.0.7",
