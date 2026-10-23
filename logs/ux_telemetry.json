@@ -1,0 +1,2109 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-22 13:59:13",
+  "updated_at": "2026-10-23 10:24:05",
+  "total_events": 318,
+  "total_mouse_clicks": 260,
+  "total_hotkey_presses": 29,
+  "total_canvas_manipulations": 27,
+  "total_text_edits": 2,
+  "active_usage_sec": 1441.0,
+  "actions": {
+    "pickFolderDialog": {
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-10-23 10:22:05"
+    },
+    "page-row-select": {
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 6,
+      "last_used": "2026-10-22 14:21:21"
+    },
+    "btn-toggle-drawer": {
+      "action_id": "btn-toggle-drawer",
+      "label": "✏️ Редактор (0)",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-10-22 14:00:01"
+    },
+    "deleteAllPageBlocks": {
+      "action_id": "deleteAllPageBlocks",
+      "label": "🗑 Удалить все рамки",
+      "zone": "editor_drawer_subbar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-22 13:59:49"
+    },
+    "btn-draw-region": {
+      "action_id": "btn-draw-region",
+      "label": "➕ Обвести",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 3,
+      "last_used": "2026-10-22 14:03:53"
+    },
+    "btn-vlm-draw-toggle": {
+      "action_id": "btn-vlm-draw-toggle",
+      "label": "👁 VLM-OCR",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-22 14:00:05"
+    },
+    "canvas:manual_draw_vlm": {
+      "action_id": "canvas:manual_draw_vlm",
+      "label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "zone": "viewer_stage_pin",
+      "event_type": "canvas_action",
+      "count": 3,
+      "last_used": "2026-10-22 14:03:57"
+    },
+    "closeInlineBubblePopup": {
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 17,
+      "last_used": "2026-10-22 14:20:21"
+    },
+    "canvas:pin_wheel_font": {
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin",
+      "event_type": "canvas_action",
+      "count": 5,
+      "last_used": "2026-10-22 14:21:05"
+    },
+    "hotkey:nav_page_next": {
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey",
+      "event_type": "hotkey_use",
+      "count": 28,
+      "last_used": "2026-10-22 14:20:37"
+    },
+    "zmode-height": {
+      "action_id": "zmode-height",
+      "label": "↕ Выс.",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-10-23 10:22:53"
+    },
+    "saveFromInlinePopup": {
+      "action_id": "saveFromInlinePopup",
+      "label": "💾 Применить",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 11,
+      "last_used": "2026-10-22 14:20:17"
+    },
+    "bbox-pin-del": {
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin",
+      "event_type": "button_click",
+      "count": 179,
+      "last_used": "2026-10-22 14:21:29"
+    },
+    "canvas:pin_click": {
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin",
+      "event_type": "canvas_action",
+      "count": 19,
+      "last_used": "2026-10-22 14:19:21"
+    },
+    "popup-del-btn": {
+      "action_id": "popup-del-btn",
+      "label": "🗑 Удалить рамку",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-10-22 14:06:53"
+    },
+    "text_edit:inline_popup": {
+      "action_id": "text_edit:inline_popup",
+      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
+      "zone": "inline_popup",
+      "event_type": "text_edit",
+      "count": 2,
+      "last_used": "2026-10-22 14:04:21"
+    },
+    "hotkey:nav_page_prev": {
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey",
+      "event_type": "hotkey_use",
+      "count": 1,
+      "last_used": "2026-10-22 14:06:21"
+    },
+    "btn-contextual-page": {
+      "action_id": "btn-contextual-page",
+      "label": "🎯 Перевести только стр. #21 (21.jpg)",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-10-22 14:11:13"
+    },
+    "sel-source-lang": {
+      "action_id": "sel-source-lang",
+      "label": "Выбор в списке [sel-source-lang]: 🇯🇵 Японский (Манга)",
+      "zone": "topbar",
+      "event_type": "control_change",
+      "count": 2,
+      "last_used": "2026-10-23 10:22:45"
+    },
+    "stab-btn-font": {
+      "action_id": "stab-btn-font",
+      "label": "🔤 Шрифт и Сохранение",
+      "zone": "settings_modal",
+      "event_type": "button_click",
+      "count": 3,
+      "last_used": "2026-10-22 14:22:17"
+    },
+    "saveSettingsAndClose": {
+      "action_id": "saveSettingsAndClose",
+      "label": "✅ Сохранить настройки",
+      "zone": "settings_modal",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-10-22 14:22:21"
+    },
+    "btn:🎨 Стиль, Шрифт и Поворот Ди": {
+      "action_id": "btn:🎨 Стиль, Шрифт и Поворот Ди",
+      "label": "🎨 Стиль, Шрифт и Поворот Диалог · 0°",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-22 14:09:01"
+    },
+    "popup-stroke-width": {
+      "action_id": "popup-stroke-width",
+      "label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "zone": "inline_popup",
+      "event_type": "control_change",
+      "count": 6,
+      "last_used": "2026-10-22 14:20:09"
+    },
+    "select:font-size-override": {
+      "action_id": "select:font-size-override",
+      "label": "Выбор размера шрифта из списка (22 px)",
+      "zone": "inline_popup",
+      "event_type": "control_change",
+      "count": 5,
+      "last_used": "2026-10-22 14:20:13"
+    },
+    "bbox-pin-save": {
+      "action_id": "bbox-pin-save",
+      "label": "💾 Сохранить прямо на рамке #N",
+      "zone": "viewer_stage_pin",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-22 14:18:33"
+    },
+    "viewChapterTranslationReport": {
+      "action_id": "viewChapterTranslationReport",
+      "label": "📋 Отчет главы",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-22 14:21:33"
+    },
+    "copyDiagnosticsReportToClipboard": {
+      "action_id": "copyDiagnosticsReportToClipboard",
+      "label": "📋 Скопировать отчет для чата (в 1 клик)",
+      "zone": "settings_modal",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-22 14:21:57"
+    },
+    "toggleSettingsModal": {
+      "action_id": "toggleSettingsModal",
+      "label": "✕ Закрыть (Esc)",
+      "zone": "settings_modal",
+      "event_type": "button_click",
+      "count": 4,
+      "last_used": "2026-10-23 10:23:45"
+    },
+    "openSettingsOnTab": {
+      "action_id": "openSettingsOnTab",
+      "label": "⚙️ Настройки",
+      "zone": "topbar",
+      "event_type": "button_click",
+      "count": 3,
+      "last_used": "2026-10-23 10:23:17"
+    },
+    "btn-primary-folder": {
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (170 стр.)",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-23 10:23:09"
+    },
+    "stab-btn-ui": {
+      "action_id": "stab-btn-ui",
+      "label": "🎨 Интерфейс и Редактор",
+      "zone": "settings_modal",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-23 10:23:21"
+    },
+    "stab-btn-filter": {
+      "action_id": "stab-btn-filter",
+      "label": "📊 Фильтр текста и SFX",
+      "zone": "settings_modal",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-23 10:23:33"
+    }
+  },
+  "zones": {
+    "left_sidebar": 11,
+    "viewer_toolbar": 9,
+    "editor_drawer_subbar": 1,
+    "viewer_stage_pin": 207,
+    "inline_popup": 44,
+    "keyboard_hotkey": 29,
+    "topbar": 5,
+    "settings_modal": 12
+  },
+  "hotkeys": {
+    "D / →": {
+      "hotkey": "D / →",
+      "label": "Клавиша D / → (Следующая страница)",
+      "count": 28
+    },
+    "A / ←": {
+      "hotkey": "A / ←",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 1
+    }
+  },
+  "missed_hotkeys": {
+    "popup-del-btn": {
+      "action_id": "popup-del-btn",
+      "label": "🗑 Удалить рамку",
+      "hotkey": "Клавиша Delete (при выбранном кружке)",
+      "description": "Полное удаление рамки #N с картинки",
+      "mouse_clicks": 2
+    }
+  },
+  "canvas_ops": {
+    "canvas:manual_draw_vlm": {
+      "action_id": "canvas:manual_draw_vlm",
+      "label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "count": 3
+    },
+    "canvas:pin_wheel_font": {
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "count": 5
+    },
+    "canvas:pin_click": {
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "count": 19
+    }
+  },
+  "features_used": {
+    "act:manual_draw_region": 3,
+    "act:vlm_ocr_sniper": 4,
+    "act:pin_wheel_font": 5,
+    "act:nav_prev_next": 29,
+    "act:zoom_controls": 2,
+    "act:save_page": 12,
+    "act:pin_click": 19,
+    "act:delete_block_frame": 2,
+    "act:text_color_stroke": 6
+  },
+  "transitions": {
+    "pickFolderDialog>>>page-row-select": {
+      "from_id": "pickFolderDialog",
+      "from_label": "📁 Выбрать папку",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 1
+    },
+    "page-row-select>>>btn-toggle-drawer": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "btn-toggle-drawer",
+      "to_label": "✏️ Редактор (10)",
+      "count": 1
+    },
+    "btn-toggle-drawer>>>deleteAllPageBlocks": {
+      "from_id": "btn-toggle-drawer",
+      "from_label": "✏️ Редактор (10)",
+      "to_id": "deleteAllPageBlocks",
+      "to_label": "🗑 Удалить все рамки",
+      "count": 1
+    },
+    "deleteAllPageBlocks>>>btn-toggle-drawer": {
+      "from_id": "deleteAllPageBlocks",
+      "from_label": "🗑 Удалить все рамки",
+      "to_id": "btn-toggle-drawer",
+      "to_label": "✏️ Редактор (0)",
+      "count": 1
+    },
+    "btn-toggle-drawer>>>btn-draw-region": {
+      "from_id": "btn-toggle-drawer",
+      "from_label": "✏️ Редактор (0)",
+      "to_id": "btn-draw-region",
+      "to_label": "➕ Обвести",
+      "count": 1
+    },
+    "btn-draw-region>>>btn-vlm-draw-toggle": {
+      "from_id": "btn-draw-region",
+      "from_label": "➕ Обвести",
+      "to_id": "btn-vlm-draw-toggle",
+      "to_label": "👁 VLM-OCR",
+      "count": 1
+    },
+    "btn-vlm-draw-toggle>>>canvas:manual_draw_vlm": {
+      "from_id": "btn-vlm-draw-toggle",
+      "from_label": "👁 VLM-OCR",
+      "to_id": "canvas:manual_draw_vlm",
+      "to_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "count": 1
+    },
+    "canvas:manual_draw_vlm>>>closeInlineBubblePopup": {
+      "from_id": "canvas:manual_draw_vlm",
+      "from_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "to_id": "closeInlineBubblePopup",
+      "to_label": "✕ (Закрыть попап)",
+      "count": 1
+    },
+    "closeInlineBubblePopup>>>canvas:pin_wheel_font": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "canvas:pin_wheel_font",
+      "to_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "count": 1
+    },
+    "canvas:pin_wheel_font>>>page-row-select": {
+      "from_id": "canvas:pin_wheel_font",
+      "from_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 1
+    },
+    "page-row-select>>>hotkey:nav_page_next": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 1
+    },
+    "hotkey:nav_page_next>>>canvas:pin_wheel_font": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "canvas:pin_wheel_font",
+      "to_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "count": 1
+    },
+    "canvas:pin_wheel_font>>>zmode-height": {
+      "from_id": "canvas:pin_wheel_font",
+      "from_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "to_id": "zmode-height",
+      "to_label": "↕ Выс.",
+      "count": 1
+    },
+    "zmode-height>>>hotkey:nav_page_next": {
+      "from_id": "zmode-height",
+      "from_label": "↕ Выс.",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 1
+    },
+    "hotkey:nav_page_next>>>btn-draw-region": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "btn-draw-region",
+      "to_label": "➕ Обвести",
+      "count": 1
+    },
+    "btn-draw-region>>>canvas:manual_draw_vlm": {
+      "from_id": "btn-draw-region",
+      "from_label": "➕ Обвести",
+      "to_id": "canvas:manual_draw_vlm",
+      "to_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "count": 2
+    },
+    "canvas:manual_draw_vlm>>>saveFromInlinePopup": {
+      "from_id": "canvas:manual_draw_vlm",
+      "from_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "to_id": "saveFromInlinePopup",
+      "to_label": "💾 Применить",
+      "count": 1
+    },
+    "saveFromInlinePopup>>>closeInlineBubblePopup": {
+      "from_id": "saveFromInlinePopup",
+      "from_label": "💾 Применить",
+      "to_id": "closeInlineBubblePopup",
+      "to_label": "✕ (Закрыть попап)",
+      "count": 9
+    },
+    "closeInlineBubblePopup>>>hotkey:nav_page_next": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 7
+    },
+    "hotkey:nav_page_next>>>bbox-pin-del": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 20
+    },
+    "bbox-pin-del>>>hotkey:nav_page_next": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 16
+    },
+    "hotkey:nav_page_next>>>canvas:pin_click": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 2
+    },
+    "canvas:pin_click>>>popup-del-btn": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "popup-del-btn",
+      "to_label": "🗑 Удалить рамку",
+      "count": 2
+    },
+    "popup-del-btn>>>canvas:pin_click": {
+      "from_id": "popup-del-btn",
+      "from_label": "🗑 Удалить рамку",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 1
+    },
+    "canvas:pin_click>>>text_edit:inline_popup": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "text_edit:inline_popup",
+      "to_label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
+      "count": 1
+    },
+    "text_edit:inline_popup>>>saveFromInlinePopup": {
+      "from_id": "text_edit:inline_popup",
+      "from_label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
+      "to_id": "saveFromInlinePopup",
+      "to_label": "💾 Применить",
+      "count": 2
+    },
+    "closeInlineBubblePopup>>>btn-draw-region": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "btn-draw-region",
+      "to_label": "➕ Обвести",
+      "count": 1
+    },
+    "canvas:manual_draw_vlm>>>bbox-pin-del": {
+      "from_id": "canvas:manual_draw_vlm",
+      "from_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "bbox-pin-del>>>text_edit:inline_popup": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "text_edit:inline_popup",
+      "to_label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
+      "count": 1
+    },
+    "closeInlineBubblePopup>>>bbox-pin-del": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 5
+    },
+    "bbox-pin-del>>>canvas:pin_click": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 12
+    },
+    "canvas:pin_click>>>closeInlineBubblePopup": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "closeInlineBubblePopup",
+      "to_label": "✕ (Закрыть попап)",
+      "count": 6
+    },
+    "bbox-pin-del>>>hotkey:nav_page_prev": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "hotkey:nav_page_prev",
+      "to_label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 1
+    },
+    "hotkey:nav_page_prev>>>hotkey:nav_page_next": {
+      "from_id": "hotkey:nav_page_prev",
+      "from_label": "Клавиша A / ← (Предыдущая страница)",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 1
+    },
+    "popup-del-btn>>>bbox-pin-del": {
+      "from_id": "popup-del-btn",
+      "from_label": "🗑 Удалить рамку",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "hotkey:nav_page_next>>>btn-contextual-page": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "btn-contextual-page",
+      "to_label": "🎯 Перевести только стр. #21 (21.jpg)",
+      "count": 2
+    },
+    "btn-contextual-page>>>sel-source-lang": {
+      "from_id": "btn-contextual-page",
+      "from_label": "🎯 Перевести только стр. #19 (19.jpg)",
+      "to_id": "sel-source-lang",
+      "to_label": "Выбор в списке [sel-source-lang]: 🇯🇵 Японский (Манга)",
+      "count": 1
+    },
+    "sel-source-lang>>>stab-btn-font": {
+      "from_id": "sel-source-lang",
+      "from_label": "Выбор в списке [sel-source-lang]: 🇯🇵 Японский (Манга)",
+      "to_id": "stab-btn-font",
+      "to_label": "🔤 Шрифт и Сохранение",
+      "count": 1
+    },
+    "stab-btn-font>>>saveSettingsAndClose": {
+      "from_id": "stab-btn-font",
+      "from_label": "🔤 Шрифт и Сохранение",
+      "to_id": "saveSettingsAndClose",
+      "to_label": "✅ Сохранить настройки",
+      "count": 2
+    },
+    "saveSettingsAndClose>>>bbox-pin-del": {
+      "from_id": "saveSettingsAndClose",
+      "from_label": "✅ Сохранить настройки",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "canvas:pin_click>>>btn:🎨 Стиль, Шрифт и Поворот Ди": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "btn:🎨 Стиль, Шрифт и Поворот Ди",
+      "to_label": "🎨 Стиль, Шрифт и Поворот Диалог · 0°",
+      "count": 1
+    },
+    "btn:🎨 Стиль, Шрифт и Поворот Ди>>>popup-stroke-width": {
+      "from_id": "btn:🎨 Стиль, Шрифт и Поворот Ди",
+      "from_label": "🎨 Стиль, Шрифт и Поворот Диалог · 0°",
+      "to_id": "popup-stroke-width",
+      "to_label": "Выбор в списке [popup-stroke-width]: 4 px",
+      "count": 1
+    },
+    "popup-stroke-width>>>saveFromInlinePopup": {
+      "from_id": "popup-stroke-width",
+      "from_label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "to_id": "saveFromInlinePopup",
+      "to_label": "💾 Применить",
+      "count": 2
+    },
+    "closeInlineBubblePopup>>>canvas:pin_click": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 3
+    },
+    "canvas:pin_click>>>popup-stroke-width": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "popup-stroke-width",
+      "to_label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "count": 4
+    },
+    "canvas:pin_click>>>bbox-pin-del": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 3
+    },
+    "popup-stroke-width>>>select:font-size-override": {
+      "from_id": "popup-stroke-width",
+      "from_label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "to_id": "select:font-size-override",
+      "to_label": "Выбор размера шрифта из списка (22 px)",
+      "count": 4
+    },
+    "select:font-size-override>>>saveFromInlinePopup": {
+      "from_id": "select:font-size-override",
+      "from_label": "Выбор размера шрифта из списка (22 px)",
+      "to_id": "saveFromInlinePopup",
+      "to_label": "💾 Применить",
+      "count": 5
+    },
+    "btn-contextual-page>>>bbox-pin-del": {
+      "from_id": "btn-contextual-page",
+      "from_label": "🎯 Перевести только стр. #21 (21.jpg)",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "saveFromInlinePopup>>>select:font-size-override": {
+      "from_id": "saveFromInlinePopup",
+      "from_label": "💾 Применить",
+      "to_id": "select:font-size-override",
+      "to_label": "Выбор размера шрифта из списка (20 px)",
+      "count": 1
+    },
+    "canvas:pin_click>>>canvas:pin_wheel_font": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "canvas:pin_wheel_font",
+      "to_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "count": 1
+    },
+    "canvas:pin_wheel_font>>>bbox-pin-save": {
+      "from_id": "canvas:pin_wheel_font",
+      "from_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "to_id": "bbox-pin-save",
+      "to_label": "💾 Сохранить прямо на рамке #N",
+      "count": 1
+    },
+    "bbox-pin-save>>>closeInlineBubblePopup": {
+      "from_id": "bbox-pin-save",
+      "from_label": "💾 Сохранить прямо на рамке #N",
+      "to_id": "closeInlineBubblePopup",
+      "to_label": "✕ (Закрыть попап)",
+      "count": 1
+    },
+    "bbox-pin-del>>>page-row-select": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 2
+    },
+    "page-row-select>>>canvas:pin_wheel_font": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "canvas:pin_wheel_font",
+      "to_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "count": 1
+    },
+    "canvas:pin_wheel_font>>>bbox-pin-del": {
+      "from_id": "canvas:pin_wheel_font",
+      "from_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "page-row-select>>>bbox-pin-del": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "bbox-pin-del>>>viewChapterTranslationReport": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "viewChapterTranslationReport",
+      "to_label": "📋 Отчет главы",
+      "count": 1
+    },
+    "viewChapterTranslationReport>>>copyDiagnosticsReportToClipboard": {
+      "from_id": "viewChapterTranslationReport",
+      "from_label": "📋 Отчет главы",
+      "to_id": "copyDiagnosticsReportToClipboard",
+      "to_label": "📋 Скопировать отчет для чата (в 1 клик)",
+      "count": 1
+    },
+    "copyDiagnosticsReportToClipboard>>>toggleSettingsModal": {
+      "from_id": "copyDiagnosticsReportToClipboard",
+      "from_label": "📋 Скопировать отчет для чата (в 1 клик)",
+      "to_id": "toggleSettingsModal",
+      "to_label": "✕ Закрыть (Esc)",
+      "count": 1
+    },
+    "toggleSettingsModal>>>openSettingsOnTab": {
+      "from_id": "toggleSettingsModal",
+      "from_label": "✕ Закрыть (Esc)",
+      "to_id": "openSettingsOnTab",
+      "to_label": "🩺 Диагностика",
+      "count": 1
+    },
+    "openSettingsOnTab>>>stab-btn-font": {
+      "from_id": "openSettingsOnTab",
+      "from_label": "🩺 Диагностика",
+      "to_id": "stab-btn-font",
+      "to_label": "🔤 Шрифт и Сохранение",
+      "count": 1
+    },
+    "saveSettingsAndClose>>>toggleSettingsModal": {
+      "from_id": "saveSettingsAndClose",
+      "from_label": "✅ Сохранить настройки",
+      "to_id": "toggleSettingsModal",
+      "to_label": "✕ Закрыть (Esc)",
+      "count": 1
+    },
+    "pickFolderDialog>>>openSettingsOnTab": {
+      "from_id": "pickFolderDialog",
+      "from_label": "📁 Выбрать папку",
+      "to_id": "openSettingsOnTab",
+      "to_label": "⚙️ Настройки",
+      "count": 1
+    },
+    "openSettingsOnTab>>>toggleSettingsModal": {
+      "from_id": "openSettingsOnTab",
+      "from_label": "⚙️ Настройки",
+      "to_id": "toggleSettingsModal",
+      "to_label": "✕ Закрыть (Esc)",
+      "count": 1
+    },
+    "toggleSettingsModal>>>sel-source-lang": {
+      "from_id": "toggleSettingsModal",
+      "from_label": "✕ Закрыть (Esc)",
+      "to_id": "sel-source-lang",
+      "to_label": "Выбор в списке [sel-source-lang]: 🇯🇵 Японский (Манга)",
+      "count": 1
+    },
+    "sel-source-lang>>>zmode-height": {
+      "from_id": "sel-source-lang",
+      "from_label": "Выбор в списке [sel-source-lang]: 🇯🇵 Японский (Манга)",
+      "to_id": "zmode-height",
+      "to_label": "↕ Выс.",
+      "count": 1
+    },
+    "zmode-height>>>btn-primary-folder": {
+      "from_id": "zmode-height",
+      "from_label": "↕ Выс.",
+      "to_id": "btn-primary-folder",
+      "to_label": "▶ Перевести всю папку (170 стр.)",
+      "count": 1
+    },
+    "btn-primary-folder>>>openSettingsOnTab": {
+      "from_id": "btn-primary-folder",
+      "from_label": "▶ Перевести всю папку (170 стр.)",
+      "to_id": "openSettingsOnTab",
+      "to_label": "⚙️ Настройки",
+      "count": 1
+    },
+    "openSettingsOnTab>>>stab-btn-ui": {
+      "from_id": "openSettingsOnTab",
+      "from_label": "⚙️ Настройки",
+      "to_id": "stab-btn-ui",
+      "to_label": "🎨 Интерфейс и Редактор",
+      "count": 1
+    },
+    "stab-btn-ui>>>stab-btn-filter": {
+      "from_id": "stab-btn-ui",
+      "from_label": "🎨 Интерфейс и Редактор",
+      "to_id": "stab-btn-filter",
+      "to_label": "📊 Фильтр текста и SFX",
+      "count": 1
+    },
+    "stab-btn-filter>>>toggleSettingsModal": {
+      "from_id": "stab-btn-filter",
+      "from_label": "📊 Фильтр текста и SFX",
+      "to_id": "toggleSettingsModal",
+      "to_label": "✕ Закрыть (Esc)",
+      "count": 1
+    }
+  },
+  "dwell_sec": {
+    "dock_right": 1441.0,
+    "dock_bottom": 0.0,
+    "dock_floating": 0.0,
+    "view_split": 1441.0,
+    "view_translated": 0.0,
+    "view_original": 0.0,
+    "edit_in_popup": 2.0,
+    "edit_in_drawer": 0.0
+  },
+  "last_action_key": "toggleSettingsModal",
+  "last_action_label": "✕ Закрыть (Esc)",
+  "last_action_ts": 1792740225.2527568,
+  "recent_events": [
+    {
+      "time": "14:10:57",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:11:09",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:11:13",
+      "type": "button_click",
+      "action_id": "btn-contextual-page",
+      "label": "🎯 Перевести только стр. #21 (21.jpg)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "14:11:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:11:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:11:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:11:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:11:33",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:11:37",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:11:49",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:11:53",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:11:57",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:05",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:33",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:12:41",
+      "type": "control_change",
+      "action_id": "popup-stroke-width",
+      "label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:12:49",
+      "type": "control_change",
+      "action_id": "select:font-size-override",
+      "label": "Выбор размера шрифта из списка (16 px)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:12:53",
+      "type": "button_click",
+      "action_id": "saveFromInlinePopup",
+      "label": "💾 Применить",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:12:57",
+      "type": "control_change",
+      "action_id": "select:font-size-override",
+      "label": "Выбор размера шрифта из списка (20 px)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:13:01",
+      "type": "button_click",
+      "action_id": "saveFromInlinePopup",
+      "label": "💾 Применить",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:13:01",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:13:13",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:13:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:13:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:09",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:14:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:17",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:37",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:41",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:14:41",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:45",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:45",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:53",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:53",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:53",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:14:57",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:01",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:05",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:05",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:15:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:13",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:17",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:16:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:16:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:37",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:37",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:41",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:45",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:53",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:53",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:16:57",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:17:05",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:21",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:17:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:37",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:41",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:41",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:41",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:45",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:45",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:53",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:17:57",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:17:57",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:01",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:01",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:13",
+      "type": "control_change",
+      "action_id": "popup-stroke-width",
+      "label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:18:17",
+      "type": "control_change",
+      "action_id": "select:font-size-override",
+      "label": "Выбор размера шрифта из списка (20 px)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:18:21",
+      "type": "button_click",
+      "action_id": "saveFromInlinePopup",
+      "label": "💾 Применить",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:18:21",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:18:29",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:29",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-save",
+      "label": "💾 Сохранить прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:37",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:18:53",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:18:57",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:19:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:19:05",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:19:05",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:19:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:19:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:19:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:19:17",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:19:21",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:09",
+      "type": "control_change",
+      "action_id": "popup-stroke-width",
+      "label": "Выбор в списке [popup-stroke-width]: 8 px",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:20:13",
+      "type": "control_change",
+      "action_id": "select:font-size-override",
+      "label": "Выбор размера шрифта из списка (22 px)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:20:17",
+      "type": "button_click",
+      "action_id": "saveFromInlinePopup",
+      "label": "💾 Применить",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:20:21",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "14:20:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:33",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:37",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "14:20:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:49",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:20:53",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:05",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "14:21:05",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:09",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:13",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:21",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "14:21:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:25",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:29",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "14:21:33",
+      "type": "button_click",
+      "action_id": "viewChapterTranslationReport",
+      "label": "📋 Отчет главы",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "14:21:57",
+      "type": "button_click",
+      "action_id": "copyDiagnosticsReportToClipboard",
+      "label": "📋 Скопировать отчет для чата (в 1 клик)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "14:22:05",
+      "type": "button_click",
+      "action_id": "toggleSettingsModal",
+      "label": "✕ Закрыть (Esc)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "14:22:09",
+      "type": "button_click",
+      "action_id": "openSettingsOnTab",
+      "label": "🩺 Диагностика",
+      "zone": "topbar"
+    },
+    {
+      "time": "14:22:17",
+      "type": "button_click",
+      "action_id": "stab-btn-font",
+      "label": "🔤 Шрифт и Сохранение",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "14:22:21",
+      "type": "button_click",
+      "action_id": "saveSettingsAndClose",
+      "label": "✅ Сохранить настройки",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "14:22:29",
+      "type": "button_click",
+      "action_id": "toggleSettingsModal",
+      "label": "✕ Закрыть (Esc)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "10:22:05",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "10:22:17",
+      "type": "button_click",
+      "action_id": "openSettingsOnTab",
+      "label": "⚙️ Настройки",
+      "zone": "topbar"
+    },
+    {
+      "time": "10:22:33",
+      "type": "button_click",
+      "action_id": "toggleSettingsModal",
+      "label": "✕ Закрыть (Esc)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "10:22:45",
+      "type": "control_change",
+      "action_id": "sel-source-lang",
+      "label": "Выбор в списке [sel-source-lang]: 🇯🇵 Японский (Манга)",
+      "zone": "topbar"
+    },
+    {
+      "time": "10:22:53",
+      "type": "button_click",
+      "action_id": "zmode-height",
+      "label": "↕ Выс.",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "10:23:09",
+      "type": "button_click",
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (170 стр.)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "10:23:17",
+      "type": "button_click",
+      "action_id": "openSettingsOnTab",
+      "label": "⚙️ Настройки",
+      "zone": "topbar"
+    },
+    {
+      "time": "10:23:21",
+      "type": "button_click",
+      "action_id": "stab-btn-ui",
+      "label": "🎨 Интерфейс и Редактор",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "10:23:33",
+      "type": "button_click",
+      "action_id": "stab-btn-filter",
+      "label": "📊 Фильтр текста и SFX",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "10:23:45",
+      "type": "button_click",
+      "action_id": "toggleSettingsModal",
+      "label": "✕ Закрыть (Esc)",
+      "zone": "settings_modal"
+    }
+  ]
+}

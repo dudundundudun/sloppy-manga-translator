@@ -2466,6 +2466,7 @@
             <button class="pill-btn" id="btn-floating-romaji" onclick="onFloatingRomajiClick()" title="Показать чтение японского текста латиницей (Ромадзи)">🔤 Ромадзи</button>
             <button class="pill-btn" onclick="openOutputFolder()" title="Открыть папку с готовым переводом в Проводнике">📂 Папка</button>
             <button class="pill-btn" onclick="viewChapterTranslationReport(true)" title="Открыть подробный диагностический отчет перевода текущей главы (TRANSLATION_REPORT.txt — модели, параметры, воронка блоков, почему не переведены страницы/текст, отказы API)">📋 Отчет главы</button>
+            <button class="pill-btn" onclick="viewUxTelemetryReport(true)" title="Открыть отчет UX-телеметрии (UX_USAGE_REPORT.txt — какие кнопки и функции вы нажимаете чаще всего, цепочки действий и рекомендации для удобного дизайна)">📊 Мои клики (UX)</button>
           </div>
         </div>
 
@@ -2965,6 +2966,27 @@
               <input id="chk-ui-compact-mascot" type="checkbox" onchange="onUiSettingCheckboxChange()" />
             </label>
 
+          <div class="section-box" style="border-color:rgba(52, 211, 153, 0.38);">
+            <div class="section-title">
+              <span style="color:var(--mint);">📊 3. Умный трекер ваших кликов и привычек (UX-Телеметрия для редизайна)</span>
+              <span id="ux-mini-counter-badge" style="font-size:11.5px; color:var(--sakura);">Записано действий: 0</span>
+            </div>
+            <div class="section-desc">
+              Программа в фоновом режиме фиксирует, какие кнопки вы нажимаете чаще всего, какими функциями пользуетесь (попап у кружка vs боковой список, перетаскивание рамок, колесико шрифта, подложка, кисть ретуши, хоткеи), какие действия делаете подряд и какие кнопки не трогаете вообще. Все данные сохраняются в <b>logs/UX_USAGE_REPORT.txt</b>.
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px;">
+              <button type="button" class="cta-main" style="width:auto; padding:8px 16px; font-size:12px;" onclick="viewUxTelemetryReport(true)">
+                📊 Открыть и скопировать UX-Отчет моих кликов
+              </button>
+              <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="openUxReportInNotepad()">
+                📝 Открыть UX_USAGE_REPORT.txt в Блокноте
+              </button>
+              <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="clearUxTelemetryInStudio()">
+                🧹 Начать замер заново
+              </button>
+            </div>
+          </div>
+
             <label class="toggle-row">
               <div class="toggle-row-text">
                 <span class="toggle-row-title">🖌 Показывать инструменты «Живая кисть замазки (B)» и «Замазка (dilate)»</span>
@@ -3228,6 +3250,15 @@
               </button>
               <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openChapterReportInNotepad()" title="Открыть файл TRANSLATION_REPORT.txt из папки переведенной манги напрямую в Блокноте Windows">
                 📝 Открыть в Блокноте
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px; border-color:rgba(244, 114, 182, 0.55); color:#f9a8d4;" onclick="viewUxTelemetryReport(false)" title="Сформировать, скопировать в буфер обмена и показать полный отчет UX_USAGE_REPORT.txt (какие кнопки и функции вы используете чаще всего)">
+                📊 UX-Отчет (Какие кнопки я жму)
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openUxReportInNotepad()" title="Открыть файл logs/UX_USAGE_REPORT.txt в Блокноте Windows">
+                📝 UX-Отчет в Блокноте
+              </button>
+              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="clearUxTelemetryInStudio()" title="Обнулить статистику нажатий кнопок UX, чтобы начать чистый замер">
+                🔄 Сброс UX-кликов
               </button>
               <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="loadDiagnosticsPanel()">
                 🔄 Обновить
@@ -7525,6 +7556,13 @@
       if (activeMaskStrokeState) {
         const st = activeMaskStrokeState;
         activeMaskStrokeState = null;
+        recordUxEvent(
+          "canvas_action",
+          st.mode === "erase" ? "canvas:live_brush_erase" : "canvas:live_brush_add",
+          st.mode === "erase" ? "🎨 Мазок живой кистью: возврат оригинального рисунка (ПКМ)" : "🧹 Мазок живой кистью: замазка остатков текста (ЛКМ)",
+          "viewer_stage_pin",
+          { feature_key: "act:live_mask_brush" }
+        );
         if (st.startSnapshot) {
           pushPageHistorySnapshot(st.startSnapshot);
         }
@@ -7556,6 +7594,13 @@
       }
 
       toggleDrawRegionMode(false);
+      recordUxEvent(
+        "canvas_action",
+        useVlmForManualDraw ? "canvas:manual_draw_vlm" : "canvas:manual_draw_region",
+        useVlmForManualDraw ? "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)" : "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
+        "viewer_stage_pin",
+        { feature_key: useVlmForManualDraw ? "act:vlm_ocr_sniper" : "act:manual_draw_region" }
+      );
       await translateManualRegionOnPage([x1, y1, x2, y2]);
     });
 
@@ -8258,6 +8303,7 @@
                 pushPageHistorySnapshot(wheelHistorySnapshot);
                 wheelHistorySnapshot = null;
               }
+              recordUxEvent("canvas_action", "canvas:pin_wheel_font", "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N", "viewer_stage_pin", { feature_key: "act:pin_wheel_font" });
               pin.classList.remove("wheeling-pin");
               highlightBlock(b.id, false);
               updateSingleBlockCardControls(b.id);
@@ -8358,8 +8404,14 @@
       });
 
       if (!st.hasMoved) {
+        recordUxEvent("canvas_action", "canvas:pin_click", ev.shiftKey ? "Shift+Клик по рамке #N на странице (мульти-выбор)" : "Клик по рамке #N прямо на странице манги", "viewer_stage_pin", { feature_key: "act:pin_click" });
         onPinClicked(st.blockId, st.pinEl, ev);
         return;
+      }
+      if (st.mode === "resize") {
+        recordUxEvent("canvas_action", "canvas:pin_resize", "📐 Растягивание рамки #N за края/уголки мышкой", "viewer_stage_pin", { feature_key: "act:pin_resize" });
+      } else {
+        recordUxEvent("canvas_action", "canvas:pin_move", "✋ Перетаскивание рамки #N мышкой по странице", "viewer_stage_pin", { feature_key: "act:pin_move" });
       }
 
       if (st.startHistorySnapshot) {
@@ -8951,6 +9003,362 @@
         closeInlineBubblePopup();
       }
     });
+
+
+    /* ==================== 📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ КЛИКОВ ПОЛЬЗОВАТЕЛЯ ==================== */
+    let uxEventQueue = [];
+    let uxLastInteractionTs = Date.now();
+    let uxActiveBatchSec = 0;
+    let uxTotalLocalEvents = 0;
+    let uxTextEditDebounceMap = {};
+
+    function detectUxZone(el) {
+      if (!el || !el.closest) return "other";
+      if (el.closest("#inline-bubble-popup")) return "inline_popup";
+      if (el.closest("#floating-brush-toolbar")) return "floating_brush_bar";
+      if (el.closest("#settings-modal")) return "settings_modal";
+      if (el.closest(".bbox-pin")) return "viewer_stage_pin";
+      if (el.closest("#viewer-stage")) return "viewer_stage_pin";
+      if (el.closest(".viewer-toolbar")) return "viewer_toolbar";
+      if (el.closest(".editor-header-row")) return "editor_drawer_header";
+      if (el.closest(".editor-sub-toolbar")) return "editor_drawer_subbar";
+      if (el.closest(".block-edit-card") || el.closest("#blocks-container")) return "editor_drawer_card";
+      if (el.closest("#text-drawer")) return "editor_drawer_header";
+      if (el.closest("#bento-left")) return "left_sidebar";
+      if (el.closest(".topbar")) return "topbar";
+      return "other";
+    }
+
+    function inferFeatureKey(actionId, el) {
+      const id = String(actionId || "").toLowerCase();
+      if (id.includes("save-page") || id.includes("savefrominlinepopup") || id.includes("pin-save") || id === "hotkey:ctrl+s") return "act:save_page";
+      if (id.includes("undo")) return "act:undo";
+      if (id.includes("redo")) return "act:redo";
+      if (id.includes("prev-page") || id.includes("next-page") || id.includes("nav_page")) return "act:nav_prev_next";
+      if (id.includes("vmode-")) return "act:view_mode_switch";
+      if (id.includes("hold_compare")) return "act:hold_compare_space";
+      if (id.includes("zmode-") || id.includes("zoom")) return "act:zoom_controls";
+      if (id === "canvas:pin_click") return "act:pin_click";
+      if (id === "canvas:pin_move") return "act:pin_move";
+      if (id === "canvas:pin_resize") return "act:pin_resize";
+      if (id === "canvas:pin_wheel_font" || id.includes("fs-select") || id.startsWith("edit-fs-")) return "act:pin_wheel_font";
+      if (id.includes("draw-region") || id === "canvas:manual_draw_region") return "act:manual_draw_region";
+      if (id.includes("vlm")) return "act:vlm_ocr_sniper";
+      if (id.includes("merge")) return "act:merge_blocks";
+      if (id.includes("split")) return "act:split_block";
+      if (id.includes("del-btn") || id.includes("removeblockframe") || id.includes("delete-block") || id === "hotkey:delete") return "act:delete_block_frame";
+      if (id.includes("clear-btn") || id.includes("clearblocktext")) return "act:clear_block_text";
+      if (id.includes("retranslate")) return "act:retranslate_single_block";
+      if (id.includes("page-all-bg")) return "act:page_all_bg";
+      if (id.includes("bg-style") || id.includes("edit-bg-") || id.includes("popup-bg-")) return "act:bg_style_backing";
+      if (id.includes("preset-")) return "act:style_preset";
+      if (id.includes("font-family")) return "act:font_family_change";
+      if (id.includes("align-")) return "act:text_align_change";
+      if (id.includes("text-color") || id.includes("stroke-color") || id.includes("stroke-width")) return "act:text_color_stroke";
+      if (id.includes("angle")) return "act:text_angle_rotate";
+      if (id.includes("symbol")) return "act:special_symbols_insert";
+      if (id.includes("mask-brush") || id.includes("fbrush-") || id.includes("edit-brush-") || id.startsWith("canvas:live_brush")) return "act:live_mask_brush";
+      if (id.includes("dilate")) return "act:mask_dilate_slider";
+      if (id.includes("romaji")) return "act:romaji_toggle_or_ai";
+      if (id.includes("gloss")) return "act:glossary_manage";
+      if (id.includes("find-replace") || id.includes("find_replace") || id === "hotkey:ctrl+f") return "act:folder_find_replace";
+      if (id.includes("dock-")) return "act:dock_mode_switch";
+      if (id.includes("toggle-sidebar") || id.includes("wide-mode") || id === "hotkey:bracket_sidebar") return "act:toggle_left_sidebar";
+      return null;
+    }
+
+    function recordUxEvent(eventType, actionId, label, zone = "other", extra = {}) {
+      uxLastInteractionTs = Date.now();
+      uxTotalLocalEvents++;
+      const badge = document.getElementById("ux-mini-counter-badge");
+      if (badge) {
+        badge.textContent = `Записано действий в сессии: ${uxTotalLocalEvents}`;
+      }
+      const featKey = extra.feature_key || inferFeatureKey(actionId, null);
+      uxEventQueue.push({
+        event_type: eventType,
+        action_id: String(actionId || "action").slice(0, 80),
+        label: String(label || actionId || "Действие").replace(/\s+/g, " ").trim().slice(0, 110),
+        zone: zone || "other",
+        feature_key: featKey,
+        hotkey: extra.hotkey || null,
+        meta: extra.meta || null,
+        timestamp_ms: Date.now()
+      });
+      if (uxEventQueue.length >= 18) {
+        flushUxTelemetryQueue();
+      }
+    }
+
+    async function flushUxTelemetryQueue(useBeacon = false) {
+      if (uxEventQueue.length === 0 && uxActiveBatchSec < 2) return;
+      const batchEvents = uxEventQueue.splice(0, uxEventQueue.length);
+      const elapsedSec = Math.round(uxActiveBatchSec * 10) / 10;
+      uxActiveBatchSec = 0;
+
+      const payloadObj = {
+        events: batchEvents,
+        active_dock_mode: uiSettings.editor_dock_mode || "right",
+        active_view_mode: viewMode || "split",
+        elapsed_active_sec: elapsedSec
+      };
+
+      if (useBeacon && navigator.sendBeacon) {
+        try {
+          const blob = new Blob([JSON.stringify(payloadObj)], { type: "application/json" });
+          navigator.sendBeacon("/ux_telemetry/record", blob);
+          return;
+        } catch (e) {}
+      }
+
+      try {
+        await fetch("/ux_telemetry/record", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payloadObj)
+        });
+      } catch (e) {}
+    }
+
+    // Периодический тик активного времени (раз в 1 сек проверяет, работал ли пользователь последние 20 сек, и раз в 4 сек отправляет батч)
+    setInterval(() => {
+      if (Date.now() - uxLastInteractionTs <= 20000) {
+        uxActiveBatchSec += 1.0;
+      }
+    }, 1000);
+
+    setInterval(() => {
+      flushUxTelemetryQueue(false);
+    }, 4000);
+
+    window.addEventListener("visibilitychange", () => {
+      if (document.visibilityState === "hidden") {
+        flushUxTelemetryQueue(true);
+      }
+    });
+    window.addEventListener("beforeunload", () => {
+      flushUxTelemetryQueue(true);
+    });
+
+    // Глобальный перехватчик кликов по всем кнопкам, карточкам, переключателям, пресетам и символам
+    document.addEventListener("click", (e) => {
+      const target = e.target;
+      if (!target || !target.closest) return;
+
+      const clickable = target.closest(
+        "button, .choice-card, .page-row, .settings-tab-btn, .block-id-badge, .find-result-row, summary"
+      );
+      if (!clickable) return;
+
+      const zone = detectUxZone(clickable);
+      let actId = clickable.id || "";
+      let label = (clickable.textContent || "").replace(/\s+/g, " ").trim();
+      const titleAttr = (clickable.getAttribute("title") || "").trim();
+      const onclickAttr = (clickable.getAttribute("onclick") || "").trim();
+
+      if (clickable.classList.contains("page-row")) {
+        actId = "page-row-select";
+        label = "Выбор страницы в списке главы слева";
+      } else if (clickable.classList.contains("block-id-badge")) {
+        actId = "block-badge-focus";
+        label = "Клик по бейджу #N для центровки на кружке";
+      } else if (clickable.classList.contains("bbox-pin-save")) {
+        actId = "bbox-pin-save";
+        label = "💾 Сохранить прямо на рамке #N";
+      } else if (clickable.classList.contains("bbox-pin-reset")) {
+        actId = "bbox-pin-reset";
+        label = "↺ Сбросить положение рамки #N на холсте";
+      } else if (clickable.classList.contains("bbox-pin-del")) {
+        actId = "bbox-pin-del";
+        label = "🗑 Удалить рамку #N кнопкой на самой рамке";
+      } else if (onclickAttr.includes("insertSymbolIntoBlock")) {
+        actId = `insert-symbol-${label}`;
+        label = `Вставка спецсимвола «${label}»`;
+      } else if (onclickAttr.includes("setBlockBgStyle")) {
+        const bgArg = clickable.dataset.bg || label;
+        actId = `bg-style-${bgArg}`;
+        label = `Подложка под текстом: ${label}`;
+      } else if (onclickAttr.includes("applyBlockStylePreset")) {
+        const prArg = clickable.dataset.preset || label;
+        actId = `preset-${prArg}`;
+        label = `Пресет стиля: ${label}`;
+      } else if (!actId) {
+        if (onclickAttr) {
+          actId = onclickAttr.split("(")[0].replace(/[^a-zA-Z0-9_-]/g, "");
+        } else {
+          actId = "btn:" + label.slice(0, 28);
+        }
+      }
+
+      // Нормализуем динамические ID карточек блоков (например edit-bg-3-bubble -> edit-bg-bubble)
+      actId = actId.replace(/-(?:\d+)-/g, "-").replace(/-(?:\d+)$/, "");
+
+      if (!label && titleAttr) {
+        label = titleAttr.slice(0, 60);
+      }
+      if (titleAttr && label.length <= 4) {
+        label = `${label} (${titleAttr.split("(")[0].trim().slice(0, 48)})`;
+      }
+
+      recordUxEvent("button_click", actId, label, zone);
+    }, true);
+
+    // Глобальный перехватчик изменений <select>, <input type="checkbox">, <input type="range">, <input type="color">
+    document.addEventListener("change", (e) => {
+      const el = e.target;
+      if (!el || !el.tagName) return;
+      const tag = el.tagName.toUpperCase();
+      if (tag !== "SELECT" && tag !== "INPUT") return;
+      if (tag === "INPUT" && ["text", "password"].includes(el.type)) return;
+
+      const zone = detectUxZone(el);
+      let actId = (el.id || el.className || "control").replace(/-(?:\d+)$/, "");
+      let label = "";
+
+      if (tag === "SELECT") {
+        const selOpt = el.options && el.options[el.selectedIndex] ? el.options[el.selectedIndex].textContent.trim() : el.value;
+        if (actId.includes("edit-fs") || actId.includes("popup-fs")) {
+          actId = "select:font-size-override";
+          label = `Выбор размера шрифта из списка (${selOpt})`;
+        } else if (actId.includes("font-family")) {
+          actId = "select:font-family";
+          label = `Смена шрифта блока (${selOpt})`;
+        } else {
+          label = `Выбор в списке [${actId}]: ${selOpt}`;
+        }
+      } else if (el.type === "checkbox") {
+        const rowTitle = el.closest(".toggle-row")?.querySelector(".toggle-row-title")?.textContent?.trim();
+        label = `Переключатель: ${rowTitle || actId} -> ${el.checked ? "ВКЛ" : "ВЫКЛ"}`;
+      } else if (el.type === "range") {
+        if (actId.includes("dilate")) {
+          actId = "slider:mask-dilate";
+          label = `Ползунок толщины замазки (dilate = ${el.value}px)`;
+        } else if (actId.includes("angle")) {
+          actId = "slider:text-angle";
+          label = `Ползунок поворота текста (${el.value}°)`;
+        } else if (actId.includes("bg-pad")) {
+          actId = "slider:bg-padding";
+          label = `Ползунок запаса подложки (${el.value}px)`;
+        } else if (actId.includes("radius")) {
+          actId = "slider:brush-radius";
+          label = `Ползунок радиуса живой кисти (${el.value}px)`;
+        } else {
+          label = `Ползунок [${actId}]: ${el.value}`;
+        }
+      } else if (el.type === "color") {
+        label = `Выбор цвета [${actId}]: ${el.value}`;
+      }
+
+      if (label) {
+        recordUxEvent("control_change", actId, label, zone);
+      }
+    }, true);
+
+    // Отслеживание ввода текста в попапе vs в карточке боковой панели (с дебаунсом 2.5 сек на блок)
+    document.addEventListener("input", (e) => {
+      const el = e.target;
+      if (!el || el.tagName !== "TEXTAREA") return;
+      if (el.id !== "popup-textarea" && !el.id?.startsWith("edit-ta-")) return;
+      const isPopup = el.id === "popup-textarea";
+      const key = isPopup ? "popup" : "drawer";
+      const now = Date.now();
+      if (!uxTextEditDebounceMap[key] || (now - uxTextEditDebounceMap[key]) > 2500) {
+        uxTextEditDebounceMap[key] = now;
+        recordUxEvent(
+          "text_edit",
+          isPopup ? "text_edit:inline_popup" : "text_edit:drawer_card",
+          isPopup ? "✍️ Ввод текста перевода во всплывающем попапе у кружка" : "✍️ Ввод текста перевода в карточке боковой панели",
+          isPopup ? "inline_popup" : "editor_drawer_card"
+        );
+      }
+    }, true);
+
+    // Отслеживание использования горячих клавиш (Hotkeys)
+    document.addEventListener("keydown", (e) => {
+      const activeEl = document.activeElement;
+      const inInput = ["INPUT", "TEXTAREA", "SELECT"].includes(activeEl?.tagName);
+      const modalOpen = document.getElementById("settings-modal")?.classList.contains("open");
+      if (modalOpen) return;
+
+      if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы")) {
+        recordUxEvent("hotkey_use", "hotkey:ctrl+s", "Горячая клавиша Ctrl+S (Сохранить страницу)", "keyboard_hotkey", { hotkey: "Ctrl+S", feature_key: "act:save_page" });
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && (e.key === "z" || e.key === "Z" || e.key === "я" || e.key === "Я")) {
+        recordUxEvent("hotkey_use", "hotkey:ctrl+z", "Горячая клавиша Ctrl+Z (Отменить действие)", "keyboard_hotkey", { hotkey: "Ctrl+Z", feature_key: "act:undo" });
+      } else if ((e.ctrlKey || e.metaKey) && (e.key === "y" || e.key === "Y" || e.key === "н" || e.key === "Н" || (e.shiftKey && (e.key === "z" || e.key === "Z")))) {
+        recordUxEvent("hotkey_use", "hotkey:ctrl+y", "Горячая клавиша Ctrl+Y (Повторить действие)", "keyboard_hotkey", { hotkey: "Ctrl+Y", feature_key: "act:redo" });
+      } else if ((e.ctrlKey || e.metaKey) && !e.shiftKey && ["f", "F", "h", "H", "а", "А", "р", "Р"].includes(e.key)) {
+        recordUxEvent("hotkey_use", "hotkey:ctrl+f", "Горячая клавиша Ctrl+F / Ctrl+H (Поиск и замена)", "keyboard_hotkey", { hotkey: "Ctrl+F/H", feature_key: "act:folder_find_replace" });
+      } else if (e.key === "Tab" && selectedPage && currentBlocks && currentBlocks.length > 0) {
+        recordUxEvent("hotkey_use", "hotkey:tab_cycle", e.shiftKey ? "Горячая клавиша Shift+Tab (Предыдущий кружок)" : "Горячая клавиша Tab (Следующий кружок)", "keyboard_hotkey", { hotkey: e.shiftKey ? "Shift+Tab" : "Tab" });
+      } else if (!inInput && !e.ctrlKey && !e.altKey && !e.metaKey) {
+        if ((e.code === "Space" || e.key === " " || ["v", "V", "м", "М"].includes(e.key)) && !e.repeat && selectedPage) {
+          recordUxEvent("hotkey_use", "hotkey:hold_compare", "Зажатие клавиши Space / V (Сверка с оригиналом)", "keyboard_hotkey", { hotkey: "Space / V", feature_key: "act:hold_compare_space" });
+        } else if (["b", "B", "и", "И"].includes(e.key) && selectedPage) {
+          recordUxEvent("hotkey_use", "hotkey:b_brush", "Клавиша B (Живая кисть маски)", "keyboard_hotkey", { hotkey: "B", feature_key: "act:live_mask_brush" });
+        } else if (["m", "M", "ь", "Ь"].includes(e.key) && selectedBlockIds && selectedBlockIds.size >= 2) {
+          recordUxEvent("hotkey_use", "hotkey:m_merge", "Клавиша M (Объединить выделенные рамки)", "keyboard_hotkey", { hotkey: "M", feature_key: "act:merge_blocks" });
+        } else if (e.key === "Delete" && activeBlockId !== null) {
+          recordUxEvent("hotkey_use", "hotkey:delete", "Клавиша Delete (Удалить выбранную рамку)", "keyboard_hotkey", { hotkey: "Delete", feature_key: "act:delete_block_frame" });
+        } else if (["ArrowLeft", "PageUp", "a", "A", "ф", "Ф"].includes(e.key) && selectedPage) {
+          recordUxEvent("hotkey_use", "hotkey:nav_page_prev", "Клавиша A / ← (Предыдущая страница)", "keyboard_hotkey", { hotkey: "A / ←", feature_key: "act:nav_prev_next" });
+        } else if (["ArrowRight", "PageDown", "d", "D", "в", "В"].includes(e.key) && selectedPage) {
+          recordUxEvent("hotkey_use", "hotkey:nav_page_next", "Клавиша D / → (Следующая страница)", "keyboard_hotkey", { hotkey: "D / →", feature_key: "act:nav_prev_next" });
+        } else if (e.key === "[" && !isMaskBrushMode) {
+          recordUxEvent("hotkey_use", "hotkey:bracket_sidebar", "Клавиша [ (Свернуть/развернуть левую панель)", "keyboard_hotkey", { hotkey: "[", feature_key: "act:toggle_left_sidebar" });
+        }
+      }
+    }, true);
+
+    async function viewUxTelemetryReport(openModalFirst = false) {
+      await flushUxTelemetryQueue(false);
+      if (openModalFirst) {
+        openSettingsOnTab("tab-diag");
+      }
+      try {
+        const res = await fetch("/ux_telemetry/report");
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Не удалось загрузить UX-отчет: ${data.detail || "ошибка"}`);
+          return;
+        }
+        const repTa = document.getElementById("diag-report-textarea");
+        if (repTa && data.report_text) {
+          repTa.value = data.report_text;
+          repTa.scrollTop = 0;
+        }
+        try {
+          await navigator.clipboard.writeText(data.report_text || "");
+          const badge = document.getElementById("diag-copy-badge");
+          if (badge) {
+            badge.textContent = "✅ Отчет UX-кликов (UX_USAGE_REPORT.txt) загружен и скопирован в буфер обмена!";
+            badge.style.display = "inline";
+            setTimeout(() => { badge.style.display = "none"; }, 5000);
+          }
+        } catch (e) {}
+        sayMiko("📊 Отчет твоих кликов и привычек (UX_USAGE_REPORT.txt) сформирован, открыт ниже и скопирован в буфер обмена! Просто вставь его в наш чат (Ctrl+V), и мы сделаем идеальный интерфейс под твою руку~ 🌸✨");
+      } catch (e) {
+        sayMiko(`Ошибка при формировании UX-отчета: ${e.message}`);
+      }
+    }
+
+    async function openUxReportInNotepad() {
+      await flushUxTelemetryQueue(false);
+      const res = await fetch("/ux_telemetry/open_report", { method: "POST" });
+      const data = await res.json();
+      if (res.ok) {
+        sayMiko(`Открыла файл отчета твоих кликов «${data.report_path}» в Блокноте Windows! 📝🌸`);
+      }
+    }
+
+    async function clearUxTelemetryInStudio() {
+      uxEventQueue = [];
+      uxTotalLocalEvents = 0;
+      const badge = document.getElementById("ux-mini-counter-badge");
+      if (badge) badge.textContent = "Записано действий в сессии: 0";
+      await fetch("/ux_telemetry/clear", { method: "POST" });
+      await viewUxTelemetryReport(false);
+      sayMiko("Статистика кликов UX-телеметрии сброшена! Теперь записываем твои действия с чистого листа~ 🧹✨");
+    }
 
     loadLocalUiSettings();
     setTargetLang(targetLang);

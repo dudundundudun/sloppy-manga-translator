@@ -91,6 +91,9 @@ LOGS_DIR = BASE_DIR / "logs"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 MAIN_LOG_FILE = LOGS_DIR / "miko_studio.log"
 DIAG_EVENTS_FILE = LOGS_DIR / "diagnostics_events.jsonl"
+UX_TELEMETRY_JSON_FILE = LOGS_DIR / "ux_telemetry.json"
+UX_EVENTS_JSONL_FILE = LOGS_DIR / "ux_events.jsonl"
+UX_REPORT_TXT_FILE = LOGS_DIR / "UX_USAGE_REPORT.txt"
 SERVER_STARTED_AT = time.time()
 
 _recent_log_entries: deque[dict[str, Any]] = deque(maxlen=400)
@@ -4357,6 +4360,18 @@ def _build_diagnostics_payload() -> dict[str, Any]:
             ),
         },
         "translator": trans_diag,
+        "ux_telemetry": {
+            "total_events": int(_load_ux_store().get("total_events") or 0),
+            "report_file_path": str(UX_REPORT_TXT_FILE),
+            "top_actions": [
+                {"label": a.get("label"), "count": a.get("count"), "zone": a.get("zone")}
+                for a in sorted(
+                    (_load_ux_store().get("actions") or {}).values(),
+                    key=lambda x: int(x.get("count") or 0),
+                    reverse=True,
+                )[:8]
+            ],
+        },
         "folder_job": folder_job_state,
         "recent_jobs": list(reversed(list(_recent_job_profiles)[-25:])),
         "recent_warnings_errors": list(reversed(list(_recent_warn_err_entries)[-40:])),
@@ -4832,6 +4847,16 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         for w in warns[:20]:
             lines.append(f"  {w.get('formatted')}")
 
+    ux_d = d.get("ux_telemetry") or {}
+    ux_top = ux_d.get("top_actions") or []
+    lines.append("")
+    lines.append(f"--- 📊 ТОП НАЖИМАЕМЫХ КНОПОК UX-ТЕЛЕМЕТРИИ (всего действий: {ux_d.get('total_events', 0)}) ---")
+    if not ux_top:
+        lines.append("  (действий UX пока не зафиксировано)")
+    else:
+        for ua in ux_top:
+            lines.append(f"  • {ua.get('count')} раз — {ua.get('label')} ({ua.get('zone')})")
+
     tail_logs = (d.get("recent_logs") or [])[-50:]
     lines.append("")
     lines.append(f"--- 📜 ПОСЛЕДНИЕ {len(tail_logs)} СТРОК ЛОГА СЕРВЕРА ---")
@@ -4876,6 +4901,708 @@ async def clear_diagnostics_endpoint() -> dict[str, str]:
     logger.info("Диагностические счетчики и буфер логов очищены пользователем.")
     return {"status": "ok"}
 
+
+
+
+
+# ==============================================================================
+#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v1.0.7)
+# ==============================================================================
+
+_ux_telemetry_lock = threading.Lock()
+
+UX_ZONE_LABELS_RU: dict[str, str] = {
+    "topbar": "Верхняя панель (Topbar: Языки / Настройки / Вид)",
+    "left_sidebar": "Левая панель (Папка / Список страниц / Старт)",
+    "viewer_toolbar": "Панель над страницей (Навигация / Режим вида / Масштаб / Инструменты)",
+    "viewer_stage_pin": "Прямо на странице манги (Кружки #N / Перетаскивание / Ресайз / Колесико)",
+    "inline_popup": "Всплывающий попап у кружка #N (Быстрое редактирование на холсте)",
+    "editor_drawer_header": "Шапка панели редактора (Сбоку/Снизу/Окно / Сохранить / Отмена)",
+    "editor_drawer_subbar": "Подпанель редактора (Обвести / Подложка на все / Удаление рамок / Ромадзи)",
+    "editor_drawer_card": "Карточки списка блоков в редакторе (Текст / Стиль / Шрифт / Поворот)",
+    "floating_brush_bar": "Плавающая панель живой кисти ретуши (Замазка ЛКМ / Оригинал ПКМ / Радиус)",
+    "settings_modal": "Окно настроек, Глоссария, Поиска Ctrl+F и Диагностики",
+    "keyboard_hotkey": "Горячие клавиши клавиатуры (Хоткеи)",
+    "other": "Прочие элементы интерфейса",
+}
+
+# Список основных функций интерфейса для отслеживания того, чем пользователь пользуется, а какие кнопки не нажимает вовсе
+KNOWN_UI_FEATURES_CATALOG: dict[str, tuple[str, str]] = {
+    "act:save_page": ("💾 Сохранить страницу (кнопка или Ctrl+S)", "Редактирование и сохранение"),
+    "act:undo": ("↩ Отменить действие (кнопка или Ctrl+Z)", "Редактирование и сохранение"),
+    "act:redo": ("↪ Повторить действие (кнопка или Ctrl+Y)", "Редактирование и сохранение"),
+    "act:nav_prev_next": ("◀ / ▶ Переключение страниц (кнопки или A/D/Стрелки)", "Навигация и просмотр"),
+    "act:view_mode_switch": ("🔀 Переключение режима До и После / Перевод / Оригинал", "Навигация и просмотр"),
+    "act:hold_compare_space": ("👁 Зажатие Space / V для мгновенной сверки с оригиналом", "Навигация и просмотр"),
+    "act:zoom_controls": ("🔍 Изменение масштаба страницы (Шир. / Выс. / ➖ / ➕ / Ctrl+Колесико)", "Навигация и просмотр"),
+    "act:pin_click": ("📌 Клик по кружку #N на странице", "Работа с рамками на странице"),
+    "act:pin_move": ("✋ Перетаскивание рамки #N мышкой", "Работа с рамками на странице"),
+    "act:pin_resize": ("📐 Изменение размера рамки #N за края/уголки", "Работа с рамками на странице"),
+    "act:pin_wheel_font": ("🖱 Изменение кегля шрифта колесиком мыши прямо на рамке #N", "Работа с рамками на странице"),
+    "act:manual_draw_region": ("➕ Обвести пропущенный кружок/текст мышкой", "Работа с рамками на странице"),
+    "act:vlm_ocr_sniper": ("👁 Снайперский VLM-OCR для сложных рукописных SFX и обложек", "Работа с рамками на странице"),
+    "act:merge_blocks": ("🔗 Объединение нескольких рамок (Shift+Клик + M)", "Работа с рамками на странице"),
+    "act:split_block": ("✂️ Разделение одной рамки на два блока", "Работа с рамками на странице"),
+    "act:delete_block_frame": ("🗑 Полное удаление рамки #N с картинки", "Работа с рамками на странице"),
+    "act:clear_block_text": ("🧹 Очистка только текста внутри рамки", "Работа с рамками на странице"),
+    "act:retranslate_single_block": ("🔄 Повторный ИИ-перевод одного кружка #N", "Работа с рамками на странице"),
+    "act:bg_style_backing": ("🛡 Подложка под текстом (Овал / По тексту / Рамка)", "Стилизация и верстка текста"),
+    "act:page_all_bg": ("🛡 Подложка сразу на все рамки страницы", "Стилизация и верстка текста"),
+    "act:style_preset": ("🎨 Пресеты стиля (Диалог / Мысли / Крик / Шепот / Нарратив / SFX)", "Стилизация и верстка текста"),
+    "act:font_family_change": ("🔤 Смена гарнитуры шрифта для блока", "Стилизация и верстка текста"),
+    "act:text_align_change": ("↔ Выравнивание текста (По левому / По центру / По правому)", "Стилизация и верстка текста"),
+    "act:text_color_stroke": ("🎨 Ручной выбор цвета текста или обводки", "Стилизация и верстка текста"),
+    "act:text_angle_rotate": ("🔄 Поворот текста ползунком угла (-45°..+45°)", "Стилизация и верстка текста"),
+    "act:special_symbols_insert": ("♥★♪ Вставка спецсимволов манги в 1 клик", "Стилизация и верстка текста"),
+    "act:live_mask_brush": ("🖌 Живая 60 FPS кисть ретуши замазки (ЛКМ замазать / ПКМ оригинал)", "Ретушь и замазка оригинала"),
+    "act:mask_dilate_slider": ("🖌 Ползунок толщины авто-замазки (dilate)", "Ретушь и замазка оригинала"),
+    "act:romaji_toggle_or_ai": ("🔤 Просмотр или ИИ-генерация транскрипции Ромадзи", "Глоссарий, Ромадзи и Поиск"),
+    "act:glossary_manage": ("📖 Добавление/импорт терминов и имен в Глоссарий", "Глоссарий, Ромадзи и Поиск"),
+    "act:folder_find_replace": ("🔎 Глобальный Поиск и Замена по всей главе (Ctrl+F / Ctrl+H)", "Глоссарий, Ромадзи и Поиск"),
+    "act:dock_mode_switch": ("📐 Переключение расположения редактора (Сбоку / Снизу / Окно)", "Навигация и просмотр"),
+    "act:toggle_left_sidebar": ("◀ Сворачивание левой панели (Широкий экран / клавиша [ )", "Навигация и просмотр"),
+}
+
+# Сопоставление кнопок мыши и их быстрых клавиш (для подсказок, где пользователь часто тянется мышкой вместо 1 нажатия клавиши)
+HOTKEY_ALTERNATIVES_MAP: dict[str, tuple[str, str]] = {
+    "btn-save-page-edits": ("Ctrl + S (или Ctrl + Enter в поле текста)", "Сохранение страницы"),
+    "btn-undo-action": ("Ctrl + Z", "Отмена последнего действия"),
+    "btn-redo-action": ("Ctrl + Y (или Ctrl + Shift + Z)", "Повтор отмененного действия"),
+    "btn-prev-page": ("Клавиша A или Стрелка влево (←)", "Переход на предыдущую страницу"),
+    "btn-next-page": ("Клавиша D или Стрелка вправо (→)", "Переход на следующую страницу"),
+    "btn-toggle-sidebar": ("Клавиша [", "Свернуть / развернуть левую панель"),
+    "btn-wide-mode": ("Клавиша [", "Широкий экран (скрыть левую панель)"),
+    "btn-top-mask-brush": ("Клавиша B", "Включить / выключить живую кисть маски"),
+    "popup-mask-brush-btn": ("Клавиша B", "Включить / выключить живую кисть маски"),
+    "btn-merge-blocks": ("Клавиша M (после Shift+Клика по рамкам)", "Объединить выделенные рамки"),
+    "popup-merge-btn": ("Клавиша M (после Shift+Клика по рамкам)", "Объединить выделенные рамки"),
+    "popup-del-btn": ("Клавиша Delete (при выбранном кружке)", "Полное удаление рамки #N с картинки"),
+}
+
+
+def _new_empty_ux_store() -> dict[str, Any]:
+    now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+    return {
+        "schema_version": 1,
+        "created_at": now_str,
+        "updated_at": now_str,
+        "total_events": 0,
+        "total_mouse_clicks": 0,
+        "total_hotkey_presses": 0,
+        "total_canvas_manipulations": 0,
+        "total_text_edits": 0,
+        "active_usage_sec": 0.0,
+        "actions": {},
+        "zones": {},
+        "hotkeys": {},
+        "missed_hotkeys": {},
+        "canvas_ops": {},
+        "features_used": {},
+        "transitions": {},
+        "dwell_sec": {
+            "dock_right": 0.0,
+            "dock_bottom": 0.0,
+            "dock_floating": 0.0,
+            "view_split": 0.0,
+            "view_translated": 0.0,
+            "view_original": 0.0,
+            "edit_in_popup": 0.0,
+            "edit_in_drawer": 0.0,
+        },
+        "last_action_key": "",
+        "last_action_label": "",
+        "last_action_ts": 0.0,
+        "recent_events": [],
+    }
+
+
+def _load_ux_store() -> dict[str, Any]:
+    if UX_TELEMETRY_JSON_FILE.exists():
+        try:
+            data = json.loads(UX_TELEMETRY_JSON_FILE.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                base = _new_empty_ux_store()
+                for k, v in base.items():
+                    if k not in data:
+                        data[k] = v
+                if isinstance(data.get("dwell_sec"), dict):
+                    for dk, dv in base["dwell_sec"].items():
+                        data["dwell_sec"].setdefault(dk, dv)
+                return data
+        except Exception as exc:
+            logger.warning("Не удалось прочитать ux_telemetry.json: %s", exc)
+    return _new_empty_ux_store()
+
+
+def _save_ux_store(store: dict[str, Any]) -> None:
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        store["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
+        UX_TELEMETRY_JSON_FILE.write_text(
+            json.dumps(store, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+    except Exception as exc:
+        logger.warning("Не удалось сохранить ux_telemetry.json: %s", exc)
+
+
+class UxEventItem(BaseModel):
+    event_type: str = Field(
+        default="button_click",
+        description="Тип события: button_click, control_change, hotkey_use, canvas_action, text_edit, dwell_tick",
+    )
+    action_id: str = Field(default="", description="Уникальный ключ элемента или действия")
+    label: str = Field(default="", description="Понятное название нажатой кнопки или действия")
+    zone: str = Field(default="other", description="Зона интерфейса, где произошло действие")
+    feature_key: str | None = Field(default=None, description="Ключ из KNOWN_UI_FEATURES_CATALOG")
+    hotkey: str | None = Field(default=None, description="Нажатая комбинация клавиш, если это hotkey_use")
+    meta: dict[str, Any] | None = Field(default=None, description="Дополнительные параметры (режим докинга, вид и т.д.)")
+    timestamp_ms: int | None = Field(default=None)
+
+
+class UxEventsBatchRequest(BaseModel):
+    events: list[UxEventItem] = Field(default_factory=list)
+    active_dock_mode: str | None = Field(default=None)
+    active_view_mode: str | None = Field(default=None)
+    elapsed_active_sec: float = Field(default=0.0, description="Активное время работы пользователя за батч (сек)")
+
+
+def _ingest_ux_events_batch(payload: UxEventsBatchRequest) -> dict[str, Any]:
+    with _ux_telemetry_lock:
+        store = _load_ux_store()
+        now_ts = time.time()
+        now_str = time.strftime("%Y-%m-%d %H:%M:%S")
+
+        elapsed_sec = max(0.0, min(120.0, float(payload.elapsed_active_sec or 0.0)))
+        if elapsed_sec > 0:
+            store["active_usage_sec"] = round(float(store.get("active_usage_sec") or 0.0) + elapsed_sec, 1)
+            dock_m = str(payload.active_dock_mode or "").strip().lower()
+            if dock_m in ("right", "bottom", "floating"):
+                dk = f"dock_{dock_m}"
+                store["dwell_sec"][dk] = round(float(store["dwell_sec"].get(dk) or 0.0) + elapsed_sec, 1)
+            view_m = str(payload.active_view_mode or "").strip().lower()
+            if view_m in ("split", "translated", "original"):
+                vk = f"view_{view_m}"
+                store["dwell_sec"][vk] = round(float(store["dwell_sec"].get(vk) or 0.0) + elapsed_sec, 1)
+
+        jsonl_lines: list[str] = []
+
+        for ev in payload.events:
+            ev_type = (ev.event_type or "button_click").strip().lower()
+            act_id = (ev.action_id or "").strip() or "unknown_action"
+            label = (ev.label or act_id).strip()[:110]
+            zone = (ev.zone or "other").strip().lower()
+            if zone not in UX_ZONE_LABELS_RU:
+                zone = "other"
+            feat_key = (ev.feature_key or "").strip()
+
+            if ev_type == "dwell_tick":
+                meta_d = ev.meta or {}
+                add_s = max(0.0, min(60.0, float(meta_d.get("sec") or 0.0)))
+                target_d = str(meta_d.get("target") or "")
+                if add_s > 0 and target_d in store["dwell_sec"]:
+                    store["dwell_sec"][target_d] = round(float(store["dwell_sec"].get(target_d) or 0.0) + add_s, 1)
+                continue
+
+            store["total_events"] = int(store.get("total_events") or 0) + 1
+            store["zones"][zone] = int(store["zones"].get(zone) or 0) + 1
+
+            if ev_type in ("button_click", "control_change"):
+                store["total_mouse_clicks"] = int(store.get("total_mouse_clicks") or 0) + 1
+                if act_id in HOTKEY_ALTERNATIVES_MAP:
+                    hk_combo, hk_desc = HOTKEY_ALTERNATIVES_MAP[act_id]
+                    mh_entry = store["missed_hotkeys"].get(act_id) or {
+                        "action_id": act_id,
+                        "label": label,
+                        "hotkey": hk_combo,
+                        "description": hk_desc,
+                        "mouse_clicks": 0,
+                    }
+                    mh_entry["mouse_clicks"] = int(mh_entry.get("mouse_clicks") or 0) + 1
+                    mh_entry["label"] = label
+                    store["missed_hotkeys"][act_id] = mh_entry
+            elif ev_type == "hotkey_use":
+                store["total_hotkey_presses"] = int(store.get("total_hotkey_presses") or 0) + 1
+                hk_name = (ev.hotkey or act_id).strip()
+                hk_entry = store["hotkeys"].get(hk_name) or {
+                    "hotkey": hk_name,
+                    "label": label,
+                    "count": 0,
+                }
+                hk_entry["count"] = int(hk_entry.get("count") or 0) + 1
+                hk_entry["label"] = label
+                store["hotkeys"][hk_name] = hk_entry
+            elif ev_type == "canvas_action":
+                store["total_canvas_manipulations"] = int(store.get("total_canvas_manipulations") or 0) + 1
+                c_entry = store["canvas_ops"].get(act_id) or {
+                    "action_id": act_id,
+                    "label": label,
+                    "count": 0,
+                }
+                c_entry["count"] = int(c_entry.get("count") or 0) + 1
+                c_entry["label"] = label
+                store["canvas_ops"][act_id] = c_entry
+            elif ev_type == "text_edit":
+                store["total_text_edits"] = int(store.get("total_text_edits") or 0) + 1
+                if zone == "inline_popup":
+                    store["dwell_sec"]["edit_in_popup"] = round(
+                        float(store["dwell_sec"].get("edit_in_popup") or 0.0) + 1.0, 1
+                    )
+                elif zone in ("editor_drawer_card", "editor_drawer_header"):
+                    store["dwell_sec"]["edit_in_drawer"] = round(
+                        float(store["dwell_sec"].get("edit_in_drawer") or 0.0) + 1.0, 1
+                    )
+
+            if feat_key:
+                store["features_used"][feat_key] = int(store["features_used"].get(feat_key) or 0) + 1
+
+            # Записываем в общий рейтинг действий
+            act_entry = store["actions"].get(act_id) or {
+                "action_id": act_id,
+                "label": label,
+                "zone": zone,
+                "event_type": ev_type,
+                "count": 0,
+                "last_used": now_str,
+            }
+            act_entry["count"] = int(act_entry.get("count") or 0) + 1
+            act_entry["label"] = label
+            act_entry["zone"] = zone
+            act_entry["last_used"] = now_str
+            store["actions"][act_id] = act_entry
+
+            # Записываем цепочки переходов (Bigram: Действие А -> Действие Б), если между ними прошло <= 45 секунд
+            prev_key = str(store.get("last_action_key") or "")
+            prev_lbl = str(store.get("last_action_label") or "")
+            prev_ts = float(store.get("last_action_ts") or 0.0)
+            if prev_key and prev_key != act_id and (now_ts - prev_ts) <= 45.0:
+                pair_key = f"{prev_key}>>>{act_id}"
+                tr_entry = store["transitions"].get(pair_key) or {
+                    "from_id": prev_key,
+                    "from_label": prev_lbl,
+                    "to_id": act_id,
+                    "to_label": label,
+                    "count": 0,
+                }
+                tr_entry["count"] = int(tr_entry.get("count") or 0) + 1
+                tr_entry["from_label"] = prev_lbl
+                tr_entry["to_label"] = label
+                store["transitions"][pair_key] = tr_entry
+
+            store["last_action_key"] = act_id
+            store["last_action_label"] = label
+            store["last_action_ts"] = now_ts
+
+            rec_item = {
+                "time": time.strftime("%H:%M:%S"),
+                "type": ev_type,
+                "action_id": act_id,
+                "label": label,
+                "zone": zone,
+            }
+            store["recent_events"].append(rec_item)
+            jsonl_lines.append(
+                json.dumps(
+                    {
+                        "timestamp": int(now_ts),
+                        **rec_item,
+                        "feature_key": feat_key or None,
+                        "meta": ev.meta or None,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+
+        if len(store["recent_events"]) > 180:
+            store["recent_events"] = store["recent_events"][-180:]
+
+        _save_ux_store(store)
+
+        if jsonl_lines:
+            try:
+                with open(UX_EVENTS_JSONL_FILE, "a", encoding="utf-8") as f_jl:
+                    f_jl.write("\n".join(jsonl_lines) + "\n")
+            except Exception:
+                pass
+
+        return store
+
+
+def _generate_ux_usage_report(store: dict[str, Any] | None = None) -> tuple[str, dict[str, Any]]:
+    """
+    Формирует подробный аналитический отчет по использованию интерфейса `logs/UX_USAGE_REPORT.txt`
+    и возвращает `(report_text, summary_dict)`.
+    """
+    if store is None:
+        with _ux_telemetry_lock:
+            store = _load_ux_store()
+
+    total_ev = int(store.get("total_events") or 0)
+    mouse_clicks = int(store.get("total_mouse_clicks") or 0)
+    hotkey_presses = int(store.get("total_hotkey_presses") or 0)
+    canvas_ops_cnt = int(store.get("total_canvas_manipulations") or 0)
+    text_edits_cnt = int(store.get("total_text_edits") or 0)
+    active_sec = float(store.get("active_usage_sec") or 0.0)
+    active_min = round(active_sec / 60.0, 1)
+
+    actions_dict: dict[str, dict[str, Any]] = store.get("actions") or {}
+    sorted_actions = sorted(
+        actions_dict.values(),
+        key=lambda x: int(x.get("count") or 0),
+        reverse=True,
+    )
+
+    zones_dict: dict[str, int] = store.get("zones") or {}
+    sorted_zones = sorted(zones_dict.items(), key=lambda kv: int(kv[1]), reverse=True)
+
+    hotkeys_dict: dict[str, dict[str, Any]] = store.get("hotkeys") or {}
+    sorted_hotkeys = sorted(
+        hotkeys_dict.values(),
+        key=lambda x: int(x.get("count") or 0),
+        reverse=True,
+    )
+
+    missed_hk_dict: dict[str, dict[str, Any]] = store.get("missed_hotkeys") or {}
+    sorted_missed_hk = sorted(
+        missed_hk_dict.values(),
+        key=lambda x: int(x.get("mouse_clicks") or 0),
+        reverse=True,
+    )
+
+    canvas_dict: dict[str, dict[str, Any]] = store.get("canvas_ops") or {}
+    sorted_canvas = sorted(
+        canvas_dict.values(),
+        key=lambda x: int(x.get("count") or 0),
+        reverse=True,
+    )
+
+    transitions_dict: dict[str, dict[str, Any]] = store.get("transitions") or {}
+    sorted_transitions = sorted(
+        transitions_dict.values(),
+        key=lambda x: int(x.get("count") or 0),
+        reverse=True,
+    )
+
+    features_used: dict[str, int] = store.get("features_used") or {}
+    unused_features: list[tuple[str, str, str]] = []
+    used_features_ranked: list[tuple[str, str, str, int]] = []
+    for f_key, (f_title, f_cat) in KNOWN_UI_FEATURES_CATALOG.items():
+        cnt = int(features_used.get(f_key) or 0)
+        if cnt <= 0:
+            unused_features.append((f_key, f_title, f_cat))
+        else:
+            used_features_ranked.append((f_key, f_title, f_cat, cnt))
+    used_features_ranked.sort(key=lambda x: x[3], reverse=True)
+
+    dwell = store.get("dwell_sec") or {}
+    popup_edits = int(dwell.get("edit_in_popup") or 0)
+    drawer_edits = int(dwell.get("edit_in_drawer") or 0)
+
+    # Формируем умные автоматические рекомендации по редизайну UI/UX на основе реальных данных пользователя
+    ux_recommendations: list[str] = []
+    if sorted_actions:
+        top5_names = ", ".join(f"«{a['label']}» ({a['count']}x)" for a in sorted_actions[:5])
+        ux_recommendations.append(
+            f"🔥 Главные кандидаты на закрепление в самой быстрой доступности (Топ-5 ваших действий): {top5_names}."
+        )
+
+    if popup_edits > 0 or drawer_edits > 0:
+        if popup_edits >= drawer_edits * 1.3:
+            ux_recommendations.append(
+                f"💬 Вы редактируете текст преимущественно через компактный Всплывающий попап прямо у кружка #N ({popup_edits} правок против {drawer_edits} в боковой панели). Имеет смысл сделать кнопки в попапе крупнее и вынести туда ваши любимые пресеты в 1 клик, а большую боковую панель открывать только по запросу."
+            )
+        elif drawer_edits >= popup_edits * 1.3:
+            ux_recommendations.append(
+                f"📋 Вы чаще редактируете перевод в основной панели списка блоков ({drawer_edits} правок против {popup_edits} во всплывающем попапе). Можно оптимизировать карточку блока в списке: оставить на виду только те кнопки, которые вы реально нажимаете, и убрать лишние строки."
+            )
+
+    if sorted_transitions and int(sorted_transitions[0].get("count") or 0) >= 2:
+        t0 = sorted_transitions[0]
+        ux_recommendations.append(
+            f"⚡ Обнаружена частая связка действий: «{t0['from_label']}» ➔ «{t0['to_label']}» ({t0['count']} раз подряд). Эту пару действий можно объединить в одну комбинированную кнопку-макрос в 1 клик!"
+        )
+
+    if sorted_missed_hk and int(sorted_missed_hk[0].get("mouse_clicks") or 0) >= 3:
+        m0 = sorted_missed_hk[0]
+        ux_recommendations.append(
+            f"⌨️ Потенциал ускорения: вы нажали мышкой «{m0['label']}» {m0['mouse_clicks']} раз(а). Можно либо вынести эту кнопку ближе к центру холста/попапа, либо использовать горячую клавишу {m0['hotkey']}."
+        )
+
+    settings_clicks = int(zones_dict.get("settings_modal") or 0)
+    if total_ev > 10 and (settings_clicks / max(1, total_ev)) >= 0.22:
+        ux_recommendations.append(
+            f"⚙️ Вы довольно часто заходите в модальное окно Настроек ({settings_clicks} действий, {round(settings_clicks / max(1, total_ev) * 100, 1)}% всех кликов). Те переключатели, ради которых вы открываете настройки, стоит вынести прямо на верхнюю панель!"
+        )
+
+    if len(unused_features) >= 5 and total_ev >= 15:
+        ux_recommendations.append(
+            f"🧹 Из {len(KNOWN_UI_FEATURES_CATALOG)} инструментов интерфейса вы пока ни разу не использовали {len(unused_features)} шт. (см. Раздел 6). Их можно спрятать под компактное меню «⋯ Еще», чтобы разгрузить интерфейс и сделать основные кнопки крупнее!"
+        )
+
+    if not ux_recommendations:
+        ux_recommendations.append(
+            "💡 Поработайте в программе в своем обычном ритме (переведите несколько страниц, поправьте бабблы, шрифты или маску), а затем скопируйте этот отчет в наш чат — и мы перестроим интерфейс идеально под вашу руку!"
+        )
+
+    mouse_vs_key_total = max(1, mouse_clicks + hotkey_presses)
+    mouse_pct = round((mouse_clicks / mouse_vs_key_total) * 100.0, 1)
+    key_pct = round((hotkey_presses / mouse_vs_key_total) * 100.0, 1)
+
+    lines: list[str] = [
+        "========================================================================================",
+        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v1.0.7",
+        "========================================================================================",
+        f"• Файл отчета              : {UX_REPORT_TXT_FILE}",
+        f"• База накопленной телеметрии: {UX_TELEMETRY_JSON_FILE}",
+        f"• Статистика собирается с  : {store.get('created_at', '—')} (обновлено: {store.get('updated_at', '—')})",
+        f"• Активное время работы    : {active_min} мин ({active_sec:.0f} сек)",
+        f"• Всего зафиксировано действ.: {total_ev} (Кликов мышью: {mouse_clicks} [{mouse_pct}%] | Хоткеев клавиатуры: {hotkey_presses} [{key_pct}%] | Манипуляций с рамками/холстом: {canvas_ops_cnt} | Правок текста: {text_edits_cnt})",
+        "",
+        "----------------------------------------------------------------------------------------",
+        "  🏆 1. ТОП-25 САМЫХ ЧАСТЫХ КНОПОК И ДЕЙСТВИЙ (ЧТО НУЖНО ДЕРЖАТЬ ПОД РУКОЙ В 1 КЛИК)",
+        "----------------------------------------------------------------------------------------",
+    ]
+
+    if not sorted_actions:
+        lines.append("  (Пока нет записанных кликов — понажимайте кнопки в интерфейсе, и здесь появится рейтинг)")
+    else:
+        lines.append(
+            "  #   | Нажатий | Доля   | Тип            | Зона интерфейса                | Кнопка / Действие (и ID элемента)"
+        )
+        lines.append("  " + "-" * 132)
+        for idx, act in enumerate(sorted_actions[:25], start=1):
+            cnt = int(act.get("count") or 0)
+            pct = round((cnt / max(1, total_ev)) * 100.0, 1)
+            ev_t = str(act.get("event_type") or "click")
+            z_short = str(act.get("zone") or "other")[:30]
+            lbl = str(act.get("label") or act.get("action_id") or "—")
+            aid = str(act.get("action_id") or "")
+            lines.append(
+                f"  #{idx:02d} | {cnt:>7d} | {pct:>5.1f}% | {ev_t:<14s} | {z_short:<30s} | {lbl} [{aid}]"
+            )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  🗺 2. РАСПРЕДЕЛЕНИЕ КЛИКОВ ПО ЗОНАМ ЭКРАНА (ГДЕ ВЫ ПРОВОДИТЕ БОЛЬШЕ ВСЕГО ВРЕМЕНИ)",
+            "----------------------------------------------------------------------------------------",
+        ]
+    )
+    if not sorted_zones:
+        lines.append("  (Нет данных по зонам экрана)")
+    else:
+        for z_key, z_cnt in sorted_zones:
+            z_pct = round((int(z_cnt) / max(1, total_ev)) * 100.0, 1)
+            z_title = UX_ZONE_LABELS_RU.get(z_key, z_key)
+            bar_len = max(1, int(round(z_pct / 4.0))) if z_cnt > 0 else 0
+            bar_str = "█" * bar_len
+            lines.append(f"  • {z_cnt:>5d} ({z_pct:>5.1f}%) [{bar_str:<25s}] — {z_title}")
+
+    lines.extend(
+        [
+            "",
+            "[Предпочтения по режиму просмотра и расположению редактора]",
+            f"  • Расположение редактора : ➡ Сбоку={dwell.get('dock_right', 0):.0f}с | ⬇ Снизу={dwell.get('dock_bottom', 0):.0f}с | 🪟 Плавающее окно={dwell.get('dock_floating', 0):.0f}с",
+            f"  • Режим просмотра манги  : 🔀 До и После={dwell.get('view_split', 0):.0f}с | 🈯 Перевод={dwell.get('view_translated', 0):.0f}с | 🇯🇵 Оригинал={dwell.get('view_original', 0):.0f}с",
+            f"  • Где вы правите текст   : 💬 Всплывающий попап у кружка={popup_edits} раз | 📋 Карточки в боковой панели={drawer_edits} раз",
+        ]
+    )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  🎯 3. РАБОТА С РАМКАМИ #N НА ХОЛСТЕ, ШРИФТАМИ, ПОДЛОЖКОЙ И КИСТЬЮ МАСКИ",
+            "----------------------------------------------------------------------------------------",
+        ]
+    )
+    if not sorted_canvas:
+        lines.append("  (Манипуляций с рамками #N, колесиком шрифта или кистью на холсте пока не зафиксировано)")
+    else:
+        for c_item in sorted_canvas[:20]:
+            lines.append(
+                f"  • {int(c_item.get('count') or 0):>5d} раз — {c_item.get('label')} [{c_item.get('action_id')}]"
+            )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  🔗 4. ТОП-15 СВЯЗОК ДЕЙСТВИЙ ПОДРЯД («ДЕЙСТВИЕ А ➔ ДЕЙСТВИЕ Б» — КАНДИДАТЫ НА МАКРО-КНОПКУ)",
+            "----------------------------------------------------------------------------------------",
+        ]
+    )
+    if not sorted_transitions:
+        lines.append("  (Цепочки последовательных действий появятся после нескольких операций в программе)")
+    else:
+        for tr_idx, tr in enumerate(sorted_transitions[:15], start=1):
+            lines.append(
+                f"  #{tr_idx:02d} ({int(tr.get('count') or 0):>3d} раз подряд): «{tr.get('from_label')}»  ➔  «{tr.get('to_label')}»"
+            )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  ⌨️ 5. МЫШКА ПРОТИВ ГОРЯЧИХ КЛАВИШ (ГДЕ МОЖНО СЭКОНОМИТЬ ЛИШНИЕ КЛИКИ)",
+            "----------------------------------------------------------------------------------------",
+            "  5А. Используемые вами горячие клавиши клавиатуры:",
+        ]
+    )
+    if not sorted_hotkeys:
+        lines.append("      (Нажатий горячих клавиш пока не зафиксировано)")
+    else:
+        for hk in sorted_hotkeys[:15]:
+            lines.append(f"      • {int(hk.get('count') or 0):>4d} раз — [{hk.get('hotkey')}] {hk.get('label')}")
+
+    lines.append("")
+    lines.append("  5Б. Кнопки, которые вы нажимаете мышкой, хотя для них есть быстрая клавиша (или их стоит вынести ближе):")
+    if not sorted_missed_hk:
+        lines.append("      (Лишних кликов мышкой по кнопкам с хоткеями не обнаружено)")
+    else:
+        for mhk in sorted_missed_hk[:12]:
+            lines.append(
+                f"      • Нажато мышкой {int(mhk.get('mouse_clicks') or 0):>4d} раз: «{mhk.get('label')}» — есть клавиша [{mhk.get('hotkey')}] ({mhk.get('description')})"
+            )
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            f"  🧹 6. КАРТА ВОСТРЕБОВАННОСТИ ФУНКЦИЙ (ИСПОЛЬЗУЕТСЯ: {len(used_features_ranked)} / НЕ ИСПОЛЬЗУЕТСЯ: {len(unused_features)})",
+            "----------------------------------------------------------------------------------------",
+            "  6А. Активно используемые вами возможности:",
+        ]
+    )
+    if not used_features_ranked:
+        lines.append("      (Список заполнится по мере работы в программе)")
+    else:
+        for f_key, f_title, f_cat, f_cnt in used_features_ranked:
+            lines.append(f"      • ✅ {f_cnt:>4d} раз | [{f_cat}] {f_title}")
+
+    lines.append("")
+    lines.append("  6Б. Функции и кнопки, которыми вы НИ РАЗУ не пользовались (кандидаты на скрытие в меню «Еще»):")
+    if not unused_features:
+        lines.append("      🎉 Вы опробовали абсолютно все инструменты студии!")
+    else:
+        for f_key, f_title, f_cat in unused_features:
+            lines.append(f"      • ⚪ 0 раз   | [{f_cat}] {f_title}")
+
+    lines.extend(
+        [
+            "",
+            "----------------------------------------------------------------------------------------",
+            "  💡 7. АВТОМАТИЧЕСКИЕ ВЫВОДЫ И РЕКОМЕНДАЦИИ ДЛЯ ОПТИМИЗАЦИИ UI / UX",
+            "----------------------------------------------------------------------------------------",
+        ]
+    )
+    for rec_line in ux_recommendations:
+        lines.append(f"  • {rec_line}")
+
+    recent_ev = store.get("recent_events") or []
+    if recent_ev:
+        lines.extend(
+            [
+                "",
+                "----------------------------------------------------------------------------------------",
+                f"  🕒 8. ХРОНОЛОГИЯ ПОСЛЕДНИХ ДЕЙСТВИЙ ПОЛЬЗОВАТЕЛЯ (ПОСЛЕДНИЕ {min(35, len(recent_ev))} СОБЫТИЙ)",
+                "----------------------------------------------------------------------------------------",
+            ]
+        )
+        for rev in recent_ev[-35:]:
+            lines.append(
+                f"  [{rev.get('time')}] ({rev.get('zone')}) {rev.get('label')} [{rev.get('action_id')}]"
+            )
+
+    lines.extend(
+        [
+            "",
+            "========================================================================================",
+            "  КОНЕЦ ОТЧЕТА UX-АНАЛИТИКИ (СКОПИРУЙТЕ ЕГО В ЧАТ ДЛЯ ПЕРСОНАЛЬНОЙ НАСТРОЙКИ ИНТЕРФЕЙСА)",
+            "========================================================================================",
+            "",
+        ]
+    )
+
+    report_text = "\n".join(lines)
+    try:
+        LOGS_DIR.mkdir(parents=True, exist_ok=True)
+        UX_REPORT_TXT_FILE.write_text(report_text, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Не удалось записать UX_USAGE_REPORT.txt: %s", exc)
+
+    summary = {
+        "total_events": total_ev,
+        "total_mouse_clicks": mouse_clicks,
+        "total_hotkey_presses": hotkey_presses,
+        "total_canvas_manipulations": canvas_ops_cnt,
+        "total_text_edits": text_edits_cnt,
+        "active_usage_sec": active_sec,
+        "top_actions": sorted_actions[:10],
+        "top_transitions": sorted_transitions[:8],
+        "zones": dict(sorted_zones),
+        "used_features_count": len(used_features_ranked),
+        "unused_features_count": len(unused_features),
+        "recommendations": ux_recommendations,
+        "report_path": str(UX_REPORT_TXT_FILE),
+    }
+    return report_text, summary
+
+
+@app.post("/ux_telemetry/record")
+async def record_ux_telemetry_endpoint(payload: UxEventsBatchRequest) -> dict[str, Any]:
+    """Принимает пачку событий взаимодействия пользователя с интерфейсом и сохраняет статистику в logs/ux_telemetry.json."""
+    store = await asyncio.to_thread(_ingest_ux_events_batch, payload)
+    return {
+        "status": "ok",
+        "total_events": int(store.get("total_events") or 0),
+        "total_mouse_clicks": int(store.get("total_mouse_clicks") or 0),
+        "total_hotkey_presses": int(store.get("total_hotkey_presses") or 0),
+    }
+
+
+@app.get("/ux_telemetry/report")
+async def get_ux_telemetry_report_endpoint() -> dict[str, Any]:
+    """Формирует, сохраняет в logs/UX_USAGE_REPORT.txt и возвращает полный отчет UX-аналитики кликов и действий пользователя."""
+    report_text, summary = await asyncio.to_thread(_generate_ux_usage_report)
+    return {
+        "status": "ok",
+        "report_path": str(UX_REPORT_TXT_FILE),
+        "report_text": report_text,
+        "summary": summary,
+    }
+
+
+@app.post("/ux_telemetry/open_report")
+async def open_ux_telemetry_report_endpoint() -> dict[str, str]:
+    """Обновляет файл logs/UX_USAGE_REPORT.txt и открывает его в Блокноте Windows."""
+    report_text, _ = await asyncio.to_thread(_generate_ux_usage_report)
+    if os.name == "nt" and hasattr(os, "startfile") and UX_REPORT_TXT_FILE.exists():
+        try:
+            os.startfile(str(UX_REPORT_TXT_FILE))
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+    return {
+        "status": "ok",
+        "report_path": str(UX_REPORT_TXT_FILE),
+    }
+
+
+@app.post("/ux_telemetry/clear")
+async def clear_ux_telemetry_endpoint() -> dict[str, str]:
+    """Сбрасывает накопленную статистику кликов UX-телеметрии для начала чистого замера."""
+    with _ux_telemetry_lock:
+        fresh = _new_empty_ux_store()
+        _save_ux_store(fresh)
+        try:
+            if UX_EVENTS_JSONL_FILE.exists():
+                UX_EVENTS_JSONL_FILE.unlink()
+        except Exception:
+            pass
+    await asyncio.to_thread(_generate_ux_usage_report, fresh)
+    logger.info("Статистика UX-телеметрии кликов и действий сброшена пользователем.")
+    return {"status": "ok"}
 
 
 def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> bool:
