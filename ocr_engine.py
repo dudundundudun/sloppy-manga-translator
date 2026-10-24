@@ -130,6 +130,14 @@ STRIP_PUNCT_REGEX = re.compile(
 REPEATED_NOISE_REGEX = re.compile(r"^(.)\1{3,}$")
 REDUPLICATED_SFX_REGEX = re.compile(r"^(.{1,3})\1+$")
 
+# Известные галлюцинации декодеров MangaOCR / manga-ocr-nar-small / HayaiOCR на пустых/шумовых кропах фона и штриховки
+# (например, заученная из синтетического корпуса фраза «タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant!»)
+KNOWN_OCR_HALLUCINATIONS_REGEX = re.compile(
+    r"(?i)(?:タクシー運転手|運転手さん.*(?:うまい店|美味しい店|レストラン|連れて)|一番(?:うまい|美味しい)(?:店|レストラン).*連れて|"
+    r"taxi\s*driver.*(?:best\s*restau?rant|take\s*me)|take\s*me\s*to\s*the\s*best\s*restau?rant|"
+    r"ご視聴ありがとうございました|チャンネル登録.*お願い|高評価.*チャンネル登録)"
+)
+
 # Словарь ТОЛЬКО чистых вздохов, стонов и охов (без диалоговых слов типа いや / やだ / おい / うん!)
 SIGH_EXACT_SET: set[str] = {
     # Только чистые бессловесные вздохи и стоны (хирагана/катакана) — без диалоговых реакций вроде えっ/くっ/ちっ/わっ!
@@ -1744,7 +1752,78 @@ class MangaOCREngine:
         return True
 
     @staticmethod
-    def _is_hallucinated_ocr_text(text: str, ink_pixels: int, is_free_text: bool = False) -> bool:
+    def _has_real_text_glyph_structure(crop_rgb: np.ndarray, is_free_text: bool = False) -> bool:
+        """
+        Проверяет, что внутри кропа действительно присутствуют дискретные текстовые глифы (буквы/иероглифы),
+        а не просто линии рисунка, волосы, складки одежды, рамки фреймов или однородный скринтон.
+        Защищает декодеры MangaOCR / NAR от подачи бессловесных кусков арта, вызывающих галлюцинации.
+        """
+        if crop_rgb is None or crop_rgb.size == 0:
+            return False
+        h, w = crop_rgb.shape[:2]
+        if h < 12 or w < 12:
+            return False
+
+        gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY) if crop_rgb.ndim == 3 else crop_rgb
+        p10, p50, p90 = [float(v) for v in np.percentile(gray, [10, 50, 90])]
+        if (p90 - p10) < (42.0 if is_free_text else 28.0):
+            return False
+
+        if p50 >= 120.0:
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        else:
+            _, binary = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+
+        num_labels, _, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+        if num_labels <= 1:
+            return False
+
+        char_like_comps = 0
+        long_wall_comps = 0
+        tiny_specks = 0
+        total_ink_area = max(1, int(np.count_nonzero(binary)))
+        largest_comp_area = 0
+
+        for idx in range(1, num_labels):
+            cw = int(stats[idx, cv2.CC_STAT_WIDTH])
+            ch = int(stats[idx, cv2.CC_STAT_HEIGHT])
+            carea = int(stats[idx, cv2.CC_STAT_AREA])
+            if carea > largest_comp_area:
+                largest_comp_area = carea
+            if carea < 4:
+                tiny_specks += 1
+                continue
+            # Длинные линии рамок/волос/контуров, пересекающие почти весь кроп
+            if (cw >= w * 0.90 and ch <= max(5, int(h * 0.18))) or (ch >= h * 0.90 and cw <= max(5, int(w * 0.18))):
+                long_wall_comps += 1
+                continue
+            if cw >= w * 0.94 and ch >= h * 0.94:
+                long_wall_comps += 1
+                continue
+            if 2 <= cw <= w * 0.88 and 3 <= ch <= h * 0.88:
+                char_like_comps += 1
+
+        # Если один гигантский кусок заливки/тени занимает >82% всех чернил и нет отдельных букв — это рисунок, а не текст
+        if largest_comp_area > total_ink_area * 0.82 and char_like_comps <= 1:
+            return False
+        # Если мелких точек скринтона в десятки раз больше, чем осмысленных штрихов — это скринтон
+        if tiny_specks > max(28, char_like_comps * 9) and char_like_comps < 4:
+            return False
+
+        min_req_comps = 2 if is_free_text else 1
+        if char_like_comps < min_req_comps:
+            return False
+        if is_free_text and long_wall_comps > char_like_comps:
+            return False
+        return True
+
+    @staticmethod
+    def _is_hallucinated_ocr_text(
+        text: str,
+        ink_pixels: int,
+        is_free_text: bool = False,
+        crop_shape: tuple[int, int] | None = None,
+    ) -> bool:
         clean = text.strip()
         if not clean:
             return True
@@ -1752,18 +1831,36 @@ class MangaOCREngine:
             return True
         if not MEANINGFUL_CHAR_REGEX.search(clean):
             return True
-        if is_free_text and ink_pixels < 38 and len(clean) > 4:
-            return True
-        if not is_free_text and ink_pixels < 16 and len(clean) > 6:
+        if KNOWN_OCR_HALLUCINATIONS_REGEX.search(clean):
+            logger.warning("Отсеяна известная галлюцинация OCR на фоновом/шумовом блоке: '%s'", clean)
             return True
 
+        norm = STRIP_PUNCT_REGEX.sub("", clean)
+        if not norm:
+            return True
+        if REPEATED_NOISE_REGEX.match(norm):
+            return True
+
+        # Проверка физической плотности чернил на символ: длинная фраза из 8+ символов не может возникнуть из пары точек
+        char_len = len(norm)
+        if char_len >= 8 and ink_pixels < char_len * 11:
+            return True
+        if is_free_text and ink_pixels < 42 and char_len > 3:
+            return True
+        if not is_free_text and ink_pixels < 22 and char_len > 4:
+            return True
+
+        if crop_shape is not None and len(crop_shape) >= 2:
+            ch, cw = int(crop_shape[0]), int(crop_shape[1])
+            crop_area = max(1, ch * cw)
+            # В реальном баббле 1 символ занимает минимум ~45-50 кв. пикселей; если в крошечном боксе «прочитано» 12+ символов — это галлюцинация декодера
+            if char_len >= 7 and crop_area < char_len * 45:
+                return True
+
         if is_free_text:
-            norm = re.sub(r"\s+", "", clean)
-            if len(norm) <= 1 and ink_pixels < 140:
+            if char_len <= 1 and ink_pixels < 150:
                 return True
-            if REPEATED_NOISE_REGEX.match(norm):
-                return True
-            if ink_pixels < 85 and len(norm) >= 8:
+            if ink_pixels < 95 and char_len >= 7:
                 return True
 
         return False
@@ -2523,7 +2620,7 @@ class MangaOCREngine:
 
                 if lbl == 0:
                     # Class 0: bubble
-                    if conf_val >= active_conf:
+                    if conf_val >= max(0.24, active_conf):
                         bubbles_cls0.append(
                             {
                                 "bbox": [x1, y1, x2, y2],
@@ -2534,7 +2631,7 @@ class MangaOCREngine:
                         )
                 elif lbl == 1:
                     # Class 1: text_bubble (точный контур текста внутри баббла)
-                    if conf_val >= max(0.20, active_conf):
+                    if conf_val >= max(0.28, active_conf):
                         text_bubbles_cls1.append(
                             {
                                 "bbox": [x1, y1, x2, y2],
@@ -2545,7 +2642,7 @@ class MangaOCREngine:
                         )
                 elif lbl == 2:
                     # Class 2: text_free (текст вне бабблов на фоне)
-                    if conf_val >= max(0.26, active_conf + 0.04):
+                    if conf_val >= max(0.32, active_conf + 0.06):
                         free_texts_cls2.append(
                             {
                                 "bbox": [x1, y1, x2, y2],
@@ -2768,6 +2865,11 @@ class MangaOCREngine:
 
         # Обрабатываем «сиротские» `text_bubble` (облачка без рамок, мысленные облачка или плашки, пропущенные YOLOv8m)
         for otb in orphan_tbs:
+            otb_conf = float(otb.get("confidence", 0.0))
+            # Если ни YOLOv8m, ни RT-DETR class 0 не увидели вокруг баббла, требуем высокую уверенность текстового бокса
+            if otb_conf < 0.42:
+                continue
+
             tx1, ty1, tx2, ty2 = otb["bbox"]
             tw = tx2 - tx1
             th = ty2 - ty1
@@ -2776,7 +2878,7 @@ class MangaOCREngine:
 
             crop_rgb = img_np[ty1:ty2, tx1:tx2]
             has_ink, _ = self._has_meaningful_ink(crop_rgb, is_free_text=False)
-            if not has_ink:
+            if not has_ink or not self._has_real_text_glyph_structure(crop_rgb, is_free_text=True):
                 continue
 
             # Расширяем `text_bubble` на 8% (4..14 px), чтобы получить комфортный `bbox` для верстки перевода
@@ -2804,14 +2906,27 @@ class MangaOCREngine:
             if overlaps_existing:
                 continue
 
-            # Проверяем, действительно ли сиротский text_bubble находится на однородном светлом/темном фоне облачка,
-            # или это текст/SFX прямо поверх сложного рисунка фона (is_free_text=True).
+            # Строгая проверка: действительно ли сиротский text_bubble находится внутри однородного светлого облачка,
+            # а не на фоне рисунка/штриховки/одежды, где просто есть 25% белых пикселей!
             exp_crop = img_np[ey1:ey2, ex1:ex2]
             exp_gray = cv2.cvtColor(exp_crop, cv2.COLOR_RGB2GRAY) if exp_crop.ndim == 3 else exp_crop
-            p75_bg = float(np.percentile(exp_gray, 75)) if exp_gray.size > 0 else 0.0
-            bright_mask = exp_gray >= max(200.0, p75_bg - 15.0)
-            bright_std = float(np.std(exp_gray[bright_mask])) if np.count_nonzero(bright_mask) >= 12 else 99.0
-            is_clean_bubble_bg = (p75_bg >= 224.0 and bright_std <= 14.5)
+            white_pixel_ratio = float(np.mean(exp_gray >= 228)) if exp_gray.size > 0 else 0.0
+            non_ink_mask = exp_gray >= 175
+            bg_std = float(np.std(exp_gray[non_ink_mask])) if int(np.count_nonzero(non_ink_mask)) >= 16 else 99.0
+            top_b = exp_gray[:3, :].ravel()
+            bot_b = exp_gray[max(0, exp_gray.shape[0] - 3) :, :].ravel()
+            left_b = exp_gray[:, :3].ravel()
+            right_b = exp_gray[:, max(0, exp_gray.shape[1] - 3) :].ravel()
+            perimeter_px = np.concatenate([top_b, bot_b, left_b, right_b])
+            perimeter_median = float(np.median(perimeter_px)) if perimeter_px.size > 0 else 0.0
+            perimeter_white_ratio = float(np.mean(perimeter_px >= 224)) if perimeter_px.size > 0 else 0.0
+
+            is_clean_bubble_bg = (
+                white_pixel_ratio >= 0.58
+                and bg_std <= 11.5
+                and perimeter_median >= 230.0
+                and perimeter_white_ratio >= 0.62
+            )
             is_free_orphan = not is_clean_bubble_bg
 
             rescued_count += 1
@@ -2819,7 +2934,7 @@ class MangaOCREngine:
                 {
                     "bbox": [ex1, ey1, ex2, ey2],
                     "text_bbox": self._compute_tight_ink_bbox(img_np, [ex1, ey1, ex2, ey2], [tx1, ty1, tx2, ty2], is_free_text=is_free_orphan),
-                    "confidence": round(float(otb["confidence"]), 4),
+                    "confidence": round(otb_conf, 4),
                     "is_free_text": is_free_orphan,
                     "_source": "rtdetr_rescued_text_bubble",
                 }
@@ -2936,10 +3051,12 @@ class MangaOCREngine:
 
         raw_detections = yolo_detections + rtdetr_bubbles
 
-        # 3. Дополнительно ищем светлые круглые/овальные облачка с текстом, которые могли пропустить нейросети
-        cv_bubbles = self._detect_missed_white_bubbles(img_np, raw_detections, min_box_size=min_box_size)
-        if cv_bubbles:
-            raw_detections.extend(cv_bubbles)
+        # 3. Резервный контурный поиск OpenCV запускаем ТОЛЬКО если нейросетевые детекторы (YOLOv8m + RT-DETR-v2)
+        # не нашли бабблов на странице (или если RT-DETR-v2 отключен), чтобы не превращать светлые детали одежды/фона в ложные бабблы
+        if len(raw_detections) == 0 or not (self._rtdetr_available and self._rtdetr_model is not None):
+            cv_bubbles = self._detect_missed_white_bubbles(img_np, raw_detections, min_box_size=min_box_size)
+            if cv_bubbles:
+                raw_detections.extend(cv_bubbles)
 
         if raw_detections:
             raw_detections = self._merge_and_nms_detections(
@@ -3492,17 +3609,20 @@ class MangaOCREngine:
                             nar_texts = [str(x).strip() for x in raw_res]
 
                 if len(nar_texts) == len(crops_pil):
-                    long_or_empty_indices = [
-                        idx for idx, txt in enumerate(nar_texts) if len(txt) >= 56 or not txt
+                    # ВАЖНО: Дочитываем через классический авторегрессионный MangaOCR ТОЛЬКО длинные монологи (len >= 54),
+                    # которые уперлись в потолок 64 токенов NAR-декодера!
+                    # Если manga-ocr-nar-small вернул пустую строку ("") на кропе — значит внутри нет японских букв,
+                    # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
+                    # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
+                    long_indices = [
+                        idx for idx, txt in enumerate(nar_texts) if len(txt) >= 54
                     ]
-                    if long_or_empty_indices:
-                        sub_crops = [crops_pil[idx] for idx in long_or_empty_indices]
+                    if long_indices:
+                        sub_crops = [crops_pil[idx] for idx in long_indices]
                         fallback_texts = self._run_classic_manga_ocr_batch(sub_crops, batch_size=batch_size)
-                        for idx, fb_txt in zip(long_or_empty_indices, fallback_texts):
+                        for idx, fb_txt in zip(long_indices, fallback_texts):
                             cur_nar = nar_texts[idx]
-                            if not cur_nar and fb_txt:
-                                nar_texts[idx] = fb_txt
-                            elif len(cur_nar) >= 56 and len(fb_txt) > len(cur_nar):
+                            if len(cur_nar) >= 54 and len(fb_txt) > len(cur_nar) and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(fb_txt):
                                 nar_texts[idx] = fb_txt
                     return nar_texts
             except Exception as nar_exc:
@@ -3572,12 +3692,11 @@ class MangaOCREngine:
         img_np = np.array(rgb_image)
 
         if mode == "long_only":
-            yolo_conf = 0.22
+            yolo_conf = max(0.25, self.conf_threshold)
             effective_min_box = max(min_box_size, 24)
         else:
-            # Сниженный порог 0.15 позволяет YOLOv8 и RT-DETR-v2 находить все круглые, овальные и нестандартные облачка
-            yolo_conf = min(self.conf_threshold, 0.15)
-            effective_min_box = max(16, min_box_size)
+            yolo_conf = max(0.22, self.conf_threshold)
+            effective_min_box = max(18, min_box_size)
 
         raw_detections = self._detect_bubbles(
             img_np,
@@ -3650,6 +3769,7 @@ class MangaOCREngine:
         batch_candidates_crops: list[Image.Image] = []
         batch_candidates_raw_np: list[np.ndarray] = []
         batch_candidates_meta: list[tuple[tuple[int, int, int, int, str], int, bool]] = []
+        rejected_hallucination_keys: set[tuple[int, int, int, int, str]] = set()
         for det in sorted_detections:
             x1, y1, x2, y2 = det["bbox"]
             is_free = bool(det.get("is_free_text", False))
@@ -3660,13 +3780,16 @@ class MangaOCREngine:
             ox1, oy1, ox2, oy2 = ocr_coords
             raw_crop_np = img_np[oy1:oy2, ox1:ox2]
             has_ink, ink_pixels = self._has_meaningful_ink(raw_crop_np, is_free_text=is_free)
-            if not has_ink and ocr_coords != [x1, y1, x2, y2]:
+            has_glyphs = has_ink and self._has_real_text_glyph_structure(raw_crop_np, is_free_text=is_free)
+            if (not has_ink or not has_glyphs) and ocr_coords != [x1, y1, x2, y2]:
                 # Фоллбэк на полный bbox баббла, если text_bbox оказался слишком узким
                 raw_crop_np = img_np[y1:y2, x1:x2]
                 has_ink, ink_pixels = self._has_meaningful_ink(raw_crop_np, is_free_text=is_free)
+                has_glyphs = has_ink and self._has_real_text_glyph_structure(raw_crop_np, is_free_text=is_free)
                 ocr_coords = [x1, y1, x2, y2]
-            if not has_ink:
+            if not has_ink or not has_glyphs:
                 self._page_ocr_cache[cache_key] = ""
+                rejected_hallucination_keys.add(cache_key)
                 continue
             padded_crop = self._crop_with_padding(rgb_image, ocr_coords, pad=8)
             batch_candidates_crops.append(padded_crop)
@@ -3683,11 +3806,12 @@ class MangaOCREngine:
                     [m[2] for m in batch_candidates_meta],
                     lang=resolved_lang,
                 )
-            for (c_key, ink_px, is_f), b_txt in zip(batch_candidates_meta, batch_texts):
-                if self._is_hallucinated_ocr_text(b_txt, ink_px, is_free_text=is_f):
+            for (c_key, ink_px, is_f), raw_np_item, b_txt in zip(batch_candidates_meta, batch_candidates_raw_np, batch_texts):
+                if self._is_hallucinated_ocr_text(b_txt, ink_px, is_free_text=is_f, crop_shape=raw_np_item.shape[:2]):
                     if b_txt and b_txt.strip():
                         hallucinated_count += 1
                     self._page_ocr_cache[c_key] = ""
+                    rejected_hallucination_keys.add(c_key)
                 else:
                     self._page_ocr_cache[c_key] = b_txt
 
@@ -3706,32 +3830,20 @@ class MangaOCREngine:
 
             if cache_key in self._page_ocr_cache:
                 recognized_text = self._page_ocr_cache[cache_key]
-                if not has_ink or self._is_hallucinated_ocr_text(recognized_text, ink_pixels, is_free_text=is_free):
+                if (
+                    not has_ink
+                    or cache_key in rejected_hallucination_keys
+                    or self._is_hallucinated_ocr_text(recognized_text, ink_pixels, is_free_text=is_free, crop_shape=raw_crop_np.shape[:2])
+                ):
                     recognized_text = ""
-                # Если на поджатом text_bbox получилась пустая строка, пробуем полный bbox баббла
-                if not recognized_text and ocr_coords != [x1, y1, x2, y2]:
-                    full_crop_np = img_np[y1:y2, x1:x2]
-                    full_padded = self._crop_with_padding(rgb_image, (x1, y1, x2, y2), pad=8)
-                    recognized_text = self._recognize_crop(
-                        full_padded,
-                        full_crop_np,
-                        resolved_lang,
-                        is_free_text=is_free,
-                    )
             else:
-                padded_crop = self._crop_with_padding(rgb_image, ocr_coords, pad=8)
-                recognized_text = self._recognize_crop(
-                    padded_crop,
-                    raw_crop_np,
-                    resolved_lang,
-                    is_free_text=is_free,
-                )
-                if not recognized_text and ocr_coords != [x1, y1, x2, y2]:
-                    full_crop_np = img_np[y1:y2, x1:x2]
-                    full_padded = self._crop_with_padding(rgb_image, (x1, y1, x2, y2), pad=8)
+                if not has_ink or not self._has_real_text_glyph_structure(raw_crop_np, is_free_text=is_free):
+                    recognized_text = ""
+                else:
+                    padded_crop = self._crop_with_padding(rgb_image, ocr_coords, pad=8)
                     recognized_text = self._recognize_crop(
-                        full_padded,
-                        full_crop_np,
+                        padded_crop,
+                        raw_crop_np,
                         resolved_lang,
                         is_free_text=is_free,
                     )
@@ -3802,24 +3914,17 @@ class MangaOCREngine:
             )
             block_id += 1
 
-        # Защита от непереведенных и полупустых страниц:
-        # если на странице были найдены речевые облачка (speech bubbles), но фильтр вздохов/длины отсеял все облачка
-        # (или больше половины облачков на странице), возвращаем облачка обратно, чтобы страница не осталась без перевода!
-        if filtered_bubble_SamePage_fallback and mode != "long_only":
+        # Защита от пустых страниц: срабатывает ТОЛЬКО если пользователь НЕ включал пропуск вздохов (skip_sighs=False),
+        # а фильтр min_text_length отсеял единственную короткую реплику на странице (не более 2 реальных бабблов).
+        # Никогда не возвращает отфильтрованные вздохи/шум при skip_sighs=True!
+        if filtered_bubble_SamePage_fallback and not skip_sighs and mode not in ("long_only", "dialogue_only", "bubbles_no_sighs"):
             kept_bubbles = sum(1 for b in output_blocks if not b.get("is_free_text"))
-            total_bubbles = kept_bubbles + len(filtered_bubble_SamePage_fallback)
-            if kept_bubbles == 0 or (kept_bubbles <= 2 and len(filtered_bubble_SamePage_fallback) >= kept_bubbles):
+            if kept_bubbles == 0 and len(filtered_bubble_SamePage_fallback) <= 2:
                 restored_by_empty_guard_count = len(filtered_bubble_SamePage_fallback)
                 restored_bboxes = {tuple(b["bbox"]) for b in filtered_bubble_SamePage_fallback}
                 filtered_items_diag = [
                     it for it in filtered_items_diag if tuple(it["bbox"]) not in restored_bboxes
                 ]
-                logger.info(
-                    "Защита от пропусков страницы: возвращено %d коротких реплик в бабблах (оставалось %d из %d).",
-                    len(filtered_bubble_SamePage_fallback),
-                    kept_bubbles,
-                    total_bubbles,
-                )
                 combined_all = output_blocks + filtered_bubble_SamePage_fallback
                 combined_all = self._sort_boxes_reading_order(combined_all, rtl=(resolved_lang == "ja"))
                 output_blocks = []

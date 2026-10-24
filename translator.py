@@ -276,6 +276,15 @@ CLOUD_CENSORSHIP_ERROR_REGEX = re.compile(
     r"sensitive\s+content|violat(?:es|ion)\s+.*policy|unsafe\s+content)"
 )
 
+# Известные галлюцинации OCR/LLM (например, «Taxi driver, take me to the best restaurant!» от MangaOCR/Sugoi на шумовых кропах)
+HALLUCINATION_TRANSLATION_REGEX = re.compile(
+    r"(?i)(?:\btaxi\s*driver\b.*\b(?:best\s*restau?rant|take\s*me)\b|"
+    r"\btake\s*me\s*to\s*the\s*best\s*restau?rant\b|"
+    r"タクシー運転手|一番(?:うまい|美味しい)(?:店|レストラン)|"
+    r"\bthank\s*you\s*for\s*watching\b|\bplease\s*subscribe\s*to\s*(?:my|the)\s*channel\b|"
+    r"\bвод[иi]тель\s*такси\b.*\bресторан\b|\bотвези\s*меня\s*в\s*лучший\s*ресторан\b)"
+)
+
 SHORT_INTERJECTIONS_RU = {
     "あ": "Ах!",
     "あっ": "Ах!",
@@ -2580,17 +2589,43 @@ class OllamaTranslator:
         return False
 
     @classmethod
-    def _is_bubble_refusal_value(cls, val_text: str) -> bool:
+    def _is_hallucinated_translation(cls, val_text: str, orig_text: str = "") -> bool:
         """
-        Проверяет, является ли отдельное значение внутри JSON-ответа заглушкой цензуры/отказа API
-        (например: 'Unable to translate', '[Unable to translate]', 'Cannot translate explicit content', 'Не удалось перевести').
+        Отсекает известные галлюцинации OCR/LLM («taxi driver take me to the best restaurant» и т.п.),
+        а также аномально длинные предложения, сгенерированные моделью из 1–3 шумовых символов.
         """
         if not val_text:
             return False
         s = str(val_text).strip()
         if not s:
             return False
-        if BUBBLE_REFUSAL_VALUE_REGEX.search(s) or REFUSAL_PATTERNS_REGEX.search(s):
+        if HALLUCINATION_TRANSLATION_REGEX.search(s):
+            return True
+        if orig_text:
+            if HALLUCINATION_TRANSLATION_REGEX.search(orig_text):
+                return True
+            clean_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+", "", orig_text)
+            words = [w for w in re.split(r"\s+", s) if w]
+            # Если исходный OCR-текст — это всего 1–2 символа (часто шум штриховки), а модель выдала длинное предложение из 8+ слов (>48 симв.)
+            if 0 < len(clean_orig) <= 2 and (len(s) > 48 or len(words) >= 8):
+                return True
+            if 0 < len(clean_orig) <= 4 and (len(s) > 85 or len(words) >= 14):
+                return True
+        return False
+
+    @classmethod
+    def _is_bubble_refusal_value(cls, val_text: str) -> bool:
+        """
+        Проверяет, является ли отдельное значение внутри JSON-ответа заглушкой цензуры/отказа API
+        (например: 'Unable to translate', '[Unable to translate]', 'Cannot translate explicit content', 'Не удалось перевести')
+        или известной фантомной галлюцинацией ('taxi driver take me to the best restaurant').
+        """
+        if not val_text:
+            return False
+        s = str(val_text).strip()
+        if not s:
+            return False
+        if BUBBLE_REFUSAL_VALUE_REGEX.search(s) or REFUSAL_PATTERNS_REGEX.search(s) or HALLUCINATION_TRANSLATION_REGEX.search(s):
             return True
         low = re.sub(r"[\[\]\(\)\<\>\*\_\"\'\`\!\.\,\:\;\-\—]+", " ", s.lower()).strip()
         low = re.sub(r"\s+", " ", low)
@@ -3133,8 +3168,8 @@ class OllamaTranslator:
             "stream": False,
             "think": False,
             "options": {
-                "temperature": 0.2,
-                "repeat_penalty": 1.15,
+                "temperature": 0.1 if "sugoi" in clean_name.lower() else 0.2,
+                "repeat_penalty": 1.10 if "sugoi" in clean_name.lower() else 1.15,
                 "num_ctx": self.num_ctx,
                 "num_predict": 2048,
             },
@@ -3506,10 +3541,10 @@ class OllamaTranslator:
         def _is_valid_target_translation(cand_str: str, orig_val: str = "") -> bool:
             if not cand_str or self._contains_cjk(cand_str):
                 return False
-            if self._is_bubble_refusal_value(cand_str):
+            if self._is_bubble_refusal_value(cand_str) or self._is_hallucinated_translation(cand_str, orig_val):
                 return False
             c = self._clean_translated_text(cand_str, target_lang=t_lang)
-            if not c or self._is_bubble_refusal_value(c):
+            if not c or self._is_bubble_refusal_value(c) or self._is_hallucinated_translation(c, orig_val):
                 return False
             if t_lang == "ru":
                 return bool(re.search(r"[А-Яа-яЁё]", c))
@@ -3832,10 +3867,10 @@ class OllamaTranslator:
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
             raw_val = translated_map.get(k, "")
-            if self._is_bubble_refusal_value(raw_val):
+            if self._is_bubble_refusal_value(raw_val) or self._is_hallucinated_translation(raw_val, orig_val):
                 raw_val = ""
             cleaned_val = self._clean_translated_text(raw_val, target_lang=t_lang)
-            if self._is_bubble_refusal_value(cleaned_val):
+            if self._is_bubble_refusal_value(cleaned_val) or self._is_hallucinated_translation(cleaned_val, orig_val):
                 cleaned_val = ""
             if t_lang == "ru" and cleaned_val and not re.search(r"[А-Яа-яЁё]", cleaned_val):
                 cleaned_val = ""
@@ -3912,13 +3947,23 @@ class OllamaTranslator:
 
         if external_cache:
             for ext_k, ext_v in list(external_cache.items()):
-                if not isinstance(ext_v, str) or self._is_bubble_refusal_value(ext_v):
+                orig_k = ext_k.split("||", 1)[1] if "||" in str(ext_k) else ""
+                if (
+                    not isinstance(ext_v, str)
+                    or self._is_bubble_refusal_value(ext_v)
+                    or self._is_hallucinated_translation(ext_v, orig_k)
+                ):
                     external_cache.pop(ext_k, None)
             if use_cache:
                 self.phrase_cache.update(external_cache)
 
         for pk, pv in list(self.phrase_cache.items()):
-            if not isinstance(pv, str) or self._is_bubble_refusal_value(pv):
+            orig_pk = pk.split("||", 1)[1] if "||" in str(pk) else ""
+            if (
+                not isinstance(pv, str)
+                or self._is_bubble_refusal_value(pv)
+                or self._is_hallucinated_translation(pv, orig_pk)
+            ):
                 self.phrase_cache.pop(pk, None)
 
         if not use_cache:
@@ -3989,6 +4034,7 @@ class OllamaTranslator:
                 is_bad_cached = (
                     self._contains_cjk(cached_cand)
                     or self._is_bubble_refusal_value(cached_cand)
+                    or self._is_hallucinated_translation(cached_cand, orig_raw)
                     or (t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", cached_cand))
                     or (t_lang == "en" and self._is_romaji_leak(cached_cand, orig_raw, "en"))
                 )
@@ -4038,6 +4084,8 @@ class OllamaTranslator:
                 if not cl or "=>" not in cl:
                     continue
                 lhs, rhs = [p.strip() for p in cl.split("=>", 1)]
+                if self._is_hallucinated_translation(rhs, lhs):
+                    continue
                 if t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", rhs):
                     continue
                 if t_lang == "en" and self._is_romaji_leak(rhs, lhs, "en"):

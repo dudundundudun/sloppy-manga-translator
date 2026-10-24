@@ -1,9 +1,13 @@
 /**
- * Background Service Worker (v1.0.0)
+ * Background Service Worker (v1.0.8)
  *
- * Изменения v1.0.0:
- * 1. Поддержка параметров `minFontSize`, `maxFontSize`, `detectFreeText` и целевого языка `romaji`.
- * 2. Поддержка остановки пакетного перевода папки (`STOP_FOLDER_TRANSLATION`) и продолжения с места остановки (`skip_existing: true`).
+ * Изменения v1.0.8:
+ * 1. Выделена команда `SET_ACTIVE_MODEL`, которая переключает только `selected_model` на сервере
+ *    без перезаписи/сброса сохраненного `unsloth_api_key` и других настроек `config.json`.
+ * 2. В `SAVE_SERVER_SETTINGS` передаются только явно заданные поля (пустой ключ не затирает серверный,
+ *    если пользователь явно не попросил очистить его), а также синхронизируются параметры фильтрации и верстки.
+ * 3. Добавлены команды `PULL_MODEL` и `GET_PULL_STATUS` для скачивания локальных моделей Ollama в 1 клик прямо из расширения.
+ * 4. Во все запросы перевода (`TRANSLATE_IMAGE`, `START_FOLDER_TRANSLATION`) передается `overflow_mode` и полный набор фильтров.
  */
 
 const SERVER_URLS = ["http://127.0.0.1:5000", "http://localhost:5000"];
@@ -70,7 +74,7 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
 
       if (res.status === 502 || res.status === 503) {
         lastError = new Error(
-          `HTTP ${res.status}: VPN в браузере перехватывает локальный адрес ${baseUrl}. Отключите прокси для 127.0.0.1.`
+          `HTTP ${res.status}: VPN или прокси перехватывает локальный адрес ${baseUrl}. Отключите прокси для 127.0.0.1.`
         );
         continue;
       }
@@ -101,16 +105,20 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
   throw lastError || new Error("Локальный сервер (127.0.0.1:5000) недоступен");
 }
 
-async function fetchImageAsDataUrl(imageUrl) {
+async function fetchImageAsDataUrl(imageUrl, refererUrl = null) {
   let lastErr = null;
 
   for (const credMode of ["omit", "include"]) {
     try {
-      const res = await fetch(imageUrl, {
+      const fetchOpts = {
         method: "GET",
         credentials: credMode,
         cache: "no-cache",
-      });
+      };
+      if (refererUrl) {
+        fetchOpts.referrer = refererUrl;
+      }
+      const res = await fetch(imageUrl, fetchOpts);
 
       if (!res.ok) {
         lastErr = new Error(`HTTP ${res.status} при скачивании картинки`);
@@ -182,21 +190,98 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           break;
         }
 
-        case "SAVE_SERVER_SETTINGS": {
+        case "SET_ACTIVE_MODEL": {
           const data = await callLocalServer(
             "/settings",
             {
               method: "POST",
               body: JSON.stringify({
-                unsloth_url: msg.unslothUrl,
-                unsloth_api_key: msg.unslothApiKey,
-                selected_model: msg.selectedModel,
-                auto_save_web_pages: msg.autoSaveWeb !== false,
-                web_save_dir: msg.webSaveDir || null,
+                selected_model: msg.selectedModel || "auto",
               }),
             },
             25000
           );
+          sendResponse({ ok: true, data });
+          break;
+        }
+
+        case "SAVE_SERVER_SETTINGS": {
+          const payload = {};
+          if (typeof msg.unslothUrl === "string" && msg.unslothUrl.trim()) {
+            payload.unsloth_url = msg.unslothUrl.trim();
+          }
+          if (typeof msg.unslothApiKey === "string") {
+            if (msg.unslothApiKey.trim() || msg.clearApiKey === true) {
+              payload.unsloth_api_key = msg.unslothApiKey.trim();
+            }
+          }
+          if (typeof msg.selectedModel === "string" && msg.selectedModel.trim()) {
+            payload.selected_model = msg.selectedModel.trim();
+          }
+          if (msg.autoSaveWeb !== undefined) {
+            payload.auto_save_web_pages = Boolean(msg.autoSaveWeb);
+          }
+          if (msg.webSaveDir !== undefined) {
+            payload.web_save_dir = msg.webSaveDir || null;
+          }
+          if (typeof msg.textFilterMode === "string" && msg.textFilterMode) {
+            payload.text_filter_mode = msg.textFilterMode;
+          }
+          if (msg.skipSighs !== undefined) {
+            payload.skip_sighs = Boolean(msg.skipSighs);
+          }
+          if (msg.skipSfx !== undefined) {
+            payload.skip_sfx = Boolean(msg.skipSfx);
+          }
+          if (msg.detectFreeText !== undefined) {
+            payload.detect_free_text = Boolean(msg.detectFreeText);
+          }
+          if (msg.minTextLength !== undefined) {
+            payload.min_text_length = Number(msg.minTextLength) || 2;
+          }
+          if (msg.minFontSize !== undefined) {
+            payload.min_font_size = Number(msg.minFontSize) || 12;
+          }
+          if (msg.maxFontSize !== undefined) {
+            payload.max_font_size = Number(msg.maxFontSize) || 32;
+          }
+          if (msg.uppercase !== undefined) {
+            payload.uppercase = Boolean(msg.uppercase);
+          }
+          if (typeof msg.overflowMode === "string" && msg.overflowMode) {
+            payload.overflow_mode = msg.overflowMode;
+          }
+
+          const data = await callLocalServer(
+            "/settings",
+            {
+              method: "POST",
+              body: JSON.stringify(payload),
+            },
+            25000
+          );
+          sendResponse({ ok: true, data });
+          break;
+        }
+
+        case "PULL_MODEL": {
+          const data = await callLocalServer(
+            "/pull_model",
+            {
+              method: "POST",
+              body: JSON.stringify({
+                model: msg.model,
+                set_as_default: msg.setAsDefault !== false,
+              }),
+            },
+            30000
+          );
+          sendResponse({ ok: true, data });
+          break;
+        }
+
+        case "GET_PULL_STATUS": {
+          const data = await callLocalServer("/pull_status", { method: "GET" }, 15000);
           sendResponse({ ok: true, data });
           break;
         }
@@ -226,7 +311,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             if (!msg.imageUrl) {
               throw new Error("Не найден URL картинки");
             }
-            base64Image = await fetchImageAsDataUrl(msg.imageUrl);
+            base64Image = await fetchImageAsDataUrl(msg.imageUrl, msg.pageUrl || null);
           }
 
           const cleanModel = msg.model && msg.model !== "auto" ? msg.model : null;
@@ -244,6 +329,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 uppercase: msg.uppercase !== false,
                 min_font_size: msg.minFontSize || 12,
                 max_font_size: msg.maxFontSize || 32,
+                overflow_mode: msg.overflowMode || "shrink",
                 detect_free_text: Boolean(msg.detectFreeText),
                 text_filter_mode: msg.textFilterMode || "dialogue_only",
                 skip_sighs: msg.skipSighs !== false,
@@ -281,7 +367,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 uppercase: msg.uppercase !== false,
                 min_font_size: msg.minFontSize || 12,
                 max_font_size: msg.maxFontSize || 32,
-                detect_free_text: msg.detectFreeText !== false,
+                overflow_mode: msg.overflowMode || "shrink",
+                detect_free_text: Boolean(msg.detectFreeText),
+                text_filter_mode: msg.textFilterMode || "dialogue_only",
+                skip_sighs: msg.skipSighs !== false,
+                skip_sfx: msg.skipSfx !== false,
+                min_text_length: msg.minTextLength || 2,
                 skip_existing: true,
                 open_when_done: true,
               }),
