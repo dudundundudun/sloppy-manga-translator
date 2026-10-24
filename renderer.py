@@ -246,7 +246,7 @@ class MangaRenderer:
         fonts_dir: str | Path = "fonts",
         max_font_size: int = 32,
         min_font_size: int = 12,
-        box_padding_ratio: float = 0.10,
+        box_padding_ratio: float = 0.05,
         line_spacing: int = 3,
         uppercase_comic_style: bool = True,
         overflow_mode: str = "shrink",
@@ -789,6 +789,120 @@ class MangaRenderer:
             return "full_box"
         return "none"
 
+    # Гласные и спецбуквы для правильного слогового и морфемного переноса (Русский + Английский + Ромадзи)
+    _VOWELS_RU = set("аеёиоуыэюяАЕЁИОУЫЭЮЯ")
+    _VOWELS_EN = set("aeiouyAEIOUY")
+    _VOWELS_ALL = _VOWELS_RU | _VOWELS_EN
+    _NO_START_NEXT_RU = set("йъьыЙЪЬЫ")
+    _MODIFIERS_RU = set("ъьЪЬ")
+
+    # Английские неделимые буквосочетания (диграфы гласных и согласных), которые нельзя разрывать посередине
+    _EN_UNBREAKABLE_DIGRAPHS = {
+        "aa", "ae", "ai", "ao", "au", "ay", "ea", "ee", "ei", "eo", "eu", "ey",
+        "ia", "ie", "io", "iu", "oa", "oe", "oi", "oo", "ou", "oy", "ua", "ue", "ui", "uo",
+        "sh", "ch", "th", "ph", "wh", "gh", "ck", "ng", "qu", "gu",
+    }
+    # Английские приставки и суффиксы для естественного морфемного переноса длинных слов
+    _EN_PREFIXES = ("under", "inter", "trans", "super", "hyper", "over", "anti", "auto", "semi", "non", "dis", "mis", "pre", "pro", "sub", "out", "un", "re", "in", "im", "il", "ir", "de", "ex")
+    _EN_SUFFIXES = ("ingly", "ement", "ation", "ition", "ously", "ively", "fully", "lessly", "ness", "ment", "tion", "sion", "able", "ible", "ably", "ibly", "less", "ship", "ward", "wise", "ing", "ful", "ous", "ive", "est")
+
+    # Однобуквенные предлоги, союзы, артикли и местоимения (RU + EN), которые привязываются к следующему слову
+    _SINGLE_LETTER_BIND_NEXT = {"в", "к", "с", "у", "о", "а", "и", "a", "i"}
+    # Короткие предлоги, артикли, союзы и вспомогательные слова (RU + EN), которые не должны «висеть» на конце строки
+    _HANGING_SHORT_WORDS = {
+        "в", "к", "с", "у", "о", "а", "и", "я",
+        "не", "ни", "на", "но", "по", "за", "из", "от", "до", "ко", "со", "во", "об", "про", "без", "для", "под", "над", "при",
+        "i", "a", "an", "the", "to", "in", "on", "of", "at", "by", "or", "so", "no", "my", "we", "he", "it", "is", "be", "do", "as", "if", "up", "us", "am", "for", "and", "but", "not", "his", "her", "our", "its", "who",
+    }
+    # Частицы и символы, которые нельзя отрывать от предыдущего слова на новую строку
+    _ENCLITIC_PARTICLES = {"бы", "б", "ли", "ль", "же", "ж", "то", "ка", "—", "-", "–", "!", "?", "?!", "!?", "...", "…", "~", "♥", "♡", "★", "☆", "♪", "♫"}
+
+    @classmethod
+    def _find_syllable_split_indices(cls, core_word: str, min_part_len: int = 4) -> list[int]:
+        """
+        Возвращает список допустимых индексов разреза `i` (`core_word[:i] + "-"`, `core_word[i:]`)
+        по правилам как русской, так и английской орфографии/типографики:
+        - Переносятся только сверхдлинные слова (от 12+ букв), при этом минимальная длина обеих частей —
+          не менее `min_part_len` букв (минимум 4 буквы до и после дефиса, никаких 1–3 букв!).
+        - В английских словах никогда не рвутся апострофные сокращения (`don't`, `everything's`),
+          гласные и согласные диграфы (`ea`, `ie`, `ou`, `oo`, `sh`, `ch`, `th`, `ph`, `ck`, `qu`),
+          и учитываются морфемные границы приставок/суффиксов (`un-`, `under-`, `-ing`, `-tion`, `-ably`, `-ment`).
+        - В русских словах соблюдаются правила слогораздела (Грамота.ру: запрет отрыва `й`, `ъ`, `ь`, `ы`,
+          разделение двойных согласных посередине).
+        """
+        if "'" in core_word or "’" in core_word:
+            return []
+
+        n = len(core_word)
+        if n < max(13, min_part_len * 2 + 2):
+            return []
+
+        low_word = core_word.lower()
+        is_latin = bool(re.search(r"[a-zA-Z]", core_word))
+
+        # Для английских слов сначала проверяем естественные морфемные границы (суффиксы и длинные приставки)
+        morpheme_indices: set[int] = set()
+        if is_latin:
+            for pfx in cls._EN_PREFIXES:
+                if low_word.startswith(pfx) and min_part_len <= len(pfx) <= n - min_part_len:
+                    morpheme_indices.add(len(pfx))
+            for sfx in cls._EN_SUFFIXES:
+                idx_s = n - len(sfx)
+                if low_word.endswith(sfx) and min_part_len <= idx_s <= n - min_part_len:
+                    # Если перед суффиксом удвоенная согласная (напр. STOP-PING, RUN-NING), разрез между ними
+                    morpheme_indices.add(idx_s)
+
+        valid_splits: list[int] = []
+        for i in range(min_part_len, n - min_part_len + 1):
+            left = core_word[:i]
+            right = core_word[i:]
+            left_low = low_word[:i]
+            right_low = low_word[i:]
+
+            # В обеих частях обязательно должна быть хотя бы одна настоящая гласная
+            if not any(ch in cls._VOWELS_ALL for ch in left):
+                continue
+            if not any(ch in cls._VOWELS_ALL for ch in right):
+                continue
+            # В английском немое конечное 'e' (напр. -ve, -ce, -le, -se, -te) не образует слог само по себе
+            if is_latin and sum(1 for ch in right_low if ch in cls._VOWELS_EN) == 1 and right_low.endswith("e"):
+                continue
+
+            if right[0] in cls._NO_START_NEXT_RU:
+                continue
+
+            # Для английского не разрываем неделимые диграфы (ea, ie, ou, oo, th, sh, ch, ph, ck, ng, qu)
+            if is_latin:
+                boundary_pair = low_word[i - 1 : i + 1]
+                if boundary_pair in cls._EN_UNBREAKABLE_DIGRAPHS:
+                    continue
+                if i in morpheme_indices:
+                    valid_splits.append(i)
+                    continue
+
+            # Нельзя разбивать удвоенную согласную иначе как посередине
+            if len(right) >= 2 and right_low[0] == right_low[1] and right[0] not in cls._VOWELS_ALL:
+                continue
+            if len(left) >= 2 and left_low[-1] == left_low[-2] and left[-1] not in cls._VOWELS_ALL:
+                continue
+
+            prev_ch = left[-1]
+            next_ch = right[0]
+            is_prev_vowel = prev_ch in cls._VOWELS_ALL
+            is_next_vowel = next_ch in cls._VOWELS_ALL
+
+            # Не рвем зияния гласных
+            if is_prev_vowel and is_next_vowel:
+                continue
+
+            # Не отрываем согласную от следующей гласной (разрез должен быть либо Г-СВ, либо С-С)
+            if not is_prev_vowel and is_next_vowel and prev_ch not in cls._MODIFIERS_RU:
+                continue
+
+            valid_splits.append(i)
+
+        return valid_splits
+
     def _split_long_word(
         self,
         draw: ImageDraw.ImageDraw,
@@ -796,23 +910,103 @@ class MangaRenderer:
         font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
         max_width: int,
     ) -> list[str]:
-        if self._measure_line_width(draw, word, font) <= max_width or len(word) <= 4:
+        """
+        Аккуратно переносит только сверхдлинные русские и английские слова (от 12+ букв) строго по слогам/морфемам
+        и максимум на 2 части, гарантируя минимум 4 буквы до и после дефиса.
+        """
+        if self._measure_line_width(draw, word, font) <= max_width:
             return [word]
 
-        parts: list[str] = []
-        current = ""
-        for idx, ch in enumerate(word):
-            candidate = current + ch
-            is_last = idx == len(word) - 1
-            test_str = candidate if is_last else candidate + "-"
-            if self._measure_line_width(draw, test_str, font) <= max_width or len(current) < 2:
-                current = candidate
+        # Если в слове уже есть дефис (например, «КТО-НИБУДЬ», «SELF-CONTROL», «WELL-KNOWN»), бьем по нему
+        if "-" in word and not word.startswith("-") and not word.endswith("-"):
+            hyph_parts = word.split("-")
+            if len(hyph_parts) == 2 and len(hyph_parts[0]) >= 3 and len(hyph_parts[1]) >= 3:
+                p1 = hyph_parts[0] + "-"
+                p2 = hyph_parts[1]
+                if self._measure_line_width(draw, p1, font) <= max_width * 1.25:
+                    return [p1, p2]
+
+        # Не разбиваем английские слова с апострофами (DON'T, EVERYTHING'S, SHOULDN'T)
+        if "'" in word or "’" in word:
+            return [word]
+
+        m = re.match(r"^([^A-Za-zА-Яа-яЁё0-9]*)([A-Za-zА-Яа-яЁё0-9]+)(.*)$", word)
+        if not m:
+            return [word]
+
+        lead_punct, core, trail_punct = m.group(1), m.group(2), m.group(3)
+        # Слова короче 12 букв (и русские, и английские) НИКОГДА не рвем дефисами!
+        if len(core) < 13:
+            return [word]
+
+        split_candidates = self._find_syllable_split_indices(core, min_part_len=4)
+        if not split_candidates:
+            return [word]
+
+        mid = len(core) / 2.0
+        fitting_splits: list[tuple[float, int]] = []
+        for idx in split_candidates:
+            part1 = f"{lead_punct}{core[:idx]}-"
+            part2 = f"{core[idx:]}{trail_punct}"
+            w1 = self._measure_line_width(draw, part1, font)
+            w2 = self._measure_line_width(draw, part2, font)
+            if w1 <= max_width * 1.22 and w2 <= max_width * 1.25:
+                fitting_splits.append((abs(idx - mid), idx))
+
+        if fitting_splits:
+            fitting_splits.sort(key=lambda item: item[0])
+            best_idx = fitting_splits[0][1]
+            return [f"{lead_punct}{core[:best_idx]}-", f"{core[best_idx:]}{trail_punct}"]
+
+        return [word]
+
+    @classmethod
+    def _preprocess_tokens_no_orphans(cls, raw_words: list[str]) -> list[str]:
+        """
+        1. Присоединяет одиночные знаки препинания и частицы (`бы`, `ли`, `же`, `—`, `♥`) к предыдущему слову.
+        2. Присоединяет однобуквенные предлоги, союзы, артикли и местоимения (`в`, `к`, `с`, `у`, `о`, `а`, `и`, `a`, `i`)
+           к следующему слову (если следующее слово не сверхдлинное <= 8 букв), чтобы они никогда не оставались
+           в одиночку на строке и не висели оторванными в конце строки.
+        """
+        if not raw_words:
+            return []
+        step1: list[str] = []
+        for tok in raw_words:
+            clean_low = re.sub(r"[^a-zA-Zа-яА-ЯёЁ]", "", tok).lower()
+            if step1 and (tok in cls._ENCLITIC_PARTICLES or (clean_low in {"бы", "б", "ли", "ль", "же", "ж"} and len(clean_low) <= 2)):
+                step1[-1] = f"{step1[-1]} {tok}"
             else:
-                parts.append(current + "-")
-                current = ch
-        if current:
-            parts.append(current)
-        return parts
+                step1.append(tok)
+
+        merged: list[str] = []
+        i = 0
+        while i < len(step1):
+            tok = step1[i]
+            clean_low = re.sub(r"^[^a-zA-Zа-яА-ЯёЁ]+|[^a-zA-Zа-яА-ЯёЁ]+$", "", tok).lower()
+            has_trailing_punct = bool(tok and tok[-1] in ".,!?;:…»)")
+            if (
+                i + 1 < len(step1)
+                and not has_trailing_punct
+                and clean_low in cls._SINGLE_LETTER_BIND_NEXT
+                and len(clean_low) == 1
+            ):
+                next_clean = re.sub(r"[^a-zA-Zа-яА-ЯёЁ]", "", step1[i + 1])
+                if len(next_clean) <= 8:
+                    merged.append(f"{tok} {step1[i + 1]}")
+                    i += 2
+                    continue
+            merged.append(tok)
+            i += 1
+        return merged
+
+    @classmethod
+    def _is_hanging_short_word(cls, token: str) -> bool:
+        """Проверяет, является ли последнее слово строки коротким предлогом/артиклем/союзом (RU + EN), который плохо смотрится в конце строки."""
+        last_piece = token.rsplit(" ", 1)[-1]
+        if last_piece and last_piece[-1] in ".,!?;:…»)":
+            return False
+        clean = re.sub(r"^[^a-zA-Zа-яА-ЯёЁ']+|[^a-zA-Zа-яА-ЯёЁ']+$", "", last_piece).lower()
+        return clean in cls._HANGING_SHORT_WORDS
 
     def _wrap_text_pixel(
         self,
@@ -827,51 +1021,102 @@ class MangaRenderer:
         if not raw_words:
             return ""
 
-        edge_width = max(12, int(max_width * 0.78)) if elliptical_shaping else max_width
+        tokens = self._preprocess_tokens_no_orphans(raw_words)
+        if not tokens:
+            return ""
 
-        if len(raw_words) <= 3 and self._measure_line_width(draw, text, font) <= edge_width:
-            return text
+        edge_width = max(16, int(max_width * 0.85)) if elliptical_shaping else max_width
+
+        # Если вся фраза короткая (1–2 токена) и помещается на 1 строку — не разбиваем
+        full_joined = " ".join(tokens)
+        if len(tokens) <= 2 and self._measure_line_width(draw, full_joined, font) <= max_width * 1.08:
+            return full_joined
 
         words: list[str] = []
-        for w in raw_words:
+        for w in tokens:
             w_len = self._measure_line_width(draw, w, font)
-            if allow_hyphenation and w_len > edge_width:
-                words.extend(self._split_long_word(draw, w, font, edge_width))
-            elif allow_hyphenation and w_len > max_width:
+            if allow_hyphenation and w_len > max_width * 1.15 and " " not in w:
                 words.extend(self._split_long_word(draw, w, font, max_width))
             else:
                 words.append(w)
 
+        n = len(words)
+        if n == 1:
+            return words[0]
+
+        word_widths = [self._measure_line_width(draw, w, font) for w in words]
+        space_w = max(2.0, self._measure_line_width(draw, " ", font))
+
+        def _line_width(i: int, j: int) -> float:
+            return sum(word_widths[i:j]) + space_w * max(0, j - i - 1)
+
+        total_text_w = sum(word_widths) + space_w * max(0, n - 1)
+        max_single_w = max(word_widths, default=float(max_width))
+        eff_max_w = max(float(max_width), max_single_w)
+
+        est_lines = max(1, int(math.ceil(total_text_w / max(1.0, eff_max_w * (0.84 if elliptical_shaping else 0.92)))))
+        if elliptical_shaping and total_text_w > edge_width and est_lines == 1:
+            est_lines = 2
+        ideal_line_w = min(eff_max_w * 0.92, max(eff_max_w * 0.58, total_text_w / max(1, est_lines)))
+
+        INF = 1e18
+        dp_cost = [INF] * (n + 1)
+        dp_next = [n] * (n + 1)
+        dp_cost[n] = 0.0
+
+        for i in range(n - 1, -1, -1):
+            is_first = (i == 0)
+            line_cap = (eff_max_w * 0.88 if (elliptical_shaping and is_first and n >= 3) else eff_max_w)
+            for j in range(i + 1, n + 1):
+                lw = _line_width(i, j)
+                if j > i + 1 and lw > eff_max_w * 1.08:
+                    break
+
+                is_last = (j == n)
+                cost = 0.0
+
+                if elliptical_shaping and (is_first or is_last) and n >= 3 and lw > line_cap:
+                    over = lw - line_cap
+                    cost += (over * over) * 3.0
+
+                target_for_line = ideal_line_w * (0.86 if (elliptical_shaping and (is_first or is_last) and n >= 3) else 1.0)
+                diff = target_for_line - lw
+                if is_last:
+                    if j - i == 1 and n >= 3 and lw < ideal_line_w * 0.42:
+                        cost += (ideal_line_w * 0.55 - lw) ** 2 * 1.8
+                    else:
+                        cost += (diff * diff) * 0.35
+                else:
+                    cost += (diff * diff) * 1.0
+
+                if not is_last and self._is_hanging_short_word(words[j - 1]):
+                    cost += (eff_max_w * 0.85) ** 2
+
+                # Дополнительный штраф, если на строке остается одно-единственное однобуквенное слово («В», «А», «I», «A»)
+                if j - i == 1 and len(re.sub(r"[^a-zA-Zа-яА-ЯёЁ]", "", words[i])) == 1:
+                    cost += (eff_max_w * 1.5) ** 2
+
+                if j > i + 1:
+                    for k in range(i, j - 1):
+                        if words[k].endswith("-"):
+                            cost += (eff_max_w * 2.0) ** 2
+
+                cost += (eff_max_w * 0.28) ** 2
+
+                total_c = cost + dp_cost[j]
+                if total_c < dp_cost[i]:
+                    dp_cost[i] = total_c
+                    dp_next[i] = j
+
         lines: list[str] = []
-        current_line = words[0]
-
-        for word in words[1:]:
-            line_limit = edge_width if (elliptical_shaping and len(lines) == 0) else max_width
-            test_line = f"{current_line} {word}"
-            if self._measure_line_width(draw, test_line, font) <= line_limit:
-                current_line = test_line
-            else:
-                lines.append(current_line)
-                current_line = word
-
-        lines.append(current_line)
-
-        if elliptical_shaping and len(lines) >= 3:
-            last_line = lines[-1]
-            if self._measure_line_width(draw, last_line, font) > edge_width:
-                last_words = last_line.split()
-                if len(last_words) >= 2:
-                    sub_lines: list[str] = []
-                    cur = last_words[0]
-                    for lw in last_words[1:]:
-                        cand = f"{cur} {lw}"
-                        if self._measure_line_width(draw, cand, font) <= edge_width:
-                            cur = cand
-                        else:
-                            sub_lines.append(cur)
-                            cur = lw
-                    sub_lines.append(cur)
-                    lines = lines[:-1] + sub_lines
+        curr = 0
+        while curr < n:
+            nxt = dp_next[curr]
+            if nxt <= curr:
+                nxt = curr + 1
+            line_tokens = words[curr:nxt]
+            lines.append(" ".join(line_tokens))
+            curr = nxt
 
         return "\n".join(lines)
 
@@ -886,6 +1131,7 @@ class MangaRenderer:
         target_h: int,
         elliptical: bool = True,
         align: str = "center",
+        width_tolerance_ratio: float = 1.0,
     ) -> bool:
         lines = wrapped_text.split("\n")
         if self._needs_special_rendering(font, wrapped_text):
@@ -906,7 +1152,8 @@ class MangaRenderer:
             total_w = bbox[2] - bbox[0]
             total_h = bbox[3] - bbox[1]
 
-        if total_w > target_w or total_h > target_h:
+        allowed_w = target_w * max(1.0, float(width_tolerance_ratio))
+        if total_w > allowed_w or total_h > target_h:
             return False
 
         if not elliptical:
@@ -915,8 +1162,8 @@ class MangaRenderer:
         if len(lines) <= 1:
             return True
 
-        rx = (target_w / 2.0) * 1.08
-        ry = (target_h / 2.0) * 1.12
+        rx = (allowed_w / 2.0) * 1.14
+        ry = (target_h / 2.0) * 1.16
         if rx <= 1.0 or ry <= 1.0:
             return True
 
@@ -925,10 +1172,13 @@ class MangaRenderer:
 
         for idx, line in enumerate(lines):
             cy = top_y + (idx + 0.5) * line_h_avg
-            norm_y = min(0.95, abs(cy) / ry)
-            chord_w = 2.0 * rx * math.sqrt(max(0.15, 1.0 - (norm_y**2)))
+            norm_y = min(0.92, abs(cy) / ry)
+            chord_w = 2.0 * rx * math.sqrt(max(0.24, 1.0 - (norm_y**2)))
             line_w = self._measure_line_width(draw, line, font) + 2 * stroke_w
-            if line_w > chord_w:
+            if line.strip().count(" ") <= 1:
+                if line_w > allowed_w:
+                    return False
+            elif line_w > max(chord_w, allowed_w * 0.85):
                 return False
 
         return True
@@ -1029,6 +1279,7 @@ class MangaRenderer:
         def _evaluate_font_size(
             font_size: int,
             allow_hyphenation: bool,
+            width_slack: float = 1.0,
         ) -> tuple[bool, str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int]:
             font = self._get_font(font_size, font_family_path=font_family_path)
             stroke_w = self._compute_stroke_width(
@@ -1038,11 +1289,15 @@ class MangaRenderer:
                 stroke_width_override=stroke_width_override,
             )
             spacing = self._get_line_spacing(font_size, style_preset=preset)
+            eff_wrap_w = max(12, int(round(target_w * width_slack)))
+            if max_expand_w and eff_wrap_w > max_expand_w:
+                eff_wrap_w = max(target_w, max_expand_w)
+            eff_tol = eff_wrap_w / max(1.0, float(target_w))
             wrapped = self._wrap_text_pixel(
                 draw,
                 text,
                 font,
-                target_w,
+                eff_wrap_w,
                 allow_hyphenation=allow_hyphenation,
                 elliptical_shaping=use_ellipse,
             )
@@ -1056,6 +1311,7 @@ class MangaRenderer:
                 target_h,
                 elliptical=use_ellipse,
                 align=align,
+                width_tolerance_ratio=eff_tol,
             )
             return fits, wrapped, font, stroke_w, spacing
 
@@ -1063,11 +1319,12 @@ class MangaRenderer:
             low_bound: int,
             high_bound: int,
             allow_hyphenation: bool,
+            width_slack: float = 1.0,
         ) -> tuple[str, ImageFont.FreeTypeFont | ImageFont.ImageFont, int, int, int] | None:
             if high_bound < low_bound:
                 return None
 
-            fits_hi, wrap_hi, font_hi, stroke_hi, space_hi = _evaluate_font_size(high_bound, allow_hyphenation)
+            fits_hi, wrap_hi, font_hi, stroke_hi, space_hi = _evaluate_font_size(high_bound, allow_hyphenation, width_slack)
             if fits_hi:
                 return wrap_hi, font_hi, stroke_hi, space_hi, high_bound
 
@@ -1077,7 +1334,7 @@ class MangaRenderer:
 
             while low <= high:
                 mid = (low + high) // 2
-                fits, wrapped, font, stroke_w, spacing = _evaluate_font_size(mid, allow_hyphenation)
+                fits, wrapped, font, stroke_w, spacing = _evaluate_font_size(mid, allow_hyphenation, width_slack)
                 if fits:
                     best = (wrapped, font, stroke_w, spacing, mid)
                     low = mid + 1
@@ -1087,22 +1344,27 @@ class MangaRenderer:
             if best is not None:
                 best_fs = best[4]
                 for probe_fs in range(min(high_bound - 1, best_fs + 2), best_fs, -1):
-                    p_fits, p_wrap, p_font, p_stroke, p_space = _evaluate_font_size(probe_fs, allow_hyphenation)
+                    p_fits, p_wrap, p_font, p_stroke, p_space = _evaluate_font_size(probe_fs, allow_hyphenation, width_slack)
                     if p_fits:
                         return p_wrap, p_font, p_stroke, p_space, probe_fs
             return best
 
-        # Проход 1: бинарный поиск без переносов слов (allow_hyphenation=False)
-        best_no_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=False)
+        # Проход 1: бинарный поиск без переносов слов (allow_hyphenation=False, строго в пределах баббла)
+        best_no_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=False, width_slack=1.08)
         if best_no_hyph is not None:
             return (*best_no_hyph, True)
 
-        # Проход 2: бинарный поиск с разрешенными переносами длинных слов (allow_hyphenation=True)
-        # В режимах overflow (Вариант Б) и expand_bubble (Вариант В) не дробим слова дефисами в узком столбике,
-        # если текст все равно выйдет за рамки или расширит баббл!
+        # Проход 2: разрешаем легкий выход длинных целых слов за поля узкого баббла по горизонтали (до +50% ширины),
+        # чтобы слова до 12 букв (и русские, и английские: «UNBELIEVABLY», «ПОЖАЛУЙСТА!») вообще не дробились дефисами!
+        slack_cap = max(min_lim, min(start_size, max(24 if unconstrained_size else 19, min_lim)))
+        best_slack_no_hyph = _binary_search_best_fit(min_lim, slack_cap, allow_hyphenation=False, width_slack=1.58)
+        if best_slack_no_hyph is not None:
+            return (*best_slack_no_hyph, True)
+
+        # Проход 3: аккуратный слоговой/морфемный перенос только для сверхдлинных слов (от 12+ букв, минимум по 4 буквы с каждой стороны)
         if overflow_mode == "shrink":
-            hyph_start = max(min_lim, min(start_size, max(28 if unconstrained_size else 22, min_lim)))
-            best_with_hyph = _binary_search_best_fit(min_lim, hyph_start, allow_hyphenation=True)
+            hyph_start = max(min_lim, min(start_size, max(24 if unconstrained_size else 18, min_lim)))
+            best_with_hyph = _binary_search_best_fit(min_lim, hyph_start, allow_hyphenation=True, width_slack=1.35)
             if best_with_hyph is not None:
                 return (*best_with_hyph, True)
 
@@ -1131,13 +1393,15 @@ class MangaRenderer:
             )
             return wrapped, min_font, min_stroke, min_spacing, min_lim, False
 
-        wrap_limit = max(target_w, int(min_lim * 2.5)) if min_lim == max_lim else target_w
+        wrap_limit = max(int(target_w * 1.58), int(min_lim * 6.8))
+        if max_expand_w and wrap_limit > max_expand_w:
+            wrap_limit = max(target_w, max_expand_w)
         wrapped = self._wrap_text_pixel(
             draw,
             text,
             min_font,
             wrap_limit,
-            allow_hyphenation=(min_lim != max_lim),
+            allow_hyphenation=False,
             elliptical_shaping=False,
         )
         return wrapped, min_font, min_stroke, min_spacing, min_lim, False
@@ -1369,8 +1633,8 @@ class MangaRenderer:
 
             # Вариант Б (overflow): если текст выходит за рамки баббла и не задана ручная обводка,
             # усиливаем контрастную обводку (минимум 4px), чтобы буквы идеально читались поверх контура баббла!
-            if block_overflow_mode == "overflow" and is_overflowing_box and eff_stroke_override is None:
-                stroke_w = max(stroke_w, 4)
+            if is_overflowing_box and eff_stroke_override is None:
+                stroke_w = max(stroke_w, 4 if block_overflow_mode == "overflow" else 3)
 
             needs_rich_symbols = self._needs_special_rendering(font, wrapped_text)
             rich_layer: Image.Image | None = None
