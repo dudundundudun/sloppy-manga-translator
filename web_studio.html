@@ -4731,10 +4731,13 @@
       const uUrl = document.getElementById("inp-unsloth-url").value.trim();
       const apiKey = document.getElementById("inp-api-key").value.trim();
       updateDeepSeekPresetCards(mod);
+      const payload = { selected_model: mod };
+      if (uUrl) payload.unsloth_url = uUrl;
+      if (apiKey) payload.unsloth_api_key = apiKey;
       await fetch("/settings", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, unsloth_api_key: apiKey })
+        body: JSON.stringify(payload)
       });
       await loadHealth(false);
     }
@@ -7318,10 +7321,35 @@
       }
     }
 
+    let isRetranslatingSingleBlock = false;
     async function retranslateFromInlinePopup(ev, useVlmOcr = false) {
-      if (!popupBlockId) return;
-      await retranslateSingleBlockById(popupBlockId, ev, useVlmOcr);
-      if (popupBlockId) populateInlinePopup(popupBlockId);
+      if (!popupBlockId || isRetranslatingSingleBlock) return;
+      const btnEl = ev && ev.currentTarget ? ev.currentTarget : null;
+      const origBtnHtml = btnEl ? btnEl.innerHTML : "";
+      const allRetrBtns = document.querySelectorAll("#inline-bubble-popup .btn-retranslate-block");
+      allRetrBtns.forEach(b => { b.disabled = true; b.style.opacity = "0.6"; });
+      if (btnEl) {
+        btnEl.innerHTML = useVlmOcr ? "⏳ VLM..." : "⏳ ИИ...";
+      }
+      try {
+        await retranslateSingleBlockById(popupBlockId, ev, useVlmOcr);
+        if (popupBlockId) {
+          populateInlinePopup(popupBlockId);
+          const ta = document.getElementById("popup-textarea");
+          if (ta) {
+            ta.style.transition = "box-shadow 0.25s ease, border-color 0.25s ease";
+            ta.style.borderColor = "var(--mint)";
+            ta.style.boxShadow = "0 0 0 2px rgba(52, 211, 153, 0.45)";
+            setTimeout(() => {
+              ta.style.borderColor = "";
+              ta.style.boxShadow = "";
+            }, 900);
+          }
+        }
+      } finally {
+        allRetrBtns.forEach(b => { b.disabled = false; b.style.opacity = ""; });
+        if (btnEl && origBtnHtml) btnEl.innerHTML = origBtnHtml;
+      }
     }
 
     async function clearTextFromInlinePopup(ev) {
@@ -8266,8 +8294,8 @@
 
     async function retranslateSingleBlockById(blockId, ev, useVlmOcr = false) {
       if (ev) ev.stopPropagation();
-      if (!selectedPage) return;
-      syncInputsToCurrentBlocks();
+      if (!selectedPage || isRetranslatingSingleBlock) return;
+      isRetranslatingSingleBlock = true;
       pushPageHistorySnapshot();
       sayMiko(
         useVlmOcr
@@ -8310,9 +8338,13 @@
         renderBlocksEditor();
         highlightBlock(blockId, false);
         if (popupBlockId === blockId) populateInlinePopup(blockId);
-        sayMiko(`Блок #${blockId} успешно переведен заново: «${data.updated_block?.translated_text || ""}»! 🌸`);
+        const updOrig = data.updated_block?.original_text || "";
+        const updTr = data.updated_block?.translated_text || "";
+        sayMiko(`Блок #${blockId} переведен заново: «${updOrig}» ➔ «${updTr}»! 🌸`);
       } catch (e) {
         sayMiko(`Ошибка связи при переводе блока #${blockId}: ${e.message}`);
+      } finally {
+        isRetranslatingSingleBlock = false;
       }
     }
 

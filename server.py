@@ -4066,7 +4066,11 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
         manifest["phrase_cache"] = {}
     phrase_cache: dict[str, str] = dict(manifest["phrase_cache"])
     rolling_ctx = manifest.get("rolling_context")
-    context_lines = [str(x) for x in rolling_ctx[-10:]] if isinstance(rolling_ctx, list) and rolling_ctx else None
+    context_lines = [
+        str(x)
+        for x in (rolling_ctx[-10:] if isinstance(rolling_ctx, list) else [])
+        if str(x) and not str(x).lower().strip().endswith("=> twitch")
+    ] or None
 
     if not new_block["translated_text"] and orig_text:
         active_mod = await translator_engine.resolve_model(payload.ollama_model)
@@ -4084,6 +4088,26 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
         if translated_list:
             new_block = _ensure_block_clean_bbox(dict(translated_list[0]))
             new_block["is_deleted"] = False
+        if not str(new_block.get("translated_text") or "").strip():
+            alt_mod = None
+            if not active_mod.startswith("unsloth::") and translator_engine.unsloth_api_key:
+                alt_mod = "unsloth::deepseek-v4-flash"
+            elif active_mod.startswith("unsloth::"):
+                alt_mod = await translator_engine._resolve_local_fallback_model(target_lang=payload.target_lang)
+            if alt_mod and alt_mod != active_mod:
+                alt_list = await translator_engine.translate_blocks(
+                    blocks=[new_block],
+                    source_lang=det_lang,
+                    target_lang=payload.target_lang,
+                    model=alt_mod,
+                    context_lines=context_lines,
+                    external_cache=phrase_cache,
+                    use_cache=False,
+                    skip_sighs=False,
+                )
+                if alt_list and str(alt_list[0].get("translated_text") or "").strip():
+                    new_block = _ensure_block_clean_bbox(dict(alt_list[0]))
+                    new_block["is_deleted"] = False
 
     existing_blocks.append(new_block)
 
@@ -4208,22 +4232,35 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
         raise HTTPException(status_code=404, detail=f"Блок #{payload.block_id} не найден.")
 
     orig_t = str(target_blk.get("original_text") or "").strip()
+    old_tr_val = str(target_blk.get("translated_text") or "").strip()
     det_lang = payload.lang if payload.lang in ("ja", "ko", "zh") else "ja"
-    if payload.use_vlm_ocr or not orig_t or orig_t == "[Выделенная область]":
-        ocr_coords = target_blk.get("text_bbox") or target_blk.get("clean_bbox") or target_blk["bbox"]
+    norm_old_tr = re.sub(r"[^a-zA-Zа-яА-ЯёЁ]+", "", old_tr_val).lower()
+    norm_orig_core = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』]+", "", orig_t)
+    # Если блок ранее был ошибочно прочитан как короткий SFX («ビクッ»/«ピクッ» -> «Twitch») или пуст,
+    # то даже при нажатии на обычную кнопку «🔄 ИИ» перечитываем ПОЛНЫЙ bbox баббла (с подключением VLM-OCR)!
+    suspect_ocr = (
+        not orig_t
+        or orig_t == "[Выделенная область]"
+        or norm_old_tr in ("twitch", "twitches", "twitching")
+        or norm_orig_core in ("ビクッ", "ピクッ", "ぴくっ", "びくっ", "ビク", "ピク")
+    )
+    if payload.use_vlm_ocr or suspect_ocr:
+        # Всегда берем полный bbox баббла, а не урезанный text_bbox, который мог обрезать края иероглифов!
+        ocr_coords = target_blk["bbox"]
+        force_vlm = bool(payload.use_vlm_ocr or norm_old_tr in ("twitch", "twitches", "twitching"))
         async with gpu_lock:
             rec_t, det_lang, _ = await asyncio.to_thread(
                 ocr_engine.recognize_manual_region,
                 pil_image,
                 ocr_coords,
                 payload.lang,
-                payload.use_vlm_ocr,
+                force_vlm,
                 payload.vlm_model,
                 getattr(translator_engine, "base_url", "http://127.0.0.1:11434") if translator_engine else "http://127.0.0.1:11434",
                 translator_engine.unsloth_url if translator_engine else None,
                 translator_engine.unsloth_api_key if translator_engine else None,
             )
-        if rec_t:
+        if rec_t and rec_t != "[Выделенная область]":
             orig_t = rec_t
             target_blk["original_text"] = orig_t
             target_blk["romaji_text"] = japanese_to_romaji_local(orig_t)
@@ -4234,16 +4271,23 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     if not isinstance(manifest.get("phrase_cache"), dict):
         manifest["phrase_cache"] = {}
     rolling_ctx = manifest.get("rolling_context")
-    context_lines = [str(x) for x in rolling_ctx[-10:]] if isinstance(rolling_ctx, list) and rolling_ctx else None
+    context_lines = [
+        str(x)
+        for x in (rolling_ctx[-10:] if isinstance(rolling_ctx, list) else [])
+        if str(x) and not str(x).lower().strip().endswith("=> twitch")
+    ] or None
     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
 
-    if orig_t:
+    if orig_t and orig_t != "[Выделенная область]":
         ck_single = f"{t_lang}||{orig_t}"
         manifest["phrase_cache"].pop(ck_single, None)
         translator_engine.phrase_cache.pop(ck_single, None)
         active_mod = await translator_engine.resolve_model(payload.ollama_model)
+        blk_for_llm = dict(target_blk)
+        blk_for_llm["translated_text"] = ""
+        blk_for_llm["is_deleted"] = False
         translated_one = await translator_engine.translate_blocks(
-            blocks=[target_blk],
+            blocks=[blk_for_llm],
             source_lang=det_lang,
             target_lang=payload.target_lang,
             model=active_mod,
@@ -4252,16 +4296,40 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
             use_cache=False,
             skip_sighs=False,
         )
-        if translated_one:
-            new_tr_val = str(translated_one[0].get("translated_text") or "").strip()
-            if new_tr_val:
-                target_blk["translated_text"] = new_tr_val
-                target_blk["romaji_text"] = translated_one[0].get("romaji_text") or target_blk.get("romaji_text") or ""
-                target_blk["translation_source"] = translated_one[0].get("translation_source") or "llm"
-                target_blk["skip_reason"] = ""
-                target_blk["is_deleted"] = False
-                manifest["phrase_cache"][ck_single] = new_tr_val
-                translator_engine.phrase_cache[ck_single] = new_tr_val
+        new_tr_val = str(translated_one[0].get("translated_text") or "").strip() if translated_one else ""
+        # Если выбранная модель вернула пустую строку или снова выдала старый ошибочный «Twitch»,
+        # автоматически пробуем альтернативный провайдер (Cloud DeepSeek <-> Local Ollama)!
+        if not new_tr_val or (norm_old_tr == "twitch" and new_tr_val.strip().lower() == "twitch"):
+            alt_mod = None
+            if not active_mod.startswith("unsloth::") and translator_engine.unsloth_api_key:
+                alt_mod = "unsloth::deepseek-v4-flash"
+            elif active_mod.startswith("unsloth::"):
+                alt_mod = await translator_engine._resolve_local_fallback_model(target_lang=t_lang)
+            if alt_mod and alt_mod != active_mod:
+                translated_alt = await translator_engine.translate_blocks(
+                    blocks=[blk_for_llm],
+                    source_lang=det_lang,
+                    target_lang=payload.target_lang,
+                    model=alt_mod,
+                    context_lines=context_lines,
+                    glossary_entries=folder_glossary_entries,
+                    use_cache=False,
+                    skip_sighs=False,
+                )
+                if translated_alt:
+                    alt_val = str(translated_alt[0].get("translated_text") or "").strip()
+                    if alt_val:
+                        translated_one = translated_alt
+                        new_tr_val = alt_val
+
+        if new_tr_val:
+            target_blk["translated_text"] = new_tr_val
+            target_blk["romaji_text"] = translated_one[0].get("romaji_text") or target_blk.get("romaji_text") or ""
+            target_blk["translation_source"] = translated_one[0].get("translation_source") or "llm"
+            target_blk["skip_reason"] = ""
+            target_blk["is_deleted"] = False
+            manifest["phrase_cache"][ck_single] = new_tr_val
+            translator_engine.phrase_cache[ck_single] = new_tr_val
 
     active_blocks = [
         b for b in blocks_dicts if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()

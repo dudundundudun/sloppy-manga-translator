@@ -38,6 +38,7 @@ import io
 import logging
 import re
 import sys
+import time
 import unicodedata
 from pathlib import Path
 from typing import Any
@@ -603,19 +604,25 @@ class MangaOCREngine:
 
         base_ol_url = (ollama_base_url or self.ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
 
-        # 1. Пробуем локальную Vision-модель в Ollama
+        # 1. Пробуем локальную Vision-модель в Ollama (с 30-секундным кэшем списка /api/tags)
         try:
-            with httpx.Client(timeout=httpx.Timeout(25.0, connect=2.5), trust_env=False) as client:
-                installed_names: list[str] = []
-                try:
-                    tags_resp = client.get(f"{base_ol_url}/api/tags")
-                    if tags_resp.status_code == 200:
-                        for item in tags_resp.json().get("models", []):
-                            m_name = str(item.get("name") or "").strip()
-                            if m_name:
-                                installed_names.append(m_name)
-                except Exception:
-                    pass
+            now_mono = time.monotonic()
+            cached_ts = getattr(self, "_ollama_vlm_tags_ts", 0.0)
+            installed_names: list[str] = list(getattr(self, "_ollama_vlm_tags_cache", []) or [])
+            with httpx.Client(timeout=httpx.Timeout(25.0, connect=2.0), trust_env=False) as client:
+                if (now_mono - cached_ts) > 30.0 or not hasattr(self, "_ollama_vlm_tags_cache"):
+                    installed_names = []
+                    try:
+                        tags_resp = client.get(f"{base_ol_url}/api/tags")
+                        if tags_resp.status_code == 200:
+                            for item in tags_resp.json().get("models", []):
+                                m_name = str(item.get("name") or "").strip()
+                                if m_name:
+                                    installed_names.append(m_name)
+                        self._ollama_vlm_tags_cache = installed_names
+                        self._ollama_vlm_tags_ts = now_mono
+                    except Exception:
+                        pass
 
                 chosen_ol_vlm = self._pick_best_ollama_vlm_model(installed_names, preferred_model=vlm_model)
                 if chosen_ol_vlm:
@@ -633,7 +640,7 @@ class MangaOCREngine:
                     if gen_resp.status_code == 200:
                         raw_out = str(gen_resp.json().get("response") or "")
                         text_out, det_lang = self._clean_vlm_ocr_output(raw_out, fallback_lang=fb_lang)
-                        if text_out:
+                        if text_out and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(text_out):
                             self._last_vlm_model_used = f"ollama::{chosen_ol_vlm}"
                             self._vlm_ocr_calls_count += 1
                             self.last_detection_stats["vlm_ocr_calls"] = self._vlm_ocr_calls_count
@@ -648,7 +655,7 @@ class MangaOCREngine:
         except Exception as ol_exc:
             logger.debug("Локальный VLM-OCR через Ollama пропущен: %s", ol_exc)
 
-        # 2. Пробуем облачный OpenAI-совместимый Vision API (если передан URL и ключ)
+        # 2. Пробуем облачный OpenAI-совместимый Vision API (с ретраями при сетевых таймаутах)
         if cloud_api_url and cloud_api_key:
             c_url = cloud_api_url.rstrip("/")
             for sfx in ("/v1/chat/completions", "/chat/completions", "/v1"):
@@ -667,53 +674,64 @@ class MangaOCREngine:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "Authorization": f"Bearer {cloud_api_key.strip()}",
-                "User-Agent": "MikoMangaStudio/1.0.7",
+                "User-Agent": "MikoMangaStudio/1.0.8",
             }
-            try:
-                with httpx.Client(timeout=httpx.Timeout(25.0, connect=6.0), trust_env=False) as client:
-                    for c_mod in candidate_cloud_models[:2]:
-                        payload_cloud = {
-                            "model": c_mod,
-                            "messages": [
-                                {
-                                    "role": "user",
-                                    "content": [
-                                        {"type": "text", "text": vlm_prompt},
-                                        {
-                                            "type": "image_url",
-                                            "image_url": {"url": f"data:image/png;base64,{b64_png}"},
-                                        },
-                                    ],
-                                }
-                            ],
-                            "temperature": 0.0,
-                            "max_tokens": 160,
-                            "stream": False,
-                        }
-                        c_resp = client.post(
-                            f"{c_url}/v1/chat/completions",
-                            headers=headers,
-                            json=payload_cloud,
-                        )
-                        if c_resp.status_code == 200:
-                            choices = c_resp.json().get("choices") or []
-                            if choices and isinstance(choices[0], dict):
-                                raw_c = str((choices[0].get("message") or {}).get("content") or "")
-                                text_out, det_lang = self._clean_vlm_ocr_output(raw_c, fallback_lang=fb_lang)
-                                if text_out:
-                                    self._last_vlm_model_used = f"cloud::{c_mod}"
-                                    self._vlm_ocr_calls_count += 1
-                                    self.last_detection_stats["vlm_ocr_calls"] = self._vlm_ocr_calls_count
-                                    self.last_detection_stats["vlm_ocr_backend"] = self.get_vlm_ocr_backend_name()
-                                    logger.info(
-                                        "🎯 [VLM-OCR Cloud] Модель %s распознала текст: '%s' (lang=%s)",
-                                        c_mod,
-                                        text_out,
-                                        det_lang,
-                                    )
-                                    return text_out, det_lang, self._last_vlm_model_used
-            except Exception as c_exc:
-                logger.debug("Облачный VLM-OCR пропущен: %s", c_exc)
+            with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), trust_env=False) as client:
+                for c_mod in candidate_cloud_models[:2]:
+                    payload_cloud = {
+                        "model": c_mod,
+                        "messages": [
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": vlm_prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {"url": f"data:image/png;base64,{b64_png}"},
+                                    },
+                                ],
+                            }
+                        ],
+                        "temperature": 0.0,
+                        "max_tokens": 160,
+                        "stream": False,
+                    }
+                    for attempt in range(2):
+                        try:
+                            c_resp = client.post(
+                                f"{c_url}/v1/chat/completions",
+                                headers=headers,
+                                json=payload_cloud,
+                            )
+                            if c_resp.status_code == 200:
+                                choices = c_resp.json().get("choices") or []
+                                if choices and isinstance(choices[0], dict):
+                                    raw_c = str((choices[0].get("message") or {}).get("content") or "")
+                                    text_out, det_lang = self._clean_vlm_ocr_output(raw_c, fallback_lang=fb_lang)
+                                    if text_out and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(text_out):
+                                        self._last_vlm_model_used = f"cloud::{c_mod}"
+                                        self._vlm_ocr_calls_count += 1
+                                        self.last_detection_stats["vlm_ocr_calls"] = self._vlm_ocr_calls_count
+                                        self.last_detection_stats["vlm_ocr_backend"] = self.get_vlm_ocr_backend_name()
+                                        logger.info(
+                                            "🎯 [VLM-OCR Cloud] Модель %s распознала текст: '%s' (lang=%s)",
+                                            c_mod,
+                                            text_out,
+                                            det_lang,
+                                        )
+                                        return text_out, det_lang, self._last_vlm_model_used
+                                break
+                            elif c_resp.status_code in (429, 500, 502, 503, 504) and attempt == 0:
+                                time.sleep(0.8)
+                                continue
+                            else:
+                                break
+                        except Exception as c_exc:
+                            if attempt == 0:
+                                logger.debug("Повтор VLM-OCR Cloud (%s) после сетевого сбоя: %s", c_mod, c_exc)
+                                time.sleep(0.6)
+                                continue
+                            logger.warning("Сбой облачного VLM-OCR (%s): %s", c_mod, c_exc)
 
         return "", fb_lang, ""
 
@@ -4023,58 +4041,116 @@ class MangaOCREngine:
 
         # 1. Если пользователь явно запросил снайперский VLM-OCR (`use_vlm_ocr=True`)
         if use_vlm_ocr:
-            vlm_txt, vlm_lang, _ = self.recognize_crop_via_vlm(
-                rgb_image=rgb_image,
-                bbox=[x1, y1, x2, y2],
-                lang=req_lang,
-                vlm_model=vlm_model,
-                ollama_base_url=ollama_base_url,
-                cloud_api_url=cloud_api_url,
-                cloud_api_key=cloud_api_key,
-            )
-            if vlm_txt and not PUNCT_ONLY_REGEX.match(vlm_txt):
-                return vlm_txt, vlm_lang, is_free_text
+            try:
+                vlm_txt, vlm_lang, _ = self.recognize_crop_via_vlm(
+                    rgb_image=rgb_image,
+                    bbox=[x1, y1, x2, y2],
+                    lang=req_lang,
+                    vlm_model=vlm_model,
+                    ollama_base_url=ollama_base_url,
+                    cloud_api_url=cloud_api_url,
+                    cloud_api_key=cloud_api_key,
+                )
+                if vlm_txt and not PUNCT_ONLY_REGEX.match(vlm_txt):
+                    return vlm_txt, vlm_lang, is_free_text
+            except Exception as vlm_exc:
+                logger.warning("Сбой VLM-OCR при ручном выделении, переход к локальному OCR: %s", vlm_exc)
 
+        # ВАЖНО: При ручном выделении («➕ Обвести») пользователь сам обводит нужный текст!
+        # Нельзя полагаться только на `_compute_tight_ink_bbox`, так как буквы часто касаются границ
+        # пользовательской рамки и отбрасываются как «стенки баббла», оставляя одну точку/дакутэн в центре,
+        # которую декодер читает как «ビクッ» / «ピクッ» (-> «Twitch»)!
+        full_padded = self._crop_with_padding(rgb_image, [x1, y1, x2, y2], pad=12)
+        full_padded_np = np.array(full_padded)
         tight_coords = self._compute_tight_ink_bbox(img_np, [x1, y1, x2, y2], None, is_free_text=is_free_text)
         tx1, ty1, tx2, ty2 = tight_coords
-        tight_raw_np = img_np[ty1:ty2, tx1:tx2]
-        padded_crop = self._crop_with_padding(rgb_image, tight_coords, pad=10)
-        padded_np = np.array(padded_crop)
+        tight_area = max(1, (tx2 - tx1) * (ty2 - ty1))
+        full_area = max(1, (x2 - x1) * (y2 - y1))
+        # Используем tight_coords только если он сохранил >= 45% площади выделения пользователя
+        use_tight = tight_coords != [x1, y1, x2, y2] and (tight_area >= full_area * 0.45)
+        tight_padded = self._crop_with_padding(rgb_image, tight_coords, pad=10) if use_tight else full_padded
+        tight_raw_np = img_np[ty1:ty2, tx1:tx2] if use_tight else raw_crop_np
+        _, full_ink_px = self._has_meaningful_ink(raw_crop_np, is_free_text=False)
 
         recognized = ""
         if resolved_lang in ("ko", "zh"):
             try:
                 recognized = self._recognize_single_ko_zh_crop(
-                    padded_crop,
-                    tight_raw_np,
+                    full_padded,
+                    raw_crop_np,
                     lang=resolved_lang,
                     is_free_text=False,
                 )
             except Exception:
                 recognized = ""
-            if (not recognized or PUNCT_ONLY_REGEX.match(recognized)) and tight_coords != [x1, y1, x2, y2]:
-                full_padded = self._crop_with_padding(rgb_image, (x1, y1, x2, y2), pad=10)
+            if (not recognized or PUNCT_ONLY_REGEX.match(recognized)) and use_tight:
                 try:
                     recognized = self._recognize_single_ko_zh_crop(
-                        full_padded,
-                        raw_crop_np,
+                        tight_padded,
+                        tight_raw_np,
                         lang=resolved_lang,
                         is_free_text=False,
                     )
                 except Exception:
                     pass
         else:
-            ja_res = self._recognize_crops_batch_ja([padded_crop])
-            recognized = ja_res[0].strip() if ja_res else ""
-            # Если на поджатом кропе пусто, пробуем полный выделенный пользователем прямоугольник
-            if (not recognized or PUNCT_ONLY_REGEX.match(recognized)) and tight_coords != [x1, y1, x2, y2]:
-                full_padded = self._crop_with_padding(rgb_image, (x1, y1, x2, y2), pad=10)
-                ja_res_full = self._recognize_crops_batch_ja([full_padded])
-                recognized = ja_res_full[0].strip() if ja_res_full else ""
+            # Для одиночного выделенного пользователем баббла запускаем и классический MangaOCR (с выравниванием пропорций ViT),
+            # и manga-ocr-nar-small на полном кропе `full_padded`, выбирая наиболее полное и осмысленное чтение!
+            ja_candidates: list[str] = []
+            try:
+                classic_outs = self._run_classic_manga_ocr_batch([full_padded], batch_size=1)
+                if classic_outs and classic_outs[0].strip():
+                    ja_candidates.append(classic_outs[0].strip())
+            except Exception:
+                pass
+            try:
+                nar_outs = self._recognize_crops_batch_ja([full_padded])
+                if nar_outs and nar_outs[0].strip() and nar_outs[0].strip() not in ja_candidates:
+                    ja_candidates.append(nar_outs[0].strip())
+            except Exception:
+                pass
+            if use_tight:
+                try:
+                    classic_tight = self._run_classic_manga_ocr_batch([tight_padded], batch_size=1)
+                    if classic_tight and classic_tight[0].strip() and classic_tight[0].strip() not in ja_candidates:
+                        ja_candidates.append(classic_tight[0].strip())
+                except Exception:
+                    pass
+
+            def _score_ja_manual_cand(cand_s: str) -> float:
+                c = cand_s.strip()
+                if not c or PUNCT_ONLY_REGEX.match(c) or KNOWN_OCR_HALLUCINATIONS_REGEX.search(c):
+                    return -999.0
+                core = STRIP_PUNCT_REGEX.sub("", c)
+                if not core or REPEATED_NOISE_REGEX.match(core):
+                    return -999.0
+                score = float(len(core)) * 2.5
+                kanji_cnt = len(HANZI_REGEX.findall(core))
+                kana_cnt = len(KANA_REGEX.findall(core))
+                score += kanji_cnt * 4.5 + kana_cnt * 1.5
+                # Если локальный декодер выдал одиночный короткий SFX вроде «ビクッ» / «ピクッ» («Twitch»)
+                # или вздох при большом количестве чернил в баббле — сильно штрафуем такой кандидат!
+                if self.is_sfx_or_onomatopoeia(c, is_free_text=True) or c.strip("〜~！!？?…・ ") in ("ビクッ", "ピクッ", "ぴくっ", "びくっ", "ビク", "ピク"):
+                    if full_ink_px >= 110 or full_area >= 1800:
+                        score -= 25.0
+                    else:
+                        score -= 6.0
+                elif self.is_sigh_or_interjection(c) and len(core) <= 3 and full_ink_px >= 160:
+                    score -= 10.0
+                return score
+
+            scored_ja = sorted(
+                [( _score_ja_manual_cand(cand), cand ) for cand in ja_candidates],
+                key=lambda item: item[0],
+                reverse=True,
+            )
+            if scored_ja and scored_ja[0][0] > -100.0:
+                recognized = scored_ja[0][1]
+
             # Если текст пустой или на другом языке, пробуем HayaiOCR v2.5 Nova или EasyOCR
             if not recognized or PUNCT_ONLY_REGEX.match(recognized):
                 if self.use_hayai_ocr and self._hayai_available is not False:
-                    h_outs = self._recognize_crops_batch_hayai([padded_crop], max_num_patches=512, lang="auto")
+                    h_outs = self._recognize_crops_batch_hayai([full_padded], max_num_patches=512, lang="auto")
                     cand_h = h_outs[0].strip() if h_outs else ""
                     if cand_h and not PUNCT_ONLY_REGEX.match(cand_h):
                         recognized = cand_h
@@ -4085,7 +4161,7 @@ class MangaOCREngine:
                 if (not recognized or PUNCT_ONLY_REGEX.match(recognized)) and self._check_easyocr():
                     for fallback_reader in (self._get_ko_reader(), self._get_zh_reader()):
                         if fallback_reader is not None:
-                            lines = fallback_reader.readtext(padded_np, detail=0, paragraph=True)
+                            lines = fallback_reader.readtext(full_padded_np, detail=0, paragraph=True)
                             cand = " ".join(str(x).strip() for x in lines if str(x).strip())
                             if cand and not PUNCT_ONLY_REGEX.match(cand):
                                 recognized = cand
@@ -4094,27 +4170,42 @@ class MangaOCREngine:
         # Если с первого раза текст слишком бледный, пробуем повысить контраст кропа
         if not recognized or PUNCT_ONLY_REGEX.match(recognized):
             try:
-                contrast_pil = ImageOps.autocontrast(padded_crop, cutoff=2)
+                contrast_pil = ImageOps.autocontrast(full_padded, cutoff=2)
                 with torch.inference_mode():
-                    cand2 = self.ja_recognizer(contrast_pil).strip()
-                if cand2 and not PUNCT_ONLY_REGEX.match(cand2):
+                    cand2 = self.ja_recognizer(self._pad_to_balanced_aspect_for_vit(contrast_pil)).strip()
+                if cand2 and not PUNCT_ONLY_REGEX.match(cand2) and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(cand2):
                     recognized = cand2
             except Exception:
                 pass
 
-        # Автоматический снайперский фоллбэк на VLM-OCR (Шаг 4), если стандартный OCR не справился со сложным SFX/обложкой
-        if not recognized or PUNCT_ONLY_REGEX.match(recognized):
-            vlm_txt, vlm_lang, _ = self.recognize_crop_via_vlm(
-                rgb_image=rgb_image,
-                bbox=[x1, y1, x2, y2],
-                lang=req_lang,
-                vlm_model=vlm_model,
-                ollama_base_url=ollama_base_url,
-                cloud_api_url=cloud_api_url,
-                cloud_api_key=cloud_api_key,
+        # Автоматический снайперский фоллбэк на VLM-OCR (Шаг 4):
+        # Срабатывает не только когда стандартный OCR вернул пустую строку, но и когда он ошибочно прочитал
+        # крупный баббл с текстом (`full_ink_px >= 110`) как короткий шумовой SFX «ビクッ»/«ピクッ» («Twitch»)!
+        rec_core = STRIP_PUNCT_REGEX.sub("", recognized or "")
+        is_suspicious_sfx_on_rich_bubble = bool(
+            recognized
+            and full_ink_px >= 110
+            and len(rec_core) <= 4
+            and (
+                self.is_sfx_or_onomatopoeia(recognized, is_free_text=True)
+                or rec_core in ("ビクッ", "ピクッ", "ぴくっ", "びくっ", "ビク", "ピク", "ヒクッ", "ひくっ")
             )
-            if vlm_txt and not PUNCT_ONLY_REGEX.match(vlm_txt):
-                recognized = vlm_txt
-                resolved_lang = vlm_lang
+        )
+        if not use_vlm_ocr and (not recognized or PUNCT_ONLY_REGEX.match(recognized) or is_suspicious_sfx_on_rich_bubble):
+            try:
+                vlm_txt, vlm_lang, _ = self.recognize_crop_via_vlm(
+                    rgb_image=rgb_image,
+                    bbox=[x1, y1, x2, y2],
+                    lang=req_lang,
+                    vlm_model=vlm_model,
+                    ollama_base_url=ollama_base_url,
+                    cloud_api_url=cloud_api_url,
+                    cloud_api_key=cloud_api_key,
+                )
+                if vlm_txt and not PUNCT_ONLY_REGEX.match(vlm_txt):
+                    recognized = vlm_txt
+                    resolved_lang = vlm_lang
+            except Exception as vlm_fb_exc:
+                logger.debug("Фоллбэк VLM-OCR пропущен: %s", vlm_fb_exc)
 
         return recognized, resolved_lang, is_free_text

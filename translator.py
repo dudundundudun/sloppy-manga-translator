@@ -2591,7 +2591,7 @@ class OllamaTranslator:
     @classmethod
     def _is_hallucinated_translation(cls, val_text: str, orig_text: str = "") -> bool:
         """
-        Отсекает известные галлюцинации OCR/LLM («taxi driver take me to the best restaurant» и т.п.),
+        Отсекает известные галлюцинации OCR/LLM («taxi driver take me to the best restaurant», ложный «Twitch» и т.п.),
         а также аномально длинные предложения, сгенерированные моделью из 1–3 шумовых символов.
         """
         if not val_text:
@@ -2601,10 +2601,15 @@ class OllamaTranslator:
             return False
         if HALLUCINATION_TRANSLATION_REGEX.search(s):
             return True
+        norm_val_alpha = re.sub(r"[^a-zA-Zа-яА-ЯёЁ]+", "", s).lower()
         if orig_text:
             if HALLUCINATION_TRANSLATION_REGEX.search(orig_text):
                 return True
             clean_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+", "", orig_text)
+            # Защита от залипания ответа «Twitch» (когда модель копирует «Twitch» из контекста или шумового SFX на обычную реплику)
+            if norm_val_alpha in ("twitch", "twitches", "twitching", "flinch"):
+                if clean_orig and not any(sfx_k in clean_orig for sfx_k in ("ビク", "ピク", "ぴく", "びく", "ヒク", "ひく", "痙攣", "つる")):
+                    return True
             words = [w for w in re.split(r"\s+", s) if w]
             # Если исходный OCR-текст — это всего 1–2 символа (часто шум штриховки), а модель выдала длинное предложение из 8+ слов (>48 симв.)
             if 0 < len(clean_orig) <= 2 and (len(s) > 48 or len(words) >= 8):
@@ -3144,6 +3149,54 @@ class OllamaTranslator:
                 )
         return combined_res
 
+    async def _call_sugoi_plain_lines(
+        self,
+        client: httpx.AsyncClient,
+        clean_name: str,
+        source_dict: dict[str, str],
+    ) -> dict[str, str]:
+        """
+        Нативный построчный режим перевода специально для `Sugoi-14B-Ultra`:
+        Модель `Sugoi-14B-Ultra` обучена на прямых парах «японская фраза -> английский перевод» без JSON-схемы
+        и без списков контекста в system_prompt (из-за которых при `"format": "json"` она может копировать
+        предыдущее слово из контекста вроде «Twitch»).
+        """
+        out_map: dict[str, str] = {}
+        sugoi_sys = (
+            "You are a professional Japanese-to-English manga translator. "
+            "Translate the Japanese dialogue into natural, idiomatic English. "
+            "Output ONLY the English translation without quotes, notes, or explanations."
+        )
+        for k, ja_line in source_dict.items():
+            clean_ja = str(ja_line or "").strip()
+            if not clean_ja:
+                continue
+            payload_line: dict[str, Any] = {
+                "model": clean_name,
+                "system": sugoi_sys,
+                "prompt": f"Translate from Japanese to English:\n{clean_ja}",
+                "stream": False,
+                "think": False,
+                "options": {
+                    "temperature": 0.1,
+                    "repeat_penalty": 1.12,
+                    "num_ctx": 2048,
+                    "num_predict": 256,
+                },
+            }
+            try:
+                resp = await client.post(f"{self.base_url}/api/generate", json=payload_line)
+                if resp.status_code == 200:
+                    raw_ans = str(resp.json().get("response") or "").strip()
+                    cleaned_ans = THINK_REGEX.sub("", raw_ans).strip()
+                    cleaned_ans = cleaned_ans.splitlines()[0].strip() if cleaned_ans else ""
+                    cleaned_ans = cleaned_ans.strip('"\'«»„“”')
+                    if cleaned_ans and not self._is_bubble_refusal_value(cleaned_ans) and not self._is_hallucinated_translation(cleaned_ans, clean_ja):
+                        out_map[self._normalize_key(k)] = cleaned_ans
+            except Exception as exc:
+                logger.debug("Ошибка построчного вызова Sugoi для ключа %s: %s", k, exc)
+        return out_map
+
     async def _call_ollama_direct(
         self,
         client: httpx.AsyncClient,
@@ -3160,16 +3213,40 @@ class OllamaTranslator:
             clean_name = clean_name.split("ollama/", 1)[1]
 
         _t0_ol = time.perf_counter()
+        is_sugoi = "sugoi" in clean_name.lower()
+        extracted_input_dict: dict[str, str] = {}
+        if is_sugoi:
+            m_json = re.search(r"\{.*\}", user_prompt, flags=re.DOTALL)
+            if m_json:
+                try:
+                    raw_d = json.loads(m_json.group(0))
+                    if isinstance(raw_d, dict):
+                        extracted_input_dict = {str(k): str(v) for k, v in raw_d.items() if v is not None}
+                except Exception:
+                    pass
+            # Для одиночных бабблов и малых пачек (<= 6 фраз) сразу используем нативный построчный режим Sugoi без JSON-грамматики!
+            if 0 < len(extracted_input_dict) <= 6:
+                direct_sugoi_map = await self._call_sugoi_plain_lines(client, clean_name, extracted_input_dict)
+                if direct_sugoi_map:
+                    _el_s = time.perf_counter() - _t0_ol
+                    self._record_api_call("ollama", clean_name, _el_s, len(direct_sugoi_map), "OK")
+                    return direct_sugoi_map
+
+        # Для Sugoi в пакетном режиме убираем блок NAME GLOSSARY & CONTEXT со стрелками '=>', чтобы модель не копировала старые реплики
+        eff_system_prompt = system_prompt
+        if is_sugoi and "NAME GLOSSARY & CONTEXT" in eff_system_prompt:
+            eff_system_prompt = eff_system_prompt.split("NAME GLOSSARY & CONTEXT", 1)[0].strip()
+
         payload: dict[str, Any] = {
             "model": clean_name,
-            "system": system_prompt,
+            "system": eff_system_prompt,
             "prompt": user_prompt,
             "format": "json",
             "stream": False,
             "think": False,
             "options": {
-                "temperature": 0.1 if "sugoi" in clean_name.lower() else 0.2,
-                "repeat_penalty": 1.10 if "sugoi" in clean_name.lower() else 1.15,
+                "temperature": 0.1 if is_sugoi else 0.2,
+                "repeat_penalty": 1.10 if is_sugoi else 1.15,
                 "num_ctx": self.num_ctx,
                 "num_predict": 2048,
             },
@@ -3221,8 +3298,20 @@ class OllamaTranslator:
             except Exception:
                 pass
 
-        for rk in [k for k, v in list(parsed.items()) if self._is_bubble_refusal_value(v)]:
+        for rk in [
+            k
+            for k, v in list(parsed.items())
+            if self._is_bubble_refusal_value(v)
+            or self._is_hallucinated_translation(v, extracted_input_dict.get(k, ""))
+        ]:
             parsed.pop(rk, None)
+        if is_sugoi and extracted_input_dict:
+            missing_sugoi = {
+                k: v for k, v in extracted_input_dict.items() if self._normalize_key(k) not in parsed or not parsed.get(self._normalize_key(k))
+            }
+            if 0 < len(missing_sugoi) <= 8:
+                rescued_sugoi = await self._call_sugoi_plain_lines(client, clean_name, missing_sugoi)
+                parsed.update(rescued_sugoi)
         _el_ol = time.perf_counter() - _t0_ol
         if not parsed and self._is_refusal_response(raw_output):
             self._last_call_was_refusal = True
@@ -3863,6 +3952,43 @@ class OllamaTranslator:
                                     "source": "romaji_rescue_dict",
                                     "note": f"Спасено словарем частых фраз манги (после: {bad_reason_by_k.get(k, 'пропуск')})",
                                 }
+
+        # Если была выбрана локальная модель Ollama (например, Sugoi), но какие-то фразы остались непереведенными
+        # или отсеяны как галлюцинация («Twitch»), автоматически допереводим их через облачный API (если есть ключ)!
+        still_missing_local = [
+            k for k, orig_v in source_map.items() if not _is_valid_target_translation(translated_map.get(k, ""), orig_v)
+        ]
+        if (
+            still_missing_local
+            and not active_model.startswith("unsloth::")
+            and self._is_remote_cloud_url(self.unsloth_url)
+            and bool(self.unsloth_api_key)
+            and not self.stop_requested
+        ):
+            cloud_rescue_source = {
+                k: self._sanitize_safety_triggers_for_cloud(source_map[k]) for k in still_missing_local
+            }
+            cloud_rescue_json = json.dumps(cloud_rescue_source, ensure_ascii=False, separators=(",", ":"))
+            c_sys, c_usr = self._get_minimal_retry_prompts(t_lang, cloud_rescue_json)
+            try:
+                c_res = await self._call_llm_json(
+                    client=client,
+                    full_model_id="unsloth::deepseek-v4-flash",
+                    system_prompt=c_sys,
+                    user_prompt=c_usr,
+                )
+                c_res.pop("__refusal__", None)
+                c_res.pop("__partial_refusal__", None)
+                for k_c in still_missing_local:
+                    cand_c = c_res.get(k_c, "")
+                    if cand_c and _is_valid_target_translation(cand_c, source_map[k_c]):
+                        translated_map[k_c] = cand_c
+                        chunk_prov[k_c] = {
+                            "source": "llm_micro_retry",
+                            "note": "Допереведено через облачный API (deepseek-v4-flash) после сбоя локальной модели",
+                        }
+            except Exception as c_rescue_exc:
+                logger.debug("Резервный доперевод через облачный API пропущен: %s", c_rescue_exc)
 
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
