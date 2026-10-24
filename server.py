@@ -21,6 +21,7 @@ FastAPI-сервер для локального переводчика манг
 from __future__ import annotations
 
 import asyncio
+import copy
 import base64
 import binascii
 import io
@@ -75,6 +76,7 @@ from translator import (
     japanese_to_romaji_local,
     merge_glossaries,
     normalize_glossary_entries,
+    is_translated_sigh_text,
     parse_glossary_text_or_json,
 )
 
@@ -642,6 +644,10 @@ class TranslateRequest(BaseModel):
     page_url: str | None = Field(default=None, description="URL страницы сайта, где читается манга")
     image_url: str | None = Field(default=None, description="URL исходной картинки манги")
     page_index: int | None = Field(default=None, description="Порядковый номер картинки на веб-странице (1..N)")
+    force_retranslate: bool = Field(
+        default=False,
+        description="Принудительно перевести все блоки заново через ИИ (игнорируя и обновляя старый кэш фраз)",
+    )
 
 
 class TextBlock(BaseModel):
@@ -771,7 +777,6 @@ class FolderTranslateRequest(BaseModel):
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
-    overflow_mode: str | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
@@ -801,12 +806,15 @@ class PageFileTranslateRequest(BaseModel):
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
-    overflow_mode: str | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
     skip_sfx: bool | None = Field(default=None)
     min_text_length: int | None = Field(default=None)
+    force_retranslate: bool = Field(
+        default=False,
+        description="Принудительно перевести все блоки страницы заново через ИИ (без старого кэша)",
+    )
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
 
@@ -1765,35 +1773,44 @@ def is_page_already_translated(
     except OSError:
         return False
 
-    if isinstance(page_meta, dict) and "blocks" in page_meta and isinstance(page_meta.get("blocks"), list):
-        saved_blocks = page_meta["blocks"]
-        if not saved_blocks:
+    if isinstance(page_meta, dict):
+        if bool(page_meta.get("manually_edited")):
             return True
-        active_blocks = [
-            b for b in saved_blocks if isinstance(b, dict) and not bool(b.get("is_deleted", False))
-        ]
-        if not active_blocks:
-            return True
+        if "blocks" in page_meta and isinstance(page_meta.get("blocks"), list):
+            saved_blocks = page_meta["blocks"]
+            if not saved_blocks:
+                return True
+            active_blocks = [
+                b
+                for b in saved_blocks
+                if isinstance(b, dict)
+                and not bool(b.get("is_deleted", False))
+                and not str(b.get("skip_reason") or "").strip()
+                and str(b.get("translation_source") or "") != "skipped_sigh"
+                and bool(str(b.get("translated_text") or "").strip())
+            ]
+            if not active_blocks:
+                has_only_errors = any(
+                    isinstance(b, dict)
+                    and not bool(b.get("is_deleted", False))
+                    and str(b.get("translation_source") or "") == "untranslated_error"
+                    for b in saved_blocks
+                )
+                return not has_only_errors
 
-        t_lang = (target_lang or "en").lower().strip()
-        valid_translated_count = 0
-        for b in active_blocks:
-            tr_txt = str(b.get("translated_text") or "").strip()
-            orig_txt = str(b.get("original_text") or "").strip()
-            if not tr_txt:
-                continue
-            if OllamaTranslator._contains_cjk(tr_txt):
-                continue
-            if t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", tr_txt):
-                continue
-            if t_lang == "en" and OllamaTranslator._is_romaji_leak(tr_txt, orig_txt, "en"):
-                continue
-            valid_translated_count += 1
+            valid_translated_count = 0
+            for b in active_blocks:
+                tr_txt = str(b.get("translated_text") or "").strip()
+                if not tr_txt:
+                    continue
+                if OllamaTranslator._contains_cjk(tr_txt):
+                    continue
+                if OllamaTranslator._is_bubble_refusal_value(tr_txt):
+                    continue
+                valid_translated_count += 1
 
-        # Если страница переведена лишь частично (есть пропущенные бабблы или Ромадзи вместо перевода) —
-        # считаем страницу НЕ завершенной, чтобы при переводе папки она автоматически доперевелась!
-        if valid_translated_count < len(active_blocks):
-            return False
+            if valid_translated_count == 0:
+                return False
 
     return True
 
@@ -1816,6 +1833,10 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
         rel = img_path.relative_to(source_dir)
         rel_norm = _normalize_rel_path(rel)
         dest_path = output_dir / rel
+        try:
+            dest_exists = bool(dest_path.exists() and dest_path.is_file() and dest_path.stat().st_size > 128)
+        except OSError:
+            dest_exists = False
         meta = pages_meta.get(rel_norm, {}) if isinstance(pages_meta.get(rel_norm), dict) else {}
         done = is_page_already_translated(dest_path, page_meta=meta, target_lang=t_lang)
         if done:
@@ -1828,6 +1849,13 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
             if not isinstance(sb, dict):
                 continue
             sb_copy = _ensure_block_clean_bbox(dict(sb))
+            tr_s = str(sb_copy.get("translated_text") or "").strip()
+            if bool(sb_copy.get("is_deleted", False)) or not tr_s:
+                sb_copy["is_deleted"] = True
+                sb_copy["translated_text"] = ""
+            else:
+                sb_copy["is_deleted"] = False
+                sb_copy["translated_text"] = tr_s
             orig_s = str(sb_copy.get("original_text") or "").strip()
             if orig_s and not str(sb_copy.get("romaji_text") or "").strip():
                 sb_copy["romaji_text"] = (
@@ -1843,6 +1871,7 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
                 "filename": img_path.name,
                 "source_path": str(img_path),
                 "dest_path": str(dest_path),
+                "dest_exists": dest_exists,
                 "is_translated": done,
                 "blocks_count": meta.get("blocks_count", len(enriched_saved_blocks) if enriched_saved_blocks else None),
                 "free_text_count": meta.get("free_text_count", 0),
@@ -2099,6 +2128,7 @@ async def process_single_pil_image(
     external_cache: dict[str, str] | None = None,
     src_file: Path | str | None = None,
     glossary_entries: list[dict[str, str]] | None = None,
+    use_cache: bool = True,
 ) -> tuple[Image.Image, Image.Image, Image.Image, list[dict[str, Any]], str, str]:
     assert ocr_engine is not None
     assert translator_engine is not None
@@ -2144,24 +2174,33 @@ async def process_single_pil_image(
         model=active_model,
         context_lines=context_lines,
         external_cache=external_cache,
+        use_cache=use_cache,
         skip_sighs=eff_skip_sighs,
         glossary_entries=glossary_entries,
     )
     _llm_sec = round(time.perf_counter() - _t0_llm, 2)
 
+    active_render_blocks: list[dict[str, Any]] = []
     for idx_b, blk in enumerate(blocks, start=1):
         blk["id"] = idx_b
-        blk["is_deleted"] = False
+        clean_tr_blk = str(blk.get("translated_text") or "").strip()
+        if bool(blk.get("is_deleted", False)) or not clean_tr_blk:
+            blk["is_deleted"] = True
+            blk["translated_text"] = ""
+        else:
+            blk["is_deleted"] = False
+            blk["translated_text"] = clean_tr_blk
+            active_render_blocks.append(blk)
         _ensure_block_clean_bbox(blk)
 
-    if not blocks:
+    if not active_render_blocks:
         empty_mask = Image.new("L", pil_image.size, 0)
-        return pil_image.copy(), pil_image.copy(), empty_mask, [], active_model, detected_lang
+        return pil_image.copy(), pil_image.copy(), empty_mask, blocks, active_model, detected_lang
 
     _t0_render = time.perf_counter()
     cleaned_image, mask_image, _clean_hit, _clean_hash = await _get_or_clean_page_image(
         pil_image,
-        blocks,
+        active_render_blocks,
         src_file=src_file,
         save_to_disk=True,
     )
@@ -2172,7 +2211,7 @@ async def process_single_pil_image(
     final_image = await asyncio.to_thread(
         renderer_engine.render_blocks,
         cleaned_image,
-        blocks,
+        active_render_blocks,
         uppercase,
         max_font_size,
         min_font_size,
@@ -2271,6 +2310,8 @@ async def _run_folder_translation_job(
     for ck, cv in raw_phrase_cache.items():
         if not isinstance(ck, str) or not isinstance(cv, str) or not cv.strip():
             continue
+        if OllamaTranslator._is_bubble_refusal_value(cv):
+            continue
         if ck.startswith("ru||") and not re.search(r"[А-Яа-яЁё]", cv):
             continue
         if ck.startswith("en||"):
@@ -2278,6 +2319,9 @@ async def _run_folder_translation_job(
             if OllamaTranslator._is_romaji_leak(cv, orig_part, "en"):
                 continue
         phrase_cache[ck] = cv
+    if force_retranslate:
+        phrase_cache.clear()
+        translator_engine.phrase_cache.clear()
 
     to_process: list[tuple[int, Path, Path, str]] = []
     skipped_count = 0
@@ -2473,6 +2517,7 @@ async def _run_folder_translation_job(
                         model=active_mod,
                         context_lines=rolling_context if rolling_context else None,
                         external_cache=phrase_cache,
+                        use_cache=(not force_retranslate),
                         skip_sighs=eff_skip_sighs,
                         glossary_entries=folder_glossary_entries,
                     )
@@ -2546,8 +2591,9 @@ async def _run_folder_translation_job(
                 p_blocks = sp["blocks"]
                 gids = sp["global_ids"]
                 for b, gid in zip(p_blocks, gids):
-                    t_txt = translated_by_gid.get(gid, "")
+                    t_txt = str(translated_by_gid.get(gid, "") or "").strip()
                     b["translated_text"] = t_txt
+                    b["is_deleted"] = not bool(t_txt)
                     b["translation_source"] = source_by_gid.get(gid) or ("llm" if t_txt else "untranslated_error")
                     b["skip_reason"] = "" if t_txt else skip_reason_by_gid.get(gid, "")
                     _ensure_block_clean_bbox(b)
@@ -2577,20 +2623,24 @@ async def _run_folder_translation_job(
                 src_p: Path,
                 dst_p: Path,
             ) -> None:
-                if not blocks_in:
+                active_in = [
+                    b for b in (blocks_in or [])
+                    if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()
+                ]
+                if not active_in:
                     shutil.copy2(src_p, dst_p)
                     return
-                clean_hash = _compute_clean_state_hash(src_p, blocks_in)
+                clean_hash = _compute_clean_state_hash(src_p, active_in)
                 cached_im = _get_cached_cleaned_image(src_p, clean_hash)
                 if cached_im is not None:
                     cleaned_im = cached_im
                 else:
-                    cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, blocks_in)
+                    cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in)
                     _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
                 eff_overflow = overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
                 final_im = renderer_engine.render_blocks(
                     cleaned_im,
-                    blocks_in,
+                    active_in,
                     uppercase,
                     max_font_size,
                     min_font_size,
@@ -3301,6 +3351,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
                 skip_sighs=payload.skip_sighs,
                 skip_sfx=payload.skip_sfx,
                 min_text_length=payload.min_text_length,
+                use_cache=(not payload.force_retranslate),
             )
         )
     except RuntimeError as exc:
@@ -3445,13 +3496,31 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
     context_lines: list[str] | None = None
     phrase_cache: dict[str, str] = {}
     manifest: dict[str, Any] | None = None
+    already_had_translation = dest_path.exists()
     if output_dir is not None:
         manifest = _load_folder_manifest(output_dir)
         ctx = manifest.get("rolling_context")
         if isinstance(ctx, list) and ctx:
             context_lines = [str(x) for x in ctx[-12:]]
         if isinstance(manifest.get("phrase_cache"), dict):
-            phrase_cache = dict(manifest["phrase_cache"])
+            phrase_cache = {
+                k: v
+                for k, v in manifest["phrase_cache"].items()
+                if isinstance(v, str) and not OllamaTranslator._is_bubble_refusal_value(v)
+            }
+        if rel_norm and isinstance(manifest.get("pages"), dict) and rel_norm in manifest["pages"]:
+            already_had_translation = True
+            prev_page_blocks = (manifest["pages"].get(rel_norm) or {}).get("blocks") or []
+            if isinstance(prev_page_blocks, list):
+                for pb in prev_page_blocks:
+                    if isinstance(pb, dict):
+                        pb_orig = str(pb.get("original_text") or "").strip()
+                        if pb_orig:
+                            ck_evict = f"{target_lang}||{pb_orig}"
+                            phrase_cache.pop(ck_evict, None)
+                            translator_engine.phrase_cache.pop(ck_evict, None)
+
+    is_retranslate = bool(payload.force_retranslate or already_had_translation)
 
     final_image, _, _, blocks, active_model, detected_lang = await process_single_pil_image(
         pil_image=pil_image,
@@ -3471,6 +3540,7 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
         external_cache=phrase_cache,
         src_file=src_file,
         glossary_entries=normalize_glossary_entries(manifest.get("glossary", [])) if manifest else None,
+        use_cache=(not is_retranslate),
     )
 
     if not blocks:
@@ -3620,11 +3690,13 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
             if not isinstance(b, dict):
                 continue
             b_copy = _ensure_block_clean_bbox(dict(b))
-            if b_copy.get("is_deleted"):
+            tr_val = str(b_copy.get("translated_text") or "").strip()
+            if b_copy.get("is_deleted") or not tr_val:
                 b_copy["is_deleted"] = True
                 b_copy["translated_text"] = ""
             else:
                 b_copy["is_deleted"] = False
+                b_copy["translated_text"] = tr_val
             blocks.append(b_copy)
     else:
         eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
@@ -3860,6 +3932,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
         prev_meta = {}
     prev_meta.update(
         {
+            "manually_edited": True,
             "blocks_count": len(blocks_dicts),
             "free_text_count": sum(1 for b in blocks_dicts if b.get("is_free_text")),
             "uppercase": payload.uppercase,
@@ -4058,6 +4131,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
         prev_meta = {}
     prev_meta.update(
         {
+            "manually_edited": True,
             "blocks_count": len(existing_blocks),
             "free_text_count": sum(1 for b in existing_blocks if b.get("is_free_text")),
             "detected_lang": det_lang,
@@ -4098,6 +4172,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
 
 @app.post("/retranslate_single_block")
 async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockRequest) -> dict[str, Any]:
+    t_lang = (payload.target_lang or "en").lower().strip()
     """
     Принудительно переводит один конкретный блок `#block_id` через активную ИИ-модель
     (с отключенным пропуском вздохов и сбросом кэша для этой фразы) и сразу перерисовывает страницу.
@@ -4153,20 +4228,40 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
             target_blk["original_text"] = orig_t
             target_blk["romaji_text"] = japanese_to_romaji_local(orig_t)
 
+    manifest = _load_folder_manifest(output_dir)
+    if not isinstance(manifest.get("pages"), dict):
+        manifest["pages"] = {}
+    if not isinstance(manifest.get("phrase_cache"), dict):
+        manifest["phrase_cache"] = {}
+    rolling_ctx = manifest.get("rolling_context")
+    context_lines = [str(x) for x in rolling_ctx[-10:]] if isinstance(rolling_ctx, list) and rolling_ctx else None
+    folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
+
     if orig_t:
+        ck_single = f"{t_lang}||{orig_t}"
+        manifest["phrase_cache"].pop(ck_single, None)
+        translator_engine.phrase_cache.pop(ck_single, None)
         active_mod = await translator_engine.resolve_model(payload.ollama_model)
         translated_one = await translator_engine.translate_blocks(
             blocks=[target_blk],
             source_lang=det_lang,
             target_lang=payload.target_lang,
             model=active_mod,
+            context_lines=context_lines,
+            glossary_entries=folder_glossary_entries,
             use_cache=False,
             skip_sighs=False,
         )
-        if translated_one and translated_one[0].get("translated_text"):
-            target_blk["translated_text"] = translated_one[0]["translated_text"]
-            target_blk["romaji_text"] = translated_one[0].get("romaji_text") or target_blk.get("romaji_text") or ""
-            target_blk["is_deleted"] = False
+        if translated_one:
+            new_tr_val = str(translated_one[0].get("translated_text") or "").strip()
+            if new_tr_val:
+                target_blk["translated_text"] = new_tr_val
+                target_blk["romaji_text"] = translated_one[0].get("romaji_text") or target_blk.get("romaji_text") or ""
+                target_blk["translation_source"] = translated_one[0].get("translation_source") or "llm"
+                target_blk["skip_reason"] = ""
+                target_blk["is_deleted"] = False
+                manifest["phrase_cache"][ck_single] = new_tr_val
+                translator_engine.phrase_cache[ck_single] = new_tr_val
 
     active_blocks = [
         b for b in blocks_dicts if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()
@@ -4197,12 +4292,10 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
         save_kwargs["quality"] = 95
     final_image.save(dest_path, **save_kwargs)
 
-    manifest = _load_folder_manifest(output_dir)
-    if not isinstance(manifest.get("pages"), dict):
-        manifest["pages"] = {}
     prev_meta = manifest["pages"].get(rel_norm, {})
     if not isinstance(prev_meta, dict):
         prev_meta = {}
+    prev_meta["manually_edited"] = True
     prev_meta["blocks"] = blocks_dicts
     prev_meta["updated_at"] = int(time.time())
     manifest["pages"][rel_norm] = prev_meta

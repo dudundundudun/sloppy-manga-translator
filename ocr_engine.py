@@ -2811,7 +2811,7 @@ class MangaOCREngine:
             p75_bg = float(np.percentile(exp_gray, 75)) if exp_gray.size > 0 else 0.0
             bright_mask = exp_gray >= max(200.0, p75_bg - 15.0)
             bright_std = float(np.std(exp_gray[bright_mask])) if np.count_nonzero(bright_mask) >= 12 else 99.0
-            is_clean_bubble_bg = (p75_bg >= 224.0 and bright_std <= 14.5) or float(otb["confidence"]) >= 0.72
+            is_clean_bubble_bg = (p75_bg >= 224.0 and bright_std <= 14.5)
             is_free_orphan = not is_clean_bubble_bg
 
             rescued_count += 1

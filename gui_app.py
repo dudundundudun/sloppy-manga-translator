@@ -85,6 +85,13 @@ TEXT_FILTER_MODE_MAP = {
     "🔊 Переводить вообще всё (диалоги, фон, спецэффекты и вздохи)": "all",
 }
 
+OVERFLOW_MODE_MAP = {
+    "💬 Авто-расширение баббла (Вариант В)": "expand_bubble",
+    "📐 Уменьшать шрифт в рамку (Стандарт)": "shrink",
+    "🔓 Разрешить выход за рамки (Вариант Б)": "overflow",
+}
+OVERFLOW_LABEL_BY_CODE = {v: k for k, v in OVERFLOW_MODE_MAP.items()}
+
 
 class MikoMangaStudioGUI:
     """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v1.0.0)."""
@@ -2551,7 +2558,7 @@ class MikoMangaStudioGUI:
             "min_text_length": int(self.var_min_text_len.get()),
             "skip_existing": bool(self.var_skip_existing.get()),
             "batch_pages": 12,
-            "force_retranslate": False,
+            "force_retranslate": not bool(self.var_skip_existing.get()),
             "open_when_done": False,
         }
 
@@ -2645,6 +2652,7 @@ class MikoMangaStudioGUI:
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
             "min_text_length": int(self.var_min_text_len.get()),
+            "force_retranslate": True,
             "return_image": True,
             "image_format": "webp",
         }

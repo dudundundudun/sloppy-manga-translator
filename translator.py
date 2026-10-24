@@ -252,9 +252,22 @@ MAX_CONCURRENT_CLOUD_REQUESTS = 3
 REFUSAL_PATTERNS_REGEX = re.compile(
     r"(?i)(?:\bi\s*(?:can['\u2019]?t|cannot|am\s+unable\s+to|won['\u2019]?t|must\s+decline|refuse\s+to)\b.*"
     r"\b(?:translat|intensif|explicit|sexual|content|request|assist|fulfill|generate|rewrite|child|minor|nsfw|adult|inappropriate)\b"
-    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+sexual\s+content|violates?\s+(?:our|the)\s+policy|content_filter|data_inspection_failed)\b"
-    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь|продолжить)|откровенн\w+\s+сексуальн\w+|наруша\w+\s+правил\w+)\b"
-    r"|(?:抱歉.*(?:无法|不能).*(?:翻译|提供|生成|处理)|内容.*(?:违规|敏感|不当)))"
+    r"|\b(?:unable\s+to\s+translate|cannot\s+translate|can['\u2019]?t\s+translate|translation\s+(?:unavailable|refused|blocked|failed)|refused\s+to\s+translate)\b"
+    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+sexual\s+content|violates?\s+(?:our|the)\s+policy|content_filter|data_inspection_failed|censored\s+content)\b"
+    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь|продолжить)|невозможно\s+перевести|не\s+удалось\s+перевести|перевод\s+(?:невозможен|недоступен|заблокирован)|откровенн\w+\s+сексуальн\w+|наруша\w+\s+правил\w+)\b"
+    r"|(?:抱歉.*(?:无法|不能).*(?:翻译|提供|生成|处理)|无法翻译|不能翻译|内容.*(?:违规|敏感|不当)))"
+)
+
+BUBBLE_REFUSAL_VALUE_REGEX = re.compile(
+    r"(?i)(?:\b(?:unable\s+to\s+translate|cannot\s+translate|can['\u2019]?t\s+translate|"
+    r"i\s+cannot\s+translate|i\s+can['\u2019]?t\s+translate|i\s+am\s+unable\s+to\s+translate|"
+    r"translation\s+(?:unavailable|blocked|refused|failed|error)|content\s+(?:filtered|blocked|censored|policy)|"
+    r"safety\s+(?:filter|policy|guidelines)|inappropriate\s+content|explicit\s+content|"
+    r"not\s+able\s+to\s+translate|refuse\s+to\s+translate)\b|"
+    r"^\s*[\[\(\<\*\-]*\s*(?:unable\s+to\s+translate|cannot\s+translate|untranslatable|censored|filtered|blocked|nsfw|error|refused|"
+    r"не\s+удалось\s+перевести|невозможно\s+перевести|цензура|заблокировано|ошибка\s+перевода)\s*[\]\)\>\*\-\!\.]*\s*$|"
+    r"\b(?:не\s+удалось\s+перевести|невозможно\s+перевести|я\s+не\s+могу\s+перевести|перевод\s+заблокирован)\b|"
+    r"(?:无法翻译|不能翻译|内容违规|敏感内容))"
 )
 
 CLOUD_CENSORSHIP_ERROR_REGEX = re.compile(
@@ -2558,12 +2571,66 @@ class OllamaTranslator:
         cleaned = THINK_REGEX.sub("", raw_text).strip()
         if not cleaned:
             return False
-        if REFUSAL_PATTERNS_REGEX.search(cleaned):
+        if REFUSAL_PATTERNS_REGEX.search(cleaned) or BUBBLE_REFUSAL_VALUE_REGEX.search(cleaned):
             return True
         if "{" not in cleaned and ":" not in cleaned:
             low = cleaned.lower()
-            if low.startswith(("i can't", "i cannot", "i’m sorry", "i'm sorry", "sorry,", "извините", "я не могу")):
+            if low.startswith(("i can't", "i cannot", "i’m sorry", "i'm sorry", "sorry,", "unable to translate", "cannot translate", "извините", "я не могу", "не удалось перевести")):
                 return True
+        return False
+
+    @classmethod
+    def _is_bubble_refusal_value(cls, val_text: str) -> bool:
+        """
+        Проверяет, является ли отдельное значение внутри JSON-ответа заглушкой цензуры/отказа API
+        (например: 'Unable to translate', '[Unable to translate]', 'Cannot translate explicit content', 'Не удалось перевести').
+        """
+        if not val_text:
+            return False
+        s = str(val_text).strip()
+        if not s:
+            return False
+        if BUBBLE_REFUSAL_VALUE_REGEX.search(s) or REFUSAL_PATTERNS_REGEX.search(s):
+            return True
+        low = re.sub(r"[\[\]\(\)\<\>\*\_\"\'\`\!\.\,\:\;\-\—]+", " ", s.lower()).strip()
+        low = re.sub(r"\s+", " ", low)
+        if low in (
+            "unable to translate",
+            "cannot translate",
+            "can t translate",
+            "cant translate",
+            "untranslatable",
+            "translation unavailable",
+            "translation error",
+            "translation blocked",
+            "translation refused",
+            "content filtered",
+            "content blocked",
+            "censored",
+            "filtered",
+            "nsfw",
+            "не удалось перевести",
+            "невозможно перевести",
+            "перевод невозможен",
+            "перевод недоступен",
+            "цензура",
+        ):
+            return True
+        if low.startswith((
+            "unable to translate",
+            "cannot translate",
+            "i cannot translate",
+            "i can t translate",
+            "i am unable to translate",
+            "i m unable to translate",
+            "sorry i cannot",
+            "sorry i can t",
+            "as an ai",
+            "не удалось перевести",
+            "невозможно перевести",
+            "я не могу перевести",
+        )):
+            return True
         return False
 
     @classmethod
@@ -3119,6 +3186,8 @@ class OllamaTranslator:
             except Exception:
                 pass
 
+        for rk in [k for k, v in list(parsed.items()) if self._is_bubble_refusal_value(v)]:
+            parsed.pop(rk, None)
         _el_ol = time.perf_counter() - _t0_ol
         if not parsed and self._is_refusal_response(raw_output):
             self._last_call_was_refusal = True
@@ -3224,16 +3293,27 @@ class OllamaTranslator:
                         raw_output = str(msg_obj.get("content") or "{}")
                         _el_cloud = time.perf_counter() - _t0_cloud
                         parsed = self._parse_json_response(raw_output)
+                        refusal_keys = [k for k, v in parsed.items() if self._is_bubble_refusal_value(v)]
+                        for rk in refusal_keys:
+                            parsed.pop(rk, None)
                         is_filter_stop = finish_reason in ("content_filter", "safety", "moderation", "sensitive")
-                        if not parsed and (is_filter_stop or self._is_refusal_response(raw_output)):
+                        if refusal_keys or (not parsed and (is_filter_stop or self._is_refusal_response(raw_output))):
                             self._last_call_was_refusal = True
                             self.last_refusal_message = (
-                                raw_output.strip()[:240]
-                                if raw_output.strip() and raw_output.strip() != "{}"
-                                else f"finish_reason={finish_reason or 'content_filter'}"
+                                f"Censorship in {len(refusal_keys)} bubbles (e.g. 'unable to translate')"
+                                if refusal_keys
+                                else (
+                                    raw_output.strip()[:240]
+                                    if raw_output.strip() and raw_output.strip() != "{}"
+                                    else f"finish_reason={finish_reason or 'content_filter'}"
+                                )
                             )
-                            self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
-                            return {"__refusal__": self.last_refusal_message}
+                            if not parsed:
+                                self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
+                                return {"__refusal__": self.last_refusal_message}
+                            parsed["__partial_refusal__"] = self.last_refusal_message
+                            self._record_api_call("cloud", model_name, _el_cloud, len(parsed) - 1, "PARTIAL_REFUSAL", self.last_refusal_message)
+                            return parsed
                         self._record_api_call("cloud", model_name, _el_cloud, len(parsed), "OK")
                         return parsed
                     except (
@@ -3401,8 +3481,19 @@ class OllamaTranslator:
             system_prompt=system_prompt,
             user_prompt=user_prompt,
         )
-        was_refusal = bool(translated_map.pop("__refusal__", None))
-        refusal_reason_snapshot = self.last_refusal_message if was_refusal else ""
+        full_refusal = bool(translated_map.pop("__refusal__", None))
+        partial_refusal = bool(translated_map.pop("__partial_refusal__", None))
+        # Дополнительно вычищаем любые бабблы, где модель написала "unable to translate" и т.п.
+        inline_refusal_keys = [
+            k for k, v in list(translated_map.items()) if self._is_bubble_refusal_value(v)
+        ]
+        for rk in inline_refusal_keys:
+            translated_map.pop(rk, None)
+        was_refusal = full_refusal or partial_refusal or bool(inline_refusal_keys)
+        refusal_reason_snapshot = (
+            self.last_refusal_message
+            or ("API returned 'unable to translate' inside bubbles" if inline_refusal_keys else "")
+        ) if was_refusal else ""
 
         t_lang = target_lang.lower().strip()
         if t_lang == "ru":
@@ -3415,8 +3506,10 @@ class OllamaTranslator:
         def _is_valid_target_translation(cand_str: str, orig_val: str = "") -> bool:
             if not cand_str or self._contains_cjk(cand_str):
                 return False
+            if self._is_bubble_refusal_value(cand_str):
+                return False
             c = self._clean_translated_text(cand_str, target_lang=t_lang)
-            if not c:
+            if not c or self._is_bubble_refusal_value(c):
                 return False
             if t_lang == "ru":
                 return bool(re.search(r"[А-Яа-яЁё]", c))
@@ -3436,17 +3529,23 @@ class OllamaTranslator:
                     "note": f"Переведено основной моделью ({active_model})",
                 }
 
-        # СЦЕНАРИЙ 1: Если при работе через облачный API модель наткнулась на цензуру (was_refusal=True),
-        # МГНОВЕННО переключаемся на локальную модель Ollama, переводим этот кусок через неё (с сохранением глоссария и контекста)
-        # и затем автоматически возвращаемся к переводу следующих кусков через облачный API!
-        if was_refusal and not translated_map and not self.stop_requested:
-            sample_phrases = ", ".join(f"«{v[:18]}»" for v in list(source_map.values())[:3])
+        # СЦЕНАРИЙ 1: Если при работе через облачный API модель наткнулась на цензуру (was_refusal=True —
+        # либо весь ответ заблокирован, либо в отдельных бабблах вернулось "unable to translate"),
+        # МГНОВЕННО переключаемся на скачанную локальную модель Ollama, переводим цензурные бабблы через неё
+        # (с сохранением глоссария и контекста) и затем автоматически возвращаемся к переводу следующих кусков через API!
+        refused_sub_map = {
+            k: orig_v
+            for k, orig_v in source_map.items()
+            if not _is_valid_target_translation(translated_map.get(k, ""), orig_v)
+        }
+        if was_refusal and refused_sub_map and not self.stop_requested:
+            sample_phrases = ", ".join(f"«{v[:18]}»" for v in list(refused_sub_map.values())[:3])
             self._record_incident(
                 "CLOUD_CENSORSHIP_REFUSAL",
                 active_model,
-                f"Облачная модель отклонила пачку ({len(source_map)} фраз) из-за цензуры/фильтра ({sample_phrases})",
+                f"Облачная модель отклонила {len(refused_sub_map)}/{len(source_map)} фраз из-за цензуры/фильтра ({sample_phrases})",
                 details=refusal_reason_snapshot,
-                affected_count=len(source_map),
+                affected_count=len(refused_sub_map),
             )
             local_fallback_model = (
                 await self._resolve_local_fallback_model(target_lang=t_lang)
@@ -3459,16 +3558,18 @@ class OllamaTranslator:
                     int(self.diagnostics_stats.get("local_censorship_fallbacks_count") or 0) + 1
                 )
                 logger.warning(
-                    "🛡 [ОБХОД ЦЕНЗУРЫ API] Облачная модель '%s' отклонила кусок (%d блоков) из-за цензуры! "
-                    "Мгновенно переключаюсь на локальную модель '%s' для перевода этого куска (после него вернусь обратно на API '%s')...",
+                    "🛡 [ОБХОД ЦЕНЗУРЫ API] Облачная модель '%s' отклонила %d/%d блоков из-за цензуры (%s)! "
+                    "Мгновенно переключаюсь на локальную модель '%s' для перевода цензурных бабблов (затем вернусь обратно на API '%s')...",
                     active_model,
+                    len(refused_sub_map),
                     len(source_map),
+                    refusal_reason_snapshot[:80],
                     local_fallback_model,
                     active_model,
                 )
                 loc_chunk_map = await self._translate_map_via_local_ollama(
                     client=client,
-                    source_map=source_map,
+                    source_map=refused_sub_map,
                     source_lang=source_lang,
                     target_lang=t_lang,
                     context_lines=context_lines,
@@ -3476,9 +3577,9 @@ class OllamaTranslator:
                     local_model_id=local_fallback_model,
                 )
                 if loc_chunk_map:
-                    translated_map.update(loc_chunk_map)
                     for k_loc, v_loc in loc_chunk_map.items():
-                        if v_loc:
+                        if v_loc and not self._is_bubble_refusal_value(v_loc):
+                            translated_map[k_loc] = v_loc
                             chunk_prov[k_loc] = {
                                 "source": "llm_local_bypass",
                                 "note": f"Переведено локальной моделью ({local_fallback_model}) после отказа цензуры API ({active_model})",
@@ -3486,15 +3587,15 @@ class OllamaTranslator:
                     self._record_incident(
                         "LOCAL_CENSORSHIP_BYPASS_OK",
                         local_fallback_model,
-                        f"Локальная модель успешно перевела цензурный кусок ({len(loc_chunk_map)}/{len(source_map)} фраз) вместо {active_model}",
+                        f"Локальная модель успешно перевела цензурные бабблы ({len(loc_chunk_map)}/{len(refused_sub_map)} фраз) вместо {active_model}",
                         details=f"Причина отказа облака: {refusal_reason_snapshot}",
                         affected_count=len(loc_chunk_map),
                     )
                     logger.info(
-                        "✅ [ОБХОД ЦЕНЗУРЫ API] Кусок с цензурой (%d/%d блоков) успешно переведен локальной моделью '%s'. "
+                        "✅ [ОБХОД ЦЕНЗУРЫ API] Цензурные бабблы (%d/%d блоков) успешно переведены локальной моделью '%s'. "
                         "Возвращаюсь к переводу через API '%s'!",
                         len(loc_chunk_map),
-                        len(source_map),
+                        len(refused_sub_map),
                         local_fallback_model,
                         active_model,
                     )
@@ -3664,8 +3765,14 @@ class OllamaTranslator:
                                 system_prompt=min_sys,
                                 user_prompt=min_usr,
                             )
-                            retry_refused = bool(retry_map.pop("__refusal__", None))
-                            if (retry_refused or not retry_map) and active_model.startswith("unsloth::"):
+                            retry_refused = bool(retry_map.pop("__refusal__", None)) or bool(retry_map.pop("__partial_refusal__", None))
+                            for rk_r in [kr for kr, vr in list(retry_map.items()) if self._is_bubble_refusal_value(vr)]:
+                                retry_map.pop(rk_r, None)
+                                retry_refused = True
+                            missing_after_cloud_retry = [
+                                kr for kr in b_sub if not _is_valid_target_translation(retry_map.get(kr, ""), source_map[kr])
+                            ]
+                            if (retry_refused or not retry_map or missing_after_cloud_retry) and active_model.startswith("unsloth::"):
                                 loc_model = await self._resolve_local_fallback_model(target_lang=t_lang)
                                 if loc_model:
                                     self.last_local_fallback_model = loc_model
@@ -3682,16 +3789,22 @@ class OllamaTranslator:
                                         active_model,
                                         loc_model,
                                     )
-                                    raw_json = json.dumps(raw_sub_source, ensure_ascii=False, separators=(",", ":"))
+                                    loc_target_source = {
+                                        kr: source_map[kr]
+                                        for kr in (missing_after_cloud_retry if missing_after_cloud_retry else b_sub)
+                                    }
+                                    raw_json = json.dumps(loc_target_source, ensure_ascii=False, separators=(",", ":"))
                                     loc_sys, loc_usr = self._get_minimal_retry_prompts(t_lang, raw_json)
-                                    retry_map = await self._call_ollama_direct(
+                                    loc_retry_res = await self._call_ollama_direct(
                                         client=client,
                                         ollama_model_name=loc_model,
                                         system_prompt=loc_sys,
                                         user_prompt=loc_usr,
                                         persist_as_default=False,
                                     )
-                                    retry_map.pop("__refusal__", None)
+                                    loc_retry_res.pop("__refusal__", None)
+                                    if loc_retry_res:
+                                        retry_map.update(loc_retry_res)
                         except Exception as retry_exc:
                             logger.warning("Подгруппа доперевода (%d блоков) не удалась: %s", len(b_sub), retry_exc)
 
@@ -3719,7 +3832,11 @@ class OllamaTranslator:
         final_map: dict[str, str] = {}
         for k, orig_val in source_map.items():
             raw_val = translated_map.get(k, "")
+            if self._is_bubble_refusal_value(raw_val):
+                raw_val = ""
             cleaned_val = self._clean_translated_text(raw_val, target_lang=t_lang)
+            if self._is_bubble_refusal_value(cleaned_val):
+                cleaned_val = ""
             if t_lang == "ru" and cleaned_val and not re.search(r"[А-Яа-яЁё]", cleaned_val):
                 cleaned_val = ""
             elif t_lang == "en" and cleaned_val and self._is_romaji_leak(cleaned_val, orig_val, "en"):
@@ -3794,7 +3911,24 @@ class OllamaTranslator:
             interj_dict = SHORT_INTERJECTIONS_EN
 
         if external_cache:
-            self.phrase_cache.update(external_cache)
+            for ext_k, ext_v in list(external_cache.items()):
+                if not isinstance(ext_v, str) or self._is_bubble_refusal_value(ext_v):
+                    external_cache.pop(ext_k, None)
+            if use_cache:
+                self.phrase_cache.update(external_cache)
+
+        for pk, pv in list(self.phrase_cache.items()):
+            if not isinstance(pv, str) or self._is_bubble_refusal_value(pv):
+                self.phrase_cache.pop(pk, None)
+
+        if not use_cache:
+            for blk_flush in blocks:
+                orig_flush = (blk_flush.get("original_text") or "").strip()
+                if orig_flush:
+                    flush_key = f"{t_lang}||{orig_flush}"
+                    self.phrase_cache.pop(flush_key, None)
+                    if external_cache is not None:
+                        external_cache.pop(flush_key, None)
 
         translated_map: dict[str, str] = {}
         block_prov: dict[str, dict[str, str]] = {}
@@ -3848,12 +3982,13 @@ class OllamaTranslator:
                 }
                 continue
 
-            # 2. Проверка локального кэша уже переведенных фраз (с защитой от старых записей с Ромадзи вместо перевода!)
+            # 2. Проверка локального кэша уже переведенных фраз (с защитой от старых записей с Ромадзи и отказами цензуры!)
             cache_key = f"{t_lang}||{orig_raw}"
             if use_cache and cache_key in self.phrase_cache and self.phrase_cache[cache_key]:
                 cached_cand = self.phrase_cache[cache_key]
                 is_bad_cached = (
                     self._contains_cjk(cached_cand)
+                    or self._is_bubble_refusal_value(cached_cand)
                     or (t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", cached_cand))
                     or (t_lang == "en" and self._is_romaji_leak(cached_cand, orig_raw, "en"))
                 )
@@ -3982,7 +4117,7 @@ class OllamaTranslator:
                     k = str(b["id"])
                     orig_raw = (b.get("original_text") or "").strip()
                     t_val = chunk_map.get(k, "")
-                    if t_val and orig_raw:
+                    if t_val and orig_raw and not self._is_bubble_refusal_value(t_val):
                         self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
                         if len(orig_raw) >= 4 and len(t_val) >= 4:
                             pair_str = f"{orig_raw} => {t_val}"
@@ -4032,7 +4167,7 @@ class OllamaTranslator:
                     k = str(b["id"])
                     orig_raw = (b.get("original_text") or "").strip()
                     t_val = chunk_map.get(k, "")
-                    if t_val and orig_raw:
+                    if t_val and orig_raw and not self._is_bubble_refusal_value(t_val):
                         self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
                         if len(orig_raw) >= 4 and len(t_val) >= 4:
                             pair_str = f"{orig_raw} => {t_val}"

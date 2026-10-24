@@ -4924,9 +4924,23 @@
           if (opts && opts.preserveCurrentSelection) {
             const justBecameTranslated = !selectedPage.is_translated && Boolean(refreshed.is_translated);
             selectedPage.is_translated = refreshed.is_translated;
+            selectedPage.dest_exists = Boolean(refreshed.dest_exists || refreshed.is_translated);
             selectedPage.dest_path = refreshed.dest_path || selectedPage.dest_path;
             selectedPage.has_saved_blocks = Boolean(refreshed.has_saved_blocks || refreshed.is_translated);
-            if (justBecameTranslated && !isSavingEdits && !isUserTypingInTextEditor()) {
+            // Никогда не перезаписываем уже загруженные блоки активной страницы фоновым ответом /folder_inspect,
+            // чтобы не сбросить несохраненный ввод в попапе или текущие правки рамок!
+            if (
+              (!currentBlocks || currentBlocks.length === 0) &&
+              Array.isArray(refreshed.blocks) &&
+              refreshed.blocks.length > 0 &&
+              !isSavingEdits &&
+              !hasPendingUnsavedPageEdits &&
+              !isUserTypingInTextEditor()
+            ) {
+              selectedPage.blocks = refreshed.blocks.map(b => ({ ...b }));
+              currentBlocks = selectedPage.blocks.map(b => ({ ...b }));
+            }
+            if (justBecameTranslated && (!currentBlocks || currentBlocks.length === 0) && !isSavingEdits && !isUserTypingInTextEditor()) {
               selectPage(refreshed);
             }
           } else {
@@ -5107,6 +5121,7 @@
         flushPendingPageSaveBeforeLeave();
       }
       selectedPage = p;
+      preloadOrigPageImageForBrush();
       activeBlockId = null;
       hasPendingUnsavedPageEdits = false;
       closeInlineBubblePopup();
@@ -5146,7 +5161,7 @@
       renderBlocksEditor();
 
       const drawerOpen = document.getElementById("text-drawer").classList.contains("open");
-      if (!p.has_saved_blocks && currentBlocks.length === 0 && (drawerOpen || p.is_translated)) {
+      if (!p.has_saved_blocks && currentBlocks.length === 0 && drawerOpen) {
         ensurePageBlocksLoaded(false);
       }
     }
@@ -5447,6 +5462,7 @@
       } catch (err) {
         return;
       }
+      clearLiveRetouchCanvases();
       clientEditRevision++;
       if (selectedPage) {
         selectedPage.blocks = currentBlocks;
@@ -5494,6 +5510,7 @@
       } catch (err) {
         return;
       }
+      clearLiveRetouchCanvases();
       clientEditRevision++;
       if (selectedPage) {
         selectedPage.blocks = currentBlocks;
@@ -6307,6 +6324,62 @@
       });
     }
 
+    /* Мгновенно (за 0 мс) закрашивает удаленные рамки чистыми пикселями оригинала манги прямо на экране,
+       чтобы перевод исчезал в ту же миллисекунду, что и квадрат рамки, еще до ответа сервера! */
+    function paintOriginalCropsOverDeletedBlocks(deletedBlocks) {
+      if (!deletedBlocks || !deletedBlocks.length || !selectedPage || !selectedPage.source_path) return;
+      const transWrap = document.getElementById("pin-wrap-trans");
+      const transImg = transWrap ? transWrap.querySelector("img") : null;
+      if (!transWrap || !transImg) return;
+
+      const drawPatches = (origImg) => {
+        if (!origImg || !origImg.naturalWidth || !origImg.naturalHeight) return;
+        const natW = origImg.naturalWidth;
+        const natH = origImg.naturalHeight;
+        const cvs = ensureLiveRetouchCanvas(transWrap, transImg);
+        if (!cvs) return;
+        const ctx = cvs.getContext("2d");
+        if (!ctx) return;
+
+        deletedBlocks.forEach(b => {
+          if (!b) return;
+          const boxes = [];
+          if (Array.isArray(b.clean_bbox) && b.clean_bbox.length === 4) boxes.push(b.clean_bbox);
+          if (Array.isArray(b.bbox) && b.bbox.length === 4) boxes.push(b.bbox);
+          if (!boxes.length) return;
+
+          let x1 = Infinity, y1 = Infinity, x2 = -Infinity, y2 = -Infinity;
+          boxes.forEach(bx => {
+            x1 = Math.min(x1, Number(bx[0]) || 0);
+            y1 = Math.min(y1, Number(bx[1]) || 0);
+            x2 = Math.max(x2, Number(bx[2]) || 0);
+            y2 = Math.max(y2, Number(bx[3]) || 0);
+          });
+          const bw = Math.max(16, x2 - x1);
+          const bh = Math.max(16, y2 - y1);
+          // Запас под авто-расширение баббла (expand_bubble), обводку текста и ластик
+          const padX = Math.max(22, Math.round(bw * 0.26));
+          const padY = Math.max(22, Math.round(bh * 0.26));
+          const sx = Math.max(0, Math.floor(x1 - padX));
+          const sy = Math.max(0, Math.floor(y1 - padY));
+          const ex = Math.min(natW, Math.ceil(x2 + padX));
+          const ey = Math.min(natH, Math.ceil(y2 + padY));
+          const sw = ex - sx;
+          const sh = ey - sy;
+          if (sw > 0 && sh > 0) {
+            ctx.drawImage(origImg, sx, sy, sw, sh, sx, sy, sw, sh);
+          }
+        });
+      };
+
+      preloadOrigPageImageForBrush();
+      if (cachedOrigPageImg && cachedOrigPageImg.complete && cachedOrigPageImg.naturalWidth > 0) {
+        drawPatches(cachedOrigPageImg);
+      } else if (cachedOrigPageImg) {
+        cachedOrigPageImg.addEventListener("load", () => drawPatches(cachedOrigPageImg), { once: true });
+      }
+    }
+
     function sampleLocalBubbleColor(img, imgX, imgY, rImg) {
       if (!brushFillColorAuto && brushCustomFillColor) {
         return brushCustomFillColor;
@@ -6635,7 +6708,32 @@
 
     function syncInputsToCurrentBlocks() {
       if (!currentBlocks) return;
+      // 1. Сначала обязательно синхронизируем открытый всплывающий попап (#popup-textarea),
+      // чтобы карточка в скрытой боковой панели никогда не перезаписала свежий текст попапа!
+      const popEl = document.getElementById("inline-bubble-popup");
+      const isPopOpen = Boolean(popEl && popEl.classList.contains("open") && popupBlockId);
+      if (isPopOpen) {
+        const pBlk = currentBlocks.find(x => x.id === popupBlockId);
+        const pTa = document.getElementById("popup-textarea");
+        const pFs = document.getElementById("popup-fs-select");
+        if (pBlk && pTa) {
+          pBlk.translated_text = pTa.value;
+          pBlk.is_deleted = !pTa.value.trim();
+          const cardTa = document.getElementById(`edit-ta-${popupBlockId}`);
+          if (cardTa && cardTa.value !== pTa.value) {
+            cardTa.value = pTa.value;
+          }
+        }
+        if (pBlk && pFs) {
+          const pVal = parseInt(pFs.value, 10);
+          pBlk.font_size = (!isNaN(pVal) && pVal >= 6) ? pVal : null;
+          const cardFs = document.getElementById(`edit-fs-${popupBlockId}`);
+          if (cardFs) cardFs.value = pFs.value;
+        }
+      }
+      // 2. Синхронизируем остальные карточки боковой панели
       currentBlocks.forEach(b => {
+        if (isPopOpen && b.id === popupBlockId) return;
         const ta = document.getElementById(`edit-ta-${b.id}`);
         if (ta) {
           b.translated_text = ta.value;
@@ -6679,7 +6777,11 @@
       if (idx < 0) return;
 
       pushPageHistorySnapshot();
-      currentBlocks.splice(idx, 1);
+      const removedBlock = currentBlocks.splice(idx, 1)[0];
+      // Мгновенно (за 0 мс) стираем переведенный текст удаленного квадрата чистым оригиналом на экране!
+      if (removedBlock) {
+        paintOriginalCropsOverDeletedBlocks([removedBlock]);
+      }
       selectedBlockIds.delete(blockId);
       clientEditRevision++;
       hasPendingUnsavedPageEdits = true;
@@ -6703,32 +6805,43 @@
       const dr = document.getElementById("text-drawer");
       if (dr && dr.classList.contains("open")) {
         renderBlocksEditor();
+      } else {
+        const oldCard = document.querySelector(`.block-edit-card[data-block-id="${blockId}"]`);
+        if (oldCard) oldCard.remove();
       }
-      renderBboxPinsOnStage();
+      // Точечно удаляем только сам кружок/рамку #blockId со сцены без пересоздания остальных рамок под курсором!
+      document.querySelectorAll(`.bbox-pin[data-block-id="${blockId}"], .clean-bbox-ghost[data-block-id="${blockId}"]`).forEach(el => el.remove());
+      document.querySelectorAll(".img-pin-wrap").forEach(w => {
+        if (w._pinMap) w._pinMap.delete(blockId);
+      });
       if (immediateSave) {
-        sayMiko(`Рамка #${blockId} удалена (Ctrl+Z — вернуть)! Обновляю страницу... 🗑✨`);
+        sayMiko(`Рамка #${blockId} и перевод удалены (Ctrl+Z — вернуть)! Обновляю файл... 🗑✨`);
         await saveEditedPageTranslation({ isAuto: true });
       } else {
-        sayMiko(`🗑 Рамка #${blockId} убрана (осталось ${currentBlocks.length})! Можно кликать дальше без пауз — страница обновится сама через 0.5с (Ctrl+Z — отмена)~ ✨`);
-        scheduleIdleAutoSave(520);
+        sayMiko(`🗑 Рамка #${blockId} и перевод сразу убраны с экрана (осталось ${currentBlocks.length})! Можно кликать дальше без пауз (Ctrl+Z — отмена)~ ✨`);
+        scheduleIdleAutoSave(750, true);
       }
     }
 
     function isClientBlockSighOrNoise(b) {
       if (!b) return true;
       if (b.is_deleted) return true;
+      if (b.is_free_text) return true;
+      if (String(b.style_preset || "").toLowerCase() === "sfx") return true;
       const trans = String(b.translated_text || "").trim();
       const orig = String(b.original_text || "").trim();
       if (!trans) return true;
-      if (b.is_free_text) return true;
-      const cleanOrig = orig.replace(/[\s\.,!\?…〜~ー—\-・「」『』（）\(\)\[\]【】♡♥★☆♪♫]/g, "");
-      if (cleanOrig.length <= 1 && !/[\u4e00-\u9fff]/.test(cleanOrig)) return true;
+      const cleanOrig = orig.replace(/[\s\.,!\?！？…〜~ー—\-・「」『』（）\(\)\[\]【】♡♥★☆♪♫]/g, "");
       const cleanTrans = trans.replace(/[^a-zA-Zа-яА-ЯёЁ]/g, "").toLowerCase();
-      const sighSet = new Set([
-        "а", "о", "э", "у", "ы", "м", "н", "ах", "ох", "эх", "ух", "ага", "угу", "мм", "ммм", "ха", "хах", "хех", "фух", "пф", "пфф", "тьфу", "кх", "гх", "нгх", "нн", "аа", "оо",
-        "a", "o", "ah", "oh", "eh", "uh", "um", "mm", "mmm", "hm", "hmm", "ha", "hah", "heh", "ugh", "phew", "gasp", "sigh", "pant", "sob", "tsk", "shh", "eep", "wah", "kya", "kyaa", "ngh", "nngh", "aa", "oo"
-      ]);
-      if (sighSet.has(cleanTrans)) return true;
+      if (!cleanOrig || !cleanTrans) return true;
+      if (cleanOrig.length <= 2 && cleanTrans.length <= 5 && !/[\u4e00-\u9fff]/.test(cleanOrig)) return true;
+      // Чистая катакана (японская ономатопея / звуковые эффекты SFX) до 6 символов
+      if (cleanOrig.length <= 6 && /^[\u30A0-\u30FF]+$/.test(cleanOrig)) return true;
+      // Повторяющиеся 1-2 символа хираганы/катаканы (стоны/вздохи вроде あぁっ, んんっ, はぁ)
+      const uniqOrig = new Set(Array.from(cleanOrig));
+      if (uniqOrig.size <= 2 && cleanOrig.length <= 4 && cleanTrans.length <= 9 && !/[\u4e00-\u9fff]/.test(cleanOrig)) return true;
+      const sighRx = /^(a+h*|o+h*|u+h*|e+h*|m+h*|h+m+|h+a+h*|h+e+h*|u+f+|u+g+h+|n+g+h*|k+h+|g+h+|t+s+k|t+c+h|p+h+e+w|w+h+o+a|e+e+p|e+e+k|w+a+h+|k+y+a+|g+u+l+p|s+i+g+h|g+a+s+p|s+o+b|p+a+n+t|s+h+h+|h+u+h|а+х*|о+х*|у+х*|э+х*|ы+х*|м+м*|н+н*|х+м+|х+а+х*|х+е+х*|у+ф+|п+ф+|т+ь+ф+у|т+ц|ф+у+х|к+х+|г+х+|н+г+х*|а+г+а|у+г+у|и+к|а+й|о+й|вздох|всхлип|ш+ш+)$/i;
+      if (sighRx.test(cleanTrans)) return true;
       return false;
     }
 
@@ -6737,21 +6850,30 @@
         await cleanFolderNoiseInStudio();
         return;
       }
+      if (!selectedPage) {
+        sayMiko("Сначала выбери страницу манги слева~ 🌸");
+        return;
+      }
+      if (!currentBlocks || currentBlocks.length === 0) {
+        await ensurePageBlocksLoaded(false);
+      }
       if (!currentBlocks || currentBlocks.length === 0) {
         sayMiko("На этой странице нет рамок для очистки~ 🌸");
         return;
       }
       cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
-      const beforeCount = currentBlocks.length;
+      const removedBlocks = currentBlocks.filter(b => isClientBlockSighOrNoise(b));
       const kept = currentBlocks.filter(b => !isClientBlockSighOrNoise(b));
-      const removedCnt = beforeCount - kept.length;
+      const removedCnt = removedBlocks.length;
       if (removedCnt <= 0) {
         sayMiko("На этой странице нет лишних рамок фона, вздохов или пустых блоков — остались только чистые диалоги! ✨");
         return;
       }
       pushPageHistorySnapshot();
       currentBlocks = kept;
+      // Мгновенно (за 0 мс) закрашиваем все удаленные шумовые блоки чистым оригиналом манги на экране!
+      paintOriginalCropsOverDeletedBlocks(removedBlocks);
       selectedBlockIds = new Set();
       clientEditRevision++;
       hasPendingUnsavedPageEdits = true;
@@ -6827,6 +6949,7 @@
       blk.translated_text = "";
       blk.is_deleted = true;
       blk._dirtyPreview = false;
+      paintOriginalCropsOverDeletedBlocks([blk]);
       clientEditRevision++;
       renderBlocksEditor();
       renderBboxPinsOnStage();
@@ -6864,7 +6987,9 @@
         return;
       }
       pushPageHistorySnapshot();
+      const removedEmpty = currentBlocks.filter(b => Boolean(b.is_deleted) || !(b.translated_text || "").trim());
       currentBlocks = currentBlocks.filter(b => !(Boolean(b.is_deleted) || !(b.translated_text || "").trim()));
+      paintOriginalCropsOverDeletedBlocks(removedEmpty);
       const removedCnt = beforeCount - currentBlocks.length;
       selectedBlockIds = new Set();
       clientEditRevision++;
@@ -6892,7 +7017,9 @@
         return;
       }
       pushPageHistorySnapshot();
+      const removedFree = currentBlocks.filter(b => b.is_free_text);
       currentBlocks = currentBlocks.filter(b => !b.is_free_text);
+      paintOriginalCropsOverDeletedBlocks(removedFree);
       const removedCnt = beforeCount - currentBlocks.length;
       selectedBlockIds = new Set();
       clientEditRevision++;
@@ -6915,7 +7042,9 @@
       cancelIdleAutoSaveTimer();
       syncInputsToCurrentBlocks();
       pushPageHistorySnapshot();
+      const removedAll = currentBlocks.slice();
       currentBlocks = [];
+      paintOriginalCropsOverDeletedBlocks(removedAll);
       selectedBlockIds = new Set();
       clientEditRevision++;
       if (selectedPage) {
@@ -7160,6 +7289,23 @@
     }
 
     async function saveFromInlinePopup(closeAfter = true) {
+      if (popupBlockId && currentBlocks) {
+        const pTa = document.getElementById("popup-textarea");
+        const pFs = document.getElementById("popup-fs-select");
+        const blk = currentBlocks.find(x => x.id === popupBlockId);
+        if (blk && pTa) {
+          blk.translated_text = pTa.value;
+          blk.is_deleted = !pTa.value.trim();
+          const cardTa = document.getElementById(`edit-ta-${popupBlockId}`);
+          if (cardTa) cardTa.value = pTa.value;
+        }
+        if (blk && pFs) {
+          const pVal = parseInt(pFs.value, 10);
+          blk.font_size = (!isNaN(pVal) && pVal >= 6) ? pVal : null;
+          const cardFs = document.getElementById(`edit-fs-${popupBlockId}`);
+          if (cardFs) cardFs.value = pFs.value;
+        }
+      }
       if (closeAfter) {
         closeInlineBubblePopup();
       }
@@ -7513,25 +7659,40 @@
         }
 
         selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
+        selectedPage.dest_exists = true;
         selectedPage.is_translated = true;
         selectedPage.has_saved_blocks = true;
 
-        // Обновляем блоки только если пользователь не внес новых правок, пока шло сохранение!
+        // Обновляем блоки на месте (сохраняя ссылки на объекты для обработчиков рамок), если не было новых правок
         if (clientEditRevision === saveRevision) {
           if (Array.isArray(data.blocks)) {
-            currentBlocks = data.blocks.map(b => ({ ...b, _dirtyPreview: false }));
+            const byId = new Map(currentBlocks.map(b => [b.id, b]));
+            currentBlocks = data.blocks.map(nb => {
+              const existing = byId.get(nb.id);
+              if (existing) {
+                Object.assign(existing, nb, { _dirtyPreview: false });
+                return existing;
+              }
+              return { ...nb, _dirtyPreview: false };
+            });
           } else {
             currentBlocks.forEach(b => { b._dirtyPreview = false; });
           }
           selectedPage.blocks = currentBlocks;
 
-          // Если курсор сейчас НЕ в текстовом поле редактора — обновим карточки
-          const activeTag = document.activeElement?.tagName;
+          const activeEl = document.activeElement;
+          const activeTag = activeEl?.tagName;
           const isTypingInEditor = activeTag === "TEXTAREA" || activeTag === "INPUT";
           if (!isTypingInEditor) {
             renderBlocksEditor();
           } else {
-            currentBlocks.forEach(b => updateSingleBlockCardControls(b.id));
+            currentBlocks.forEach(b => {
+              updateSingleBlockCardControls(b.id);
+              const cardTa = document.getElementById(`edit-ta-${b.id}`);
+              if (cardTa && activeEl !== cardTa) {
+                cardTa.value = b.translated_text || "";
+              }
+            });
           }
           if (popupBlockId && !isTypingInEditor) {
             populateInlinePopup(popupBlockId);
@@ -8154,7 +8315,8 @@
 
     /* Плавное обновление переведенной картинки на месте через предзагрузку URL без пересоздания DOM и без моргания */
     function updateTranslatedImageSmoothly(urlOrBase64) {
-      const url = urlOrBase64 || (selectedPage && selectedPage.is_translated && selectedPage.dest_path
+      const hasTransFile = Boolean(selectedPage && (selectedPage.is_translated || selectedPage.dest_exists));
+      const url = urlOrBase64 || (hasTransFile && selectedPage.dest_path
         ? `/local_image?path=${encodeURIComponent(selectedPage.dest_path)}&t=${Date.now()}`
         : null);
       const transWrap = document.getElementById("pin-wrap-trans");
@@ -8166,14 +8328,17 @@
           if (!activeMaskStrokeState) {
             clearLiveRetouchCanvases();
           }
-          renderBboxPinsOnStage();
+          if (!isFrameEraserDragging) {
+            renderBboxPinsOnStage();
+          }
         };
         preImg.onerror = () => {
           transImg.src = url;
-          renderBboxPinsOnStage();
+          if (!isFrameEraserDragging) {
+            renderBboxPinsOnStage();
+          }
         };
         preImg.src = url;
-        renderBboxPinsOnStage();
         return;
       }
       renderViewer(url);
@@ -8183,10 +8348,12 @@
       const stage = document.getElementById("viewer-stage");
       stage.classList.toggle("split-mode", viewMode === "split");
       if (!selectedPage) return;
+      preloadOrigPageImageForBrush();
 
       const ts = Date.now();
       const origUrl = `/local_image?path=${encodeURIComponent(selectedPage.source_path)}&t=${ts}`;
-      const transUrl = freshBase64 || (selectedPage.is_translated && selectedPage.dest_path
+      const hasTransFile = Boolean(selectedPage.is_translated || selectedPage.dest_exists);
+      const transUrl = freshBase64 || (hasTransFile && selectedPage.dest_path
         ? `/local_image?path=${encodeURIComponent(selectedPage.dest_path)}&t=${ts}`
         : null);
 
@@ -8321,15 +8488,15 @@
     }
 
     /* Автосохранение вызывается ТОЛЬКО после перетаскивания/ресайза рамки мышкой или прокрутки колесиком! */
-    function scheduleIdleAutoSave(customDelayMs) {
-      if (uiSettings.auto_save_after_idle === false) {
+    function scheduleIdleAutoSave(customDelayMs, forceSchedule = false) {
+      if (!forceSchedule && uiSettings.auto_save_after_idle === false) {
         // Если автосохранение выключено, не запускаем таймер — на рамке светится значок 💾
         return;
       }
-      if (pinInteractState) return; // Ждем, пока пользователь отпустит кнопку мыши
-      if (isUserTypingInTextEditor()) return; // Не запускаем во время ввода текста в окне редактирования
+      if (pinInteractState || isFrameEraserDragging) return; // Ждем, пока пользователь отпустит кнопку мыши
+      if (!forceSchedule && isUserTypingInTextEditor()) return; // Не запускаем во время ввода текста в окне редактирования
       cancelIdleAutoSaveTimer();
-      const delay = Math.max(500, Number(customDelayMs || uiSettings.auto_save_delay_ms || 2500));
+      const delay = Math.max(200, Number(customDelayMs || uiSettings.auto_save_delay_ms || 2500));
       idleAutoSaveDeadline = Date.now() + delay;
 
       const pill = document.getElementById("autosave-status-pill");
@@ -8725,22 +8892,23 @@
             if (ev.ctrlKey || ev.metaKey) return; // Let Ctrl+Wheel zoom the stage
             ev.preventDefault();
             ev.stopPropagation();
-            ensureBlockCleanBbox(b);
+            const liveB = (currentBlocks && currentBlocks.find(x => x.id === b.id)) || b;
+            ensureBlockCleanBbox(liveB);
 
             if (wheelHistorySnapshot === null) {
               wheelHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
             }
-            const curEst = b.font_size ? Number(b.font_size) : (b.rendered_font_size || estimateAutoFontSizeForBox(b));
+            const curEst = liveB.font_size ? Number(liveB.font_size) : (liveB.rendered_font_size || estimateAutoFontSizeForBox(liveB));
             const absDelta = Math.abs(ev.deltaY);
             const mag = absDelta > 160 ? 4 : (absDelta < 35 ? 1 : 2);
             const step = ev.deltaY < 0 ? mag : -mag;
             const nextFs = Math.max(8, Math.min(140, Math.round(curEst + step)));
-            if (b.font_size === nextFs && b._dirtyPreview) {
+            if (liveB.font_size === nextFs && liveB._dirtyPreview) {
               return;
             }
-            b.font_size = nextFs;
-            b.is_deleted = false;
-            b._dirtyPreview = true;
+            liveB.font_size = nextFs;
+            liveB.is_deleted = false;
+            liveB._dirtyPreview = true;
             clientEditRevision++;
 
             pin.classList.add("wheeling-pin");
@@ -8849,7 +9017,12 @@
     });
 
     window.addEventListener("mouseup", (ev) => {
-      isFrameEraserDragging = false;
+      if (isFrameEraserDragging) {
+        isFrameEraserDragging = false;
+        if (hasPendingUnsavedPageEdits) {
+          scheduleIdleAutoSave(550, true);
+        }
+      }
       if (!pinInteractState) return;
       const st = pinInteractState;
       pinInteractState = null;
@@ -9046,6 +9219,10 @@
 
     async function translateSelectedPage() {
       if (!selectedPage) return;
+      if (currentBlocks && currentBlocks.length > 0) {
+        syncInputsToCurrentBlocks();
+        pushPageHistorySnapshot();
+      }
       const subBtn = document.getElementById("btn-contextual-page");
       subBtn.disabled = true;
       sayMiko(`Перевожу страницу «${selectedPage.rel_path}»... Секундочку~ ✍️✨`);
@@ -9065,6 +9242,7 @@
         skip_sighs: document.getElementById("chk-skip-sighs").checked,
         skip_sfx: document.getElementById("chk-skip-sfx").checked,
         min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
+        force_retranslate: true,
         return_image: true,
         image_format: "webp"
       };
@@ -9108,6 +9286,9 @@
         if (!currentFolder) return;
       }
 
+      const skipExistingChecked = document.getElementById("chk-skip-existing").checked;
+      const allAlreadyDone = Array.isArray(folderPages) && folderPages.length > 0 && folderPages.every(p => Boolean(p.is_translated));
+      const shouldForceRetranslate = !skipExistingChecked || allAlreadyDone;
       const payload = {
         folder_path: currentFolder,
         lang: document.getElementById("sel-source-lang").value,
@@ -9122,9 +9303,9 @@
         skip_sighs: document.getElementById("chk-skip-sighs").checked,
         skip_sfx: document.getElementById("chk-skip-sfx").checked,
         min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
-        skip_existing: document.getElementById("chk-skip-existing").checked,
+        skip_existing: shouldForceRetranslate ? false : skipExistingChecked,
         batch_pages: parseInt(document.getElementById("inp-batch-pages")?.value, 10) || 12,
-        force_retranslate: false,
+        force_retranslate: shouldForceRetranslate,
         open_when_done: false
       };
 

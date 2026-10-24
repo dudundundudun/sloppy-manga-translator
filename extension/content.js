@@ -1033,9 +1033,16 @@
     }
 
     try {
-      let imageB64 = img.dataset.mtTranslated === "true" ? null : tryExtractCanvasBase64(img);
+      const isRetranslate = img.dataset.mtTranslated === "true";
+      let imageB64 = isRetranslate ? (img.dataset.mtOriginalBase64 || null) : tryExtractCanvasBase64(img);
+      if (imageB64 && !img.dataset.mtOriginalBase64 && !isRetranslate) {
+        img.dataset.mtOriginalBase64 = imageB64;
+      }
       if (!imageB64 && srcUrl.startsWith("blob:")) {
         imageB64 = await tryFetchInPageContext(srcUrl);
+        if (imageB64 && !img.dataset.mtOriginalBase64) {
+          img.dataset.mtOriginalBase64 = imageB64;
+        }
       }
 
       const response = await safeSendMessage({
@@ -1053,6 +1060,7 @@
         skipSighs: settings.skipSighs,
         skipSfx: settings.skipSfx,
         minTextLength: settings.minTextLength,
+        forceRetranslate: isRetranslate,
         autoSave: settings.autoSaveWeb !== false,
         saveDir: settings.webSaveDir || null,
         chapterTitle: document.title || location.hostname || "Web_Manga",
@@ -1224,9 +1232,13 @@
 
   async function translateAllVisibleImages() {
     scanPageImages();
-    const candidates = Array.from(document.querySelectorAll("img")).filter(
-      (img) => isMangaCandidate(img) && img.dataset.mtTranslated !== "true"
+    const allMangaImgs = Array.from(document.querySelectorAll("img")).filter((img) =>
+      isMangaCandidate(img)
     );
+    let candidates = allMangaImgs.filter((img) => img.dataset.mtTranslated !== "true");
+    if (candidates.length === 0 && allMangaImgs.length > 0) {
+      candidates = allMangaImgs;
+    }
 
     if (candidates.length === 0) {
       statusText.textContent = "Страницы для перевода не найдены.";

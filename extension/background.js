@@ -249,6 +249,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 skip_sighs: msg.skipSighs !== false,
                 skip_sfx: msg.skipSfx !== false,
                 min_text_length: msg.minTextLength || 2,
+                force_retranslate: Boolean(msg.forceRetranslate),
                 return_image: true,
                 image_format: "webp",
                 save_debug: false,
