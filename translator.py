@@ -1853,8 +1853,8 @@ class OllamaTranslator:
         port_alive = False
         found_ids: list[str] = []
 
-        # Для облачных OpenAI-шлюзов (ModuleAPI, PositionAPI, DeepSeek) сначала опрашиваем /v1/models
-        paths_to_try = ("/v1/models", "/models", "/api/v1/models", "/api/models")
+        # Для облачных OpenAI-шлюзов (ModuleAPI, PositionAPI, DeepSeek) опрашиваем /v1/models без лишних 404/HTML-запросов
+        paths_to_try = ("/v1/models",) if is_remote else ("/v1/models", "/models", "/api/v1/models", "/api/models")
         for path in paths_to_try:
             try:
                 resp = await client.get(
@@ -1864,7 +1864,13 @@ class OllamaTranslator:
                 )
                 if resp.status_code < 500:
                     port_alive = True
+                if resp.status_code in (401, 403) and is_remote:
+                    # Шлюз отвечает, но /v1/models закрыт или требует ключ при chat/completions — возвращаем рабочие пресеты без спама 404
+                    return u_url, ["deepseek-v4-flash", "deepseek-v4-pro"], True
                 if resp.status_code == 200:
+                    ctype = (resp.headers.get("content-type") or "").lower()
+                    if "text/html" in ctype and is_remote:
+                        continue
                     try:
                         data = resp.json()
                         extracted = self._extract_model_ids_from_payload(data)

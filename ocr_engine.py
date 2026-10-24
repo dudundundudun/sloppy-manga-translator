@@ -2804,13 +2804,23 @@ class MangaOCREngine:
             if overlaps_existing:
                 continue
 
+            # Проверяем, действительно ли сиротский text_bubble находится на однородном светлом/темном фоне облачка,
+            # или это текст/SFX прямо поверх сложного рисунка фона (is_free_text=True).
+            exp_crop = img_np[ey1:ey2, ex1:ex2]
+            exp_gray = cv2.cvtColor(exp_crop, cv2.COLOR_RGB2GRAY) if exp_crop.ndim == 3 else exp_crop
+            p75_bg = float(np.percentile(exp_gray, 75)) if exp_gray.size > 0 else 0.0
+            bright_mask = exp_gray >= max(200.0, p75_bg - 15.0)
+            bright_std = float(np.std(exp_gray[bright_mask])) if np.count_nonzero(bright_mask) >= 12 else 99.0
+            is_clean_bubble_bg = (p75_bg >= 224.0 and bright_std <= 14.5) or float(otb["confidence"]) >= 0.72
+            is_free_orphan = not is_clean_bubble_bg
+
             rescued_count += 1
             final_detections.append(
                 {
                     "bbox": [ex1, ey1, ex2, ey2],
-                    "text_bbox": self._compute_tight_ink_bbox(img_np, [ex1, ey1, ex2, ey2], [tx1, ty1, tx2, ty2], is_free_text=False),
+                    "text_bbox": self._compute_tight_ink_bbox(img_np, [ex1, ey1, ex2, ey2], [tx1, ty1, tx2, ty2], is_free_text=is_free_orphan),
                     "confidence": round(float(otb["confidence"]), 4),
-                    "is_free_text": False,
+                    "is_free_text": is_free_orphan,
                     "_source": "rtdetr_rescued_text_bubble",
                 }
             )
@@ -3830,7 +3840,7 @@ class MangaOCREngine:
         zero_reason_ru = ""
         if len(output_blocks) == 0:
             if len(filtered_items_diag) > 0:
-                samples = ", ".join(f"«{it[text]}» ({it[reason_ru]})" for it in filtered_items_diag[:5])
+                samples = ", ".join(f"«{it.get('text', '')}» ({it.get('reason_ru', '')})" for it in filtered_items_diag[:5])
                 zero_reason_code = "all_filtered_out"
                 zero_reason_ru = f"Весь распознанный текст ({len(filtered_items_diag)} шт.) отсеян фильтром настроек: {samples}"
             elif no_ink_count >= len(raw_detections):

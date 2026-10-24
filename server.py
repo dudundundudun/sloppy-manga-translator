@@ -3816,7 +3816,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
             pil_image,
             active_blocks,
             src_file=src_file,
-            save_to_disk=True,
+            save_to_disk=False,
         )
         eff_overflow = payload.overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
         final_image = await asyncio.to_thread(
@@ -3871,13 +3871,11 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     )
     manifest["pages"][rel_norm] = prev_meta
     _save_folder_manifest(output_dir, manifest)
-    await asyncio.to_thread(
-        _generate_and_save_folder_report,
-        output_dir,
-        manifest,
-        source_dir,
-        t_lang,
-    )
+    threading.Thread(
+        target=_generate_and_save_folder_report,
+        args=(output_dir, copy.deepcopy(manifest), source_dir, t_lang),
+        daemon=True,
+    ).start()
 
     translated_image_url: str | None = (
         f"/local_image?path={quote(str(dest_path))}&t={int(time.time() * 1000)}"
@@ -4769,6 +4767,140 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
     }
 
 
+class FolderCleanNoiseRequest(BaseModel):
+    source_dir: str = Field(..., description="Путь к исходной папке главы")
+    target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
+    remove_free_text: bool = Field(default=True, description="Удалить все рамки вне бабблов (is_free_text)")
+    remove_sighs: bool = Field(default=True, description="Удалить короткие вздохи и междометия")
+    remove_sfx: bool = Field(default=True, description="Удалить звуковые спецэффекты (SFX)")
+    remove_empty: bool = Field(default=True, description="Удалить пустые/удаленные рамки")
+
+
+@app.post("/folder_clean_noise")
+async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[str, Any]:
+    """
+    Пакетно очищает все уже переведенные страницы папки от лишних рамок (надписей на фоне вне бабблов,
+    коротких вздохов, SFX и пустых блоков) и мгновенно перерисовывает затронутые страницы (0 токенов ИИ!).
+    """
+    if cleaner_engine is None or renderer_engine is None or translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    source_dir = _unwrap_output_folder_if_needed(Path(payload.source_dir).resolve())
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+
+    t_lang = (payload.target_lang or "en").lower().strip()
+    output_dir = get_output_dir_for_folder(source_dir, t_lang)
+    manifest = _load_folder_manifest(output_dir)
+    pages_meta = manifest.get("pages")
+    if not isinstance(pages_meta, dict) or not pages_meta:
+        return {
+            "status": "ok",
+            "affected_pages": 0,
+            "removed_blocks": 0,
+            "message": "В этой папке еще нет сохраненных переведенных страниц.",
+        }
+
+    affected_pages = 0
+    total_removed_blocks = 0
+
+    for rel_norm, p_meta in list(pages_meta.items()):
+        if not isinstance(p_meta, dict):
+            continue
+        blocks = p_meta.get("blocks")
+        if not isinstance(blocks, list) or not blocks:
+            continue
+
+        kept_blocks: list[dict[str, Any]] = []
+        for b in blocks:
+            if not isinstance(b, dict):
+                continue
+            is_del = bool(b.get("is_deleted")) or not str(b.get("translated_text") or "").strip()
+            if payload.remove_empty and is_del:
+                continue
+            is_free = bool(b.get("is_free_text", False))
+            if payload.remove_free_text and is_free:
+                continue
+            orig_t = str(b.get("original_text") or "").strip()
+            trans_t = str(b.get("translated_text") or "").strip()
+            if payload.remove_sighs and (
+                MangaOCREngine.is_sigh_or_interjection(orig_t)
+                or is_translated_sigh_text(trans_t, orig_t)
+            ):
+                continue
+            if payload.remove_sfx and MangaOCREngine.is_sfx_or_onomatopoeia(orig_t, is_free_text=is_free):
+                continue
+            kept_blocks.append(b)
+
+        removed_on_page = len(blocks) - len(kept_blocks)
+        if removed_on_page <= 0:
+            continue
+
+        total_removed_blocks += removed_on_page
+        affected_pages += 1
+
+        src_file = (source_dir / rel_norm).resolve()
+        dest_file = (output_dir / rel_norm).resolve()
+        if src_file.exists() and src_file.is_file():
+            try:
+                with Image.open(src_file) as raw_im:
+                    pil_image = _pil_to_rgb_clean(raw_im)
+                active_blocks = [
+                    _ensure_block_clean_bbox(dict(kb))
+                    for kb in kept_blocks
+                    if not bool(kb.get("is_deleted")) and str(kb.get("translated_text") or "").strip()
+                ]
+                if not active_blocks:
+                    final_image = pil_image.copy()
+                else:
+                    cleaned_image, _, _, _ = await _get_or_clean_page_image(
+                        pil_image,
+                        active_blocks,
+                        src_file=src_file,
+                        save_to_disk=False,
+                    )
+                    eff_overflow = getattr(translator_engine, "overflow_mode", "shrink") or "shrink"
+                    final_image = await asyncio.to_thread(
+                        renderer_engine.render_blocks,
+                        cleaned_image,
+                        active_blocks,
+                        bool(p_meta.get("uppercase", translator_engine.uppercase)),
+                        int(p_meta.get("max_font_size", translator_engine.max_font_size)),
+                        int(p_meta.get("min_font_size", translator_engine.min_font_size)),
+                        None,
+                        eff_overflow,
+                    )
+                dest_file.parent.mkdir(parents=True, exist_ok=True)
+                save_kwargs: dict[str, Any] = {}
+                if dest_file.suffix.lower() in (".jpg", ".jpeg", ".webp"):
+                    save_kwargs["quality"] = 95
+                elif dest_file.suffix.lower() == ".png":
+                    save_kwargs["compress_level"] = 1
+                final_image.save(dest_file, **save_kwargs)
+            except Exception as exc:
+                logger.warning("Не удалось перерисовать страницу %s при пакетной очистке шума: %s", rel_norm, exc)
+
+        p_meta["blocks"] = kept_blocks
+        p_meta["blocks_count"] = len(kept_blocks)
+        p_meta["free_text_count"] = sum(1 for kb in kept_blocks if kb.get("is_free_text"))
+        p_meta["updated_at"] = int(time.time())
+        pages_meta[rel_norm] = p_meta
+
+    if affected_pages > 0:
+        _save_folder_manifest(output_dir, manifest)
+        threading.Thread(
+            target=_generate_and_save_folder_report,
+            args=(output_dir, copy.deepcopy(manifest), source_dir, t_lang),
+            daemon=True,
+        ).start()
+
+    return {
+        "status": "ok",
+        "affected_pages": affected_pages,
+        "removed_blocks": total_removed_blocks,
+    }
+
+
 @app.get("/folder_report")
 async def get_folder_report_endpoint(
     folder_path: str | None = Query(default=None, description="Путь к исходной или переведенной папке главы"),
@@ -5106,10 +5238,12 @@ def _save_ux_store(store: dict[str, Any]) -> None:
     try:
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         store["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
-        UX_TELEMETRY_JSON_FILE.write_text(
+        tmp_path = UX_TELEMETRY_JSON_FILE.with_suffix(".json.tmp")
+        tmp_path.write_text(
             json.dumps(store, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+        os.replace(tmp_path, UX_TELEMETRY_JSON_FILE)
     except Exception as exc:
         logger.warning("Не удалось сохранить ux_telemetry.json: %s", exc)
 

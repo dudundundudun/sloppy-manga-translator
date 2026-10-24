@@ -822,62 +822,79 @@ class BubbleCleaner:
                 base_mask_np = None
 
         if base_composited_np is None or base_mask_np is None:
-            base_mask_np = self.build_text_mask(img_np, blocks, include_custom_strokes=False)
-            if np.count_nonzero(base_mask_np) == 0:
+            pad = self.crop_padding
+            uncached_blocks: list[dict[str, Any]] = []
+            skipped_blocks: list[dict[str, Any]] = []
+            active_block_specs: list[tuple[dict[str, Any], int, int, int, int, int, int, int, int, bool, tuple[Any, ...], tuple[np.ndarray, np.ndarray] | None]] = []
+
+            for block in blocks:
+                if self._is_block_skipped(block):
+                    skipped_blocks.append(block)
+                    continue
+                x1, y1, x2, y2 = self._get_effective_clean_bounds(block, orig_w, orig_h)
+                is_free_text = bool(block.get("is_free_text", False))
+                mdil = int(block.get("mask_dilate") or 0)
+                cx1 = max(0, x1 - pad)
+                cy1 = max(0, y1 - pad)
+                cx2 = min(orig_w, x2 + pad)
+                cy2 = min(orig_h, y2 + pad)
+                if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
+                    continue
+                block_crop_key = (
+                    img_fp,
+                    int(x1),
+                    int(y1),
+                    int(x2),
+                    int(y2),
+                    bool(is_free_text),
+                    int(mdil),
+                    int(self.dilate_size),
+                )
+                with self._cache_lock:
+                    cached_crop_pair = self._block_crop_cache.get(block_crop_key)
+                    if cached_crop_pair is not None:
+                        self._block_crop_cache.move_to_end(block_crop_key)
+                if (
+                    cached_crop_pair is None
+                    or cached_crop_pair[0].shape != (cy2 - cy1, cx2 - cx1, 3)
+                    or cached_crop_pair[1].shape != (cy2 - cy1, cx2 - cx1)
+                ):
+                    uncached_blocks.append(block)
+                    cached_crop_pair = None
+                active_block_specs.append((block, x1, y1, x2, y2, cx1, cy1, cx2, cy2, is_free_text, block_crop_key, cached_crop_pair))
+
+            if not active_block_specs:
+                base_mask_np = np.zeros((orig_h, orig_w), dtype=np.uint8)
                 base_composited_np = img_np.copy()
             else:
-                base_composited_np = img_np.copy()
-                pad = self.crop_padding
-
-                for block in blocks:
-                    if self._is_block_skipped(block):
-                        continue
-                    x1, y1, x2, y2 = self._get_effective_clean_bounds(block, orig_w, orig_h)
-                    is_free_text = bool(block.get("is_free_text", False))
-                    mdil = int(block.get("mask_dilate") or 0)
-
-                    cx1 = max(0, x1 - pad)
-                    cy1 = max(0, y1 - pad)
-                    cx2 = min(orig_w, x2 + pad)
-                    cy2 = min(orig_h, y2 + pad)
-
-                    if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
-                        continue
-
-                    margin_extra = 4 if is_free_text else 1
-                    bx1 = max(cx1, x1 - margin_extra)
-                    by1 = max(cy1, y1 - margin_extra)
-                    bx2 = min(cx2, x2 + margin_extra)
-                    by2 = min(cy2, y2 + margin_extra)
-
-                    crop_mask = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
-                    crop_mask[by1 - cy1 : by2 - cy1, bx1 - cx1 : bx2 - cx1] = base_mask_np[by1:by2, bx1:bx2]
-                    if np.count_nonzero(crop_mask) == 0:
-                        continue
-
-                    block_crop_key = (
-                        img_fp,
-                        int(x1),
-                        int(y1),
-                        int(x2),
-                        int(y2),
-                        bool(is_free_text),
-                        int(mdil),
-                        int(self.dilate_size),
+                if uncached_blocks:
+                    base_mask_np = self.build_text_mask(
+                        img_np,
+                        uncached_blocks + skipped_blocks,
+                        include_custom_strokes=False,
                     )
-                    with self._cache_lock:
-                        cached_crop_pair = self._block_crop_cache.get(block_crop_key)
-                        if cached_crop_pair is not None:
-                            self._block_crop_cache.move_to_end(block_crop_key)
+                else:
+                    base_mask_np = np.zeros((orig_h, orig_w), dtype=np.uint8)
 
+                base_composited_np = img_np.copy()
+
+                for block, x1, y1, x2, y2, cx1, cy1, cx2, cy2, is_free_text, block_crop_key, cached_crop_pair in active_block_specs:
                     crop_rgb = base_composited_np[cy1:cy2, cx1:cx2]
-                    if (
-                        cached_crop_pair is not None
-                        and cached_crop_pair[0].shape == crop_rgb.shape
-                        and cached_crop_pair[1].shape == crop_mask.shape
-                    ):
+                    if cached_crop_pair is not None:
                         inpainted_crop, crop_mask = cached_crop_pair[0], cached_crop_pair[1]
+                        base_mask_np[cy1:cy2, cx1:cx2] = np.maximum(base_mask_np[cy1:cy2, cx1:cx2], crop_mask)
                     else:
+                        margin_extra = 4 if is_free_text else 1
+                        bx1 = max(cx1, x1 - margin_extra)
+                        by1 = max(cy1, y1 - margin_extra)
+                        bx2 = min(cx2, x2 + margin_extra)
+                        by2 = min(cy2, y2 + margin_extra)
+
+                        crop_mask = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
+                        crop_mask[by1 - cy1 : by2 - cy1, bx1 - cx1 : bx2 - cx1] = base_mask_np[by1:by2, bx1:bx2]
+                        if np.count_nonzero(crop_mask) == 0:
+                            continue
+
                         inpainted_crop = self._inpaint_crop(crop_rgb, crop_mask, is_free_text=is_free_text)
                         with self._cache_lock:
                             self._block_crop_cache[block_crop_key] = (inpainted_crop.copy(), crop_mask.copy())

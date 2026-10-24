@@ -20,11 +20,12 @@
     "auto_scroll_to_bubble": true,
     "floating_auto_fade": true,
     "auto_collapse_sidebar": false,
-    "compact_mascot": false,
+    "compact_mascot": true,
     "default_zoom_mode": "fit_width",
     "right_panel_width": 460,
     "bottom_panel_height": 340,
-    "left_sidebar_width": 360
+    "left_sidebar_width": 360,
+    "auto_save_after_idle": true
   },
   "overflow_mode": "shrink"
 }
