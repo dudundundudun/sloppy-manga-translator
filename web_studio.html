@@ -2564,7 +2564,7 @@
             <button class="pill-btn" id="btn-frame-eraser" onclick="toggleFrameEraserMode()" title="Режим Ластика рамок (Клавиша E): кликайте или зажмите ЛКМ и проведите по лишним рамкам #N, чтобы мгновенно стереть их серией!">🗑 Ластик (E)</button>
             <button class="pill-btn" id="btn-clean-page-noise" onclick="cleanPageNoiseBlocks(event)" style="border-color:rgba(244, 63, 94, 0.45); color:#fda4af;" title="В 1 клик удалить на этой странице все рамки фона (вне бабблов), вздохи, SFX и пустые блоки (Клавиша X). Shift+Клик — очистить сразу во всей главе!">🧹 Убрать шум</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице (со снайперским 👁 VLM-OCR по умолчанию)">➕ Обвести</button>
-            <button class="pill-btn subtle-active" id="btn-vlm-draw-toggle" onclick="toggleVlmForManualDraw()" title="Снайперский 👁 VLM-OCR для «➕ Обвести» (включен по умолчанию для точного чтения сложных шрифтов и SFX)">👁 VLM: ВКЛ</button>
+            <button class="pill-btn" id="btn-vlm-draw-toggle" onclick="toggleVlmForManualDraw()" title="Режим 👁 VLM-OCR для «➕ Обвести»: АВТО (сначала мгновенный локальный GPU OCR за 0.08с, авто-подхват VLM на сложных SFX) или ВКЛ (всегда VLM)">👁 VLM: АВТО</button>
             <button class="pill-btn subtle-active" id="btn-quick-filter-toggle" onclick="toggleQuickBubbleFilterMode()" title="Быстрое переключение режима распознавания: 💬 Только бабблы (без мусора на фоне) ⟷ 💭 Бабблы + Надписи на фоне">💬 Только бабблы</button>
 
             <!-- Compact "⋯ Еще" Menu for Secondary / Rarely Used Tools -->
@@ -3912,7 +3912,7 @@
       if (topSel && topSel.value !== profId) topSel.value = profId;
       const modSel = document.getElementById("sel-settings-translation-profile");
       if (modSel && modSel.value !== profId) modSel.value = profId;
-      const batchByProf = { eco_book: 50, balanced: 15, turbo: 12, local_only: 12 };
+      const batchByProf = { eco_book: 25, balanced: 15, turbo: 12, local_only: 12 };
       const batchInp = document.getElementById("inp-batch-pages");
       if (batchInp && batchByProf[profId]) {
         batchInp.value = batchByProf[profId];
@@ -8250,7 +8250,7 @@
 
     /* ==================== MANUAL DRAW REGION & 60 FPS LIVE MASK BRUSH ==================== */
     let isDrawRegionMode = false;
-    let useVlmForManualDraw = true;
+    let useVlmForManualDraw = false;
     let isFrameEraserMode = false;
     let isFrameEraserDragging = false;
     let hasPendingUnsavedPageEdits = false;

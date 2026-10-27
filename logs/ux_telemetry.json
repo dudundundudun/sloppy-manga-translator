@@ -1,13 +1,13 @@
 {
   "schema_version": 1,
   "created_at": "2026-10-24 12:37:52",
-  "updated_at": "2026-10-27 08:54:46",
+  "updated_at": "2026-10-27 07:37:57",
   "total_events": 342,
   "total_mouse_clicks": 186,
   "total_hotkey_presses": 0,
   "total_canvas_manipulations": 131,
   "total_text_edits": 25,
-  "active_usage_sec": 2299.0,
+  "active_usage_sec": 2280.0,
   "actions": {
     "pickFolderDialog": {
       "action_id": "pickFolderDialog",
@@ -872,10 +872,10 @@
     }
   },
   "dwell_sec": {
-    "dock_right": 2299.0,
+    "dock_right": 2280.0,
     "dock_bottom": 0.0,
     "dock_floating": 0.0,
-    "view_split": 2299.0,
+    "view_split": 2280.0,
     "view_translated": 0.0,
     "view_original": 0.0,
     "edit_in_popup": 25.0,

@@ -146,6 +146,7 @@ _ring_handler = RingBufferLogHandler()
 _ring_handler.setFormatter(_log_formatter)
 _root_logger.addHandler(_ring_handler)
 
+logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
 logger = logging.getLogger("manga_server")
 
 
@@ -1018,14 +1019,20 @@ def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
     }
 
 
+_manifest_write_lock = threading.Lock()
+
+
 def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
     try:
-        output_dir.mkdir(parents=True, exist_ok=True)
-        manifest_path = output_dir / MANIFEST_FILENAME
-        manifest_path.write_text(
-            json.dumps(manifest, ensure_ascii=False, indent=2),
-            encoding="utf-8",
-        )
+        with _manifest_write_lock:
+            output_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = output_dir / MANIFEST_FILENAME
+            tmp_path = output_dir / f"{MANIFEST_FILENAME}.tmp"
+            tmp_path.write_text(
+                json.dumps(manifest, ensure_ascii=False, indent=2),
+                encoding="utf-8",
+            )
+            os.replace(tmp_path, manifest_path)
     except Exception as exc:
         logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
 
@@ -2994,7 +3001,8 @@ async def _run_folder_translation_job(
                     }
                     manifest["rolling_context"] = rolling_context
                     manifest["phrase_cache"] = phrase_cache
-                    _save_folder_manifest(output_dir, manifest)
+                    if len(scanned_pages) <= 6 or (done_in_run + 1) % 6 == 0:
+                        _save_folder_manifest(output_dir, manifest)
                 except Exception as render_exc:
                     logger.exception("Ошибка при сохранении страницы %s: %s", img_path, render_exc)
                     shutil.copy2(img_path, dest_path)

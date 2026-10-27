@@ -414,13 +414,16 @@ class MangaOCREngine:
                         local_dir=str(proc_dir),
                         allow_patterns=list(HF_HAYAI_PROCESSOR_ALLOW_PATTERNS),
                     )
-                try:
-                    processor = AutoProcessor.from_pretrained(str(proc_dir))
-                except Exception:
-                    img_proc_cls = getattr(transformers, "AutoImageProcessor", None)
-                    if img_proc_cls is not None:
+                img_proc_cls = getattr(transformers, "AutoImageProcessor", None)
+                if img_proc_cls is not None:
+                    try:
+                        processor = img_proc_cls.from_pretrained(str(proc_dir), local_files_only=True)
+                    except Exception:
                         processor = img_proc_cls.from_pretrained(str(proc_dir))
-                    else:
+                if processor is None:
+                    try:
+                        processor = AutoProcessor.from_pretrained(str(proc_dir), local_files_only=True)
+                    except Exception:
                         processor = AutoProcessor.from_pretrained(HF_HAYAI_PROCESSOR_REPO)
 
             model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True)
@@ -610,7 +613,7 @@ class MangaOCREngine:
             cached_ts = getattr(self, "_ollama_vlm_tags_ts", 0.0)
             installed_names: list[str] = list(getattr(self, "_ollama_vlm_tags_cache", []) or [])
             with httpx.Client(timeout=httpx.Timeout(25.0, connect=2.0), trust_env=False) as client:
-                if (now_mono - cached_ts) > 30.0 or not hasattr(self, "_ollama_vlm_tags_cache"):
+                if (now_mono - cached_ts) > 300.0 or not hasattr(self, "_ollama_vlm_tags_cache"):
                     installed_names = []
                     try:
                         tags_resp = client.get(f"{base_ol_url}/api/tags")
@@ -1028,6 +1031,22 @@ class MangaOCREngine:
 
     def _load_manga_ocr(self) -> MangaOcr:
         force_cpu = not self.device.startswith("cuda")
+        local_mocr_dir = self.models_dir / "manga-ocr-base"
+        try:
+            has_weights = (
+                (local_mocr_dir / "pytorch_model.bin").exists()
+                or (local_mocr_dir / "model.safetensors").exists()
+            )
+            if not (local_mocr_dir / "config.json").exists() or not has_weights:
+                snapshot_download(
+                    repo_id="kha-white/manga-ocr-base",
+                    local_dir=str(local_mocr_dir),
+                    allow_patterns=["*.json", "*.bin", "*.safetensors", "*.txt"],
+                )
+            if (local_mocr_dir / "config.json").exists():
+                return MangaOcr(pretrained_model_name_or_path=str(local_mocr_dir), force_cpu=force_cpu)
+        except Exception as exc:
+            logger.debug("Локальный кэш manga-ocr-base пропущен (%s), используем стандартную загрузку.", exc)
         return MangaOcr(force_cpu=force_cpu)
 
     def _check_rapidocr(self) -> bool:

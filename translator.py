@@ -195,14 +195,14 @@ TRANSLATION_PROFILES: dict[str, dict[str, Any]] = {
         "id": "eco_book",
         "title": "💎 Эконом + Книга (1–2 запроса)",
         "short_title": "💎 Эконом + Книга",
-        "pages_per_batch": 50,
-        "tail_merge_pages": 15,
+        "pages_per_batch": 25,
+        "tail_merge_pages": 10,
         "max_parallel_streams": 1,
-        "min_phrases_per_stream": 260,
+        "min_phrases_per_stream": 150,
         "parallel_trigger_phrases": 9999,
         "two_phase_book_mode": True,
         "local_only": False,
-        "description": "Двухфазный режим: сначала локальный OCR всех страниц, затем перевод единым сценарием главы (Book Script) за 1–2 запроса.",
+        "description": "Двухфазный режим: сначала локальный OCR пачки (до 25–35 стр.), затем перевод единым сценарием книги (по <=150 фраз без обрезки JSON и таймаутов).",
     },
     "balanced": {
         "id": "balanced",
@@ -302,7 +302,7 @@ SOURCE_LANG_NAMES_RU = {
 }
 
 MAX_BUBBLES_PER_BATCH_LOCAL = 12
-MAX_BUBBLES_PER_BATCH_CLOUD = 260
+MAX_BUBBLES_PER_BATCH_CLOUD = 150
 CLOUD_PARALLEL_CHUNK_SIZE = 42
 MAX_CONCURRENT_CLOUD_REQUESTS = 3
 
@@ -3673,17 +3673,18 @@ class OllamaTranslator:
                 except Exception:
                     pass
             items_cnt = len(expected_keys_list) if expected_keys_list is not None else 20
-            # БЛОК 3.4: Адекватные таймауты для малых запросов (<= 15 блоков -> ReadTimeout = 22с вместо 90с!)
-            req_timeout = (
-                httpx.Timeout(22.0, connect=10.0)
-                if items_cnt <= 15
-                else httpx.Timeout(self.timeout_sec, connect=15.0)
-            )
+            # Ступенчатые адаптивные таймауты (<=15 фраз -> 22с, 16..70 фраз -> 45с, >70 фраз -> 65с вместо висения по 90с!)
+            if items_cnt <= 15:
+                req_timeout = httpx.Timeout(22.0, connect=10.0)
+            elif items_cnt <= 70:
+                req_timeout = httpx.Timeout(45.0, connect=12.0)
+            else:
+                req_timeout = httpx.Timeout(min(65.0, float(self.timeout_sec)), connect=15.0)
 
             # Для внешних облачных API (ModuleAPI, DeepSeek, OpenRouter) используем строго выбранную модель
             # и НИКОГДА не переключаем deepseek-v4-flash на дорогую deepseek-v4-pro!
             if is_cloud:
-                # БЛОК 4.2: Включаем response_format={"type": "json_object"} с автоматическим фоллбэком при HTTP 400/422
+                # БЛОК 4.2: Включаем response_format={"type": "json_object"} и max_tokens=8192 (чтобы JSON никогда не обрезался на 200 репликах!)
                 payload_cloud: dict[str, Any] = {
                     "model": model_name,
                     "messages": [
@@ -3691,7 +3692,7 @@ class OllamaTranslator:
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 4096,
+                    "max_tokens": 8192 if items_cnt > 80 else 4096,
                     "stream": False,
                     "response_format": {"type": "json_object"},
                 }
@@ -3716,8 +3717,9 @@ class OllamaTranslator:
                                 self.last_refusal_message = f"HTTP {response.status_code} Censorship: {err_body[:180]}"
                                 self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
                                 return {"__refusal__": self.last_refusal_message}
-                            if response.status_code in (400, 422) and "response_format" in payload_cloud:
+                            if response.status_code in (400, 422) and ("response_format" in payload_cloud or payload_cloud.get("max_tokens", 4096) > 4096):
                                 payload_cloud.pop("response_format", None)
+                                payload_cloud["max_tokens"] = 4096
                                 response = await client.post(
                                     f"{self.unsloth_url}/v1/chat/completions",
                                     headers=self._unsloth_headers(),
@@ -4172,7 +4174,11 @@ class OllamaTranslator:
                     details=sample_bad,
                     affected_count=len(bad_keys),
                 )
-                retry_chunk_size = 8 if not active_model.startswith("unsloth::") else 14
+                retry_chunk_size = (
+                    8
+                    if not active_model.startswith("unsloth::")
+                    else (14 if was_refusal else 80)
+                )
                 bad_sublists = [
                     bad_keys[i : i + retry_chunk_size]
                     for i in range(0, len(bad_keys), retry_chunk_size)
@@ -4687,10 +4693,27 @@ class OllamaTranslator:
                                 running_context.append(pair_str)
             running_context = running_context[-8:]
         else:
-            for start_idx in range(0, len(unique_to_translate), batch_limit):
+            total_uniq = len(unique_to_translate)
+            if total_uniq > batch_limit:
+                num_seq_chunks = (total_uniq + batch_limit - 1) // batch_limit
+                seq_chunk_size = (total_uniq + num_seq_chunks - 1) // num_seq_chunks
+                seq_chunks = [
+                    unique_to_translate[i : i + seq_chunk_size]
+                    for i in range(0, total_uniq, seq_chunk_size)
+                ]
+                logger.info(
+                    "📦 Равномерная балансировка большой пачки (%d фраз, лимит=%d) -> %d сбалансированных чанков (%s)",
+                    total_uniq,
+                    batch_limit,
+                    len(seq_chunks),
+                    ", ".join(f"{len(c)} фраз" for c in seq_chunks),
+                )
+            else:
+                seq_chunks = [unique_to_translate] if unique_to_translate else []
+
+            for chunk in seq_chunks:
                 if self.stop_requested:
                     break
-                chunk = unique_to_translate[start_idx : start_idx + batch_limit]
                 sub_prov: dict[str, dict[str, str]] = {}
                 try:
                     chunk_map = await self._translate_batch_chunk(
