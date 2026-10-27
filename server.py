@@ -312,6 +312,14 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
 
     block.setdefault("translation_source", None)
     block.setdefault("skip_reason", None)
+    block.setdefault("font_too_small_warning", False)
+    block.setdefault("page_base_font_size", None)
+    block.setdefault("safe_bbox", None)
+    block.setdefault("bubble_bbox", None)
+    block.setdefault("optical_center", None)
+    block.setdefault("aspect_ratio", None)
+    block.setdefault("shape_hint", None)
+    block.setdefault("recommended_max_chars", None)
 
     return block
 
@@ -671,6 +679,10 @@ class TextBlock(BaseModel):
         default=False,
         description="Если True, размер рамки был изменен пользователем (ресайз, объединение Merge или разделение Split)",
     )
+    is_merged_bubble: bool = Field(
+        default=False,
+        description="Если True, блок создан объединением нескольких соседних рамок (M)",
+    )
     confidence: float = 1.0
     original_text: str
     romaji_text: str = ""
@@ -729,6 +741,38 @@ class TextBlock(BaseModel):
     is_overflowing: bool | None = Field(
         default=None,
         description="True, если текст не поместился в исходную рамку при минимальном размере шрифта",
+    )
+    font_too_small_warning: bool | None = Field(
+        default=None,
+        description="True, если выбранный кегль < 72% от базового диалогового кегля страницы (Блок 4.1)",
+    )
+    page_base_font_size: int | None = Field(
+        default=None,
+        description="Базовый гармонизированный размер шрифта диалога на странице (px)",
+    )
+    safe_bbox: list[int] | None = Field(
+        default=None,
+        description="Безопасная внутренняя зона бабла с учетом отступов [sx1, sy1, sx2, sy2]",
+    )
+    bubble_bbox: list[int] | None = Field(
+        default=None,
+        description="Границы сегментированной полости бабла [bx1, by1, bx2, by2]",
+    )
+    optical_center: list[int] | None = Field(
+        default=None,
+        description="Оптический центр бабла [cx, cy] по Pole of Inaccessibility",
+    )
+    aspect_ratio: float | None = Field(
+        default=None,
+        description="Отношение ширины к высоте бабла",
+    )
+    shape_hint: str | None = Field(
+        default=None,
+        description="Форма бабла: narrow_vertical, round_oval, wide_horizontal",
+    )
+    recommended_max_chars: int | None = Field(
+        default=None,
+        description="Рекомендуемый лимит символов для комфортной верстки в бабле",
     )
     mask_dilate: int | None = Field(
         default=None,
@@ -950,6 +994,44 @@ class RetranslateSingleBlockRequest(BaseModel):
     overflow_mode: str | None = Field(default=None)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
+    image_format: str = Field(default="webp")
+    blocks: list[TextBlock] = Field(default_factory=list)
+
+
+class DiamondWrapBlockRequest(BaseModel):
+    block_id: int
+    text: str | None = Field(default=None)
+    bbox: list[int] | None = Field(default=None)
+    style_preset: str = Field(default="dialogue")
+    font_family: str | None = Field(default=None)
+    font_size: int | None = Field(default=None)
+    uppercase: bool = Field(default=True)
+    source_path: str | None = Field(default=None)
+    dest_path: str | None = Field(default=None)
+    source_dir: str | None = Field(default=None)
+    target_lang: str = Field(default="ru")
+    min_font_size: int = Field(default=12)
+    max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    return_image: bool = Field(default=True)
+    prefer_url: bool = Field(default=True)
+    image_format: str = Field(default="webp")
+    blocks: list[TextBlock] = Field(default_factory=list)
+
+
+class ShortenBlockTextRequest(BaseModel):
+    block_id: int
+    source_path: str | None = Field(default=None)
+    dest_path: str | None = Field(default=None)
+    source_dir: str | None = Field(default=None)
+    target_lang: str = Field(default="ru")
+    ollama_model: str | None = Field(default=None)
+    uppercase: bool = Field(default=True)
+    min_font_size: int = Field(default=12)
+    max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+    return_image: bool = Field(default=True)
+    prefer_url: bool = Field(default=True)
     image_format: str = Field(default="webp")
     blocks: list[TextBlock] = Field(default_factory=list)
 
@@ -3284,6 +3366,11 @@ async def health_check() -> dict[str, Any]:
             if (renderer_engine is not None and hasattr(renderer_engine, "list_available_fonts"))
             else []
         ),
+        "font_status": (
+            renderer_engine.get_font_status_info()
+            if (renderer_engine is not None and hasattr(renderer_engine, "get_font_status_info"))
+            else {}
+        ),
         "folder_job": folder_job_state,
     }
 
@@ -4707,6 +4794,130 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
         "processing_time_sec": elapsed,
         "updated_block": TextBlock(**target_blk),
         "translated_image": translated_b64,
+        "blocks": [TextBlock(**b) for b in blocks_dicts],
+    }
+
+
+@app.post("/auto_diamond_wrap")
+async def auto_diamond_wrap_endpoint(payload: DiamondWrapBlockRequest) -> dict[str, Any]:
+    """
+    БЛОК 6.3: Кнопка «💎 Алмазная разбивка»:
+    Принудительно пересчитывает `\n` внутри `translated_text` по профилю суперэллипса (2D-DP)
+    и возвращает текст с явными переносами строк (а при переданном `source_path` сразу перерисовывает страницу).
+    """
+    if renderer_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    blocks_dicts: list[dict[str, Any]] = [
+        _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
+    ]
+    target_blk = next((b for b in blocks_dicts if int(b.get("id", -1)) == int(payload.block_id)), None)
+
+    raw_text = payload.text if payload.text is not None else (str(target_blk.get("translated_text") or "") if target_blk else "")
+    bbox = payload.bbox or (target_blk.get("safe_bbox") or target_blk.get("bbox") if target_blk else [0, 0, 140, 160])
+    style_preset = (target_blk.get("style_preset") if target_blk else payload.style_preset) or "dialogue"
+    font_family = target_blk.get("font_family") if target_blk else payload.font_family
+    font_size = (target_blk.get("font_size") or target_blk.get("rendered_font_size")) if target_blk else payload.font_size
+
+    diamond_text = renderer_engine.format_diamond_lines(
+        text=raw_text,
+        bbox=bbox,
+        style_preset=style_preset,
+        font_family=font_family,
+        font_size=font_size,
+        uppercase=payload.uppercase,
+    )
+
+    if target_blk is not None:
+        target_blk["translated_text"] = diamond_text
+        target_blk["is_deleted"] = not bool(diamond_text.strip())
+
+    if payload.source_path and blocks_dicts and cleaner_engine is not None and translator_engine is not None:
+        save_req = SaveEditedPageRequest(
+            source_path=payload.source_path,
+            dest_path=payload.dest_path,
+            source_dir=payload.source_dir,
+            target_lang=payload.target_lang,
+            uppercase=payload.uppercase,
+            min_font_size=payload.min_font_size,
+            max_font_size=payload.max_font_size,
+            overflow_mode=payload.overflow_mode,
+            return_image=payload.return_image,
+            prefer_url=payload.prefer_url,
+            image_format=payload.image_format,
+            blocks=[TextBlock(**b) for b in blocks_dicts],
+        )
+        res = await save_edited_page_endpoint(save_req)
+        res["diamond_text"] = diamond_text
+        res["block_id"] = payload.block_id
+        return res
+
+    return {
+        "status": "ok",
+        "block_id": payload.block_id,
+        "diamond_text": diamond_text,
+        "blocks": [TextBlock(**b) for b in blocks_dicts] if blocks_dicts else [],
+    }
+
+
+@app.post("/shorten_block_text")
+async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[str, Any]:
+    """
+    БЛОК 6.3: Кнопка «✂️ Сократить под бабл (AI)»:
+    Отправляет конкретную фразу в ИИ с задачей сократить длину русского/английского текста на 25–35%
+    с сохранением смысла и тона персонажа, обновляет блок и сразу перерисовывает страницу.
+    """
+    if translator_engine is None or renderer_engine is None or cleaner_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    blocks_dicts: list[dict[str, Any]] = [
+        _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
+    ]
+    target_blk = next((b for b in blocks_dicts if int(b.get("id", -1)) == int(payload.block_id)), None)
+    if target_blk is None:
+        raise HTTPException(status_code=404, detail=f"Блок #{payload.block_id} не найден.")
+
+    cur_text = str(target_blk.get("translated_text") or "").strip()
+    orig_text = str(target_blk.get("original_text") or "").strip()
+    if not cur_text:
+        raise HTTPException(status_code=400, detail="В выбранном блоке нет текста перевода для сокращения.")
+
+    shortened = await translator_engine.shorten_text_for_bubble(
+        text=cur_text,
+        orig_text=orig_text,
+        target_lang=payload.target_lang,
+        bbox=target_blk.get("bbox"),
+        model=payload.ollama_model,
+    )
+    if shortened:
+        target_blk["translated_text"] = shortened
+        target_blk["is_deleted"] = False
+
+    if payload.source_path:
+        save_req = SaveEditedPageRequest(
+            source_path=payload.source_path,
+            dest_path=payload.dest_path,
+            source_dir=payload.source_dir,
+            target_lang=payload.target_lang,
+            uppercase=payload.uppercase,
+            min_font_size=payload.min_font_size,
+            max_font_size=payload.max_font_size,
+            overflow_mode=payload.overflow_mode,
+            return_image=payload.return_image,
+            prefer_url=payload.prefer_url,
+            image_format=payload.image_format,
+            blocks=[TextBlock(**b) for b in blocks_dicts],
+        )
+        res = await save_edited_page_endpoint(save_req)
+        res["shortened_text"] = shortened
+        res["updated_block"] = TextBlock(**target_blk)
+        return res
+
+    return {
+        "status": "ok",
+        "block_id": payload.block_id,
+        "shortened_text": shortened,
+        "updated_block": TextBlock(**target_blk),
         "blocks": [TextBlock(**b) for b in blocks_dicts],
     }
 

@@ -2701,21 +2701,60 @@ class MangaOCREngine:
         matched_tbs: list[dict[str, Any]],
     ) -> list[dict[str, Any]] | None:
         """
-        Если внутри одного родительского `bubble` найдено 2 отдельных неперекрывающихся `text_bubble` (от RT-DETR-v2),
-        проверяет, разделены ли они перемычкой/границей баббла или широким пустым зазором.
-        Если да — аккуратно разрезает родительский `bubble` на 2 независимых баббла с собственными `bbox` и `text_bbox`.
+        Если внутри одного родительского `bubble` найдено 2 (или более) отдельных неперекрывающихся `text_bubble`
+        (от RT-DETR-v2), разрезает родительский `bubble` на независимые под-баблы с собственными неперекрывающимися
+        `bbox` и `text_bbox` (включая диагональные сдвоенные баблы-«восьмерки» с белой перемычкой без черной линии!).
         """
-        if len(matched_tbs) != 2:
+        if len(matched_tbs) < 2:
             return None
 
         bx1, by1, bx2, by2 = bubble_det["bbox"]
         bw = bx2 - bx1
         bh = by2 - by1
-        if bw < 72 and bh < 72:
+        if bw < 64 and bh < 64:
             return None
+
+        # Если внутри сдвоенного/строенного облачка найдено 3+ отдельных текстовых блока
+        if len(matched_tbs) >= 3:
+            # Проверяем, что текстовые боксы попарно не являются дублями друг друга
+            for idx_a in range(len(matched_tbs)):
+                ta = matched_tbs[idx_a]["bbox"]
+                area_a = float(max(1, (ta[2] - ta[0]) * (ta[3] - ta[1])))
+                for idx_b in range(idx_a + 1, len(matched_tbs)):
+                    tb = matched_tbs[idx_b]["bbox"]
+                    area_b = float(max(1, (tb[2] - tb[0]) * (tb[3] - tb[1])))
+                    ix1, iy1 = max(ta[0], tb[0]), max(ta[1], tb[1])
+                    ix2, iy2 = min(ta[2], tb[2]), min(ta[3], tb[3])
+                    if ix2 > ix1 and iy2 > iy1:
+                        if float((ix2 - ix1) * (iy2 - iy1)) / min(area_a, area_b) >= 0.20:
+                            return None
+            out_multi: list[dict[str, Any]] = []
+            for m_tb in matched_tbs:
+                tx1, ty1, tx2, ty2 = m_tb["bbox"]
+                tw_m = max(12, tx2 - tx1)
+                th_m = max(12, ty2 - ty1)
+                pad_x = max(12, int(round(tw_m * 0.28)))
+                pad_y = max(12, int(round(th_m * 0.28)))
+                sub_b = [
+                    max(bx1, tx1 - pad_x),
+                    max(by1, ty1 - pad_y),
+                    min(bx2, tx2 + pad_x),
+                    min(by2, ty2 + pad_y),
+                ]
+                out_multi.append(
+                    {
+                        "bbox": sub_b,
+                        "text_bbox": cls._compute_tight_ink_bbox(img_np, sub_b, [tx1, ty1, tx2, ty2], is_free_text=False),
+                        "confidence": round(max(float(bubble_det["confidence"]), float(m_tb["confidence"])), 4),
+                        "is_free_text": False,
+                    }
+                )
+            return out_multi
 
         tb1 = matched_tbs[0]["bbox"]
         tb2 = matched_tbs[1]["bbox"]
+        w1, h1 = max(8, tb1[2] - tb1[0]), max(8, tb1[3] - tb1[1])
+        w2, h2 = max(8, tb2[2] - tb2[0]), max(8, tb2[3] - tb2[1])
 
         ix1 = max(tb1[0], tb2[0])
         iy1 = max(tb1[1], tb2[1])
@@ -2723,74 +2762,114 @@ class MangaOCREngine:
         iy2 = min(tb1[3], tb2[3])
         if ix2 > ix1 and iy2 > iy1:
             inter_a = float((ix2 - ix1) * (iy2 - iy1))
-            min_a = float(min((tb1[2] - tb1[0]) * (tb1[3] - tb1[1]), (tb2[2] - tb2[0]) * (tb2[3] - tb2[1])))
-            if inter_a / max(1.0, min_a) >= 0.22:
+            min_a = float(min(w1 * h1, w2 * h2))
+            if inter_a / max(1.0, min_a) >= 0.18:
                 return None
+
+        cx1, cy1 = (tb1[0] + tb1[2]) / 2.0, (tb1[1] + tb1[3]) / 2.0
+        cx2, cy2 = (tb2[0] + tb2[2]) / 2.0, (tb2[1] + tb2[3]) / 2.0
+        dx_centers = abs(cx1 - cx2)
+        dy_centers = abs(cy1 - cy2)
 
         x_gap = max(tb1[0], tb2[0]) - min(tb1[2], tb2[2])
         y_gap = max(tb1[1], tb2[1]) - min(tb1[3], tb2[3])
 
         crop_gray = cv2.cvtColor(img_np[by1:by2, bx1:bx2], cv2.COLOR_RGB2GRAY)
 
-        # Вариант 1: Горизонтальный раздел (два облачка слева и справа)
-        if x_gap >= 8 and x_gap >= y_gap:
-            left_tb, right_tb = (tb1, tb2) if tb1[0] <= tb2[0] else (tb2, tb1)
-            gap_s = max(bx1 + 12, left_tb[2]) - bx1
-            gap_e = min(bx2 - 12, right_tb[0]) - bx1
+        # Определяем доминирующую ось разделения двух долей сдвоенного бабла (включая диагональные восьмерки)
+        horiz_dominant = (x_gap >= y_gap and x_gap >= 4) or (
+            x_gap < 4 and y_gap < 6 and (dx_centers / max(1.0, float(bw))) >= (dy_centers / max(1.0, float(bh)))
+        )
+
+        # Вариант 1: Горизонтальный или диагонально-горизонтальный раздел (два облачка слева и справа)
+        if horiz_dominant and dx_centers >= max(24.0, min(w1, w2) * 0.65):
+            if tb1[0] + tb1[2] <= tb2[0] + tb2[2]:
+                left_tb, right_tb = tb1, tb2
+                left_conf, right_conf = float(matched_tbs[0]["confidence"]), float(matched_tbs[1]["confidence"])
+            else:
+                left_tb, right_tb = tb2, tb1
+                left_conf, right_conf = float(matched_tbs[1]["confidence"]), float(matched_tbs[0]["confidence"])
+
+            gap_s = max(bx1 + 10, min(left_tb[2], int(round((cx1 + cx2) / 2.0)) - 6)) - bx1
+            gap_e = min(bx2 - 10, max(right_tb[0], int(round((cx1 + cx2) / 2.0)) + 6)) - bx1
             if gap_e > gap_s + 2:
                 white_cols = np.mean(crop_gray >= 225, axis=0)
                 min_rel = int(np.argmin(white_cols[gap_s:gap_e])) + gap_s
-                pinch_white = float(white_cols[min_rel])
-                base_white = float(np.percentile(white_cols, 75))
-                if pinch_white <= base_white * 0.76 or x_gap >= max(24, int(bw * 0.16)):
-                    split_x = bx1 + min_rel
-                    if (split_x - bx1) >= 28 and (bx2 - split_x) >= 28:
-                        b_left = [bx1, by1, split_x, by2]
-                        b_right = [split_x, by1, bx2, by2]
-                        return [
-                            {
-                                "bbox": b_left,
-                                "text_bbox": cls._compute_tight_ink_bbox(img_np, b_left, left_tb, is_free_text=False),
-                                "confidence": round(max(float(bubble_det["confidence"]), float(matched_tbs[0]["confidence"])), 4),
-                                "is_free_text": False,
-                            },
-                            {
-                                "bbox": b_right,
-                                "text_bbox": cls._compute_tight_ink_bbox(img_np, b_right, right_tb, is_free_text=False),
-                                "confidence": round(max(float(bubble_det["confidence"]), float(matched_tbs[1]["confidence"])), 4),
-                                "is_free_text": False,
-                            },
-                        ]
+                split_x = bx1 + min_rel
+            else:
+                split_x = int(round((left_tb[2] + right_tb[0]) / 2.0))
 
-        # Вариант 2: Вертикальный раздел (два облачка сверху и снизу — часто в манхве/вебтунах)
-        if y_gap >= 10 and y_gap > x_gap:
-            top_tb, bot_tb = (tb1, tb2) if tb1[1] <= tb2[1] else (tb2, tb1)
-            gap_s = max(by1 + 12, top_tb[3]) - by1
-            gap_e = min(by2 - 12, bot_tb[1]) - by1
+            split_x = max(bx1 + 24, min(bx2 - 24, split_x))
+            if (split_x - bx1) >= 24 and (bx2 - split_x) >= 24:
+                # Поджимаем вертикальные границы каждой половинки вокруг её собственного текстового бокса,
+                # чтобы при диагональном расположении двух баблов их рамки не наезжали друг на друга по высоте!
+                lh_pad = max(18, int(round((left_tb[3] - left_tb[1]) * 0.42)))
+                rh_pad = max(18, int(round((right_tb[3] - right_tb[1]) * 0.42)))
+                ly1 = max(by1, left_tb[1] - lh_pad) if dy_centers >= bh * 0.22 else by1
+                ly2 = min(by2, left_tb[3] + lh_pad) if dy_centers >= bh * 0.22 else by2
+                ry1 = max(by1, right_tb[1] - rh_pad) if dy_centers >= bh * 0.22 else by1
+                ry2 = min(by2, right_tb[3] + rh_pad) if dy_centers >= bh * 0.22 else by2
+
+                b_left = [bx1, ly1, split_x, max(ly1 + 24, ly2)]
+                b_right = [split_x, ry1, bx2, max(ry1 + 24, ry2)]
+                return [
+                    {
+                        "bbox": b_left,
+                        "text_bbox": cls._compute_tight_ink_bbox(img_np, b_left, left_tb, is_free_text=False),
+                        "confidence": round(max(float(bubble_det["confidence"]), left_conf), 4),
+                        "is_free_text": False,
+                    },
+                    {
+                        "bbox": b_right,
+                        "text_bbox": cls._compute_tight_ink_bbox(img_np, b_right, right_tb, is_free_text=False),
+                        "confidence": round(max(float(bubble_det["confidence"]), right_conf), 4),
+                        "is_free_text": False,
+                    },
+                ]
+
+        # Вариант 2: Вертикальный или диагонально-вертикальный раздел (два облачка сверху и снизу — часто в манхве/маньхуа)
+        if dy_centers >= max(24.0, min(h1, h2) * 0.65):
+            if tb1[1] + tb1[3] <= tb2[1] + tb2[3]:
+                top_tb, bot_tb = tb1, tb2
+                top_conf, bot_conf = float(matched_tbs[0]["confidence"]), float(matched_tbs[1]["confidence"])
+            else:
+                top_tb, bot_tb = tb2, tb1
+                top_conf, bot_conf = float(matched_tbs[1]["confidence"]), float(matched_tbs[0]["confidence"])
+
+            gap_s = max(by1 + 10, min(top_tb[3], int(round((cy1 + cy2) / 2.0)) - 6)) - by1
+            gap_e = min(by2 - 10, max(bot_tb[1], int(round((cy1 + cy2) / 2.0)) + 6)) - by1
             if gap_e > gap_s + 2:
                 white_rows = np.mean(crop_gray >= 225, axis=1)
                 min_rel = int(np.argmin(white_rows[gap_s:gap_e])) + gap_s
-                pinch_white = float(white_rows[min_rel])
-                base_white = float(np.percentile(white_rows, 75))
-                if pinch_white <= base_white * 0.76 or y_gap >= max(26, int(bh * 0.18)):
-                    split_y = by1 + min_rel
-                    if (split_y - by1) >= 26 and (by2 - split_y) >= 26:
-                        b_top = [bx1, by1, bx2, split_y]
-                        b_bot = [bx1, split_y, bx2, by2]
-                        return [
-                            {
-                                "bbox": b_top,
-                                "text_bbox": cls._compute_tight_ink_bbox(img_np, b_top, top_tb, is_free_text=False),
-                                "confidence": round(max(float(bubble_det["confidence"]), float(matched_tbs[0]["confidence"])), 4),
-                                "is_free_text": False,
-                            },
-                            {
-                                "bbox": b_bot,
-                                "text_bbox": cls._compute_tight_ink_bbox(img_np, b_bot, bot_tb, is_free_text=False),
-                                "confidence": round(max(float(bubble_det["confidence"]), float(matched_tbs[1]["confidence"])), 4),
-                                "is_free_text": False,
-                            },
-                        ]
+                split_y = by1 + min_rel
+            else:
+                split_y = int(round((top_tb[3] + bot_tb[1]) / 2.0))
+
+            split_y = max(by1 + 22, min(by2 - 22, split_y))
+            if (split_y - by1) >= 22 and (by2 - split_y) >= 22:
+                tw_pad = max(18, int(round((top_tb[2] - top_tb[0]) * 0.42)))
+                bw_pad = max(18, int(round((bot_tb[2] - bot_tb[0]) * 0.42)))
+                tx1_b = max(bx1, top_tb[0] - tw_pad) if dx_centers >= bw * 0.22 else bx1
+                tx2_b = min(bx2, top_tb[2] + tw_pad) if dx_centers >= bw * 0.22 else bx2
+                bx1_b = max(bx1, bot_tb[0] - bw_pad) if dx_centers >= bw * 0.22 else bx1
+                bx2_b = min(bx2, bot_tb[2] + bw_pad) if dx_centers >= bw * 0.22 else bx2
+
+                b_top = [tx1_b, by1, max(tx1_b + 24, tx2_b), split_y]
+                b_bot = [bx1_b, split_y, max(bx1_b + 24, bx2_b), by2]
+                return [
+                    {
+                        "bbox": b_top,
+                        "text_bbox": cls._compute_tight_ink_bbox(img_np, b_top, top_tb, is_free_text=False),
+                        "confidence": round(max(float(bubble_det["confidence"]), top_conf), 4),
+                        "is_free_text": False,
+                    },
+                    {
+                        "bbox": b_bot,
+                        "text_bbox": cls._compute_tight_ink_bbox(img_np, b_bot, bot_tb, is_free_text=False),
+                        "confidence": round(max(float(bubble_det["confidence"]), bot_conf), 4),
+                        "is_free_text": False,
+                    },
+                ]
 
         return None
 

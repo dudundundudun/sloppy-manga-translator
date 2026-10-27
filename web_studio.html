@@ -1352,7 +1352,7 @@
       align-items: center;
       justify-content: center;
       text-align: center;
-      font-family: "Comic Sans MS", "Segoe UI", system-ui, sans-serif;
+      font-family: "CC Wild Words", "Anime Ace v05", "Manga Temple", "Segoe UI Semibold", "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
       font-weight: 800;
       color: #0f0f0f;
       text-shadow:
@@ -1361,7 +1361,7 @@
         -1.5px  1.5px 0 #ffffff,
          1.5px  1.5px 0 #ffffff,
          0px    0px   4px #ffffff;
-      line-height: 1.15;
+      line-height: 1.24;
       overflow: visible;
       word-break: normal;
       overflow-wrap: normal;
@@ -1374,6 +1374,146 @@
     .bbox-pin.dragging-pin .bbox-live-text,
     .bbox-pin.dirty-preview-pin .bbox-live-text {
       display: flex;
+    }
+
+    /* БЛОК 6.1: Оверлей безопасной зоны бабла (Safe Margin & Diamond Guide) и оптического центра */
+    .bubble-safe-zone-guide {
+      position: absolute;
+      inset: 10% 11%;
+      border: 1.5px dashed rgba(56, 189, 248, 0.88);
+      border-radius: 50%;
+      background: radial-gradient(ellipse at center, rgba(56, 189, 248, 0.08) 0%, rgba(56, 189, 248, 0.0) 75%);
+      box-shadow: inset 0 0 10px rgba(56, 189, 248, 0.18);
+      pointer-events: none;
+      display: none;
+      z-index: 6;
+    }
+    .bbox-pin.active-pin .bubble-safe-zone-guide {
+      display: block;
+    }
+    .bubble-safe-zone-guide::after {
+      content: "💎 Safe Zone";
+      position: absolute;
+      bottom: -14px;
+      left: 50%;
+      transform: translateX(-50%);
+      font-size: 8.5px;
+      font-weight: 700;
+      color: #7dd3fc;
+      background: rgba(11, 9, 18, 0.86);
+      padding: 0 5px;
+      border-radius: 4px;
+      border: 1px solid rgba(56, 189, 248, 0.4);
+      white-space: nowrap;
+    }
+    .bubble-optical-center-mark {
+      position: absolute;
+      left: 50%;
+      top: 47.8%;
+      width: 9px;
+      height: 9px;
+      transform: translate(-50%, -50%);
+      border-radius: 50%;
+      border: 1.5px solid #38bdf8;
+      background: rgba(56, 189, 248, 0.35);
+      box-shadow: 0 0 6px rgba(56, 189, 248, 0.85);
+      pointer-events: none;
+      display: none;
+      z-index: 7;
+    }
+    .bbox-pin.active-pin .bubble-optical-center-mark {
+      display: block;
+    }
+    .bbox-pin.qa-overflow-pin {
+      border-color: #fb7185 !important;
+      box-shadow: 0 0 12px rgba(251, 113, 133, 0.55);
+    }
+    .bbox-pin.qa-small-font-pin {
+      border-color: #fbbf24 !important;
+    }
+
+    /* БЛОК 6.2: Индикаторы проблемных баблов (Typesetting QA Badges) */
+    .qa-badge-overflow {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      background: rgba(244, 63, 94, 0.2);
+      color: #fda4af;
+      border: 1px solid rgba(244, 63, 94, 0.55);
+      border-radius: 6px;
+      padding: 1px 7px;
+      font-size: 10.5px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .qa-badge-small-font {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      background: rgba(245, 158, 11, 0.2);
+      color: #fde68a;
+      border: 1px solid rgba(245, 158, 11, 0.55);
+      border-radius: 6px;
+      padding: 1px 7px;
+      font-size: 10.5px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+    .block-edit-card.qa-overflow-card {
+      border-color: rgba(244, 63, 94, 0.65) !important;
+      box-shadow: inset 0 0 0 1px rgba(244, 63, 94, 0.25);
+    }
+    .block-edit-card.qa-small-font-card {
+      border-color: rgba(245, 158, 11, 0.65) !important;
+      box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.22);
+    }
+
+    /* БЛОК 6.3: Кнопки «💎 Алмазная разбивка» и «✂️ Сократить под бабл (AI)» */
+    .btn-diamond-wrap {
+      background: rgba(56, 189, 248, 0.16);
+      color: #bae6fd;
+      border: 1px solid rgba(56, 189, 248, 0.48);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-diamond-wrap:hover {
+      background: rgba(56, 189, 248, 0.34);
+      color: #fff;
+      border-color: #38bdf8;
+    }
+    .btn-shorten-ai {
+      background: rgba(16, 185, 129, 0.16);
+      color: #a7f3d0;
+      border: 1px solid rgba(16, 185, 129, 0.48);
+      border-radius: 8px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-shorten-ai:hover {
+      background: rgba(16, 185, 129, 0.34);
+      color: #fff;
+      border-color: #34d399;
+    }
+    .scanlation-font-hint-banner {
+      margin: 6px 10px 0 10px;
+      padding: 7px 11px;
+      border-radius: 9px;
+      background: rgba(56, 189, 248, 0.11);
+      border: 1px dashed rgba(56, 189, 248, 0.42);
+      color: #bae6fd;
+      font-size: 11.5px;
+      line-height: 1.4;
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
     }
 
     /* Ghost outline of original clean_bbox when translation box is moved */
@@ -2687,6 +2827,10 @@
           </div>
         </div>
 
+        <div class="scanlation-font-hint-banner" id="drawer-font-hint-banner">
+          <span>💡 <b>Сканлейт-шрифты:</b> сейчас используется системный гротеск (<i>Segoe UI Semibold / Trebuchet MS</i>, без Comic Sans). Для эталонной верстки рекомендуем положить в папку <code>fonts/</code>: <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b>.</span>
+          <button type="button" class="romaji-copy-btn" onclick="this.parentElement.style.display='none'" title="Скрыть подсказку">✕</button>
+        </div>
         <div class="blocks-scroll-area" id="blocks-container">
           Выберите страницу слева и нажмите «✏️ Редактор» или кликните по любому кружку #N на странице.
         </div>
@@ -2699,6 +2843,7 @@
     <div class="inline-popup-header" id="inline-popup-drag-bar">
       <div style="display:flex; align-items:center; gap:5px;">
         <span class="block-id-badge" id="popup-block-badge">#1 · 💬 Баббл</span>
+        <span id="popup-qa-badges" style="display:inline-flex; gap:4px; align-items:center;"></span>
         <button type="button" class="romaji-copy-btn" onclick="stepInlinePopupBlock(-1)" title="Предыдущий кружок на странице (Shift+Tab)">◀</button>
         <button type="button" class="romaji-copy-btn" onclick="stepInlinePopupBlock(1)" title="Следующий кружок на странице (Tab)">▶</button>
       </div>
@@ -2840,6 +2985,8 @@
         <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Полностью удалить эту рамку с картинки (Delete)">🗑 Удалить</button>
         <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event, false)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
         <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event, true)" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;" title="Снайперский 👁 VLM-OCR: заново прочитать сложный шрифт или SFX через Vision-модель и перевести">👁 VLM</button>
+        <button type="button" class="btn-diamond-wrap" onclick="applyDiamondWrapFromPopup(event)" title="💎 Алмазная разбивка: пересчитать переносы строк (\n) по профилю суперэллипса Ламе">💎 Алмаз</button>
+        <button type="button" class="btn-shorten-ai" id="popup-shorten-ai-btn" onclick="shortenFromInlinePopup(event)" title="✂️ Сократить под бабл (AI): сжать длину фразы на 25–35% через ИИ с сохранением смысла и тона персонажа">✂️ Сжать (AI)</button>
         <button type="button" class="btn-merge-blocks" id="popup-merge-btn" onclick="mergeSelectedBlocks(event)" title="Объединить выделенные через Shift+Клик рамки в один блок (M)">🔗 Объединить (M)</button>
       </div>
       <details class="popup-more-menu" id="popup-more-details">
@@ -3187,6 +3334,9 @@
 
         <!-- TAB 4: FONT & SAVING -->
         <div class="settings-tab-pane" id="tab-font">
+          <div class="scanlation-font-hint-banner" id="settings-font-hint-banner" style="margin:0 0 10px 0; display:flex;">
+            <span>💡 <b>Рекомендуемые сканлейт-шрифты (v3.5 Pro Scanlation):</b> положите <code>.ttf</code> файлы <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b> в папку <code>fonts/</code>. При пустой папке <code>fonts/</code> программа никогда не использует Comic Sans MS, а выбирает чистый <b>Segoe UI Semibold / Trebuchet MS</b>.</span>
+          </div>
           <div class="section-box">
             <div class="section-title">🔤 Размер шрифта и стиль верстки</div>
             <div class="section-desc">Движок автоматически подбирает оптимальный размер шрифта под каждое облачко в заданных пределах:</div>
@@ -4999,6 +5149,13 @@
           availableFonts = data.available_fonts;
           populateFontFamilySelect(document.getElementById("popup-font-family"), null);
         }
+        if (data.font_status && typeof data.font_status === "object") {
+          const hasCustom = Boolean(data.font_status.has_custom_fonts);
+          const drBanner = document.getElementById("drawer-font-hint-banner");
+          const stBanner = document.getElementById("settings-font-hint-banner");
+          if (drBanner) drBanner.style.display = hasCustom ? "none" : "flex";
+          if (stBanner) stBanner.style.display = hasCustom ? "none" : "flex";
+        }
         let models = data.models || [];
         if (force) {
           const mRes = await fetch("/models?refresh=true");
@@ -5954,7 +6111,8 @@
         bbox: [minX1, minY1, maxX2, maxY2],
         clean_bbox: [minCX1, minCY1, maxCX2, maxCY2],
         bbox_modified: true,
-        bbox_resized: true,
+        bbox_resized: false,
+        is_merged_bubble: true,
         original_text: mergedOrig,
         romaji_text: mergedRomaji,
         translated_text: mergedTrans,
@@ -7480,6 +7638,17 @@
       const isDel = Boolean(blk.is_deleted) || !(blk.translated_text || "").trim();
       document.getElementById("popup-block-badge").textContent =
         `#${blk.id} · ${isFree ? "📝 Фон" : "💬 Баббл"}${isDel ? " (Ориг.)" : ""}`;
+      const qaEl = document.getElementById("popup-qa-badges");
+      if (qaEl) {
+        let qh = "";
+        if (!isDel && blk.is_overflowing) {
+          qh += `<span class="qa-badge-overflow" title="Выход за границы безопасной зоны бабла">⚠️ Выход за границы</span>`;
+        }
+        if (!isDel && blk.font_too_small_warning) {
+          qh += `<span class="qa-badge-small-font" title="Мелкий кегль (<72% от нормы страницы)">🔍 Мелкий кегль</span>`;
+        }
+        qaEl.innerHTML = qh;
+      }
       document.getElementById("popup-orig-text").textContent = `🇯🇵 ${blk.original_text || "—"}`;
       document.getElementById("popup-romaji-text").textContent = `🔤 ${blk.romaji_text || "—"}`;
       document.getElementById("popup-romaji-row").style.display = blk.romaji_text ? "flex" : "none";
@@ -7645,6 +7814,227 @@
       }
     }
 
+    function computeSafeGuideInlineCss(b) {
+      if (!b || !Array.isArray(b.bbox) || b.bbox.length < 4) return "";
+      const [x1, y1, x2, y2] = b.bbox;
+      const bw = Math.max(8, x2 - x1);
+      const bh = Math.max(8, y2 - y1);
+      const preset = String(b.style_preset || "dialogue").toLowerCase();
+      const bRad = (preset === "narration" || preset === "sfx") ? "6px" : "50%";
+      if (Array.isArray(b.safe_bbox) && b.safe_bbox.length >= 4 && !isBlockBboxModified(b)) {
+        const [sx1, sy1, sx2, sy2] = b.safe_bbox;
+        const leftPct = Math.max(2, Math.min(35, ((sx1 - x1) / bw) * 100));
+        const topPct = Math.max(2, Math.min(35, ((sy1 - y1) / bh) * 100));
+        const rightPct = Math.max(2, Math.min(35, ((x2 - sx2) / bw) * 100));
+        const botPct = Math.max(2, Math.min(35, ((y2 - sy2) / bh) * 100));
+        return `inset:${topPct.toFixed(1)}% ${rightPct.toFixed(1)}% ${botPct.toFixed(1)}% ${leftPct.toFixed(1)}%; border-radius:${bRad};`;
+      }
+      const mRatio = preset === "shout" ? 8 : 11;
+      return `inset:${mRatio}% ${mRatio}%; border-radius:${bRad};`;
+    }
+
+    function computeOpticalCenterInlineCss(b) {
+      if (!b || !Array.isArray(b.bbox) || b.bbox.length < 4) return "left:50%; top:47.8%;";
+      const [x1, y1, x2, y2] = b.bbox;
+      const bw = Math.max(8, x2 - x1);
+      const bh = Math.max(8, y2 - y1);
+      if (Array.isArray(b.optical_center) && b.optical_center.length >= 2 && !isBlockBboxModified(b)) {
+        const [ocx, ocy] = b.optical_center;
+        const cxPct = Math.max(15, Math.min(85, ((ocx - x1) / bw) * 100));
+        const cyPct = Math.max(15, Math.min(85, ((ocy - y1) / bh) * 100));
+        return `left:${cxPct.toFixed(1)}%; top:${cyPct.toFixed(1)}%;`;
+      }
+      return "left:50%; top:47.8%;";
+    }
+
+    function clientSideDiamondBreak(rawText, bbox) {
+      const clean = String(rawText || "").replace(/\s+/g, " ").trim();
+      if (!clean) return "";
+      const words = clean.split(" ");
+      if (words.length <= 2) return clean;
+      const bw = Array.isArray(bbox) && bbox.length >= 4 ? Math.max(20, bbox[2] - bbox[0]) : 120;
+      const bh = Array.isArray(bbox) && bbox.length >= 4 ? Math.max(20, bbox[3] - bbox[1]) : 150;
+      const aspect = Math.max(0.3, Math.min(2.5, bw / bh));
+      const estLines = Math.max(2, Math.min(words.length, Math.round(Math.sqrt(clean.length / (aspect * 2.2)))));
+      const weights = [];
+      for (let k = 0; k < estLines; k++) {
+        const tk = (2 * (k + 0.5)) / estLines - 1;
+        weights.push(Math.pow(Math.max(0.25, 1 - Math.pow(Math.abs(tk), 1.85)), 1 / 1.85));
+      }
+      const sumW = weights.reduce((a, c) => a + c, 0);
+      const totalChars = clean.length;
+      const lines = [];
+      let wIdx = 0;
+      for (let k = 0; k < estLines && wIdx < words.length; k++) {
+        if (k === estLines - 1) {
+          lines.push(words.slice(wIdx).join(" "));
+          break;
+        }
+        const targetChars = (weights[k] / sumW) * totalChars;
+        const cur = [words[wIdx++]];
+        while (wIdx < words.length - (estLines - 1 - k)) {
+          const candLen = cur.join(" ").length + 1 + words[wIdx].length;
+          if (candLen <= targetChars * 1.12) {
+            cur.push(words[wIdx++]);
+          } else {
+            break;
+          }
+        }
+        lines.push(cur.join(" "));
+      }
+      return lines.join("\n");
+    }
+
+    async function applyDiamondWrapToBlock(blockId, ev = null) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!currentBlocks || !blockId) return;
+      syncInputsToCurrentBlocks();
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk || !(blk.translated_text || "").trim()) {
+        sayMiko("В этом блоке пока нет текста для алмазной разбивки~ 💎");
+        return;
+      }
+      pushPageHistorySnapshot();
+      sayMiko(`💎 Рассчитываю 2D-DP алмазную разбивку строк по профилю суперэллипса для бабла #${blockId}... ✨`);
+      try {
+        const res = await fetch("/auto_diamond_wrap", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            block_id: blockId,
+            text: blk.translated_text,
+            bbox: blk.safe_bbox || blk.bbox,
+            style_preset: blk.style_preset || "dialogue",
+            font_family: blk.font_family || null,
+            font_size: blk.font_size || blk.rendered_font_size || null,
+            uppercase: document.getElementById("chk-uppercase")?.checked !== false,
+            source_path: selectedPage ? selectedPage.source_path : null,
+            dest_path: selectedPage ? (selectedPage.dest_path || null) : null,
+            source_dir: currentFolder || null,
+            target_lang: targetLang,
+            min_font_size: parseInt(document.getElementById("inp-min-font")?.value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font")?.value, 10) || 32,
+            overflow_mode: overflowMode,
+            return_image: true,
+            prefer_url: true,
+            image_format: "webp",
+            blocks: currentBlocks
+          })
+        });
+        const data = await res.json();
+        if (res.ok && data.diamond_text) {
+          if (Array.isArray(data.blocks) && data.blocks.length > 0) {
+            currentBlocks = data.blocks.map(b => ({ ...b, _dirtyPreview: false }));
+            if (selectedPage) selectedPage.blocks = currentBlocks;
+          } else {
+            blk.translated_text = data.diamond_text;
+          }
+          renderBlocksEditor();
+          if (popupBlockId === blockId) populateInlinePopup(blockId);
+          if (data.translated_image_url || data.translated_image) {
+            updateTranslatedImageSmoothly(data.translated_image_url || data.translated_image);
+          } else {
+            renderBboxPinsOnStage();
+          }
+          sayMiko(`💎 Готово! Алмазная разбивка для #${blockId} вставлена в поле редактора (переносы строк можно подправить вручную)~ ✨`);
+          return;
+        }
+      } catch (e) {}
+
+      // Fallback на клиентский расчет, если сервер недоступен
+      blk.translated_text = clientSideDiamondBreak(blk.translated_text, blk.bbox);
+      blk._dirtyPreview = true;
+      renderBlocksEditor();
+      if (popupBlockId === blockId) populateInlinePopup(blockId);
+      updatePinDomForBlock(blockId);
+    }
+
+    async function applyDiamondWrapFromPopup(ev) {
+      if (!popupBlockId) return;
+      await applyDiamondWrapToBlock(popupBlockId, ev);
+    }
+
+    let isShorteningBlockText = false;
+    async function shortenBlockTextForBubble(blockId, ev = null) {
+      if (ev) {
+        ev.preventDefault();
+        ev.stopPropagation();
+      }
+      if (!currentBlocks || !blockId || isShorteningBlockText) return;
+      syncInputsToCurrentBlocks();
+      const blk = currentBlocks.find(x => x.id === blockId);
+      if (!blk || !(blk.translated_text || "").trim()) {
+        sayMiko("В этом блоке нет текста для сокращения~ ✂️");
+        return;
+      }
+      isShorteningBlockText = true;
+      pushPageHistorySnapshot();
+      const btnEl = ev && ev.currentTarget ? ev.currentTarget : null;
+      const origHtml = btnEl ? btnEl.innerHTML : "";
+      if (btnEl) {
+        btnEl.disabled = true;
+        btnEl.innerHTML = "⏳ Сжимаю...";
+      }
+      sayMiko(`✂️ Прошу ИИ сократить фразу в бабле #${blockId} на 25–35% с сохранением смысла и тона персонажа... ✨`);
+      try {
+        const res = await fetch("/shorten_block_text", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            block_id: blockId,
+            source_path: selectedPage ? selectedPage.source_path : null,
+            dest_path: selectedPage ? (selectedPage.dest_path || null) : null,
+            source_dir: currentFolder || null,
+            target_lang: targetLang,
+            ollama_model: document.getElementById("sel-model")?.value || null,
+            uppercase: document.getElementById("chk-uppercase")?.checked !== false,
+            min_font_size: parseInt(document.getElementById("inp-min-font")?.value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font")?.value, 10) || 32,
+            overflow_mode: overflowMode,
+            return_image: true,
+            prefer_url: true,
+            image_format: "webp",
+            blocks: currentBlocks
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Не удалось сократить фразу #${blockId}: ${data.detail || "ошибка сервера"}`);
+          return;
+        }
+        if (Array.isArray(data.blocks) && data.blocks.length > 0) {
+          currentBlocks = data.blocks.map(b => ({ ...b, _dirtyPreview: false }));
+          if (selectedPage) selectedPage.blocks = currentBlocks;
+        } else if (data.shortened_text) {
+          blk.translated_text = data.shortened_text;
+        }
+        renderBlocksEditor();
+        if (popupBlockId === blockId) populateInlinePopup(blockId);
+        if (data.translated_image_url || data.translated_image) {
+          updateTranslatedImageSmoothly(data.translated_image_url || data.translated_image);
+        } else {
+          renderBboxPinsOnStage();
+        }
+        sayMiko(`✂️ Фраза #${blockId} компактно сокращена под бабл: «${data.shortened_text || blk.translated_text}»! 🌸✨`);
+      } catch (e) {
+        sayMiko(`Ошибка при сокращении фразы #${blockId}: ${e.message}`);
+      } finally {
+        isShorteningBlockText = false;
+        if (btnEl) {
+          btnEl.disabled = false;
+          if (origHtml) btnEl.innerHTML = origHtml;
+        }
+      }
+    }
+
+    async function shortenFromInlinePopup(ev) {
+      if (!popupBlockId) return;
+      await shortenBlockTextForBubble(popupBlockId, ev);
+    }
+
     let isRetranslatingSingleBlock = false;
     async function retranslateFromInlinePopup(ev, useVlmOcr = false) {
       if (!popupBlockId || isRetranslatingSingleBlock) return;
@@ -7745,7 +8135,9 @@
           `</select></div>`;
 
         const retranslateBtnHtml = `<button type="button" class="btn-retranslate-block" onclick="retranslateSingleBlockById(${b.id}, event, false)" title="Принудительно перевести этот кружок заново через ИИ">🔄 Перевести ИИ</button>` +
-          `<button type="button" class="btn-retranslate-block" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;" onclick="retranslateSingleBlockById(${b.id}, event, true)" title="Снайперский 👁 VLM-OCR: заново распознать сложный рукописный текст, SFX или обложку через Vision-модель и сразу перевести">👁 VLM-OCR</button>`;
+          `<button type="button" class="btn-retranslate-block" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;" onclick="retranslateSingleBlockById(${b.id}, event, true)" title="Снайперский 👁 VLM-OCR: заново распознать сложный рукописный текст, SFX или обложку через Vision-модель и сразу перевести">👁 VLM-OCR</button>` +
+          `<button type="button" class="btn-diamond-wrap" onclick="applyDiamondWrapToBlock(${b.id}, event)" title="💎 Алмазная разбивка: принудительно пересчитать переносы строк (\n) внутри текста по профилю суперэллипса">💎 Алмазная разбивка</button>` +
+          `<button type="button" class="btn-shorten-ai" onclick="shortenBlockTextForBubble(${b.id}, event)" title="✂️ Сократить под бабл (AI): отправить фразу в ИИ, чтобы сжать длину на 25–35% с сохранением смысла и тона">✂️ Сократить под бабл (AI)</button>`;
         const splitFrameBtnHtml = `<button type="button" class="btn-split-block" onclick="splitBlockById(${b.id}, event)" title="Разделить рамку #${b.id} и её текст на 2 независимых блока">✂️ Разделить рамку</button>`;
         const removeFrameBtnHtml = `<button type="button" class="btn-delete-block" onclick="removeBlockFrameCompletely(${b.id}, event)" title="Полностью удалить рамку #${b.id} с картинки и вернуть чистый оригинал">🗑 Удалить рамку</button>`;
         const deleteActionHtml = !isDel
@@ -7864,11 +8256,19 @@
           `</details>`;
 
         const isMultiSel = selectedBlockIds && selectedBlockIds.size >= 2 && selectedBlockIds.has(b.id);
+        const isOvf = !isDel && Boolean(b.is_overflowing);
+        const isSmallFs = !isDel && Boolean(b.font_too_small_warning);
+        const qaBadgesHtml =
+          (isOvf ? `<span class="qa-badge-overflow" title="Текст не помещается в безопасную зону бабла — нажмите «✂️ Сократить под бабл (AI)» или выберите режим Вариант Б/В">⚠️ Выход за границы</span>` : "") +
+          (isSmallFs ? `<span class="qa-badge-small-font" title="Кегль этого бабла (${b.rendered_font_size || "?"}px) меньше 72% от базового кегля страницы (${b.page_base_font_size || "?"}px) — рекомендуется сократить фразу">🔍 Мелкий кегль (&lt;72% от нормы страницы)</span>` : "");
         return (
-          `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isMultiSel ? "multi-selected-card" : ""} ${isDel ? "deleted-block" : ""}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="onBlockCardClick(${b.id}, event)">` +
+          `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isMultiSel ? "multi-selected-card" : ""} ${isDel ? "deleted-block" : ""} ${isOvf ? "qa-overflow-card" : (isSmallFs ? "qa-small-font-card" : "")}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="onBlockCardClick(${b.id}, event)">` +
             `<div class="block-meta-col">` +
-              `<div class="block-header-line">` +
-                `<span class="block-id-badge" title="Клик — центрировать страницу на кружке #${b.id}; Shift + Клик — выделить несколько рамок для объединения">#${b.id} · ${typeLabel} 🎯</span>` +
+              `<div class="block-header-line" style="flex-wrap:wrap;">` +
+                `<div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">` +
+                  `<span class="block-id-badge" title="Клик — центрировать страницу на кружке #${b.id}; Shift + Клик — выделить несколько рамок для объединения">#${b.id} · ${typeLabel} 🎯</span>` +
+                  qaBadgesHtml +
+                `</div>` +
                 fsSelectHtml +
               `</div>` +
               `<div class="block-orig-text" title="Распознанный оригинальный текст">🇯🇵 ${origHtml}</div>` +
@@ -9083,6 +9483,8 @@
             (isMultiPin ? " multi-selected-pin" : "") +
             (isDel ? " deleted-pin" : "") +
             (isMod ? " modified-pin" : "") +
+            (!isDel && b.is_overflowing ? " qa-overflow-pin" : "") +
+            (!isDel && b.font_too_small_warning ? " qa-small-font-pin" : "") +
             (b._dirtyPreview && !isDel ? " dirty-preview-pin" : "") +
             (isUnsaved ? " unsaved-pin" : "");
           pin.dataset.blockId = String(b.id);
@@ -9115,6 +9517,8 @@
               `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${b.id} к оригиналу">↺</button>` +
               `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Полностью удалить рамку #${b.id} с картинки">🗑</button>` +
             `</div>` +
+            `<div class="bubble-safe-zone-guide" style="${computeSafeGuideInlineCss(b)}"></div>` +
+            `<div class="bubble-optical-center-mark" style="${computeOpticalCenterInlineCss(b)}" title="Оптический центр бабла (Pole of Inaccessibility + оптическое смещение -2.2%)"></div>` +
             `<div class="bbox-live-text" style="font-size:${cssFs}px; ${liveBgCss} ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
             handlesHtml;
 

@@ -41,6 +41,67 @@ os.environ["no_proxy"] = "127.0.0.1,localhost"
 
 logger = logging.getLogger(__name__)
 
+# БЛОК 5: Системное правило Typesetting-Aware Translation для контроля длины фразы под геометрию бабла
+TYPESETTING_AWARE_RULE_RU = (
+    "5. Typesetting-Aware Translation (Контроль длины под верстку бабла): "
+    "Если у блока указан мета-тег геометрии бабла (например, `[shape: narrow_vertical, max_chars: ~35]`), "
+    "узкий бабл (`narrow_vertical`) или малый лимит `max_chars`, подбирай максимально емкие, живые и короткие "
+    "разговорные формулировки без воды и длинных причастных оборотов, чтобы текст крупно и читаемо лег в бабл без мельчения шрифта."
+)
+
+TYPESETTING_AWARE_RULE_EN = (
+    "5. Typesetting-Aware Translation (Bubble Geometry Budget): "
+    "If a bubble includes a geometry tag such as `[shape: narrow_vertical, max_chars: ~35]`, "
+    "a `narrow_vertical` shape, or a tight `max_chars` budget, use maximally concise, punchy, natural spoken phrasing "
+    "without filler so the text fits at a large, readable font size without shrinking."
+)
+
+SYSTEM_PROMPT = (
+    "Ты — профессиональный переводчик и редактор локализации манги (Miko-chan Manga Studio v3.5 Pro Scanlation Edition).\n"
+    + TYPESETTING_AWARE_RULE_RU
+)
+
+SHAPE_META_TAG_REGEX = re.compile(r"\[\s*shape\s*:[^\]]*\]", flags=re.IGNORECASE)
+
+
+def compute_bubble_geometry_budget(block: dict[str, Any]) -> dict[str, Any]:
+    """
+    БЛОК 5: Вычисляет геометрический бюджет бабла для контроля длины перевода:
+    - `aspect_ratio = round(box_w / max(1, box_h), 2)`
+    - `shape_hint`: `"narrow_vertical"` (< 0.65), `"round_oval"` (0.65..1.45), `"wide_horizontal"` (> 1.45)
+    - `recommended_max_chars`: `int((box_w * box_h) / (18 * 18) * 1.3)`
+    """
+    raw_bbox = block.get("bbox") or block.get("clean_bbox") or [0, 0, 120, 120]
+    if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) >= 4:
+        try:
+            x1, y1, x2, y2 = [int(round(float(c))) for c in raw_bbox[:4]]
+            box_w = max(1, abs(x2 - x1))
+            box_h = max(1, abs(y2 - y1))
+        except Exception:
+            box_w, box_h = 120, 120
+    else:
+        box_w, box_h = 120, 120
+
+    aspect_ratio = round(box_w / max(1, box_h), 2)
+    if aspect_ratio < 0.65:
+        shape_hint = "narrow_vertical"
+    elif aspect_ratio <= 1.45:
+        shape_hint = "round_oval"
+    else:
+        shape_hint = "wide_horizontal"
+
+    recommended_max_chars = max(8, min(220, int((box_w * box_h) / (18 * 18) * 1.3)))
+    meta_tag = f"[shape: {shape_hint}, max_chars: ~{recommended_max_chars}]"
+    block["aspect_ratio"] = aspect_ratio
+    block["shape_hint"] = shape_hint
+    block["recommended_max_chars"] = recommended_max_chars
+    return {
+        "aspect_ratio": aspect_ratio,
+        "shape_hint": shape_hint,
+        "recommended_max_chars": recommended_max_chars,
+        "meta_tag": meta_tag,
+    }
+
 # Каталог лучших локальных моделей для перевода манги (с прямыми GGUF-ссылками для авто-обхода блокировки Fake-IP 198.18.x.x в Ollama)
 RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
     {
@@ -3055,6 +3116,7 @@ class OllamaTranslator:
         if t_lang == "romaji" and KANA_ANY_REGEX.search(text):
             text = kana_to_romaji(text)
         from renderer import normalize_manga_special_symbols
+        text = SHAPE_META_TAG_REGEX.sub("", text).strip()
         normalized = normalize_manga_special_symbols(text).translate(FULLWIDTH_PUNCT_MAP)
         no_cjk = CJK_REGEX.sub("", normalized)
         no_sym = CJK_SYMBOLS_REGEX.sub("", no_cjk)
@@ -3067,6 +3129,7 @@ class OllamaTranslator:
         source_map_json: str,
         context_lines: list[str] | None = None,
         glossary_entries: list[dict[str, str]] | None = None,
+        geometry_hints_map: dict[str, str] | None = None,
     ) -> tuple[str, str, str]:
         src_en = SOURCE_LANG_NAMES_EN.get(source_lang, "comic")
         src_ru = SOURCE_LANG_NAMES_RU.get(source_lang, "комикса")
@@ -3107,6 +3170,19 @@ class OllamaTranslator:
                 f"{joined_ctx}"
             )
 
+        if geometry_hints_map:
+            g_hint_lines = [f"- #{k}: {tag}" for k, tag in list(geometry_hints_map.items())[:60]]
+            if g_hint_lines:
+                joined_hints = "\n".join(g_hint_lines)
+                context_block_ru += (
+                    "\nГЕОМЕТРИЯ БАБЛОВ (Typesetting Budget — подбирай длину фразы под форму и лимит символов бабла, НЕ включай тег [shape: ...] в текст перевода):\n"
+                    f"{joined_hints}"
+                )
+                context_block_en += (
+                    "\nBUBBLE GEOMETRY BUDGET (fit translation length to bubble shape & max_chars, do NOT include [shape: ...] tags in output values):\n"
+                    f"{joined_hints}"
+                )
+
         # БЛОК 4: Проверяем размер пачки. Для малых пачек (1–5 блоков) добавляем жесткую анти-чат инструкцию
         try:
             parsed_cnt = len(json.loads(source_map_json))
@@ -3143,7 +3219,8 @@ class OllamaTranslator:
                 "1. Имена, фамилии и домашние прозвища передавай фонетически (Поливанов/Хэпбёрн), НЕ переводи их буквально по смыслу иероглифов (七香/ななか -> Нанака, 七ちゃん -> Нана-тян, НЕ «Семь-тян»; 一 -> Ити/Кадзу; 双葉 -> Футаба; 三玖 -> Мику; 四葉 -> Ёцуба; 五月 -> Ицуки). Сохраняй суффиксы (-сан, -тян, -кун, -сэмпай, -сэнсэй).\n"
                 "2. Переводи реплики и междометия связно, живо и лаконично под размер облачков.\n"
                 "3. Запрещено оставлять японские/корейские/китайские символы или пропускать ключи JSON.\n"
-                "4. Не выводи <think>. Верни ТОЛЬКО валидный JSON-объект с теми же ключами."
+                "4. Не выводи <think>. Верни ТОЛЬКО валидный JSON-объект с теми же ключами.\n"
+                f"{TYPESETTING_AWARE_RULE_RU}"
                 f"{small_batch_guard}{context_block_ru}"
             )
             usr_prompt = f"{usr_prefix_tag}Переведи все значения JSON с {src_ru} на русский язык (только кириллицей, сохрани ключи):\n{source_map_json}"
@@ -3156,7 +3233,8 @@ class OllamaTranslator:
             "1. Translate the MEANING of every dialogue line, exclamation, and interjection into natural, idiomatic English. NEVER transliterate sentences or words into Japanese Romaji (e.g., write 'Stop it!', NEVER 'Yamete!'; write 'Wait!', NEVER 'Chotto matte!'; write 'Feels so good...', NEVER 'Kimochiii').\n"
             "2. Only personal character names should be romanized phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei).\n"
             "3. Output zero Japanese/Korean/Chinese characters and NEVER skip any JSON key.\n"
-            "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys."
+            "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys.\n"
+            f"{TYPESETTING_AWARE_RULE_EN}"
             f"{small_batch_guard}{context_block_en}"
         )
         usr_prompt = f"{usr_prefix_tag}Translate all JSON values from {src_en} into natural English (translate meaning, do NOT output Romaji, keep exact keys):\n{source_map_json}"
@@ -3931,6 +4009,13 @@ class OllamaTranslator:
         source_map: dict[str, str] = {
             str(block["id"]): block["original_text"] for block in chunk_blocks
         }
+        geometry_hints_map: dict[str, str] = {}
+        for block in chunk_blocks:
+            b_key = str(block["id"])
+            g_budget = compute_bubble_geometry_budget(block)
+            if g_budget["shape_hint"] == "narrow_vertical" or g_budget["recommended_max_chars"] <= 55:
+                geometry_hints_map[b_key] = g_budget["meta_tag"]
+
         # Компактный JSON без отступов экономит 150-300 входных токенов на каждой пачке
         source_map_json = json.dumps(source_map, ensure_ascii=False, separators=(",", ":"))
         eff_glossary = merge_glossaries(self.glossary, glossary_entries)
@@ -3940,6 +4025,7 @@ class OllamaTranslator:
             source_map_json=source_map_json,
             context_lines=context_lines,
             glossary_entries=eff_glossary,
+            geometry_hints_map=geometry_hints_map if geometry_hints_map else None,
         )
 
         translated_map = await self._call_llm_json(
@@ -4496,6 +4582,7 @@ class OllamaTranslator:
         eff_skip_sighs = self.skip_sighs if skip_sighs is None else bool(skip_sighs)
 
         for block in blocks:
+            compute_bubble_geometry_budget(block)
             k = str(block["id"])
             if block.get("is_deleted"):
                 translated_map[k] = ""
@@ -4975,3 +5062,160 @@ class OllamaTranslator:
             if val_s and not self._is_bubble_refusal_value(val_s):
                 cleaned_out[norm_k] = val_s
         return cleaned_out
+
+    async def translate_blocks_batch(
+        self,
+        blocks: list[dict[str, Any]],
+        source_lang: str = "ja",
+        target_lang: str = "en",
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Алиас пакетного перевода блоков с расчетом геометрического бюджета баблов (Блок 5)."""
+        return await self.translate_blocks(
+            blocks=blocks,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            **kwargs,
+        )
+
+    async def translate_page(
+        self,
+        blocks: list[dict[str, Any]],
+        source_lang: str = "ja",
+        target_lang: str = "en",
+        **kwargs: Any,
+    ) -> list[dict[str, Any]]:
+        """Алиас перевода страницы с расчетом геометрического бюджета баблов (Блок 5)."""
+        return await self.translate_blocks(
+            blocks=blocks,
+            source_lang=source_lang,
+            target_lang=target_lang,
+            **kwargs,
+        )
+
+    @staticmethod
+    def _compress_text_heuristic(text: str, target_lang: str = "ru", target_max_chars: int = 35) -> str:
+        """Локальный эвристический компрессор разговорной реплики на случай недоступности LLM."""
+        s = (text or "").strip()
+        if not s:
+            return s
+        t_lang = (target_lang or "ru").lower().strip()
+        if t_lang == "ru":
+            replacements = [
+                (r"\bпожалуйста\b,?\s*", ""),
+                (r"\bна самом деле\b,?\s*", ""),
+                (r"\bв конце концов\b,?\s*", ""),
+                (r"\bкак бы то ни было\b,?\s*", ""),
+                (r"\bчестно говоря\b,?\s*", ""),
+                (r"\bпочему бы тебе не\b", "может,"),
+                (r"\bчто ты такое говоришь\b", "что ты несешь"),
+                (r"\bя понятия не имею\b", "без понятия"),
+                (r"\bне может этого быть\b", "не может быть"),
+                (r"\bсовершенно верно\b", "точно"),
+                (r"\bв данный момент\b", "сейчас"),
+                (r"\bпрямо сейчас\b", "сейчас"),
+                (r"\bтолько что\b", "сейчас"),
+                (r"\bиз-за того, что\b", "потому что"),
+                (r"\bдля того чтобы\b", "чтобы"),
+                (r"\bв том случае, если\b", "если"),
+                (r"\bнесмотря на то, что\b", "хотя"),
+                (r"\bочень сильно\b", "очень"),
+            ]
+        else:
+            replacements = [
+                (r"\bas a matter of fact\b,?\s*", ""),
+                (r"\bto tell you the truth\b,?\s*", ""),
+                (r"\bin order to\b", "to"),
+                (r"\bat this point in time\b", "now"),
+                (r"\bright now\b", "now"),
+                (r"\bdo not\b", "don't"),
+                (r"\bcannot\b", "can't"),
+                (r"\bwill not\b", "won't"),
+                (r"\bshould not\b", "shouldn't"),
+                (r"\bcould not\b", "couldn't"),
+                (r"\bwould not\b", "wouldn't"),
+                (r"\bI am\b", "I'm"),
+                (r"\byou are\b", "you're"),
+                (r"\bwe are\b", "we're"),
+                (r"\bthey are\b", "they're"),
+                (r"\bwhat is\b", "what's"),
+                (r"\bthat is\b", "that's"),
+                (r"\bthere is\b", "there's"),
+                (r"\bgoing to\b", "gonna"),
+                (r"\bwant to\b", "wanna"),
+                (r"\bgot to\b", "gotta"),
+            ]
+        out = s
+        for pat, rep in replacements:
+            out = re.sub(pat, rep, out, flags=re.IGNORECASE)
+        out = re.sub(r"\s+", " ", out).strip()
+        out = re.sub(r"\s+([,.!?;:])", r"\1", out)
+        if out and s and s[0].isupper():
+            out = out[0].upper() + out[1:]
+        return out or s
+
+    async def shorten_text_for_bubble(
+        self,
+        text: str,
+        orig_text: str = "",
+        target_lang: str = "ru",
+        bbox: list[int] | None = None,
+        model: str | None = None,
+    ) -> str:
+        """
+        БЛОК 6.3: Кнопка «✂️ Сократить под бабл (AI)»:
+        Сокращает длину переведенной фразы на 25–35% с сохранением смысла и тона персонажа,
+        чтобы текст крупно и свободно поместился в узкий бабл.
+        """
+        clean_cur = (text or "").strip()
+        if not clean_cur:
+            return ""
+        t_lang = (target_lang or "ru").lower().strip()
+        dummy_blk: dict[str, Any] = {"bbox": bbox or [0, 0, 100, 180]}
+        budget = compute_bubble_geometry_budget(dummy_blk)
+        target_len = max(6, int(round(len(clean_cur) * 0.68)))
+        eff_max_chars = min(target_len, int(budget["recommended_max_chars"]))
+
+        active_model = await self.resolve_model(model, source_lang="ja", target_lang=t_lang)
+        client = self._get_http_client()
+
+        if t_lang == "ru":
+            sys_p = (
+                "Ты — профессиональный редактор и тайпсеттер манги.\n"
+                f"Сократи длину русской реплики на 25–35% (желательно до ~{eff_max_chars} символов) "
+                f"для узкого бабла `{budget['meta_tag']}`, полностью сохранив смысл, эмоцию и тон персонажа.\n"
+                "Убери лишние местоимения, вводные слова и длинные обороты, замени на живую короткую разговорную фразу.\n"
+                "Верни ТОЛЬКО валидный JSON-объект {\"1\": \"сокращенная фраза\"} без пояснений."
+            )
+            orig_part = f" (оригинал: {orig_text})" if orig_text else ""
+            usr_p = f"Сократи фразу на 25-35% под узкий бабл{orig_part}:\n" + json.dumps({"1": clean_cur}, ensure_ascii=False)
+        else:
+            sys_p = (
+                "You are a professional manga scanlation editor and typesetter.\n"
+                f"Shorten the English dialogue line by 25–35% (aim for ~{eff_max_chars} chars) "
+                f"to fit a narrow bubble `{budget['meta_tag']}` while preserving the exact meaning, emotion, and character voice.\n"
+                "Use natural contractions and punchy phrasing. Return ONLY a valid JSON object {\"1\": \"shortened line\"}."
+            )
+            orig_part = f" (original: {orig_text})" if orig_text else ""
+            usr_p = f"Shorten by 25-35% for a narrow speech bubble{orig_part}:\n" + json.dumps({"1": clean_cur}, ensure_ascii=False)
+
+        try:
+            res_map = await self._call_llm_json(
+                client=client,
+                full_model_id=active_model,
+                system_prompt=sys_p,
+                user_prompt=usr_p,
+            )
+            res_map.pop("__refusal__", None)
+            res_map.pop("__partial_refusal__", None)
+            cand = str(res_map.get("1") or "").strip()
+            if not cand and res_map:
+                first_v = next(iter(res_map.values()), "")
+                cand = str(first_v or "").strip()
+            cand = self._clean_translated_text(cand, target_lang=t_lang)
+            if cand and not self._is_bubble_refusal_value(cand):
+                return cand
+        except Exception as exc:
+            logger.warning("Фоллбэк на эвристическое сжатие фразы (ИИ недоступен: %s)", exc)
+
+        return self._compress_text_heuristic(clean_cur, target_lang=t_lang, target_max_chars=eff_max_chars)
