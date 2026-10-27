@@ -70,6 +70,7 @@ from renderer import MangaRenderer
 from translator import (
     CLOUD_API_PRESETS,
     RECOMMENDED_LOCAL_MODELS,
+    TRANSLATION_PROFILES,
     OllamaTranslator,
     export_glossary_to_sakura_text,
     export_glossary_to_tsv,
@@ -744,6 +745,14 @@ class TextBlock(BaseModel):
         default=None,
         description="Причина пропуска или отсутствия перевода для данного блока",
     )
+    api_censored: bool = Field(
+        default=False,
+        description="True, если блок был отклонен облачным API из-за цензуры (не отправлять повторно в облако)",
+    )
+    api_failed: bool = Field(
+        default=False,
+        description="True, если блок вернулся пустым после доперевода через облачный API",
+    )
 
 
 class TranslateResponse(BaseModel):
@@ -784,7 +793,11 @@ class FolderTranslateRequest(BaseModel):
     min_text_length: int | None = Field(default=None)
     skip_existing: bool = Field(default=True)
     force_retranslate: bool = Field(default=False)
-    batch_pages: int = Field(default=12, description="Сколько страниц сканировать через OCR и отправлять в ИИ одним пакетом (экономия токенов)")
+    batch_pages: int = Field(default=15, description="Сколько страниц сканировать через OCR и отправлять в ИИ одним пакетом (экономия токенов)")
+    translation_profile: str | None = Field(
+        default=None,
+        description="Профиль перевода: 'eco_book', 'balanced', 'turbo', 'local_only'",
+    )
     selected_files: list[str] | None = Field(default=None)
     open_when_done: bool = Field(default=True)
 
@@ -823,6 +836,8 @@ class ServerSettingsRequest(BaseModel):
     unsloth_url: str | None = Field(default=None)
     unsloth_api_key: str | None = Field(default=None)
     selected_model: str | None = Field(default=None)
+    translation_profile: str | None = Field(default=None)
+    local_fallback_model_multilang: str | None = Field(default=None)
     auto_save_web_pages: bool | None = Field(default=None)
     web_save_dir: str | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
@@ -1013,6 +1028,201 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
         )
     except Exception as exc:
         logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
+
+
+CHAPTER_BOOK_MD_FILENAME = "_chapter_book.md"
+CHAPTER_SCRIPT_JSON_FILENAME = "_chapter_script_bilingual.json"
+CHAPTER_SCRIPT_TXT_FILENAME = "_chapter_script_bilingual.txt"
+
+
+def _sort_page_blocks_reading_order(blocks: list[dict[str, Any]], lang: str = "ja") -> list[dict[str, Any]]:
+    """
+    БЛОК 2.1: Упорядочивает текстовые блоки страницы в естественном порядке чтения комикса:
+    - Для японской манги (ja): справа налево, сверху вниз (rtl=True).
+    - Для китайской маньхуа (zh) и корейской манхвы (ko): слева направо, сверху вниз (rtl=False).
+    """
+    if not blocks:
+        return []
+    rtl = (lang or "ja").lower().strip() == "ja"
+    valid_boxes: list[dict[str, Any]] = []
+    for b in blocks:
+        bbox = b.get("bbox")
+        if isinstance(bbox, list) and len(bbox) >= 4:
+            valid_boxes.append(b)
+        else:
+            b_copy = dict(b)
+            b_copy["bbox"] = [0, 0, 100, 100]
+            valid_boxes.append(b_copy)
+    ordered = MangaOCREngine._sort_boxes_reading_order(valid_boxes, rtl=rtl)
+    for idx_b, blk in enumerate(ordered, start=1):
+        blk["id"] = idx_b
+    return ordered
+
+
+def _build_smart_page_batches(
+    items: list[Any],
+    pages_per_batch: int,
+    tail_merge_pages: int,
+) -> list[list[Any]]:
+    """
+    БЛОК 1: Разбивает список страниц на пачки по `pages_per_batch` с умным слиянием коротких хвостов:
+    если в последней пачке остается `<= tail_merge_pages` страниц, они присоединяются к предыдущей пачке
+    (например, при 25 стр. и пачке 15 стр. получается 1 пачка 15 + 10 = 25 или 2 сбалансированные пачки 12 + 13,
+    без микро-пачек по 1 странице!).
+    """
+    if not items:
+        return []
+    n = len(items)
+    p_batch = max(1, int(pages_per_batch or 15))
+    t_merge = max(0, int(tail_merge_pages or 0))
+    if n <= p_batch:
+        return [items]
+    # Если для режима balanced (p_batch=15, t_merge=5) 25 страниц = 15 + 10 (или если 16..20 стр., делим пополам 10+10 / 12+13)
+    raw_batches = [items[i : i + p_batch] for i in range(0, n, p_batch)]
+    if len(raw_batches) >= 2 and len(raw_batches[-1]) <= t_merge:
+        tail = raw_batches.pop()
+        combined_last = raw_batches[-1] + tail
+        # Если объединенная пачка стала слишком большой (> p_batch + 3) и всего было 2 пачки, делим ровно пополам (например, 25 -> 12 + 13)
+        if len(raw_batches) == 1 and len(combined_last) > p_batch:
+            mid = len(combined_last) // 2
+            raw_batches = [combined_last[:mid], combined_last[mid:]]
+        else:
+            raw_batches[-1] = combined_last
+    return raw_batches
+
+
+def _generate_and_save_chapter_book_files(
+    output_dir: Path,
+    manifest: dict[str, Any] | None = None,
+    source_dir: Path | None = None,
+    target_lang: str | None = None,
+) -> dict[str, Any]:
+    """
+    БЛОК 2.2: Автоматически формирует и сохраняет в папку перевода файлы «Книги перевода»:
+    1. `_chapter_book.md` — чистая книга для чтения и ИИ (`## Страница 001 (filename)`, далее реплики по порядку чтения).
+    2. `_chapter_script_bilingual.json` и `_chapter_script_bilingual.txt` — двуязычный скрипт с привязкой к бабблам
+       (`page_name`, `page_index`, `block_id`, `book_key`, `bbox`, `original_text`, `translated_text`).
+    """
+    try:
+        output_dir = Path(output_dir).resolve()
+        output_dir.mkdir(parents=True, exist_ok=True)
+    except Exception:
+        pass
+
+    if manifest is None:
+        manifest = _load_folder_manifest(output_dir)
+
+    if source_dir is None:
+        saved_src = manifest.get("source_dir")
+        if saved_src and Path(str(saved_src)).exists():
+            source_dir = Path(str(saved_src)).resolve()
+        else:
+            source_dir = _unwrap_output_folder_if_needed(output_dir)
+    else:
+        source_dir = _unwrap_output_folder_if_needed(Path(source_dir).resolve())
+
+    t_lang = (target_lang or manifest.get("target_lang") or "en").lower().strip()
+    pages_meta: dict[str, Any] = manifest.get("pages", {}) if isinstance(manifest.get("pages"), dict) else {}
+
+    all_src_images: list[Path] = []
+    if source_dir and source_dir.exists() and source_dir.is_dir():
+        try:
+            all_src_images = collect_images_in_folder(source_dir)
+        except Exception:
+            all_src_images = []
+
+    rel_paths_ordered: list[str] = []
+    if all_src_images:
+        for img_p in all_src_images:
+            try:
+                rel_paths_ordered.append(_normalize_rel_path(img_p.relative_to(source_dir)))
+            except Exception:
+                rel_paths_ordered.append(img_p.name)
+    for k_rel in sorted(pages_meta.keys()):
+        if k_rel not in rel_paths_ordered:
+            rel_paths_ordered.append(k_rel)
+
+    chapter_title = source_dir.name if source_dir else output_dir.name
+    md_lines: list[str] = [
+        f"# 📖 Книга главы: {chapter_title} ({t_lang.upper()})",
+        "",
+    ]
+    bilingual_entries: list[dict[str, Any]] = []
+    bilingual_txt_lines: list[str] = [
+        f"# Двуязычный сценарий главы: {chapter_title} ({t_lang.upper()})",
+        "# Формат: [Pxx_yy] (page_name | #block_id) Оригинал => Перевод",
+        "",
+    ]
+
+    for p_idx, rel_norm in enumerate(rel_paths_ordered, start=1):
+        p_meta = pages_meta.get(rel_norm, {}) if isinstance(pages_meta.get(rel_norm), dict) else {}
+        p_blocks = p_meta.get("blocks", []) if isinstance(p_meta.get("blocks"), list) else []
+        md_lines.append(f"## Страница {p_idx:03d} ({rel_norm})")
+        active_lines_on_page = 0
+        for b_idx, b in enumerate(p_blocks, start=1):
+            if not isinstance(b, dict):
+                continue
+            bid = int(b.get("id") or b_idx)
+            orig_t = str(b.get("original_text") or "").strip()
+            trans_t = str(b.get("translated_text") or "").strip()
+            is_del = bool(b.get("is_deleted", False))
+            if is_del and not trans_t:
+                continue
+            if not orig_t and not trans_t:
+                continue
+            book_key = f"P{p_idx:02d}_{bid:02d}"
+            display_line = trans_t if trans_t else orig_t
+            if display_line:
+                md_lines.append(f"- **[{book_key}]** {display_line}")
+                active_lines_on_page += 1
+            entry = {
+                "book_key": book_key,
+                "page_index": p_idx,
+                "page_name": rel_norm,
+                "block_id": bid,
+                "bbox": list(b.get("bbox") or [0, 0, 0, 0]),
+                "original_text": orig_t,
+                "translated_text": trans_t,
+            }
+            bilingual_entries.append(entry)
+            bilingual_txt_lines.append(
+                f"[{book_key}] ({rel_norm} | #{bid}) {orig_t} => {trans_t}"
+            )
+        if active_lines_on_page == 0:
+            md_lines.append("*(Без диалогов)*")
+        md_lines.append("")
+
+    book_md_text = "\n".join(md_lines).strip() + "\n"
+    bilingual_txt_text = "\n".join(bilingual_txt_lines).strip() + "\n"
+    bilingual_json_payload = {
+        "chapter_title": chapter_title,
+        "source_dir": str(source_dir) if source_dir else "",
+        "output_dir": str(output_dir),
+        "target_lang": t_lang,
+        "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "total_pages": len(rel_paths_ordered),
+        "total_blocks": len(bilingual_entries),
+        "entries": bilingual_entries,
+    }
+
+    md_path = output_dir / CHAPTER_BOOK_MD_FILENAME
+    json_path = output_dir / CHAPTER_SCRIPT_JSON_FILENAME
+    txt_path = output_dir / CHAPTER_SCRIPT_TXT_FILENAME
+    try:
+        md_path.write_text(book_md_text, encoding="utf-8")
+        json_path.write_text(json.dumps(bilingual_json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        txt_path.write_text(bilingual_txt_text, encoding="utf-8")
+    except Exception as exc:
+        logger.warning("Не удалось сохранить файлы Книги главы в %s: %s", output_dir, exc)
+
+    return {
+        "book_md_path": str(md_path),
+        "script_json_path": str(json_path),
+        "script_txt_path": str(txt_path),
+        "book_md": book_md_text,
+        "bilingual_txt": bilingual_txt_text,
+        "bilingual_json": bilingual_json_payload,
+    }
 
 
 def _generate_and_save_folder_report(
@@ -1759,6 +1969,15 @@ def _generate_and_save_folder_report(
         report_path.write_text(report_text, encoding="utf-8")
     except Exception as exc:
         logger.warning("Не удалось записать диагностический отчет %s: %s", report_path, exc)
+    try:
+        _generate_and_save_chapter_book_files(
+            output_dir=output_dir,
+            manifest=manifest,
+            source_dir=source_dir,
+            target_lang=t_lang,
+        )
+    except Exception as book_exc:
+        logger.warning("Ошибка генерации файлов книги главы: %s", book_exc)
     return report_text
 
 
@@ -2264,7 +2483,8 @@ async def _run_folder_translation_job(
     skip_existing: bool,
     force_retranslate: bool,
     open_when_done: bool,
-    batch_pages: int = 12,
+    batch_pages: int = 15,
+    translation_profile: str | None = None,
     text_filter_mode: str | None = None,
     skip_sighs: bool | None = None,
     skip_sfx: bool | None = None,
@@ -2280,7 +2500,14 @@ async def _run_folder_translation_job(
     _folder_stop_requested = False
     translator_engine.stop_requested = False
     start_ts = time.perf_counter()
-    pages_per_batch = max(1, min(25, int(batch_pages or 12)))
+    prof_cfg = translator_engine.get_profile_config(translation_profile)
+    active_profile_id = str(prof_cfg["id"])
+    pages_per_batch = (
+        int(prof_cfg["pages_per_batch"])
+        if active_profile_id in ("eco_book", "balanced", "turbo")
+        else max(1, min(50, int(batch_pages or prof_cfg["pages_per_batch"])))
+    )
+    tail_merge_pages = int(prof_cfg.get("tail_merge_pages", 5))
 
     manifest = _load_folder_manifest(output_dir)
     manifest["source_dir"] = str(source_dir)
@@ -2371,8 +2598,13 @@ async def _run_folder_translation_job(
         run_blocks_filtered = 0
         run_blocks_untranslated = 0
         refusals_before_run = int(translator_engine.diagnostics_stats.get("refusals_count") or 0)
-        active_mod = await translator_engine.resolve_model(ollama_model)
         chapter_detected_lang: str | None = lang if lang in ("ja", "ko", "zh") else None
+        active_mod = await translator_engine.resolve_model(
+            ollama_model,
+            source_lang=chapter_detected_lang or "ja",
+            target_lang=target_lang,
+            profile=active_profile_id,
+        )
         eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
             detect_free_text=detect_free_text,
             text_filter_mode=text_filter_mode,
@@ -2385,8 +2617,22 @@ async def _run_folder_translation_job(
             with Image.open(p_path) as raw_im:
                 return _pil_to_rgb_clean(raw_im)
 
-        # Обрабатываем страницы пачками по pages_per_batch (по умолчанию 12 страниц)
-        for batch_start in range(0, len(to_process), pages_per_batch):
+        # БЛОК 1: Разбиваем страницы на пачки с умным слиянием хвостов (без пачек по 1 стр.)
+        smart_batches = _build_smart_page_batches(
+            to_process,
+            pages_per_batch=pages_per_batch,
+            tail_merge_pages=tail_merge_pages,
+        )
+        logger.info(
+            "🚀 Пакетный перевод папки [профиль=%s (%s)]: всего к переводу %d стр. -> %d пачек (%s)",
+            active_profile_id,
+            prof_cfg.get("title", active_profile_id),
+            len(to_process),
+            len(smart_batches),
+            ", ".join(f"{len(b)} стр." for b in smart_batches),
+        )
+
+        for _batch_num, page_batch in enumerate(smart_batches, start=1):
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
@@ -2394,8 +2640,6 @@ async def _run_folder_translation_job(
                 return
 
             _batch_t0 = time.perf_counter()
-            _batch_num = (batch_start // pages_per_batch) + 1
-            page_batch = to_process[batch_start : batch_start + pages_per_batch]
             scanned_pages: list[dict[str, Any]] = []
             combined_blocks: list[dict[str, Any]] = []
             batch_detected_lang = chapter_detected_lang or "ja"
@@ -2415,11 +2659,14 @@ async def _run_folder_translation_job(
                 if _folder_stop_requested:
                     break
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
-                folder_job_state["current_file"] = (
-                    f"🔍 [1/3 OCR пачки {p_idx}/{len(page_batch)}] {rel_norm}"
-                    if len(page_batch) > 1
-                    else rel_norm
-                )
+                if active_profile_id == "eco_book":
+                    folder_job_state["current_file"] = f"🔍 [Фаза 1: OCR страницы {orig_idx} из {len(image_paths)}] {rel_norm}"
+                else:
+                    folder_job_state["current_file"] = (
+                        f"🔍 [1/3 OCR пачки {p_idx}/{len(page_batch)}] {rel_norm}"
+                        if len(page_batch) > 1
+                        else rel_norm
+                    )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
 
                 try:
@@ -2442,14 +2689,27 @@ async def _run_folder_translation_job(
                         p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
                     if chapter_detected_lang is None and det_lang in ("ja", "ko", "zh"):
                         chapter_detected_lang = det_lang
+                        if active_profile_id == "local_only":
+                            active_mod = await translator_engine.resolve_model(
+                                ollama_model,
+                                source_lang=det_lang,
+                                target_lang=target_lang,
+                                profile=active_profile_id,
+                            )
                     batch_detected_lang = det_lang
                     folder_job_state["detected_lang"] = det_lang
 
-                    page_global_ids: list[int] = []
-                    for b in p_blocks:
+                    # БЛОК 2.1: Упорядочиваем блоки каждой страницы в естественном порядке чтения комикса (ja -> RTL, zh/ko -> LTR)
+                    p_blocks = _sort_page_blocks_reading_order(p_blocks, lang=det_lang)
+
+                    page_global_ids: list[str | int] = []
+                    for b_ord_idx, b in enumerate(p_blocks, start=1):
                         _ensure_block_clean_bbox(b)
-                        gid = global_block_id
-                        global_block_id += 1
+                        if active_profile_id == "eco_book":
+                            gid: str | int = f"P{orig_idx:02d}_{b_ord_idx:02d}"
+                        else:
+                            gid = global_block_id
+                            global_block_id += 1
                         page_global_ids.append(gid)
                         b_copy = dict(b)
                         b_copy["id"] = gid
@@ -2498,14 +2758,18 @@ async def _run_folder_translation_job(
 
             _batch_ocr_sec = round(time.perf_counter() - _ocr_t0, 2)
 
-            # Шаг 2: Параллельный ИИ-перевод пачки (автоматически делится на 2-3 параллельных потока в translator.py!)
+            # Шаг 2: ИИ-перевод пачки (в профиле eco_book — единым сценарием книги P01_01..P25_09 за 1 запрос!)
             _llm_t0 = time.perf_counter()
-            translated_by_gid: dict[int, str] = {}
-            source_by_gid: dict[int, str] = {}
-            skip_reason_by_gid: dict[int, str] = {}
+            translated_by_gid: dict[str, str] = {}
+            source_by_gid: dict[str, str] = {}
+            skip_reason_by_gid: dict[str, str] = {}
+            api_censored_by_gid: dict[str, bool] = {}
+            api_failed_by_gid: dict[str, bool] = {}
             if combined_blocks:
                 folder_job_state["current_file"] = (
-                    f"☁️ [2/3 ИИ-перевод пачки: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
+                    f"📖 [Фаза 2: Перевод книги главы единым сценарием: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
+                    if active_profile_id == "eco_book"
+                    else f"☁️ [2/3 ИИ-перевод пачки #{_batch_num}: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
                 try:
@@ -2520,12 +2784,15 @@ async def _run_folder_translation_job(
                         use_cache=(not force_retranslate),
                         skip_sighs=eff_skip_sighs,
                         glossary_entries=folder_glossary_entries,
+                        profile=active_profile_id,
                     )
                     for eb in enriched_combined:
-                        gid_eb = int(eb["id"])
+                        gid_eb = str(eb["id"])
                         translated_by_gid[gid_eb] = str(eb.get("translated_text") or "").strip()
                         source_by_gid[gid_eb] = str(eb.get("translation_source") or "")
                         skip_reason_by_gid[gid_eb] = str(eb.get("skip_reason") or "")
+                        api_censored_by_gid[gid_eb] = bool(eb.get("api_censored", False))
+                        api_failed_by_gid[gid_eb] = bool(eb.get("api_failed", False))
                 except Exception as llm_exc:
                     logger.exception("Ошибка пакетного ИИ-перевода пачки страниц: %s", llm_exc)
 
@@ -2540,11 +2807,12 @@ async def _run_folder_translation_job(
 
             _batch_llm_sec = round(time.perf_counter() - _llm_t0, 2)
 
-            # Проверяем, не остались ли на каких-то страницах пачки непереведенные бабблы из-за сбоя/пропуска ключей
-            # (пропуская те, которые были намеренно оставлены пустыми как вздохи при skip_sighs=True!)
+            # БЛОК 3.1 и 3.2: Проверяем непереведенные бабблы пачки:
+            # НИКОГДА не отправляем повторно в облачный API блоки с флагом api_censored или api_failed!
+            # Такие блоки (или пачки <= 2 фраз) допереводим ТОЛЬКО локальной моделью (с учетом source_lang) или оставляем как SFX/оригинал.
             missing_combined: list[dict[str, Any]] = []
             for cb in combined_blocks:
-                gid_c = int(cb["id"])
+                gid_c = str(cb["id"])
                 cur_tr = translated_by_gid.get(gid_c, "").strip()
                 cur_src = source_by_gid.get(gid_c, "")
                 if (
@@ -2552,36 +2820,63 @@ async def _run_folder_translation_job(
                     and str(cb.get("original_text") or "").strip()
                     and cur_src not in ("skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user")
                 ):
-                    missing_combined.append(cb)
+                    cb_copy = dict(cb)
+                    cb_copy["api_censored"] = api_censored_by_gid.get(gid_c, False)
+                    cb_copy["api_failed"] = api_failed_by_gid.get(gid_c, False)
+                    missing_combined.append(cb_copy)
 
             if missing_combined and not _folder_stop_requested:
-                logger.info(
-                    "Доперевод %d оставшихся пустыми бабблов в пачке #%d (skip_sighs=False)...",
-                    len(missing_combined),
-                    _batch_num,
+                # Определяем, нужно ли переводить остатки строго через локальную модель (без облака)
+                any_censored_or_failed = any(
+                    bool(b.get("api_censored")) or bool(b.get("api_failed")) for b in missing_combined
                 )
-                try:
-                    rescued_list = await translator_engine.translate_blocks(
-                        blocks=missing_combined,
-                        source_lang=batch_detected_lang,
+                force_local_rescue = (
+                    active_mod.startswith("unsloth::")
+                    and (any_censored_or_failed or len(missing_combined) <= 2)
+                )
+                rescue_model: str | None = active_mod
+                if force_local_rescue:
+                    rescue_model = await translator_engine._resolve_local_fallback_model(
                         target_lang=target_lang,
-                        model=active_mod,
-                        context_lines=rolling_context if rolling_context else None,
-                        external_cache=phrase_cache,
-                        use_cache=False,
-                        skip_sighs=False,
+                        source_lang=batch_detected_lang,
                     )
-                    for rb in rescued_list:
-                        gid_r = int(rb["id"])
-                        r_txt = str(rb.get("translated_text") or "").strip()
-                        if r_txt:
-                            translated_by_gid[gid_r] = r_txt
-                            source_by_gid[gid_r] = str(rb.get("translation_source") or "llm_micro_retry")
-                            skip_reason_by_gid[gid_r] = ""
-                        elif rb.get("skip_reason"):
-                            skip_reason_by_gid[gid_r] = str(rb.get("skip_reason"))
-                except Exception as rescue_exc:
-                    logger.warning("Доперевод оставшихся блоков пачки не удался: %s", rescue_exc)
+                    if not rescue_model:
+                        logger.info(
+                            "🛡 [БЛОК 3] Пропуск повторной отправки %d отцензуренных/пропущенных бабблов в облако "
+                            "(подходящая локальная модель для '%s' не установлена).",
+                            len(missing_combined),
+                            batch_detected_lang,
+                        )
+                if rescue_model:
+                    logger.info(
+                        "Доперевод %d оставшихся пустыми бабблов в пачке #%d через '%s' (skip_sighs=False)...",
+                        len(missing_combined),
+                        _batch_num,
+                        rescue_model,
+                    )
+                    try:
+                        rescued_list = await translator_engine.translate_blocks(
+                            blocks=missing_combined,
+                            source_lang=batch_detected_lang,
+                            target_lang=target_lang,
+                            model=rescue_model,
+                            context_lines=rolling_context if rolling_context else None,
+                            external_cache=phrase_cache,
+                            use_cache=False,
+                            skip_sighs=False,
+                            profile="local_only" if force_local_rescue else active_profile_id,
+                        )
+                        for rb in rescued_list:
+                            gid_r = str(rb["id"])
+                            r_txt = str(rb.get("translated_text") or "").strip()
+                            if r_txt:
+                                translated_by_gid[gid_r] = r_txt
+                                source_by_gid[gid_r] = str(rb.get("translation_source") or "llm_micro_retry")
+                                skip_reason_by_gid[gid_r] = ""
+                            elif rb.get("skip_reason"):
+                                skip_reason_by_gid[gid_r] = str(rb.get("skip_reason"))
+                    except Exception as rescue_exc:
+                        logger.warning("Доперевод оставшихся блоков пачки не удался: %s", rescue_exc)
 
             # Шаг 3: Быстрая параллельная очистка бабблов, верстка и сохранение всех страниц пачки!
             _render_t0 = time.perf_counter()
@@ -2591,11 +2886,14 @@ async def _run_folder_translation_job(
                 p_blocks = sp["blocks"]
                 gids = sp["global_ids"]
                 for b, gid in zip(p_blocks, gids):
-                    t_txt = str(translated_by_gid.get(gid, "") or "").strip()
+                    gid_s = str(gid)
+                    t_txt = str(translated_by_gid.get(gid_s, "") or "").strip()
                     b["translated_text"] = t_txt
                     b["is_deleted"] = not bool(t_txt)
-                    b["translation_source"] = source_by_gid.get(gid) or ("llm" if t_txt else "untranslated_error")
-                    b["skip_reason"] = "" if t_txt else skip_reason_by_gid.get(gid, "")
+                    b["translation_source"] = source_by_gid.get(gid_s) or ("llm" if t_txt else "untranslated_error")
+                    b["skip_reason"] = "" if t_txt else skip_reason_by_gid.get(gid_s, "")
+                    b["api_censored"] = bool(api_censored_by_gid.get(gid_s, False)) if not t_txt else False
+                    b["api_failed"] = bool(api_failed_by_gid.get(gid_s, False)) if not t_txt else False
                     _ensure_block_clean_bbox(b)
                     orig_t = (b.get("original_text") or "").strip()
                     if orig_t:
@@ -2766,8 +3064,8 @@ async def _run_folder_translation_job(
             batch_untrans_cnt = sum(
                 1
                 for cb in combined_blocks
-                if not translated_by_gid.get(int(cb["id"]), "").strip()
-                and source_by_gid.get(int(cb["id"]), "") not in ("skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user")
+                if not translated_by_gid.get(str(cb["id"]), "").strip()
+                and source_by_gid.get(str(cb["id"]), "") not in ("skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user")
             )
             run_ocr_sec_total = round(run_ocr_sec_total + _batch_ocr_sec, 2)
             run_llm_sec_total = round(run_llm_sec_total + _batch_llm_sec, 2)
@@ -2958,7 +3256,10 @@ async def health_check() -> dict[str, Any]:
         "max_font_size": translator_engine.max_font_size if translator_engine else 32,
         "uppercase": translator_engine.uppercase if translator_engine else True,
         "overflow_mode": getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink",
-        "batch_pages": translator_engine.batch_pages if translator_engine else 12,
+        "batch_pages": translator_engine.batch_pages if translator_engine else 15,
+        "translation_profile": getattr(translator_engine, "translation_profile", "balanced") if translator_engine else "balanced",
+        "translation_profiles": list(TRANSLATION_PROFILES.values()),
+        "local_fallback_model_multilang": getattr(translator_engine, "local_fallback_model_multilang", "auto") if translator_engine else "auto",
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
         "glossary": translator_engine.glossary if translator_engine else [],
         "glossary_count": len(translator_engine.glossary) if translator_engine else 0,
@@ -3037,10 +3338,16 @@ async def get_pull_status_endpoint() -> dict[str, Any]:
 async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, Any]:
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    url_or_key_changed = (
+        (payload.unsloth_url is not None and translator_engine._normalize_api_base_url(payload.unsloth_url) != translator_engine.unsloth_url)
+        or (payload.unsloth_api_key is not None and payload.unsloth_api_key.strip() != translator_engine.unsloth_api_key)
+    )
     saved = translator_engine.save_config(
         unsloth_url=payload.unsloth_url,
         unsloth_api_key=payload.unsloth_api_key,
         selected_model=payload.selected_model,
+        translation_profile=payload.translation_profile,
+        local_fallback_model_multilang=payload.local_fallback_model_multilang,
         auto_save_web_pages=payload.auto_save_web_pages,
         web_save_dir=payload.web_save_dir,
         text_filter_mode=payload.text_filter_mode,
@@ -3057,12 +3364,15 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
     )
     if renderer_engine is not None and payload.overflow_mode:
         renderer_engine.overflow_mode = renderer_engine._normalize_overflow_mode(payload.overflow_mode)
-    models = await translator_engine.list_available_models(force_refresh=True)
+    # БЛОК 5: Не сбрасываем 5-минутный кэш моделей при обычном сохранении настроек (только если изменились api_url / api_key)
+    models = await translator_engine.list_available_models(force_refresh=url_or_key_changed)
     active = await translator_engine.resolve_model()
     return {
         "status": "ok",
         "active_model": active,
         "selected_model": saved["selected_model"],
+        "translation_profile": saved.get("translation_profile", "balanced"),
+        "local_fallback_model_multilang": saved.get("local_fallback_model_multilang", "auto"),
         "unsloth_url": saved["unsloth_url"],
         "unsloth_api_key": saved["unsloth_api_key"],
         "unsloth_status": translator_engine.last_unsloth_status,
@@ -4093,7 +4403,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
             if not active_mod.startswith("unsloth::") and translator_engine.unsloth_api_key:
                 alt_mod = "unsloth::deepseek-v4-flash"
             elif active_mod.startswith("unsloth::"):
-                alt_mod = await translator_engine._resolve_local_fallback_model(target_lang=payload.target_lang)
+                alt_mod = await translator_engine._resolve_local_fallback_model(target_lang=payload.target_lang, source_lang=det_lang)
             if alt_mod and alt_mod != active_mod:
                 alt_list = await translator_engine.translate_blocks(
                     blocks=[new_block],
@@ -4304,7 +4614,7 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
             if not active_mod.startswith("unsloth::") and translator_engine.unsloth_api_key:
                 alt_mod = "unsloth::deepseek-v4-flash"
             elif active_mod.startswith("unsloth::"):
-                alt_mod = await translator_engine._resolve_local_fallback_model(target_lang=t_lang)
+                alt_mod = await translator_engine._resolve_local_fallback_model(target_lang=t_lang, source_lang=det_lang)
             if alt_mod and alt_mod != active_mod:
                 translated_alt = await translator_engine.translate_blocks(
                     blocks=[blk_for_llm],
@@ -4471,6 +4781,7 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
             force_retranslate=payload.force_retranslate,
             open_when_done=payload.open_when_done,
             batch_pages=payload.batch_pages,
+            translation_profile=payload.translation_profile,
             text_filter_mode=payload.text_filter_mode,
             skip_sighs=payload.skip_sighs,
             skip_sfx=payload.skip_sfx,
@@ -5125,6 +5436,452 @@ async def open_folder_report_endpoint(
         "status": "ok",
         "report_path": str(report_file),
         "output_dir": res["output_dir"],
+    }
+
+
+
+
+class ChapterBookImportRequest(BaseModel):
+    folder_path: str = Field(..., description="Путь к папке главы манги")
+    target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
+    book_text: str = Field(..., description="Отредактированный текст книги (_chapter_book.md, _chapter_script_bilingual.txt или JSON)")
+    uppercase: bool = Field(default=True)
+    min_font_size: int = Field(default=12)
+    max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+
+
+class ChapterBookProofreadRequest(BaseModel):
+    folder_path: str = Field(..., description="Путь к папке главы манги")
+    target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
+    ollama_model: str | None = Field(default=None)
+    uppercase: bool = Field(default=True)
+    min_font_size: int = Field(default=12)
+    max_font_size: int = Field(default=32)
+    overflow_mode: str | None = Field(default=None)
+
+
+async def _rerender_modified_book_pages(
+    source_dir: Path,
+    output_dir: Path,
+    manifest: dict[str, Any],
+    affected_rel_paths: list[str],
+    uppercase: bool = True,
+    min_font_size: int = 12,
+    max_font_size: int = 32,
+    overflow_mode: str | None = None,
+) -> int:
+    """
+    БЛОК 2.3: Мгновенно перерисовывает затронутые страницы главы, используя уже готовый кэш очистки
+    (SimpleLama / _get_or_clean_page_image), БЕЗ повторного запуска OCR и без лишних запросов к API.
+    """
+    if cleaner_engine is None or renderer_engine is None:
+        return 0
+    pages_meta = manifest.get("pages", {})
+    rerendered = 0
+    for rel_norm in affected_rel_paths:
+        src_file = (source_dir / rel_norm).resolve()
+        if not src_file.exists() or not src_file.is_file():
+            continue
+        dest_path = output_dir / rel_norm
+        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        p_meta = pages_meta.get(rel_norm, {})
+        if not isinstance(p_meta, dict):
+            continue
+        p_blocks = [
+            _ensure_block_clean_bbox(b)
+            for b in (p_meta.get("blocks") or [])
+            if isinstance(b, dict)
+        ]
+        active_blocks = [
+            b for b in p_blocks if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()
+        ]
+        with Image.open(src_file) as raw_im:
+            pil_image = _pil_to_rgb_clean(raw_im)
+        if not active_blocks:
+            final_image = pil_image.copy()
+        else:
+            cleaned_image, _, _, _ = await _get_or_clean_page_image(
+                pil_image,
+                active_blocks,
+                src_file=src_file,
+                save_to_disk=True,
+            )
+            use_upper = bool(p_meta.get("uppercase", uppercase))
+            min_fs = int(p_meta.get("min_font_size") or min_font_size or 12)
+            max_fs = int(p_meta.get("max_font_size") or max_font_size or 32)
+            eff_overflow = overflow_mode or str(
+                p_meta.get("overflow_mode")
+                or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
+            )
+            final_image = await asyncio.to_thread(
+                renderer_engine.render_blocks,
+                cleaned_image,
+                active_blocks,
+                use_upper,
+                max_fs,
+                min_fs,
+                None,
+                eff_overflow,
+            )
+        save_kwargs: dict[str, Any] = {}
+        if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
+            save_kwargs["quality"] = 95
+        final_image.save(dest_path, **save_kwargs)
+        p_meta["blocks"] = p_blocks
+        rerendered += 1
+    return rerendered
+
+
+def _parse_imported_book_text(raw_text: str) -> dict[str, str]:
+    """
+    Разбирает отредактированный пользователем текст книги (`_chapter_book.md`, `_chapter_script_bilingual.txt`,
+    `_chapter_script_bilingual.json` или построчный Markdown со страницами `## Страница 001`)
+    и возвращает словарь `{"P01_01": "новый перевод", ...}`.
+    """
+    text_s = (raw_text or "").strip()
+    if not text_s:
+        return {}
+
+    # 1. Пробуем JSON (_chapter_script_bilingual.json или прямой словарь {"P01_01": "..."})
+    if text_s.startswith("{") or text_s.startswith("["):
+        try:
+            data = json.loads(text_s)
+            if isinstance(data, dict):
+                if isinstance(data.get("entries"), list):
+                    out_j: dict[str, str] = {}
+                    for item in data["entries"]:
+                        if isinstance(item, dict) and item.get("book_key"):
+                            out_j[str(item["book_key"]).upper()] = str(item.get("translated_text") or "").strip()
+                    if out_j:
+                        return out_j
+                return {
+                    str(k).strip().upper(): str(v).strip()
+                    for k, v in data.items()
+                    if re.match(r"^P\d+_\d+$", str(k).strip(), flags=re.IGNORECASE)
+                }
+        except Exception:
+            pass
+
+    updates: dict[str, str] = {}
+    current_page_idx = 0
+    current_block_seq = 0
+
+    for raw_line in text_s.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        # Заголовок страницы: ## Страница 001 ...
+        m_page = re.match(r"^#+\s*(?:Страница|Page)\s*0*(\d+)", line, flags=re.IGNORECASE)
+        if m_page:
+            current_page_idx = int(m_page.group(1))
+            current_block_seq = 0
+            continue
+        if line.startswith("#") or line.startswith("*("):
+            continue
+
+        # Явный ключ [P01_01] или **[P01_01]**
+        m_key_line = re.match(
+            r"^(?:[-*•]\s*)?(?:\*\*)?\[(P\d+_\d+)\](?:\*\*)?\s*(?:\([^)]*\)\s*)?(.*)$",
+            line,
+            flags=re.IGNORECASE,
+        )
+        if m_key_line:
+            b_key = m_key_line.group(1).upper()
+            rest_val = m_key_line.group(2).strip()
+            if "=>" in rest_val:
+                rest_val = rest_val.split("=>", 1)[1].strip()
+            updates[b_key] = rest_val
+            continue
+
+        # Если строка внутри секции `## Страница N` без ключа `[Pxx_yy]`, сопоставляем по порядку реплик на странице
+        if current_page_idx > 0:
+            clean_bullet = re.sub(r"^[-*•]\s*", "", line).strip()
+            if clean_bullet:
+                current_block_seq += 1
+                b_key = f"P{current_page_idx:02d}_{current_block_seq:02d}"
+                if "=>" in clean_bullet:
+                    clean_bullet = clean_bullet.split("=>", 1)[1].strip()
+                updates[b_key] = clean_bullet
+
+    return updates
+
+
+@app.get("/chapter_book")
+async def get_chapter_book_endpoint(
+    folder_path: str | None = Query(default=None),
+    target_lang: str = Query(default="en"),
+) -> dict[str, Any]:
+    """
+    БЛОК 2.2 / 2.3: Генерирует (или обновляет) и возвращает файлы «Книги перевода» главы:
+    `_chapter_book.md` и `_chapter_script_bilingual.json` / `.txt`.
+    """
+    t_lang = (target_lang or "en").strip().lower()
+    if t_lang not in VALID_TARGET_LANGS:
+        t_lang = "en"
+
+    raw_folder = (folder_path or folder_job_state.get("source_dir") or folder_job_state.get("output_dir") or "").strip()
+    if not raw_folder:
+        raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги слева.")
+
+    cand_dir = Path(raw_folder).resolve()
+    if not cand_dir.exists() or not cand_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Папка не найдена: {cand_dir}")
+
+    src_dir = _unwrap_output_folder_if_needed(cand_dir)
+    out_dir = get_output_dir_for_folder(src_dir, t_lang)
+    manifest = _load_folder_manifest(out_dir)
+    book_data = await asyncio.to_thread(
+        _generate_and_save_chapter_book_files,
+        out_dir,
+        manifest,
+        src_dir,
+        t_lang,
+    )
+    return {
+        "status": "ok",
+        "source_dir": str(src_dir),
+        "output_dir": str(out_dir),
+        **book_data,
+    }
+
+
+@app.post("/chapter_book/import")
+async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dict[str, Any]:
+    """
+    БЛОК 2.3: Импортирует отредактированный пользователем текст «Книги главы» (`_chapter_book.md` или двуязычный скрипт),
+    обновляет переводы в бабблах и мгновенно перерисовывает только затронутые страницы из кэша очистки (0 запросов к OCR и API!).
+    """
+    if cleaner_engine is None or renderer_engine is None or translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    raw_folder = (payload.folder_path or "").strip()
+    if not raw_folder:
+        raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
+
+    source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Папка не найдена: {source_dir}")
+
+    t_lang = (payload.target_lang or "en").strip().lower()
+    output_dir = get_output_dir_for_folder(source_dir, t_lang)
+    manifest = _load_folder_manifest(output_dir)
+    pages_meta = manifest.get("pages")
+    if not isinstance(pages_meta, dict) or not pages_meta:
+        raise HTTPException(status_code=400, detail="В этой папке еще нет переведенных страниц для обновления книги.")
+
+    updates_by_key = _parse_imported_book_text(payload.book_text)
+    if not updates_by_key:
+        raise HTTPException(
+            status_code=400,
+            detail="Не удалось распознать строки книги. Используйте метки [P01_01] или заголовки '## Страница 001'.",
+        )
+
+    start_ts = time.perf_counter()
+    all_src_images = collect_images_in_folder(source_dir)
+    rel_paths_ordered = [_normalize_rel_path(p.relative_to(source_dir)) for p in all_src_images]
+    for k_rel in sorted(pages_meta.keys()):
+        if k_rel not in rel_paths_ordered:
+            rel_paths_ordered.append(k_rel)
+
+    if not isinstance(manifest.get("phrase_cache"), dict):
+        manifest["phrase_cache"] = {}
+
+    updated_blocks_count = 0
+    affected_rel_paths: list[str] = []
+
+    for p_idx, rel_norm in enumerate(rel_paths_ordered, start=1):
+        p_meta = pages_meta.get(rel_norm)
+        if not isinstance(p_meta, dict):
+            continue
+        p_blocks = p_meta.get("blocks")
+        if not isinstance(p_blocks, list):
+            continue
+        page_changed = False
+        for b_idx, b in enumerate(p_blocks, start=1):
+            if not isinstance(b, dict):
+                continue
+            bid = int(b.get("id") or b_idx)
+            b_key_1 = f"P{p_idx:02d}_{bid:02d}"
+            b_key_2 = f"P{p_idx:02d}_{b_idx:02d}"
+            new_tr = updates_by_key.get(b_key_1)
+            if new_tr is None:
+                new_tr = updates_by_key.get(b_key_2)
+            if new_tr is None:
+                continue
+            new_tr_clean = new_tr.strip()
+            old_tr_clean = str(b.get("translated_text") or "").strip()
+            if new_tr_clean != old_tr_clean:
+                b["translated_text"] = new_tr_clean
+                b["is_deleted"] = not bool(new_tr_clean)
+                b["translation_source"] = "manual_edit"
+                orig_t = str(b.get("original_text") or "").strip()
+                if orig_t and new_tr_clean:
+                    manifest["phrase_cache"][f"{t_lang}||{orig_t}"] = new_tr_clean
+                    translator_engine.phrase_cache[f"{t_lang}||{orig_t}"] = new_tr_clean
+                updated_blocks_count += 1
+                page_changed = True
+        if page_changed:
+            p_meta["manually_edited"] = True
+            p_meta["updated_at"] = int(time.time())
+            affected_rel_paths.append(rel_norm)
+
+    rerendered_pages = 0
+    if affected_rel_paths:
+        _save_folder_manifest(output_dir, manifest)
+        rerendered_pages = await _rerender_modified_book_pages(
+            source_dir=source_dir,
+            output_dir=output_dir,
+            manifest=manifest,
+            affected_rel_paths=affected_rel_paths,
+            uppercase=payload.uppercase,
+            min_font_size=payload.min_font_size,
+            max_font_size=payload.max_font_size,
+            overflow_mode=payload.overflow_mode,
+        )
+        _save_folder_manifest(output_dir, manifest)
+
+    book_data = await asyncio.to_thread(
+        _generate_and_save_chapter_book_files,
+        output_dir,
+        manifest,
+        source_dir,
+        t_lang,
+    )
+    elapsed = round(time.perf_counter() - start_ts, 3)
+    return {
+        "status": "ok",
+        "updated_blocks_count": updated_blocks_count,
+        "affected_pages_count": len(affected_rel_paths),
+        "rerendered_pages_count": rerendered_pages,
+        "processing_time_sec": elapsed,
+        **book_data,
+    }
+
+
+@app.post("/chapter_book/proofread")
+async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) -> dict[str, Any]:
+    """
+    БЛОК 2.3: «✨ Вычитать стиль всей главы за 1 запрос»:
+    Отправляет весь сценарий главы одним JSON-пакетом в ИИ для согласования стиля, пола персонажей и местоимений,
+    обновляет переводы в бабблах и мгновенно перерисовывает затронутые страницы из кэша очистки без повторного OCR.
+    """
+    if cleaner_engine is None or renderer_engine is None or translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+
+    raw_folder = (payload.folder_path or "").strip()
+    if not raw_folder:
+        raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
+
+    source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
+    if not source_dir.exists() or not source_dir.is_dir():
+        raise HTTPException(status_code=404, detail=f"Папка не найдена: {source_dir}")
+
+    t_lang = (payload.target_lang or "en").strip().lower()
+    output_dir = get_output_dir_for_folder(source_dir, t_lang)
+    manifest = _load_folder_manifest(output_dir)
+    pages_meta = manifest.get("pages")
+    if not isinstance(pages_meta, dict) or not pages_meta:
+        raise HTTPException(status_code=400, detail="Сначала переведите страницы главы перед литературной вычиткой.")
+
+    start_ts = time.perf_counter()
+    all_src_images = collect_images_in_folder(source_dir)
+    rel_paths_ordered = [_normalize_rel_path(p.relative_to(source_dir)) for p in all_src_images]
+    for k_rel in sorted(pages_meta.keys()):
+        if k_rel not in rel_paths_ordered:
+            rel_paths_ordered.append(k_rel)
+
+    book_script_map: dict[str, dict[str, str]] = {}
+    detected_lang = "ja"
+    for p_idx, rel_norm in enumerate(rel_paths_ordered, start=1):
+        p_meta = pages_meta.get(rel_norm)
+        if not isinstance(p_meta, dict):
+            continue
+        if p_meta.get("detected_lang") in ("ja", "ko", "zh"):
+            detected_lang = str(p_meta["detected_lang"])
+        for b_idx, b in enumerate(p_meta.get("blocks") or [], start=1):
+            if not isinstance(b, dict) or bool(b.get("is_deleted")):
+                continue
+            orig_t = str(b.get("original_text") or "").strip()
+            trans_t = str(b.get("translated_text") or "").strip()
+            if not orig_t and not trans_t:
+                continue
+            bid = int(b.get("id") or b_idx)
+            b_key = f"P{p_idx:02d}_{bid:02d}"
+            book_script_map[b_key] = {"orig": orig_t, "trans": trans_t}
+
+    if not book_script_map:
+        raise HTTPException(status_code=400, detail="В главе нет переведенных реплик для вычитки.")
+
+    folder_glossary = normalize_glossary_entries(manifest.get("glossary", []))
+    polished_map = await translator_engine.proofread_chapter_book_script(
+        book_map=book_script_map,
+        source_lang=detected_lang,
+        target_lang=t_lang,
+        model=payload.ollama_model,
+        glossary_entries=folder_glossary,
+    )
+
+    if not isinstance(manifest.get("phrase_cache"), dict):
+        manifest["phrase_cache"] = {}
+
+    updated_blocks_count = 0
+    affected_rel_paths: list[str] = []
+    for p_idx, rel_norm in enumerate(rel_paths_ordered, start=1):
+        p_meta = pages_meta.get(rel_norm)
+        if not isinstance(p_meta, dict):
+            continue
+        page_changed = False
+        for b_idx, b in enumerate(p_meta.get("blocks") or [], start=1):
+            if not isinstance(b, dict):
+                continue
+            bid = int(b.get("id") or b_idx)
+            b_key = f"P{p_idx:02d}_{bid:02d}"
+            new_tr = polished_map.get(b_key, "").strip()
+            old_tr = str(b.get("translated_text") or "").strip()
+            if new_tr and new_tr != old_tr:
+                b["translated_text"] = new_tr
+                b["translation_source"] = "llm_book_proofread"
+                orig_t = str(b.get("original_text") or "").strip()
+                if orig_t:
+                    manifest["phrase_cache"][f"{t_lang}||{orig_t}"] = new_tr
+                    translator_engine.phrase_cache[f"{t_lang}||{orig_t}"] = new_tr
+                updated_blocks_count += 1
+                page_changed = True
+        if page_changed:
+            p_meta["updated_at"] = int(time.time())
+            affected_rel_paths.append(rel_norm)
+
+    rerendered_pages = 0
+    if affected_rel_paths:
+        _save_folder_manifest(output_dir, manifest)
+        rerendered_pages = await _rerender_modified_book_pages(
+            source_dir=source_dir,
+            output_dir=output_dir,
+            manifest=manifest,
+            affected_rel_paths=affected_rel_paths,
+            uppercase=payload.uppercase,
+            min_font_size=payload.min_font_size,
+            max_font_size=payload.max_font_size,
+            overflow_mode=payload.overflow_mode,
+        )
+        _save_folder_manifest(output_dir, manifest)
+
+    book_data = await asyncio.to_thread(
+        _generate_and_save_chapter_book_files,
+        output_dir,
+        manifest,
+        source_dir,
+        t_lang,
+    )
+    elapsed = round(time.perf_counter() - start_ts, 2)
+    return {
+        "status": "ok",
+        "updated_blocks_count": updated_blocks_count,
+        "affected_pages_count": len(affected_rel_paths),
+        "rerendered_pages_count": rerendered_pages,
+        "processing_time_sec": elapsed,
+        **book_data,
     }
 
 

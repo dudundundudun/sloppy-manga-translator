@@ -2,6 +2,8 @@
   "unsloth_url": "https://moduleapi.pro/v1",
   "unsloth_api_key": "",
   "selected_model": "auto",
+  "translation_profile": "balanced",
+  "local_fallback_model_multilang": "auto",
   "auto_save_web_pages": true,
   "web_save_dir": "Saved_Manga",
   "text_filter_mode": "dialogue_only",
@@ -12,7 +14,7 @@
   "min_font_size": 12,
   "max_font_size": 32,
   "uppercase": true,
-  "batch_pages": 12,
+  "batch_pages": 15,
   "ui_settings": {
     "editor_dock_mode": "right",
     "inline_bubble_popup": true,

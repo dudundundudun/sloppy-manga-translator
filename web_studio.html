@@ -2411,14 +2411,24 @@
         <button class="pill-btn" id="pill-ru" onclick="setTargetLang('ru')">🇷🇺 Русский</button>
         <button class="pill-btn" id="pill-romaji" onclick="setTargetLang('romaji')">🔤 Ромадзи</button>
       </div>
+      <select id="sel-translation-profile" class="lang-select" onchange="onTranslationProfileChange(this.value, true)" title="Профиль пакетного перевода: управляет числом запросов к API, режимом Книги главы и оффлайн-режимом">
+        <option value="eco_book">💎 Эконом + Книга (1–2 запроса)</option>
+        <option value="balanced" selected>⚖️ Баланс (Без микро-потоков)</option>
+        <option value="turbo">🚀 Турбо (Параллельный)</option>
+        <option value="local_only">🏠 Локальный 100% (Ollama)</option>
+      </select>
     </div>
 
     <div class="topbar-right">
       <div class="summary-chip" id="summary-chip" onclick="openSettingsOnTab('tab-ai')" title="Нажмите для быстрой настройки ИИ, фильтрации текста и интерфейса">
         Шрифт: 12–32px · Только диалоги · ИИ: Авто
       </div>
-      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-glossary')" title="Открыть Глоссарий имен/терминов и глобальный Поиск и Замену по всей главе (Ctrl+F / Ctrl+H)">
+      <button class="icon-action-btn" id="btn-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="border-color:rgba(52, 211, 153, 0.45); color:#a7f3d0;" title="Открыть полный текст перевода главы (_chapter_book.md), импортировать правки или вычитать стиль всей главы за 1 запрос">
         <span>📖</span>
+        <span>Текст главы (Книга)</span>
+      </button>
+      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-glossary')" title="Открыть Глоссарий имен/терминов и глобальный Поиск и Замену по всей главе (Ctrl+F / Ctrl+H)">
+        <span>🔎</span>
         <span>Глоссарий / Поиск</span>
       </button>
       <button class="icon-action-btn" onclick="openSettingsOnTab('tab-diag')" title="Открыть панель диагностики, таймингов этапов (OCR / ИИ / Рендер), живой лог и скопировать отчет для чата в 1 клик">
@@ -2504,6 +2514,9 @@
           </button>
           <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none; border-color:rgba(52, 211, 153, 0.45); color:#a7f3d0;">
             ✏️ Редактировать перевод и Ромадзи
+          </button>
+          <button class="cta-sub" id="btn-sidebar-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="border-color:rgba(129, 140, 248, 0.45); color:#c7d2fe;">
+            📖 Текст главы (Книга)
           </button>
         </div>
       </div>
@@ -2861,13 +2874,29 @@
         <button type="button" class="settings-tab-btn" id="stab-btn-ui" onclick="switchSettingsTab('tab-ui')">🎨 Интерфейс и Редактор</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-filter" onclick="switchSettingsTab('tab-filter')">📊 Фильтр текста и SFX</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-font" onclick="switchSettingsTab('tab-font')">🔤 Шрифт и Сохранение</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-glossary" onclick="switchSettingsTab('tab-glossary')">📖 Глоссарий и Замена</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-book" onclick="switchSettingsTab('tab-book'); loadChapterBookPanel();">📖 Текст главы (Книга)</button>
+        <button type="button" class="settings-tab-btn" id="stab-btn-glossary" onclick="switchSettingsTab('tab-glossary')">🔎 Глоссарий и Замена</button>
         <button type="button" class="settings-tab-btn" id="stab-btn-diag" onclick="switchSettingsTab('tab-diag')">🩺 Диагностика и Логи</button>
       </div>
 
       <div class="settings-body">
         <!-- TAB 1: AI & MODELS -->
         <div class="settings-tab-pane active" id="tab-ai">
+          <div class="section-box" style="border-color:rgba(52, 211, 153, 0.38);">
+            <div class="section-title">
+              <span>⚡ Профиль пакетного перевода главы (также переключается в 1 клик в верхней панели)</span>
+            </div>
+            <div class="section-desc">Управляет группировкой страниц, слиянием хвостов и параллельными потоками для экономии запросов к API и сохранения сквозного контекста:</div>
+            <div class="field-box">
+              <select id="sel-settings-translation-profile" onchange="onTranslationProfileChange(this.value, false)">
+                <option value="eco_book">💎 Эконом + Книга (1–2 запроса на 25 стр. — двухфазный OCR + единый сценарий главы)</option>
+                <option value="balanced" selected>⚖️ Баланс (Без микро-потоков — пачки по 15 стр. со слиянием хвостов <= 5 стр., ~2 запроса)</option>
+                <option value="turbo">🚀 Турбо (Параллельный — пачки по 12 стр., до 3 потоков при >= 40 фраз на поток, 3–4 запроса)</option>
+                <option value="local_only">🏠 Локальный 100% (Ollama — 0 облачных запросов, авто-выбор JA -> Sugoi/Shisa, ZH/KO -> Qwen/Gemma)</option>
+              </select>
+            </div>
+          </div>
+
           <div class="section-box">
             <div class="section-title">
               <span>🤖 Активная модель перевода</span>
@@ -3150,7 +3179,7 @@
               </div>
               <div class="field-box">
                 <label>📦 Пачка страниц за 1 запрос к ИИ:</label>
-                <input id="inp-batch-pages" type="number" min="1" max="25" value="12" onchange="updateSummaryChip()" />
+                <input id="inp-batch-pages" type="number" min="1" max="50" value="15" onchange="updateSummaryChip()" />
               </div>
             </div>
           </div>
@@ -3229,6 +3258,39 @@
                 <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="pickWebSaveDirInStudio()">📁 Выбрать</button>
                 <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="openWebSaveDirInStudio()">📂 Открыть</button>
               </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- TAB BOOK: CHAPTER BOOK & LITERARY PROOFREADING (BLOCK 2) -->
+        <div class="settings-tab-pane" id="tab-book">
+          <div class="section-box" style="border-color:rgba(52, 211, 153, 0.45);">
+            <div class="section-title">
+              <span>📖 Текст главы (Книга перевода и Литературная вычитка — _chapter_book.md)</span>
+              <span id="chapter-book-status-badge" style="font-size:11.5px; color:var(--mint);">Готов к работе</span>
+            </div>
+            <div class="section-desc">
+              По завершении перевода папки в директорию главы автоматически сохраняются чистая книга <b>_chapter_book.md</b> и двуязычный скрипт <b>_chapter_script_bilingual.json / .txt</b>. Вы можете отредактировать реплики прямо ниже и нажать <b>«📥 Импортировать и перерисовать страницы»</b> (0 запросов к OCR и API, мгновенная перерисовка из кэша очистки!) либо нажать <b>«✨ Вычитать стиль всей главы за 1 запрос»</b>.
+            </div>
+            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;">
+              <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                <button type="button" class="pill-btn active" id="btn-book-view-md" onclick="switchChapterBookViewMode('md')">📘 Чистая книга (_chapter_book.md)</button>
+                <button type="button" class="pill-btn" id="btn-book-view-bilingual" onclick="switchChapterBookViewMode('bilingual')">🔀 Двуязычный скрипт (Оригинал ➔ Перевод)</button>
+              </div>
+              <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="loadChapterBookPanel()">🔄 Обновить из папки</button>
+                <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('md')">💾 Скачать _chapter_book.md</button>
+                <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('json')">💾 Скачать .json</button>
+              </div>
+            </div>
+            <textarea id="chapter-book-textarea" placeholder="Откройте переведенную папку с главой манги, чтобы увидеть или отредактировать полный текст книги главы..." style="width:100%; height:300px; background:#0b0912; color:#e0e7ff; font-family:Consolas, 'Segoe UI', monospace; font-size:12.5px; border:1px solid rgba(129, 140, 248, 0.35); border-radius:10px; padding:12px; resize:vertical; line-height:1.5; user-select:text;"></textarea>
+            <div style="display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center;">
+              <button type="button" class="cta-main" id="btn-proofread-chapter-book" style="width:auto; padding:9px 18px; font-size:12.5px; background:linear-gradient(135deg, #818cf8, #c084fc);" onclick="proofreadEntireChapterBookInOneRequest()">
+                ✨ Вычитать стиль всей главы за 1 запрос (ИИ + перерисовка из кэша)
+              </button>
+              <button type="button" class="btn-save-edit" id="btn-import-chapter-book" style="padding:9px 18px; font-size:12.5px;" onclick="importEditedChapterBookAndRerender()">
+                📥 Импортировать правки текста и мгновенно перерисовать страницы (0 токенов)
+              </button>
             </div>
           </div>
         </div>
@@ -3443,6 +3505,11 @@
     if (!["en", "ru", "romaji"].includes(targetLang)) targetLang = "en";
     let overflowMode = localStorage.getItem("miko_overflow_mode_v1") || "shrink";
     if (!["shrink", "overflow", "expand_bubble"].includes(overflowMode)) overflowMode = "shrink";
+    let translationProfile = localStorage.getItem("miko_translation_profile_v1") || "balanced";
+    if (!["eco_book", "balanced", "turbo", "local_only"].includes(translationProfile)) translationProfile = "balanced";
+    let isSavingSettingsInProgress = false;
+    let lastSettingsSavedAtMs = 0;
+    let currentChapterBookData = { book_md: "", bilingual_txt: "", bilingual_json: null, view_mode: "md" };
     let currentFolder = "";
     let currentOutputDir = "";
     let folderPages = [];
@@ -3824,14 +3891,60 @@
       const filterLbl = modeLabels[mode] || "Только диалоги";
       const ovfLabels = { shrink: "📐 В рамку", overflow: "🔓 За рамки (Б)", expand_bubble: "💬 Авто-баббл (В)" };
       const ovfLbl = ovfLabels[overflowMode] || "📐 В рамку";
+      const profShortMap = {
+        eco_book: "💎 Книга",
+        balanced: "⚖️ Баланс",
+        turbo: "🚀 Турбо",
+        local_only: "🏠 Оффлайн"
+      };
+      const profLbl = profShortMap[translationProfile] || "⚖️ Баланс";
       const shortMod = activeModelLabel.length > 24 ? activeModelLabel.slice(0, 22) + "…" : activeModelLabel;
       if (typeof syncQuickFilterToolbarBtn === "function") syncQuickFilterToolbarBtn();
       document.getElementById("summary-chip").textContent =
-        `Шрифт: ${minF}–${maxF}px · ${ovfLbl} · ${filterLbl} · ИИ: ${shortMod}`;
+        `${profLbl} · Шрифт: ${minF}–${maxF}px · ${ovfLbl} · ИИ: ${shortMod}`;
+    }
+
+    function syncTranslationProfileSelects(profId) {
+      if (!["eco_book", "balanced", "turbo", "local_only"].includes(profId)) profId = "balanced";
+      translationProfile = profId;
+      try { localStorage.setItem("miko_translation_profile_v1", profId); } catch (e) {}
+      const topSel = document.getElementById("sel-translation-profile");
+      if (topSel && topSel.value !== profId) topSel.value = profId;
+      const modSel = document.getElementById("sel-settings-translation-profile");
+      if (modSel && modSel.value !== profId) modSel.value = profId;
+      const batchByProf = { eco_book: 50, balanced: 15, turbo: 12, local_only: 12 };
+      const batchInp = document.getElementById("inp-batch-pages");
+      if (batchInp && batchByProf[profId]) {
+        batchInp.value = batchByProf[profId];
+      }
+      updateSummaryChip();
+    }
+
+    async function onTranslationProfileChange(newProfId, persistImmediately = true) {
+      syncTranslationProfileSelects(newProfId);
+      const profNames = {
+        eco_book: "💎 Эконом + Книга (1–2 запроса на главу: сначала полный OCR, затем единый сценарий книги)",
+        balanced: "⚖️ Баланс (пачки по 15 стр. со слиянием хвостов <= 5 стр., без микро-потоков)",
+        turbo: "🚀 Турбо (быстрый старт, пачки по 12 стр., параллельные потоки)",
+        local_only: "🏠 Локальный 100% (полностью оффлайн через Ollama с авто-роутингом JA / ZH / KO)"
+      };
+      if (persistImmediately) {
+        try {
+          await fetch("/settings", {
+            method: "POST",
+            headers: {"Content-Type": "application/json"},
+            body: JSON.stringify({
+              translation_profile: translationProfile,
+              batch_pages: parseInt(document.getElementById("inp-batch-pages")?.value, 10) || 15
+            })
+          });
+        } catch (e) {}
+      }
+      sayMiko(`Профиль перевода переключен: ${profNames[translationProfile] || translationProfile} ✨`);
     }
 
     function switchSettingsTab(tabId) {
-      ["tab-ai", "tab-ui", "tab-filter", "tab-font", "tab-glossary", "tab-diag"].forEach(id => {
+      ["tab-ai", "tab-ui", "tab-filter", "tab-font", "tab-book", "tab-glossary", "tab-diag"].forEach(id => {
         const pane = document.getElementById(id);
         if (pane) pane.classList.toggle("active", id === tabId);
       });
@@ -3840,6 +3953,7 @@
         "tab-ui": "stab-btn-ui",
         "tab-filter": "stab-btn-filter",
         "tab-font": "stab-btn-font",
+        "tab-book": "stab-btn-book",
         "tab-glossary": "stab-btn-glossary",
         "tab-diag": "stab-btn-diag"
       };
@@ -3948,6 +4062,188 @@
       await fetch("/diagnostics/clear", { method: "POST" });
       await loadDiagnosticsPanel();
       sayMiko("Диагностические счетчики и буфер логов очищены! 🧹✨");
+    }
+
+    async function loadChapterBookPanel() {
+      const folderParam = currentFolder || (selectedPage && selectedPage.source_path ? selectedPage.source_path.replace(/[\\/][^\\/]+$/, "") : "");
+      const ta = document.getElementById("chapter-book-textarea");
+      const badge = document.getElementById("chapter-book-status-badge");
+      if (!folderParam) {
+        if (ta) ta.value = "Сначала выберите папку с главой манги слева (или переведите папку), чтобы открыть Книгу главы (_chapter_book.md).";
+        return;
+      }
+      if (badge) badge.textContent = "⏳ Загрузка книги...";
+      try {
+        const q = new URLSearchParams({ folder_path: folderParam, target_lang: targetLang });
+        const res = await fetch("/chapter_book?" + q.toString());
+        const data = await res.json();
+        if (!res.ok) {
+          if (ta) ta.value = data.detail || "Ошибка загрузки книги главы.";
+          if (badge) badge.textContent = "⚠️ Ошибка";
+          return;
+        }
+        currentChapterBookData.book_md = data.book_md || "";
+        currentChapterBookData.bilingual_txt = data.bilingual_txt || "";
+        currentChapterBookData.bilingual_json = data.bilingual_json || null;
+        if (ta) {
+          ta.value = currentChapterBookData.view_mode === "bilingual"
+            ? currentChapterBookData.bilingual_txt
+            : currentChapterBookData.book_md;
+        }
+        const totalBlocks = data.bilingual_json?.total_blocks || 0;
+        const totalPages = data.bilingual_json?.total_pages || 0;
+        if (badge) badge.textContent = `✅ Страниц: ${totalPages} · Реплик: ${totalBlocks}`;
+      } catch (e) {
+        if (ta) ta.value = "Не удалось загрузить книгу главы: " + e.message;
+      }
+    }
+
+    function switchChapterBookViewMode(mode) {
+      currentChapterBookData.view_mode = mode === "bilingual" ? "bilingual" : "md";
+      document.getElementById("btn-book-view-md")?.classList.toggle("active", currentChapterBookData.view_mode === "md");
+      document.getElementById("btn-book-view-bilingual")?.classList.toggle("active", currentChapterBookData.view_mode === "bilingual");
+      const ta = document.getElementById("chapter-book-textarea");
+      if (ta && (currentChapterBookData.book_md || currentChapterBookData.bilingual_txt)) {
+        ta.value = currentChapterBookData.view_mode === "bilingual"
+          ? currentChapterBookData.bilingual_txt
+          : currentChapterBookData.book_md;
+      }
+    }
+
+    function downloadChapterBookFile(fmt) {
+      let content = "";
+      let filename = "_chapter_book.md";
+      if (fmt === "json") {
+        content = currentChapterBookData.bilingual_json
+          ? JSON.stringify(currentChapterBookData.bilingual_json, null, 2)
+          : "{}";
+        filename = "_chapter_script_bilingual.json";
+      } else {
+        const ta = document.getElementById("chapter-book-textarea");
+        content = (ta && ta.value) ? ta.value : (currentChapterBookData.book_md || "");
+        filename = currentChapterBookData.view_mode === "bilingual" ? "_chapter_script_bilingual.txt" : "_chapter_book.md";
+      }
+      const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      a.href = URL.createObjectURL(blob);
+      a.download = filename;
+      a.click();
+      URL.revokeObjectURL(a.href);
+    }
+
+    async function importEditedChapterBookAndRerender() {
+      const folderParam = currentFolder || (selectedPage && selectedPage.source_path ? selectedPage.source_path.replace(/[\\/][^\\/]+$/, "") : "");
+      if (!folderParam) {
+        sayMiko("Сначала выбери папку с главой манги слева~ 🌸");
+        return;
+      }
+      const ta = document.getElementById("chapter-book-textarea");
+      const bookText = (ta?.value || "").trim();
+      if (!bookText) {
+        sayMiko("Поле текста книги пустое!");
+        return;
+      }
+      const btn = document.getElementById("btn-import-chapter-book");
+      const badge = document.getElementById("chapter-book-status-badge");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "⏳ Обновляю бабблы и перерисовываю...";
+      }
+      if (badge) badge.textContent = "⏳ Импорт и рендер...";
+      try {
+        const res = await fetch("/chapter_book/import", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            folder_path: folderParam,
+            target_lang: targetLang,
+            book_text: bookText,
+            uppercase: document.getElementById("chk-uppercase").checked,
+            min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            overflow_mode: overflowMode
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ошибка импорта книги: ${data.detail || "неизвестная ошибка"}`);
+          if (badge) badge.textContent = "⚠️ Ошибка импорта";
+          return;
+        }
+        currentChapterBookData.book_md = data.book_md || currentChapterBookData.book_md;
+        currentChapterBookData.bilingual_txt = data.bilingual_txt || currentChapterBookData.bilingual_txt;
+        currentChapterBookData.bilingual_json = data.bilingual_json || currentChapterBookData.bilingual_json;
+        if (badge) {
+          badge.textContent = `✅ Обновлено бабблов: ${data.updated_blocks_count} · Перерисовано стр.: ${data.rerendered_pages_count} (${data.processing_time_sec}с)`;
+        }
+        sayMiko(`Книга импортирована за ${data.processing_time_sec}с! Обновлено реплик: ${data.updated_blocks_count}, перерисовано страниц из кэша: ${data.rerendered_pages_count} (0 токенов ИИ!) 📖✨`);
+        await inspectCurrentFolder({ preserveCurrentSelection: false });
+      } catch (e) {
+        sayMiko("Ошибка при импорте книги: " + e.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "📥 Импортировать правки текста и мгновенно перерисовать страницы (0 токенов)";
+        }
+      }
+    }
+
+    async function proofreadEntireChapterBookInOneRequest() {
+      const folderParam = currentFolder || (selectedPage && selectedPage.source_path ? selectedPage.source_path.replace(/[\\/][^\\/]+$/, "") : "");
+      if (!folderParam) {
+        sayMiko("Сначала выбери переведенную папку с главой манги слева~ 🌸");
+        return;
+      }
+      const btn = document.getElementById("btn-proofread-chapter-book");
+      const badge = document.getElementById("chapter-book-status-badge");
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "⏳ ИИ вычитывает стиль всей главы за 1 запрос...";
+      }
+      if (badge) badge.textContent = "⏳ Литературная вычитка ИИ (1 запрос)...";
+      sayMiko("Отправляю весь сценарий главы одним запросом на литературную вычитку стиля, местоимений и имен... ✨📖");
+      try {
+        const res = await fetch("/chapter_book/proofread", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            folder_path: folderParam,
+            target_lang: targetLang,
+            ollama_model: document.getElementById("sel-model").value,
+            uppercase: document.getElementById("chk-uppercase").checked,
+            min_font_size: parseInt(document.getElementById("inp-min-font").value, 10) || 12,
+            max_font_size: parseInt(document.getElementById("inp-max-font").value, 10) || 32,
+            overflow_mode: overflowMode
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko(`Ошибка литературной вычитки: ${data.detail || "проверьте соединение с ИИ"}`);
+          if (badge) badge.textContent = "⚠️ Ошибка вычитки";
+          return;
+        }
+        currentChapterBookData.book_md = data.book_md || "";
+        currentChapterBookData.bilingual_txt = data.bilingual_txt || "";
+        currentChapterBookData.bilingual_json = data.bilingual_json || null;
+        const ta = document.getElementById("chapter-book-textarea");
+        if (ta) {
+          ta.value = currentChapterBookData.view_mode === "bilingual"
+            ? currentChapterBookData.bilingual_txt
+            : currentChapterBookData.book_md;
+        }
+        if (badge) {
+          badge.textContent = `✨ Вычитано: ${data.updated_blocks_count} реплик · Перерисовано: ${data.rerendered_pages_count} стр. (${data.processing_time_sec}с)`;
+        }
+        sayMiko(`Литературная вычитка всей главы за 1 запрос завершена за ${data.processing_time_sec}с! Улучшено реплик: ${data.updated_blocks_count}, перерисовано страниц: ${data.rerendered_pages_count}~ ✨🌸`);
+        await inspectCurrentFolder({ preserveCurrentSelection: false });
+      } catch (e) {
+        sayMiko("Ошибка вычитки главы: " + e.message);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "✨ Вычитать стиль всей главы за 1 запрос (ИИ + перерисовка из кэша)";
+        }
+      }
     }
 
     async function viewChapterTranslationReport(openModalFirst = false) {
@@ -4659,6 +4955,11 @@
           try { localStorage.setItem("miko_overflow_mode_v1", overflowMode); } catch (e) {}
         }
         syncOverflowModeUi();
+        if (data.translation_profile && ["eco_book", "balanced", "turbo", "local_only"].includes(data.translation_profile)) {
+          syncTranslationProfileSelects(data.translation_profile);
+        } else {
+          syncTranslationProfileSelects(translationProfile);
+        }
         if (data.batch_pages) {
           document.getElementById("inp-batch-pages").value = data.batch_pages;
         }
@@ -4728,9 +5029,15 @@
     async function onModelSelectChange() {
       document.getElementById("inp-custom-model").value = "";
       const mod = document.getElementById("sel-model").value;
+      updateDeepSeekPresetCards(mod);
+      // БЛОК 5: Если открыто модальное окно настроек, не сохраняем config.json дважды (при выборе в select и затем при нажатии «Сохранить настройки»)
+      const modalOpen = document.getElementById("settings-modal")?.classList.contains("open");
+      if (modalOpen) {
+        updateSummaryChip();
+        return;
+      }
       const uUrl = document.getElementById("inp-unsloth-url").value.trim();
       const apiKey = document.getElementById("inp-api-key").value.trim();
-      updateDeepSeekPresetCards(mod);
       const payload = { selected_model: mod };
       if (uUrl) payload.unsloth_url = uUrl;
       if (apiKey) payload.unsloth_api_key = apiKey;
@@ -4754,13 +5061,14 @@
       const banner = document.getElementById("api-status-banner");
       if (banner) banner.textContent = "⏳ Проверка соединения с API и обновление списка моделей...";
 
-      const res = await fetch("/settings", {
+      await fetch("/settings", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, unsloth_api_key: apiKey })
       });
-      const data = await res.json();
-      await loadHealth(true);
+      const mRes = await fetch("/models?refresh=true");
+      const data = await mRes.json();
+      await loadHealth(false);
       const det = data.unsloth_status?.detected_models || [];
       if (banner) {
         if (det.length > 0) {
@@ -4775,63 +5083,79 @@
     }
 
     async function saveSettingsAndClose() {
-      let minF = parseInt(document.getElementById("inp-min-font").value, 10) || 12;
-      let maxF = parseInt(document.getElementById("inp-max-font").value, 10) || 32;
-      if (minF > maxF) {
-        maxF = minF;
-        document.getElementById("inp-max-font").value = minF;
+      const nowMs = Date.now();
+      // БЛОК 5.3: Защита от двойного сохранения config.json при быстрых/дублирующихся событиях
+      if (isSavingSettingsInProgress || (nowMs - lastSettingsSavedAtMs) < 1200) {
+        toggleSettingsModal(false);
+        return;
       }
-      let customMod = document.getElementById("inp-custom-model").value.trim();
-      const uUrl = document.getElementById("inp-unsloth-url").value.trim();
-      const apiKey = document.getElementById("inp-api-key").value.trim();
+      isSavingSettingsInProgress = true;
+      lastSettingsSavedAtMs = nowMs;
+      try {
+        let minF = parseInt(document.getElementById("inp-min-font").value, 10) || 12;
+        let maxF = parseInt(document.getElementById("inp-max-font").value, 10) || 32;
+        if (minF > maxF) {
+          maxF = minF;
+          document.getElementById("inp-max-font").value = minF;
+        }
+        let customMod = document.getElementById("inp-custom-model").value.trim();
+        const uUrl = document.getElementById("inp-unsloth-url").value.trim();
+        const apiKey = document.getElementById("inp-api-key").value.trim();
 
-      if (customMod && !customMod.includes("::")) {
-        const isRemote = !uUrl.includes("127.0.0.1") && !uUrl.includes("localhost");
-        customMod = (isRemote || apiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
+        if (customMod && !customMod.includes("::")) {
+          const isRemote = !uUrl.includes("127.0.0.1") && !uUrl.includes("localhost");
+          customMod = (isRemote || apiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
+        }
+        const mod = customMod || document.getElementById("sel-model").value;
+        const profVal = document.getElementById("sel-settings-translation-profile")?.value || translationProfile || "balanced";
+        syncTranslationProfileSelects(profVal);
+
+        const autoSaveWeb = document.getElementById("chk-autosave-web").checked;
+        const webSaveDir = document.getElementById("inp-web-save-dir").value.trim();
+        const textFilterMode = document.getElementById("sel-text-filter-mode").value;
+        const skipSighs = document.getElementById("chk-skip-sighs").checked;
+        const skipSfx = document.getElementById("chk-skip-sfx").checked;
+        const detectFreeText = document.getElementById("chk-free-text").checked;
+        const minTextLen = parseInt(document.getElementById("inp-min-text-len").value, 10) || 2;
+        const uppercase = document.getElementById("chk-uppercase").checked;
+        const selOvf = document.getElementById("sel-overflow-mode")?.value || overflowMode || "shrink";
+        overflowMode = selOvf;
+        syncOverflowModeUi();
+        const batchPages = parseInt(document.getElementById("inp-batch-pages").value, 10) || 15;
+
+        onUiSettingCheckboxChange();
+
+        await fetch("/settings", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            selected_model: mod,
+            translation_profile: translationProfile,
+            unsloth_url: uUrl,
+            unsloth_api_key: apiKey,
+            auto_save_web_pages: autoSaveWeb,
+            web_save_dir: webSaveDir || null,
+            text_filter_mode: textFilterMode,
+            skip_sighs: skipSighs,
+            skip_sfx: skipSfx,
+            detect_free_text: detectFreeText,
+            min_text_length: minTextLen,
+            min_font_size: minF,
+            max_font_size: maxF,
+            uppercase: uppercase,
+            overflow_mode: overflowMode,
+            batch_pages: batchPages,
+            ui_settings: uiSettings
+          })
+        });
+        document.getElementById("inp-custom-model").value = "";
+        // БЛОК 5: Вызываем loadHealth(false), чтобы использовать 5-минутный in-memory кэш моделей без тройного опроса /v1/models
+        await loadHealth(false);
+        toggleSettingsModal(false);
+        sayMiko("Все настройки перевода, профилей, моделей и интерфейса сохранены! ✨");
+      } finally {
+        isSavingSettingsInProgress = false;
       }
-      const mod = customMod || document.getElementById("sel-model").value;
-
-      const autoSaveWeb = document.getElementById("chk-autosave-web").checked;
-      const webSaveDir = document.getElementById("inp-web-save-dir").value.trim();
-      const textFilterMode = document.getElementById("sel-text-filter-mode").value;
-      const skipSighs = document.getElementById("chk-skip-sighs").checked;
-      const skipSfx = document.getElementById("chk-skip-sfx").checked;
-      const detectFreeText = document.getElementById("chk-free-text").checked;
-      const minTextLen = parseInt(document.getElementById("inp-min-text-len").value, 10) || 2;
-      const uppercase = document.getElementById("chk-uppercase").checked;
-      const selOvf = document.getElementById("sel-overflow-mode")?.value || overflowMode || "shrink";
-      overflowMode = selOvf;
-      syncOverflowModeUi();
-      const batchPages = parseInt(document.getElementById("inp-batch-pages").value, 10) || 12;
-
-      onUiSettingCheckboxChange();
-
-      await fetch("/settings", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          selected_model: mod,
-          unsloth_url: uUrl,
-          unsloth_api_key: apiKey,
-          auto_save_web_pages: autoSaveWeb,
-          web_save_dir: webSaveDir || null,
-          text_filter_mode: textFilterMode,
-          skip_sighs: skipSighs,
-          skip_sfx: skipSfx,
-          detect_free_text: detectFreeText,
-          min_text_length: minTextLen,
-          min_font_size: minF,
-          max_font_size: maxF,
-          uppercase: uppercase,
-          overflow_mode: overflowMode,
-          batch_pages: batchPages,
-          ui_settings: uiSettings
-        })
-      });
-      document.getElementById("inp-custom-model").value = "";
-      await loadHealth(true);
-      toggleSettingsModal(false);
-      sayMiko("Все настройки перевода, моделей и интерфейса сохранены! ✨");
     }
 
     /* ==================== FOLDER & PAGE NAVIGATION ==================== */
@@ -9339,7 +9663,8 @@
         skip_sfx: document.getElementById("chk-skip-sfx").checked,
         min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
         skip_existing: shouldForceRetranslate ? false : skipExistingChecked,
-        batch_pages: parseInt(document.getElementById("inp-batch-pages")?.value, 10) || 12,
+        batch_pages: parseInt(document.getElementById("inp-batch-pages")?.value, 10) || 15,
+        translation_profile: document.getElementById("sel-translation-profile")?.value || translationProfile || "balanced",
         force_retranslate: shouldForceRetranslate,
         open_when_done: false
       };
