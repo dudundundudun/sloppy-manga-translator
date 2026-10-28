@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "Local Manga / Manhwa / Manhua Translator",
-  "version": "1.0.8",
-  "description": "Локальный и облачный AI-переводчик манги, манхвы и маньхуа v1.0.8 (YOLOv8m + RT-DETR-v2 + MangaOCR + DeepSeek/Ollama + LaMa)",
+  "version": "1.0.9",
+  "description": "Локальный и облачный AI-переводчик манги, манхвы и маньхуа v1.0.9 (YOLOv8m + RT-DETR-v2 + MangaOCR + DeepSeek/Ollama + LaMa)",
   "permissions": [
     "activeTab",
     "scripting",
@@ -15,7 +15,7 @@
     "http://localhost:5000/*"
   ],
   "action": {
-    "default_title": "Открыть/скрыть Manga Translator v1.0.8"
+    "default_title": "Открыть/скрыть Manga Translator v1.0.9"
   },
   "background": {
     "service_worker": "background.js"

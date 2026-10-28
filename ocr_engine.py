@@ -677,7 +677,7 @@ class MangaOCREngine:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "Authorization": f"Bearer {cloud_api_key.strip()}",
-                "User-Agent": "MikoMangaStudio/1.0.8",
+                "User-Agent": "MikoMangaStudio/1.0.9",
             }
             with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), trust_env=False) as client:
                 for c_mod in candidate_cloud_models[:2]:

@@ -1,5 +1,5 @@
 /**
- * Background Service Worker (v1.0.8)
+ * Background Service Worker (v1.0.9)
  *
  * Изменения v1.0.8:
  * 1. Выделена команда `SET_ACTIVE_MODEL`, которая переключает только `selected_model` на сервере
