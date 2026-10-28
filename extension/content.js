@@ -971,9 +971,19 @@
     return raw.replace(/^(?:unsloth|ollama)::/, "");
   }
 
+  // Сервер с v1.0.9 отдаёт installed как boolean, старые версии — как строки "true"/"false".
+  // Строгое === false / !== false на строках ломало оба списка, поэтому сравниваем через эти хелперы.
+  function isModelInstalled(m) {
+    return !!m && (m.installed === true || m.installed === "true");
+  }
+
+  function isModelDownloadable(m) {
+    return !!m && (m.installed === false || m.installed === "false");
+  }
+
   function getBestInstalledLocalModel() {
     const installedLocal = availableModelsCache.filter(
-      (m) => m && m.provider === "ollama" && m.installed !== false && String(m.id || "").startsWith("ollama::")
+      (m) => m && m.provider === "ollama" && isModelInstalled(m) && String(m.id || "").startsWith("ollama::")
     );
     if (settings.lastLocalModel && installedLocal.some((m) => m.id === settings.lastLocalModel)) {
       return settings.lastLocalModel;
@@ -1515,7 +1525,7 @@
       (m) =>
         m &&
         (m.provider === "ollama" || String(m.id || "").startsWith("ollama::")) &&
-        m.installed !== false &&
+        isModelInstalled(m) &&
         (!query ||
           String(m.name || "").toLowerCase().includes(query) ||
           String(m.id || "").toLowerCase().includes(query))
@@ -1531,7 +1541,7 @@
     const downloadableOllama = list.filter(
       (m) =>
         m &&
-        m.installed === false &&
+        isModelDownloadable(m) &&
         (!query ||
           String(m.name || "").toLowerCase().includes(query) ||
           String(m.id || "").toLowerCase().includes(query))
