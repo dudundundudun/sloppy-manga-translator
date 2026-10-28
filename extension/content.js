@@ -65,6 +65,25 @@
   let isModelSwitching = false;
   let pageBatchRunning = false;
   let pageStopRequested = false;
+  let serverInitRetryTimer = null;
+  // Шаг 6 аудита: id текущих запросов перевода (для реальной кнопки Стоп)
+  const activeTranslateRequestIds = new Set();
+  // Шаг 6 аудита: тяжёлые base64/data-URL больше НЕ храним в dataset
+  // (DOM-атрибуты раздували вкладку и были видны скриптам страницы) —
+  // только в памяти content script, ключ — сам элемент <img>.
+  const imgPayloadStore = new WeakMap();
+  function getImgPayload(img, key) {
+    const rec = imgPayloadStore.get(img);
+    return rec ? rec[key] : undefined;
+  }
+  function setImgPayload(img, key, value) {
+    let rec = imgPayloadStore.get(img);
+    if (!rec) {
+      rec = {};
+      imgPayloadStore.set(img, rec);
+    }
+    rec[key] = value;
+  }
 
   function migrateAndLoadSettings(onLoaded) {
     if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
@@ -282,6 +301,10 @@
     .mt-server-dot.online {
       background: #22c55e;
       box-shadow: 0 0 8px #22c55e;
+    }
+    .mt-server-dot.connecting {
+      background: #eab308;
+      box-shadow: 0 0 8px #eab308;
     }
     .mt-icon-btn {
       background: rgba(255, 255, 255, 0.08);
@@ -1588,10 +1611,30 @@
         return false;
       }
 
+      const hd = healthRes.data || {};
+
+      // Шаг 6 аудита: /health отвечает 200 и пока сервер ещё грузит модели
+      // (status: "initializing"). Раньше это игнорировалось: точка зеленела,
+      // а /translate падал с 503. Теперь — жёлтая точка и повторная проверка.
+      if (hd.status === "initializing") {
+        serverDot.classList.remove("online");
+        serverDot.classList.add("connecting");
+        startServerBtn.style.display = "none";
+        if (!silent) {
+          statusText.textContent = "Сервер запущен, но ещё загружает модели... подождите немного.";
+        }
+        if (!serverInitRetryTimer) {
+          serverInitRetryTimer = setTimeout(() => {
+            serverInitRetryTimer = null;
+            checkServerAndLoadModels(true, false);
+          }, 4000);
+        }
+        return false;
+      }
+
+      serverDot.classList.remove("connecting");
       serverDot.classList.add("online");
       startServerBtn.style.display = "none";
-
-      const hd = healthRes.data || {};
       serverHasApiKey = Boolean(hd.has_unsloth_key);
       if (hd.unsloth_url) {
         settings.unslothUrl = hd.unsloth_url;
@@ -1761,6 +1804,7 @@
     const pageIndex = explicitPageIndex || resolveCandidatePageIndex(img);
 
     img.dataset.mtBusy = "true";
+    const requestId = `tr-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
     if (badge) {
       badge.classList.remove("mt-error");
       badge.classList.add("mt-loading");
@@ -1770,19 +1814,21 @@
 
     try {
       const isRetranslate = img.dataset.mtTranslated === "true";
-      let imageB64 = isRetranslate ? (img.dataset.mtOriginalBase64 || null) : tryExtractCanvasBase64(img);
-      if (imageB64 && !img.dataset.mtOriginalBase64 && !isRetranslate) {
-        img.dataset.mtOriginalBase64 = imageB64;
+      let imageB64 = isRetranslate ? (getImgPayload(img, "originalBase64") || null) : tryExtractCanvasBase64(img);
+      if (imageB64 && !getImgPayload(img, "originalBase64") && !isRetranslate) {
+        setImgPayload(img, "originalBase64", imageB64);
       }
       if (!imageB64 && srcUrl.startsWith("blob:")) {
         imageB64 = await tryFetchInPageContext(srcUrl);
-        if (imageB64 && !img.dataset.mtOriginalBase64) {
-          img.dataset.mtOriginalBase64 = imageB64;
+        if (imageB64 && !getImgPayload(img, "originalBase64")) {
+          setImgPayload(img, "originalBase64", imageB64);
         }
       }
 
+      activeTranslateRequestIds.add(requestId);
       const response = await safeSendMessage({
         action: "TRANSLATE_IMAGE",
+        requestId: requestId,
         imageUrl: srcUrl,
         imageBase64: imageB64,
         lang: settings.lang,
@@ -1829,7 +1875,7 @@
         : `data:image/webp;base64,${result.translated_image}`;
 
       img.src = finalImgSrc;
-      img.dataset.mtTranslatedSrc = finalImgSrc;
+      setImgPayload(img, "translatedSrc", finalImgSrc);
       img.dataset.mtTranslated = "true";
       showingOriginal = false;
       toggleOrigBtn.textContent = "👁 Показать оригинал";
@@ -1845,6 +1891,10 @@
       toggleOrigBtn.style.display = "block";
       return { ok: true, blocks: result.blocks_count };
     } catch (err) {
+      if (err && /отменён/i.test(err.message || "")) {
+        if (badge) badge.textContent = "⏸ Отменено";
+        return { ok: false, cancelled: true, error: err.message };
+      }
       console.error("[MangaTranslator] Ошибка:", err);
       if (badge) {
         badge.textContent = "❌ Ошибка (повторить)";
@@ -1853,6 +1903,7 @@
       statusText.textContent = `❌ ${err.message}`;
       return { ok: false, error: err.message };
     } finally {
+      activeTranslateRequestIds.delete(requestId);
       img.dataset.mtBusy = "false";
       if (badge) {
         badge.classList.remove("mt-loading");
@@ -2004,6 +2055,8 @@
       const res = await translateSingleImage(candidates[i], candidates[i].__mtBadge);
       if (res && res.ok) {
         okCount++;
+      } else if (res?.cancelled) {
+        // Остановлено пользователем через реальную отмену запроса — не ошибка
       } else if (!res?.skipped) {
         failCount++;
         lastError = res?.error || "Ошибка";
@@ -2056,7 +2109,13 @@
 
   stopPageBtn.addEventListener("click", () => {
     pageStopRequested = true;
-    statusText.textContent = "⏸ Остановка после текущей страницы...";
+    // Шаг 6 аудита: раньше Стоп только выставлял флаг, и текущий запрос
+    // продолжался минутами. Теперь отменяем in-flight запросы в фоне:
+    // background оборвёт fetch к серверу, страница перестанет висеть.
+    activeTranslateRequestIds.forEach((requestId) => {
+      safeSendMessage({ action: "CANCEL_REQUEST", requestId });
+    });
+    statusText.textContent = "⏸ Останавливаю текущий запрос...";
   });
 
   function toggleOriginalAll() {
@@ -2076,7 +2135,8 @@
       } else {
         if (img.srcset) img.removeAttribute("srcset");
         clearPictureSources(img);
-        img.src = img.dataset.mtTranslatedSrc;
+        const translatedSrc = getImgPayload(img, "translatedSrc");
+        if (translatedSrc) img.src = translatedSrc;
       }
     });
     toggleOrigBtn.textContent = showingOriginal ? "👁 Вернуть перевод" : "👁 Показать оригинал";
@@ -2195,21 +2255,40 @@
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
-  const onKeyDown = (e) => {
-    if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyT" || e.key === "t" || e.key === "T")) {
-      e.preventDefault();
-      translateAllVisibleImages();
-    }
-  };
-  window.addEventListener("keydown", onKeyDown);
+  // Шаг 6 аудита: собственный keydown-обработчик Alt+T удалён — сочетание
+  // зарегистрировано один раз в manifest.json (commands.translate-page) и
+  // приходит сюда сообщением TRIGGER_TRANSLATE_PAGE из background.
+  // Раньше оба пути вызывали перевод, а ещё обработчик срабатывал при
+  // печати Alt+T в полях ввода страницы.
 
   scanPageImages();
-  const observer = new MutationObserver(() => scanPageImages());
+  // Шаг 6 аудита: раньше observer без дебаунса запускал полный перескан
+  // документа на КАЖДУЮ мутацию (включая вставки собственных бейджей) —
+  // на тяжёлых читалках это вешало вкладку. Теперь: дебаунс 250 мс и
+  // игнор мутаций внутри собственных элементов (панель и слой бейджей).
+  let scanDebounceTimer = null;
+  function scheduleScanPageImages() {
+    if (scanDebounceTimer) return;
+    scanDebounceTimer = setTimeout(() => {
+      scanDebounceTimer = null;
+      scanPageImages();
+    }, 250);
+  }
+  const observer = new MutationObserver((mutations) => {
+    const hasExternalMutation = mutations.some((m) => {
+      const t = m.target;
+      if (badgesLayer && (t === badgesLayer || badgesLayer.contains(t))) return false;
+      if (t === panel || panel.contains(t)) return false;
+      return true;
+    });
+    if (hasExternalMutation) scheduleScanPageImages();
+  });
   observer.observe(document.body, { childList: true, subtree: true });
 
   window.__mtCleanup = () => {
     observer.disconnect();
-    window.removeEventListener("keydown", onKeyDown);
+    if (scanDebounceTimer) clearTimeout(scanDebounceTimer);
+    if (serverInitRetryTimer) clearTimeout(serverInitRetryTimer);
     window.removeEventListener("scroll", refreshActiveBadgePositions);
     if (folderPollTimer) clearInterval(folderPollTimer);
     if (pullPollTimer) clearInterval(pullPollTimer);

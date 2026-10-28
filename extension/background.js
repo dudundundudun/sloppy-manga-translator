@@ -13,6 +13,17 @@
 const SERVER_URLS = ["http://127.0.0.1:5000", "http://localhost:5000"];
 let activeServerBase = SERVER_URLS[0];
 
+// Шаг 6 аудита: реестр выполняющихся запросов (requestId -> {controller, reason}),
+// чтобы кнопка "Стоп" в панели могла реально оборвать текущий fetch,
+// а не только выставить флаг между страницами.
+const inFlightRequests = new Map();
+
+function releaseInFlight(requestKey, entry) {
+  if (requestKey && entry && inFlightRequests.get(requestKey) === entry) {
+    inFlightRequests.delete(requestKey);
+  }
+}
+
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
   const chunkSize = 0x8000;
@@ -54,7 +65,7 @@ async function blobToDataUrl(blob) {
   return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
-async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
+async function callLocalServer(endpoint, options = {}, timeoutMs = 180000, requestKey = null) {
   // Шаг 3 аудита: раньше КАЖДЫЙ запрос при любой ошибке повторялся на втором
   // хосте, хотя 127.0.0.1:5000 и localhost:5000 — один и тот же сервер. Это
   // дублировало POST-запросы (двойной перевод, двойное автосохранение),
@@ -76,6 +87,11 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
     const baseUrl = bases[attempt];
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    let inFlightEntry = null;
+    if (requestKey) {
+      inFlightEntry = { controller, reason: null };
+      inFlightRequests.set(requestKey, inFlightEntry);
+    }
 
     let res;
     try {
@@ -90,6 +106,11 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
     } catch (err) {
       clearTimeout(timer);
       if (err && err.name === "AbortError") {
+        if (inFlightEntry && inFlightEntry.reason === "user") {
+          releaseInFlight(requestKey, inFlightEntry);
+          throw new Error("Запрос отменён пользователем");
+        }
+        releaseInFlight(requestKey, inFlightEntry);
         throw new Error(
           `Сервер не ответил за ${Math.round(timeoutMs / 1000)} с (${endpoint}). ` +
             "Запрос не повторялся: сервер мог успеть его выполнить, проверьте результат перед повтором."
@@ -103,17 +124,21 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
     const contentType = res.headers.get("content-type") || "";
     if (!contentType.includes("application/json")) {
       const text = await res.text();
+      releaseInFlight(requestKey, inFlightEntry);
       throw new Error(`Некорректный ответ сервера (${res.status}): ${text.slice(0, 120)}`);
     }
 
     const data = await res.json();
     if (!res.ok) {
+      releaseInFlight(requestKey, inFlightEntry);
       throw new Error(data.detail || data.error || `Ошибка сервера HTTP ${res.status}`);
     }
 
     activeServerBase = baseUrl;
+    releaseInFlight(requestKey, inFlightEntry);
     return data;
   }
+  if (requestKey) inFlightRequests.delete(requestKey);
 
   throw new Error(
     `Локальный сервер недоступен (${endpoint}): ${
@@ -364,7 +389,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 page_index: msg.pageIndex || null,
               }),
             },
-            240000
+            240000,
+            msg.requestId || null
           );
           sendResponse({ ok: true, data });
           break;
@@ -397,6 +423,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             600000
           );
           sendResponse({ ok: true, data });
+          break;
+        }
+
+        case "CANCEL_REQUEST": {
+          const entry = inFlightRequests.get(msg.requestId);
+          if (entry) {
+            entry.reason = "user";
+            entry.controller.abort();
+          }
+          sendResponse({ ok: true, cancelled: Boolean(entry) });
           break;
         }
 
