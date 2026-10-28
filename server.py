@@ -60,7 +60,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -594,13 +594,44 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Шаг 4 аудита (безопасность): раньше CORS был открыт для любого origin с
+# credentials — любой открытый в браузере сайт мог читать ответы локального
+# сервера (включая API-ключ) и дёргать его эндпоинты. Теперь отвечать можно
+# только самой веб-студии (тот же origin) и расширению Chrome.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://127.0.0.1:5000", "http://localhost:5000"],
+    allow_origin_regex=r"^chrome-extension://[a-z0-9\-]+$",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_ALLOWED_BROWSER_ORIGINS = ("http://127.0.0.1:5000", "http://localhost:5000", "chrome-extension://")
+
+
+@app.middleware("http")
+async def _localhost_origin_guard(request, call_next):
+    """Отсекает браузерные запросы с чужих сайтов к локальному серверу.
+
+    CORS сам по себе не мешает сайту *выполнять* действия (например, POST
+    /shutdown), он лишь скрывает ответы. Поэтому любой запрос с заголовком
+    Origin, который не принадлежит веб-студии или расширению, отклоняется.
+    Запросы без Origin (GUI, CLI, curl) не затрагиваются.
+    """
+    origin = request.headers.get("origin")
+    if origin and not origin.startswith(_ALLOWED_BROWSER_ORIGINS):
+        return JSONResponse(status_code=403, content={"detail": "Forbidden origin"})
+    return await call_next(request)
+
+
+def _mask_api_key(key: str | None) -> str:
+    """Маска API-ключа для ответов API: сам ключ сервер больше не отдаёт."""
+    k = (key or "").strip()
+    if not k:
+        return ""
+    return f"{k[:5]}...{k[-4:]}" if len(k) > 10 else "***"
+
 
 
 class TranslateRequest(BaseModel):
@@ -3333,7 +3364,8 @@ async def health_check() -> dict[str, Any]:
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
         "cloud_presets": CLOUD_API_PRESETS,
         "unsloth_url": translator_engine.unsloth_url if translator_engine else "http://127.0.0.1:8888",
-        "unsloth_api_key": translator_engine.unsloth_api_key if translator_engine else "",
+        "unsloth_api_key": "",
+        "unsloth_api_key_masked": _mask_api_key(translator_engine.unsloth_api_key if translator_engine else ""),
         "unsloth_status": translator_engine.last_unsloth_status if translator_engine else {},
         "has_unsloth_key": bool(translator_engine and translator_engine.unsloth_api_key),
         "auto_save_web_pages": translator_engine.auto_save_web_pages if translator_engine else True,
@@ -3389,7 +3421,8 @@ async def list_models_endpoint(
         "active_model": active,
         "selected_model": translator_engine._resolved_model or "auto",
         "unsloth_url": translator_engine.unsloth_url,
-        "unsloth_api_key": translator_engine.unsloth_api_key,
+        "unsloth_api_key": "",
+        "unsloth_api_key_masked": _mask_api_key(translator_engine.unsloth_api_key),
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(translator_engine.unsloth_api_key),
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
@@ -3470,7 +3503,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "translation_profile": saved.get("translation_profile", "balanced"),
         "local_fallback_model_multilang": saved.get("local_fallback_model_multilang", "auto"),
         "unsloth_url": saved["unsloth_url"],
-        "unsloth_api_key": saved["unsloth_api_key"],
+        "unsloth_api_key": "",
+        "unsloth_api_key_masked": _mask_api_key(saved["unsloth_api_key"]),
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(saved["unsloth_api_key"]),
         "auto_save_web_pages": saved["auto_save_web_pages"],

@@ -1916,7 +1916,10 @@ class MikoMangaStudioGUI:
                         json={
                             "selected_model": mod_id,
                             "unsloth_url": u_url,
-                            "unsloth_api_key": api_key,
+                            # Сервер больше не возвращает ключ в /health (шаг 4 аудита):
+                            # пустое поле = "ключ не трогать", иначе применение модели
+                            # стёрло бы сохранённый на сервере ключ.
+                            **({"unsloth_api_key": api_key} if api_key else {}),
                             "auto_save_web_pages": bool(self.var_auto_save_web.get()),
                             "web_save_dir": self.var_web_save_dir.get().strip(),
                             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
