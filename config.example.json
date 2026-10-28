@@ -13,7 +13,7 @@
   "min_text_length": 2,
   "min_font_size": 12,
   "max_font_size": 32,
-  "uppercase": true,
+  "uppercase": false,
   "batch_pages": 15,
   "ui_settings": {
     "editor_dock_mode": "right",

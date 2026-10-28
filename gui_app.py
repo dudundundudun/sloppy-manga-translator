@@ -150,7 +150,7 @@ class MikoMangaStudioGUI:
         self.var_api_key = tk.StringVar(value="")
         self.var_min_font = tk.IntVar(value=12)
         self.var_max_font = tk.IntVar(value=32)
-        self.var_uppercase = tk.BooleanVar(value=True)
+        self.var_uppercase = tk.BooleanVar(value=False)
         self.var_overflow_mode = tk.StringVar(value="shrink")
         self.var_overflow_label = tk.StringVar(value="📐 В рамку (Стандарт)")
         self.var_text_filter_label = tk.StringVar(value=list(TEXT_FILTER_MODE_MAP.keys())[0])
@@ -188,7 +188,7 @@ class MikoMangaStudioGUI:
                     self.target_lang = "en"
                 self.var_min_font.set(int(data.get("min_font_size", 12)))
                 self.var_max_font.set(int(data.get("max_font_size", 32)))
-                self.var_uppercase.set(bool(data.get("uppercase", True)))
+                self.var_uppercase.set(bool(data.get("uppercase", False)))
                 ovf_m = str(data.get("overflow_mode", "shrink")).strip().lower()
                 if ovf_m not in ("shrink", "overflow", "expand_bubble"):
                     ovf_m = "shrink"

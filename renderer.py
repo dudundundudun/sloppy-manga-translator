@@ -427,9 +427,9 @@ class MangaRenderer:
         min_font_size: int = 12,
         box_padding_ratio: float = 0.10,
         line_spacing: int = 2,
-        uppercase_comic_style: bool = True,
+        uppercase_comic_style: bool = False,
         overflow_mode: str = "shrink",
-        crossbar_i_mode: bool = True,
+        crossbar_i_mode: bool = False,
     ) -> None:
         self.fonts_dir = Path(fonts_dir)
         self.fonts_dir.mkdir(parents=True, exist_ok=True)
@@ -610,11 +610,19 @@ class MangaRenderer:
         if not use_upper:
             return s
 
-        # Применяем правило Crossbar-I для латиницы в режиме UPPERCASE
-        if has_latin and self.crossbar_i_mode:
+        # В режиме UPPERCASE возвращаем честный верхний регистр (без принудительной строчной 'i' на обычных шрифтах)
+        if has_latin and self.crossbar_i_mode and self._is_comic_crossbar_font(font_path):
             return _apply_crossbar_i_rule(s)
 
         return s.upper()
+
+    @staticmethod
+    def _is_comic_crossbar_font(font_path: str | None) -> bool:
+        """Проверяет, является ли шрифт специализированным комикс-шрифтом со специальной глифой Slash-I для строчной 'i'."""
+        if not font_path:
+            return False
+        low_name = Path(font_path).name.lower().replace(" ", "_")
+        return any(kw in low_name for kw in COMIC_CROSSBAR_FONT_KEYWORDS)
 
     @staticmethod
     def _apply_crossbar_i_rule(text: str) -> str:

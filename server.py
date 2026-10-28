@@ -559,11 +559,12 @@ async def lifespan(app: FastAPI):
     cleaner_engine = BubbleCleaner(use_lama=True, dilate_size=7, cache_max_pages=8, disk_cache_dir=TEMP_DIR / "clean_cache")
 
     print("  [3/4] Инициализация шрифтового движка и клиента Ollama/Cloud API...", flush=True)
+    translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     renderer_engine = MangaRenderer(
         fonts_dir=BASE_DIR / "fonts",
-        overflow_mode=getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink",
+        uppercase_comic_style=bool(getattr(translator_engine, "uppercase", False)),
+        overflow_mode=getattr(translator_engine, "overflow_mode", "shrink"),
     )
-    translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
     print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.6)", flush=True)
@@ -609,7 +610,7 @@ class TranslateRequest(BaseModel):
     target_lang: str = Field(default="en", description="Целевой язык: 'en', 'ru' или 'romaji'")
     ollama_model: str | None = Field(default=None)
     model: str | None = Field(default=None)
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12, description="Минимальный размер шрифта (px)")
     max_font_size: int = Field(default=32, description="Максимальный размер шрифта (px)")
     overflow_mode: str | None = Field(
@@ -827,7 +828,7 @@ class FolderTranslateRequest(BaseModel):
     target_lang: str = Field(default="en", description="'en', 'ru' или 'romaji'")
     ollama_model: str | None = Field(default=None)
     model: str | None = Field(default=None)
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -860,7 +861,7 @@ class PageFileTranslateRequest(BaseModel):
     target_lang: str = Field(default="en")
     ollama_model: str | None = Field(default=None)
     model: str | None = Field(default=None)
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -936,7 +937,7 @@ class SaveEditedPageRequest(BaseModel):
     dest_path: str | None = Field(default=None, description="Путь сохранения перерисованной страницы")
     source_dir: str | None = Field(default=None)
     target_lang: str = Field(default="en")
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -963,7 +964,7 @@ class ManualRegionTranslateRequest(BaseModel):
         description="Принудительно использовать снайперский VLM-OCR (Vision-модель) для чтения сложного рукописного текста/SFX/обложки",
     )
     vlm_model: str | None = Field(default=None, description="Явное имя Vision-модели для VLM-OCR (опционально)")
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -988,7 +989,7 @@ class RetranslateSingleBlockRequest(BaseModel):
         description="Если True, заново распознает оригинал блока через снайперский VLM-OCR (Vision-модель) перед переводом",
     )
     vlm_model: str | None = Field(default=None, description="Явное имя Vision-модели для VLM-OCR (опционально)")
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -1005,7 +1006,7 @@ class DiamondWrapBlockRequest(BaseModel):
     style_preset: str = Field(default="dialogue")
     font_family: str | None = Field(default=None)
     font_size: int | None = Field(default=None)
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     source_path: str | None = Field(default=None)
     dest_path: str | None = Field(default=None)
     source_dir: str | None = Field(default=None)
@@ -1026,7 +1027,7 @@ class ShortenBlockTextRequest(BaseModel):
     source_dir: str | None = Field(default=None)
     target_lang: str = Field(default="ru")
     ollama_model: str | None = Field(default=None)
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -1705,7 +1706,7 @@ def _generate_and_save_folder_report(
     eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params()
     cur_min_fs = int(translator_engine.min_font_size if translator_engine else 12)
     cur_max_fs = int(translator_engine.max_font_size if translator_engine else 32)
-    cur_upper = bool(translator_engine.uppercase if translator_engine else True)
+    cur_upper = bool(translator_engine.uppercase if translator_engine else False)
     cur_overflow = str(getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
     cur_batch_p = int(translator_engine.batch_pages if translator_engine else 12)
 
@@ -2423,7 +2424,7 @@ async def process_single_pil_image(
     lang: str,
     target_lang: str,
     ollama_model: str | None = None,
-    uppercase: bool = True,
+    uppercase: bool = False,
     min_font_size: int = 12,
     max_font_size: int = 32,
     overflow_mode: str | None = None,
@@ -3344,7 +3345,7 @@ async def health_check() -> dict[str, Any]:
         "min_text_length": translator_engine.min_text_length if translator_engine else 2,
         "min_font_size": translator_engine.min_font_size if translator_engine else 12,
         "max_font_size": translator_engine.max_font_size if translator_engine else 32,
-        "uppercase": translator_engine.uppercase if translator_engine else True,
+        "uppercase": translator_engine.uppercase if translator_engine else False,
         "overflow_mode": getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink",
         "batch_pages": translator_engine.batch_pages if translator_engine else 15,
         "translation_profile": getattr(translator_engine, "translation_profile", "balanced") if translator_engine else "balanced",
@@ -3457,8 +3458,11 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         batch_pages=payload.batch_pages,
         ui_settings=payload.ui_settings,
     )
-    if renderer_engine is not None and payload.overflow_mode:
-        renderer_engine.overflow_mode = renderer_engine._normalize_overflow_mode(payload.overflow_mode)
+    if renderer_engine is not None:
+        if payload.overflow_mode:
+            renderer_engine.overflow_mode = renderer_engine._normalize_overflow_mode(payload.overflow_mode)
+        if payload.uppercase is not None:
+            renderer_engine.uppercase_comic_style = bool(payload.uppercase)
     # БЛОК 5: Не сбрасываем 5-минутный кэш моделей при обычном сохранении настроек (только если изменились api_url / api_key)
     models = await translator_engine.list_available_models(force_refresh=url_or_key_changed)
     active = await translator_engine.resolve_model()
@@ -5171,7 +5175,7 @@ class FolderFindReplaceRequest(BaseModel):
         default=False,
         description="Если True — только найти и вернуть список всех совпадений без изменения файлов",
     )
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -5664,7 +5668,7 @@ class ChapterBookImportRequest(BaseModel):
     folder_path: str = Field(..., description="Путь к папке главы манги")
     target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
     book_text: str = Field(..., description="Отредактированный текст книги (_chapter_book.md, _chapter_script_bilingual.txt или JSON)")
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -5674,7 +5678,7 @@ class ChapterBookProofreadRequest(BaseModel):
     folder_path: str = Field(..., description="Путь к папке главы манги")
     target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
     ollama_model: str | None = Field(default=None)
-    uppercase: bool = Field(default=True)
+    uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
@@ -5685,7 +5689,7 @@ async def _rerender_modified_book_pages(
     output_dir: Path,
     manifest: dict[str, Any],
     affected_rel_paths: list[str],
-    uppercase: bool = True,
+    uppercase: bool = False,
     min_font_size: int = 12,
     max_font_size: int = 32,
     overflow_mode: str | None = None,

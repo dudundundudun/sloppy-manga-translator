@@ -35,7 +35,7 @@
     targetLang: "en",
     model: "auto",
     lastLocalModel: "",
-    uppercase: true,
+    uppercase: false,
     minFontSize: 12,
     maxFontSize: 32,
     overflowMode: "shrink",
@@ -835,7 +835,7 @@
         </div>
         <div class="mt-row">
           <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#e5e7eb;">
-            <input id="mt-uppercase-chk" type="checkbox" checked />
+            <input id="mt-uppercase-chk" type="checkbox" />
             Заглавные буквы (КОМИКС-СТИЛЬ)
           </label>
         </div>

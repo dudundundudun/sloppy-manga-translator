@@ -1535,7 +1535,7 @@ class OllamaTranslator:
         self.min_text_length: int = 2
         self.min_font_size: int = 12
         self.max_font_size: int = 32
-        self.uppercase: bool = True
+        self.uppercase: bool = False
         self.overflow_mode: str = "shrink"
         self.batch_pages: int = 15
         self.translation_profile: str = "balanced"
@@ -3604,9 +3604,20 @@ class OllamaTranslator:
                 pass
         expected_keys_list = list(extracted_input_dict.keys()) if extracted_input_dict else None
         if is_sugoi:
-            # Защита Блока 3: если в промпте китайский или корейский язык, не делаем холостых запросов к Sugoi!
+            # Защита Блока 3: если исходный язык в промпте — китайский или корейский, не делаем холостых запросов к Sugoi!
             low_prompts = (system_prompt + " " + user_prompt).lower()
-            if any(lang_m in low_prompts for lang_m in ("chinese", "manhua", "korean", "manhwa", "китайск", "корейск")):
+            is_non_ja_source = any(
+                marker in low_prompts
+                for marker in (
+                    "chinese manhua",
+                    "korean manhwa",
+                    "from chinese",
+                    "from korean",
+                    "китайской маньхуа",
+                    "корейской манхвы",
+                )
+            )
+            if is_non_ja_source:
                 logger.warning(
                     "⚠️ [БЛОК 3] Отменен вызов '%s' для не-японского текста (Sugoi обучена только на JA->EN).",
                     clean_name,
@@ -3898,7 +3909,7 @@ class OllamaTranslator:
                 if last_cloud_err is not None:
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", str(last_cloud_err))
                     low_sys = (system_prompt + " " + user_prompt).lower()
-                    hint_src = "zh" if ("chinese" in low_sys or "маньхуа" in low_sys) else ("ko" if ("korean" in low_sys or "манхв" in low_sys) else "ja")
+                    hint_src = "zh" if ("chinese manhua" in low_sys or "китайской маньхуа" in low_sys) else ("ko" if ("korean manhwa" in low_sys or "корейской манхвы" in low_sys) else "ja")
                     hint_tgt = "ru" if "русск" in low_sys else "en"
                     fallback_ollama = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                     if fallback_ollama:

@@ -3356,7 +3356,7 @@
                 <span class="toggle-row-title">🔠 Заглавные буквы (КОМИКС-СТИЛЬ)</span>
                 <span class="toggle-row-sub">Верстать переведенный текст заглавными буквами, как в классической манге и комиксах</span>
               </div>
-              <input id="chk-uppercase" type="checkbox" checked />
+              <input id="chk-uppercase" type="checkbox" onchange="onUppercaseCheckboxChange()" />
             </label>
 
             <div class="field-box" style="margin-top:6px;">
@@ -3933,6 +3933,14 @@
       applyUiSettingsToDom();
     }
 
+    function onUppercaseCheckboxChange() {
+      renderBboxPinsOnStage();
+      updateSummaryChip();
+      if (selectedPage && currentBlocks && currentBlocks.length > 0) {
+        scheduleIdleAutoSave();
+      }
+    }
+
     function resetUiSettingsToDefaults() {
       uiSettings = { ...DEFAULT_UI_SETTINGS };
       saveLocalUiSettings();
@@ -3942,7 +3950,7 @@
       document.getElementById("inp-min-font").value = 12;
       document.getElementById("inp-max-font").value = 32;
       document.getElementById("inp-batch-pages").value = 12;
-      document.getElementById("chk-uppercase").checked = true;
+      document.getElementById("chk-uppercase").checked = false;
       setOverflowMode("shrink", false);
       document.getElementById("chk-skip-existing").checked = true;
       updateSummaryChip();
@@ -7910,7 +7918,7 @@
             style_preset: blk.style_preset || "dialogue",
             font_family: blk.font_family || null,
             font_size: blk.font_size || blk.rendered_font_size || null,
-            uppercase: document.getElementById("chk-uppercase")?.checked !== false,
+            uppercase: Boolean(document.getElementById("chk-uppercase")?.checked),
             source_path: selectedPage ? selectedPage.source_path : null,
             dest_path: selectedPage ? (selectedPage.dest_path || null) : null,
             source_dir: currentFolder || null,
@@ -7990,7 +7998,7 @@
             source_dir: currentFolder || null,
             target_lang: targetLang,
             ollama_model: document.getElementById("sel-model")?.value || null,
-            uppercase: document.getElementById("chk-uppercase")?.checked !== false,
+            uppercase: Boolean(document.getElementById("chk-uppercase")?.checked),
             min_font_size: parseInt(document.getElementById("inp-min-font")?.value, 10) || 12,
             max_font_size: parseInt(document.getElementById("inp-max-font")?.value, 10) || 32,
             overflow_mode: overflowMode,
@@ -9385,7 +9393,7 @@
       const isMod = isBlockBboxModified(blk);
       const isDel = Boolean(blk.is_deleted) || !(blk.translated_text || "").trim();
       const estFs = estimateAutoFontSizeForBox(blk);
-      const useUpper = document.getElementById("chk-uppercase")?.checked !== false;
+      const useUpper = Boolean(document.getElementById("chk-uppercase")?.checked);
       const dispText = useUpper ? String(blk.translated_text || "").toUpperCase() : String(blk.translated_text || "");
       const autoOff = uiSettings.auto_save_after_idle === false;
       const showSaveBtn = autoOff || Boolean(blk._dirtyPreview);
@@ -9444,7 +9452,7 @@
         img._cachedScale = scale;
         wrap._pinMap = new Map();
 
-        const useUpper = document.getElementById("chk-uppercase")?.checked !== false;
+        const useUpper = Boolean(document.getElementById("chk-uppercase")?.checked);
         const frag = document.createDocumentFragment();
 
         currentBlocks.forEach(b => {
