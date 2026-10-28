@@ -2149,6 +2149,15 @@
     });
 
     if (!res || !res.ok) {
+      // Сервер мог успеть запустить перевод, даже если ответ потерялся
+      // (например, истёк таймаут ожидания при выборе папки). Проверяем
+      // фактический статус, прежде чем показывать пользователю ошибку.
+      const stRes = await safeSendMessage({ action: "GET_FOLDER_STATUS" });
+      if (stRes && stRes.ok && stRes.data && stRes.data.status === "running") {
+        statusText.textContent = "Перевод папки уже идёт...";
+        pollFolderStatus();
+        return;
+      }
       statusText.textContent = `Ошибка: ${(res && res.error) || "Сервер недоступен"}`;
       folderBtn.disabled = false;
       return;

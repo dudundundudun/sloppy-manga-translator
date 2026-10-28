@@ -55,14 +55,31 @@ async function blobToDataUrl(blob) {
 }
 
 async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
-  let lastError = null;
+  // Шаг 3 аудита: раньше КАЖДЫЙ запрос при любой ошибке повторялся на втором
+  // хосте, хотя 127.0.0.1:5000 и localhost:5000 — один и тот же сервер. Это
+  // дублировало POST-запросы (двойной перевод, двойное автосохранение),
+  // удваивало таймауты и подменяло настоящую ошибку сервера выдуманным
+  // текстом про VPN. Теперь:
+  // - получен HTTP-ответ (любой статус) -> повторя НЕТ, пользователю уходит
+  //   реальный текст ошибки сервера (detail/error);
+  // - сетевая ошибка без ответа -> второй алиас пробуем только для GET
+  //   (идемпотентны; заодно так находится рабочий адрес и запоминается в
+  //   activeServerBase). POST не повторяем: сервер мог успеть его выполнить.
+  // - таймаут -> сразу ошибка, без повторов.
+  const method = (options.method || "GET").toUpperCase();
+  const isIdempotent = method === "GET" || method === "HEAD";
+  const bases = [activeServerBase, ...SERVER_URLS.filter((u) => u !== activeServerBase)];
+  const maxAttempts = isIdempotent ? bases.length : 1;
+  let lastNetworkError = null;
 
-  for (const baseUrl of [activeServerBase, ...SERVER_URLS.filter((u) => u !== activeServerBase)]) {
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    const baseUrl = bases[attempt];
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
+    let res;
     try {
-      const res = await fetch(`${baseUrl}${endpoint}`, {
+      res = await fetch(`${baseUrl}${endpoint}`, {
         ...options,
         signal: controller.signal,
         headers: {
@@ -70,39 +87,39 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
           ...(options.headers || {}),
         },
       });
-      clearTimeout(timer);
-
-      if (res.status === 502 || res.status === 503) {
-        lastError = new Error(
-          `HTTP ${res.status}: VPN или прокси перехватывает локальный адрес ${baseUrl}. Отключите прокси для 127.0.0.1.`
-        );
-        continue;
-      }
-
-      const contentType = res.headers.get("content-type") || "";
-      if (!contentType.includes("application/json")) {
-        const text = await res.text();
-        throw new Error(`Некорректный ответ сервера (${res.status}): ${text.slice(0, 120)}`);
-      }
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || data.error || `Ошибка сервера HTTP ${res.status}`);
-      }
-
-      activeServerBase = baseUrl;
-      return data;
     } catch (err) {
       clearTimeout(timer);
       if (err && err.name === "AbortError") {
-        lastError = new Error(`Превышен таймаут ожидания ответа от ${baseUrl}${endpoint}`);
-      } else {
-        lastError = err;
+        throw new Error(
+          `Сервер не ответил за ${Math.round(timeoutMs / 1000)} с (${endpoint}). ` +
+            "Запрос не повторялся: сервер мог успеть его выполнить, проверьте результат перед повтором."
+        );
       }
+      lastNetworkError = err;
+      continue;
     }
+    clearTimeout(timer);
+
+    const contentType = res.headers.get("content-type") || "";
+    if (!contentType.includes("application/json")) {
+      const text = await res.text();
+      throw new Error(`Некорректный ответ сервера (${res.status}): ${text.slice(0, 120)}`);
+    }
+
+    const data = await res.json();
+    if (!res.ok) {
+      throw new Error(data.detail || data.error || `Ошибка сервера HTTP ${res.status}`);
+    }
+
+    activeServerBase = baseUrl;
+    return data;
   }
 
-  throw lastError || new Error("Локальный сервер (127.0.0.1:5000) недоступен");
+  throw new Error(
+    `Локальный сервер недоступен (${endpoint}): ${
+      lastNetworkError && lastNetworkError.message ? lastNetworkError.message : "нет соединения"
+    }. Убедитесь, что сервер запущен на 127.0.0.1:5000.`
+  );
 }
 
 async function fetchImageAsDataUrl(imageUrl, refererUrl = null) {
@@ -287,7 +304,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "PICK_WEB_SAVE_FOLDER": {
-          const data = await callLocalServer("/pick_web_save_folder", { method: "POST" }, 60000);
+          const data = await callLocalServer("/pick_web_save_folder", { method: "POST" }, 300000); // диалог выбора папки ждёт человека: 60 с не хватало
           sendResponse({ ok: true, data });
           break;
         }
@@ -377,7 +394,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 open_when_done: true,
               }),
             },
-            60000
+            600000
           );
           sendResponse({ ok: true, data });
           break;
