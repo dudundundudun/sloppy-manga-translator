@@ -60,10 +60,11 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from app_version import APP_VERSION
 from cleaner import BubbleCleaner
 from ocr_engine import MangaOCREngine
 from renderer import MangaRenderer
@@ -566,7 +567,7 @@ async def lifespan(app: FastAPI):
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.6)", flush=True)
+    print(f"  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v{APP_VERSION})", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -589,17 +590,48 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.6",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
+# Шаг 4 аудита (безопасность): раньше CORS был открыт для любого origin с
+# credentials — любой открытый в браузере сайт мог читать ответы локального
+# сервера (включая API-ключ) и дёргать его эндпоинты. Теперь отвечать можно
+# только самой веб-студии (тот же origin) и расширению Chrome.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=["http://127.0.0.1:5000", "http://localhost:5000"],
+    allow_origin_regex=r"^chrome-extension://[a-z0-9\-]+$",
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+_ALLOWED_BROWSER_ORIGINS = ("http://127.0.0.1:5000", "http://localhost:5000", "chrome-extension://")
+
+
+@app.middleware("http")
+async def _localhost_origin_guard(request, call_next):
+    """Отсекает браузерные запросы с чужих сайтов к локальному серверу.
+
+    CORS сам по себе не мешает сайту *выполнять* действия (например, POST
+    /shutdown), он лишь скрывает ответы. Поэтому любой запрос с заголовком
+    Origin, который не принадлежит веб-студии или расширению, отклоняется.
+    Запросы без Origin (GUI, CLI, curl) не затрагиваются.
+    """
+    origin = request.headers.get("origin")
+    if origin and not origin.startswith(_ALLOWED_BROWSER_ORIGINS):
+        return JSONResponse(status_code=403, content={"detail": "Forbidden origin"})
+    return await call_next(request)
+
+
+def _mask_api_key(key: str | None) -> str:
+    """Маска API-ключа для ответов API: сам ключ сервер больше не отдаёт."""
+    k = (key or "").strip()
+    if not k:
+        return ""
+    return f"{k[:5]}...{k[-4:]}" if len(k) > 10 else "***"
+
 
 
 class TranslateRequest(BaseModel):
@@ -3276,7 +3308,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.6 Server Running</h1>")
+    return HTMLResponse(content=f"<h1>Manga Translator v{APP_VERSION} Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -3323,7 +3355,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.6",
+        "version": APP_VERSION,
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -3332,7 +3364,8 @@ async def health_check() -> dict[str, Any]:
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
         "cloud_presets": CLOUD_API_PRESETS,
         "unsloth_url": translator_engine.unsloth_url if translator_engine else "http://127.0.0.1:8888",
-        "unsloth_api_key": translator_engine.unsloth_api_key if translator_engine else "",
+        "unsloth_api_key": "",
+        "unsloth_api_key_masked": _mask_api_key(translator_engine.unsloth_api_key if translator_engine else ""),
         "unsloth_status": translator_engine.last_unsloth_status if translator_engine else {},
         "has_unsloth_key": bool(translator_engine and translator_engine.unsloth_api_key),
         "auto_save_web_pages": translator_engine.auto_save_web_pages if translator_engine else True,
@@ -3388,7 +3421,8 @@ async def list_models_endpoint(
         "active_model": active,
         "selected_model": translator_engine._resolved_model or "auto",
         "unsloth_url": translator_engine.unsloth_url,
-        "unsloth_api_key": translator_engine.unsloth_api_key,
+        "unsloth_api_key": "",
+        "unsloth_api_key_masked": _mask_api_key(translator_engine.unsloth_api_key),
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(translator_engine.unsloth_api_key),
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
@@ -3469,7 +3503,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "translation_profile": saved.get("translation_profile", "balanced"),
         "local_fallback_model_multilang": saved.get("local_fallback_model_multilang", "auto"),
         "unsloth_url": saved["unsloth_url"],
-        "unsloth_api_key": saved["unsloth_api_key"],
+        "unsloth_api_key": "",
+        "unsloth_api_key_masked": _mask_api_key(saved["unsloth_api_key"]),
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(saved["unsloth_api_key"]),
         "auto_save_web_pages": saved["auto_save_web_pages"],
@@ -5066,7 +5101,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "1.0.6",
+            "version": APP_VERSION,
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -6125,7 +6160,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
     }
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.6 ===",
+        f"=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v{APP_VERSION} ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -6956,10 +6991,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.6":
+                if running_ver != APP_VERSION:
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.6...",
+                        f"Останавливаю старый процесс для запуска v{APP_VERSION}...",
                         flush=True,
                     )
                     try:
@@ -6984,5 +7019,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.6 на 127.0.0.1:5000...", flush=True)
+    print(f"Запуск локального сервера Manga Translator v{APP_VERSION} на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)

@@ -5221,7 +5221,7 @@
       await fetch("/settings", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, unsloth_api_key: apiKey })
+        body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, ...(apiKey ? { unsloth_api_key: apiKey } : {}) })
       });
       const mRes = await fetch("/models?refresh=true");
       const data = await mRes.json();
@@ -5289,7 +5289,9 @@
             selected_model: mod,
             translation_profile: translationProfile,
             unsloth_url: uUrl,
-            unsloth_api_key: apiKey,
+            // Сервер больше не отдаёт ключ обратно (шаг 4 аудита): пустое поле
+            // нельзя отправлять — сервер трактует "" как "стереть ключ".
+            ...(apiKey ? { unsloth_api_key: apiKey } : {}),
             auto_save_web_pages: autoSaveWeb,
             web_save_dir: webSaveDir || null,
             text_filter_mode: textFilterMode,

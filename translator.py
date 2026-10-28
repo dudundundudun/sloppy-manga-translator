@@ -1506,7 +1506,7 @@ class OllamaTranslator:
         )
         self.gguf_dir = self.config_path.resolve().parent / "models" / "gguf"
         self._resolved_model: str | None = None
-        self._cached_models: list[dict[str, str]] = []
+        self._cached_models: list[dict[str, Any]] = []
         self._cache_timestamp: float = 0.0
         self._cached_cloud_probe: dict[str, tuple[float, tuple[str, list[str], bool]]] = {}
         self._cached_ollama_tags: tuple[float, list[str]] | None = None
@@ -2461,7 +2461,7 @@ class OllamaTranslator:
             )
             return self.pull_state
 
-    async def list_available_models(self, force_refresh: bool = False) -> list[dict[str, str]]:
+    async def list_available_models(self, force_refresh: bool = False) -> list[dict[str, Any]]:
         now = time.monotonic()
         if force_refresh:
             self._cached_cloud_probe.clear()
@@ -2469,7 +2469,7 @@ class OllamaTranslator:
         if not force_refresh and self._cached_models and (now - self._cache_timestamp) < MODEL_LIST_CACHE_TTL_SEC:
             return self._cached_models
 
-        models_list: list[dict[str, str]] = []
+        models_list: list[dict[str, Any]] = []
         seen_ids: set[str] = set()
         installed_ollama_tags: set[str] = set()
         client = self._get_http_client()
@@ -2494,7 +2494,7 @@ class OllamaTranslator:
                             "id": full_id,
                             "name": f"{badge} {m_name} (Установлена ✅)",
                             "provider": "ollama",
-                            "installed": "true",
+                            "installed": True,
                         }
                     )
         else:
@@ -2519,7 +2519,7 @@ class OllamaTranslator:
                                         "id": full_id,
                                         "name": f"{badge} {m_name} (Установлена ✅)",
                                         "provider": "ollama",
-                                        "installed": "true",
+                                        "installed": True,
                                     }
                                 )
                     self._cached_ollama_tags = (time.monotonic(), fetched_ollama_names)
@@ -2539,7 +2539,7 @@ class OllamaTranslator:
                             "id": full_id,
                             "name": f"{badge} {cli_name} (Установлена ✅)",
                             "provider": "ollama",
-                            "installed": "true",
+                            "installed": True,
                         }
                     )
 
@@ -2579,7 +2579,7 @@ class OllamaTranslator:
                                     "id": ollama_id,
                                     "name": f"🦙 [Ollama] {raw_ollama_name} (Установлена ✅)",
                                     "provider": "ollama",
-                                    "installed": "true",
+                                    "installed": True,
                                 },
                             )
                         continue
@@ -2593,7 +2593,7 @@ class OllamaTranslator:
                                 "id": full_id,
                                 "name": f"{icon_prefix} {m_id}",
                                 "provider": "unsloth",
-                                "installed": "true",
+                                "installed": True,
                             }
                         )
                 break
@@ -2616,7 +2616,7 @@ class OllamaTranslator:
                             "id": cid,
                             "name": label_m,
                             "provider": "unsloth",
-                            "installed": "true",
+                            "installed": True,
                         },
                     )
 
@@ -2636,7 +2636,7 @@ class OllamaTranslator:
                         "id": rec_id,
                         "name": f"{rec['title']} [📥 Скачать в Ollama]",
                         "provider": "ollama",
-                        "installed": "false",
+                        "installed": False,
                     }
                 )
 
@@ -2661,7 +2661,7 @@ class OllamaTranslator:
                     "id": self._resolved_model,
                     "name": f"{icon} {short}",
                     "provider": prov,
-                    "installed": "true",
+                    "installed": True,
                 },
             )
 
@@ -2696,7 +2696,7 @@ class OllamaTranslator:
                 return cloud_models[0]["id"]
 
         installed_ollama = [
-            m for m in available if m["provider"] == "ollama" and m.get("installed") == "true"
+            m for m in available if m["provider"] == "ollama" and m.get("installed") is True
         ]
 
         for m in installed_ollama:
@@ -3336,7 +3336,7 @@ class OllamaTranslator:
         installed_ollama = [
             m["id"]
             for m in (self._cached_models or [])
-            if m.get("provider") == "ollama" and m.get("installed") == "true"
+            if m.get("provider") == "ollama" and m.get("installed") is True
         ]
         if not installed_ollama:
             try:
@@ -3344,7 +3344,7 @@ class OllamaTranslator:
                 installed_ollama = [
                     m["id"]
                     for m in available
-                    if m.get("provider") == "ollama" and m.get("installed") == "true"
+                    if m.get("provider") == "ollama" and m.get("installed") is True
                 ]
             except Exception as exc:
                 logger.debug("Не удалось обновить список моделей для локального фоллбэка: %s", exc)
