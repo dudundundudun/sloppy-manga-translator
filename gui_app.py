@@ -23,6 +23,8 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
+from app_version import APP_VERSION
+
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
 os.environ["NO_PROXY"] = "127.0.0.1,localhost"
@@ -97,9 +99,9 @@ class MikoMangaStudioGUI:
     """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v1.0.0)."""
 
     def __init__(self, root: tk.Tk) -> None:
-        print("[GUI] Инициализация окна Miko-chan Manga Studio v1.0.5...", flush=True)
+        print(f"[GUI] Инициализация окна Miko-chan Manga Studio v{APP_VERSION}...", flush=True)
         self.root = root
-        self.root.title("🌸 Miko-chan Manga Studio v1.0.5")
+        self.root.title(f"🌸 Miko-chan Manga Studio v{APP_VERSION}")
         self.root.geometry("1460x880")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_DEEP)
@@ -485,7 +487,7 @@ class MikoMangaStudioGUI:
 
         self.lbl_miko_speech = tk.Label(
             speech_wrap,
-            text="Привет! Версия v1.0.0 готова: в редакторе есть кнопка «🗑 Удалить перевод», а в настройках — фильтр вздохов/SFX и пресеты DeepSeek Flash/Pro~ 🌸",
+            text=f"Привет! Версия v{APP_VERSION} готова: в редакторе есть кнопка «🗑 Удалить перевод», а в настройках — фильтр вздохов/SFX и пресеты DeepSeek Flash/Pro~ 🌸",
             bg="#141122",
             fg=FG_PRIMARY,
             font=("Segoe UI", 9),
@@ -905,7 +907,7 @@ class MikoMangaStudioGUI:
 
     def _open_diagnostics_modal(self) -> None:
         win = tk.Toplevel(self.root)
-        win.title("🩺 Диагностика, Тайминги и Логи (v1.0.5)")
+        win.title(f"🩺 Диагностика, Тайминги и Логи (v{APP_VERSION})")
         win.geometry("880x640")
         win.configure(bg=BG_BENTO)
         win.transient(self.root)
@@ -1855,8 +1857,8 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.5":
-                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v1.0.5...", flush=True)
+                if running_ver != APP_VERSION:
+                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v{APP_VERSION}...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)
                     except Exception:

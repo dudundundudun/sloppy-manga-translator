@@ -64,6 +64,7 @@ from fastapi.responses import FileResponse, HTMLResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from app_version import APP_VERSION
 from cleaner import BubbleCleaner
 from ocr_engine import MangaOCREngine
 from renderer import MangaRenderer
@@ -566,7 +567,7 @@ async def lifespan(app: FastAPI):
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.6)", flush=True)
+    print(f"  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v{APP_VERSION})", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -589,7 +590,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.6",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -3276,7 +3277,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.6 Server Running</h1>")
+    return HTMLResponse(content=f"<h1>Manga Translator v{APP_VERSION} Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -3323,7 +3324,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.6",
+        "version": APP_VERSION,
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -5066,7 +5067,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "1.0.6",
+            "version": APP_VERSION,
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -6125,7 +6126,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
     }
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.6 ===",
+        f"=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v{APP_VERSION} ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -6956,10 +6957,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.6":
+                if running_ver != APP_VERSION:
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.6...",
+                        f"Останавливаю старый процесс для запуска v{APP_VERSION}...",
                         flush=True,
                     )
                     try:
@@ -6984,5 +6985,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.6 на 127.0.0.1:5000...", flush=True)
+    print(f"Запуск локального сервера Manga Translator v{APP_VERSION} на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)
