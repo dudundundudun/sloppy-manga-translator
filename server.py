@@ -3437,11 +3437,26 @@ async def pull_model_endpoint(payload: PullModelRequest) -> dict[str, Any]:
     global _pull_task
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
-    if translator_engine.pull_state.get("status") == "downloading":
+    # Шаг 5 аудита: статус резервируется СИНХРОННО в эндпоинте, до create_task.
+    # Раньше "downloading" выставлялся только внутри самой корутины, и второй
+    # запрос успевал пройти проверку и запустить параллельную загрузку в тот
+    # же .part-файл (файл модели повреждался).
+    if translator_engine.pull_state.get("status") == "downloading" or (
+        _pull_task is not None and not _pull_task.done()
+    ):
         return {
             "status": "already_downloading",
             "pull_state": translator_engine.pull_state,
         }
+    translator_engine.pull_state = {
+        "status": "downloading",
+        "model": payload.model,
+        "progress_pct": 0.0,
+        "completed_gb": 0.0,
+        "total_gb": 0.0,
+        "message": f"Запуск скачивания {payload.model}...",
+        "error": None,
+    }
 
     _pull_task = asyncio.create_task(
         translator_engine.pull_ollama_model(
@@ -4957,103 +4972,129 @@ async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[
     }
 
 
+def _on_folder_job_task_done(_task: asyncio.Task) -> None:
+    """Шаг 5 аудита: задача умерла до того, как выставила статус running
+    (например, assert движков) — не оставляем вечный статус starting,
+    который навсегда блокирует новые запуски перевода папки."""
+    if folder_job_state.get("status") == "starting":
+        folder_job_state["status"] = "error"
+        folder_job_state["error"] = "Задача перевода завершилась до начала работы."
+
+
 @app.post("/translate_folder")
 async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str, Any]:
     global _folder_task
 
-    if folder_job_state.get("status") == "running":
-        raise HTTPException(status_code=409, detail="Перевод папки уже выполняется.")
+    # Шаг 5 аудита: атомарный старт. Раньше проверка status == 'running'
+    # стояла здесь, а сам статус выставлялся только внутри задачи после
+    # загрузки манифеста — два параллельных запроса успевали запустить
+    # два перевода одной папки с общим состоянием. Теперь статус
+    # резервируется ('starting') синхронно в эндпоинте до любой работы,
+    # а 'stopping' тоже считается занятым: старый перевод ещё дорабатывает.
+    if folder_job_state.get("status") in ("running", "stopping", "starting"):
+        raise HTTPException(status_code=409, detail="Перевод папки уже выполняется или останавливается.")
+    _prev_folder_state = dict(folder_job_state)
+    folder_job_state["status"] = "starting"
+    _job_started = False
+    try:
 
-    req_lang = payload.lang.lower().strip()
-    if req_lang not in VALID_SOURCE_LANGS:
-        req_lang = "auto"
+        req_lang = payload.lang.lower().strip()
+        if req_lang not in VALID_SOURCE_LANGS:
+            req_lang = "auto"
 
-    target_lang = payload.target_lang.lower().strip()
-    if target_lang not in VALID_TARGET_LANGS:
-        raise HTTPException(
-            status_code=400,
-            detail="target_lang должен быть 'en', 'ru' или 'romaji'.",
-        )
+        target_lang = payload.target_lang.lower().strip()
+        if target_lang not in VALID_TARGET_LANGS:
+            raise HTTPException(
+                status_code=400,
+                detail="target_lang должен быть 'en', 'ru' или 'romaji'.",
+            )
 
-    folder_str = payload.folder_path
-    if not folder_str:
-        folder_str = await asyncio.to_thread(open_native_folder_picker)
+        folder_str = payload.folder_path
         if not folder_str:
-            return {"status": "cancelled", "message": "Выбор папки отменен."}
+            folder_str = await asyncio.to_thread(open_native_folder_picker)
+            if not folder_str:
+                return {"status": "cancelled", "message": "Выбор папки отменен."}
 
-    source_dir = Path(folder_str).resolve()
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+        source_dir = Path(folder_str).resolve()
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
 
-    all_images = collect_images_in_folder(source_dir)
-    if not all_images:
-        raise HTTPException(status_code=400, detail=f"В папке '{source_dir.name}' нет картинок.")
+        all_images = collect_images_in_folder(source_dir)
+        if not all_images:
+            raise HTTPException(status_code=400, detail=f"В папке '{source_dir.name}' нет картинок.")
 
-    if payload.selected_files:
-        wanted = {_normalize_rel_path(x) for x in payload.selected_files if str(x).strip()}
-        images = [
-            p
-            for p in all_images
-            if _normalize_rel_path(p.relative_to(source_dir)) in wanted or p.name in wanted
-        ]
-        if not images:
-            raise HTTPException(status_code=400, detail="Выбранные страницы не найдены в папке.")
-    else:
-        images = all_images
+        if payload.selected_files:
+            wanted = {_normalize_rel_path(x) for x in payload.selected_files if str(x).strip()}
+            images = [
+                p
+                for p in all_images
+                if _normalize_rel_path(p.relative_to(source_dir)) in wanted or p.name in wanted
+            ]
+            if not images:
+                raise HTTPException(status_code=400, detail="Выбранные страницы не найдены в папке.")
+        else:
+            images = all_images
 
-    output_dir = get_output_dir_for_folder(source_dir, target_lang)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = get_output_dir_for_folder(source_dir, target_lang)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest_preview = _load_folder_manifest(output_dir)
-    pages_meta_preview = manifest_preview.get("pages", {}) if isinstance(manifest_preview.get("pages"), dict) else {}
-    already_done = sum(
-        1
-        for p in images
-        if payload.skip_existing
-        and not payload.force_retranslate
-        and is_page_already_translated(
-            output_dir / p.relative_to(source_dir),
-            page_meta=pages_meta_preview.get(_normalize_rel_path(p.relative_to(source_dir))),
-            target_lang=target_lang,
+        manifest_preview = _load_folder_manifest(output_dir)
+        pages_meta_preview = manifest_preview.get("pages", {}) if isinstance(manifest_preview.get("pages"), dict) else {}
+        already_done = sum(
+            1
+            for p in images
+            if payload.skip_existing
+            and not payload.force_retranslate
+            and is_page_already_translated(
+                output_dir / p.relative_to(source_dir),
+                page_meta=pages_meta_preview.get(_normalize_rel_path(p.relative_to(source_dir))),
+                target_lang=target_lang,
+            )
         )
-    )
 
-    _folder_task = asyncio.create_task(
-        _run_folder_translation_job(
-            source_dir=source_dir,
-            output_dir=output_dir,
-            image_paths=images,
-            lang=req_lang,
-            target_lang=target_lang,
-            ollama_model=(payload.ollama_model or payload.model),
-            uppercase=payload.uppercase,
-            min_font_size=payload.min_font_size,
-            max_font_size=payload.max_font_size,
-            detect_free_text=payload.detect_free_text,
-            overflow_mode=payload.overflow_mode,
-            skip_existing=payload.skip_existing,
-            force_retranslate=payload.force_retranslate,
-            open_when_done=payload.open_when_done,
-            batch_pages=payload.batch_pages,
-            translation_profile=payload.translation_profile,
-            text_filter_mode=payload.text_filter_mode,
-            skip_sighs=payload.skip_sighs,
-            skip_sfx=payload.skip_sfx,
-            min_text_length=payload.min_text_length,
+        _folder_task = asyncio.create_task(
+            _run_folder_translation_job(
+                source_dir=source_dir,
+                output_dir=output_dir,
+                image_paths=images,
+                lang=req_lang,
+                target_lang=target_lang,
+                ollama_model=(payload.ollama_model or payload.model),
+                uppercase=payload.uppercase,
+                min_font_size=payload.min_font_size,
+                max_font_size=payload.max_font_size,
+                detect_free_text=payload.detect_free_text,
+                overflow_mode=payload.overflow_mode,
+                skip_existing=payload.skip_existing,
+                force_retranslate=payload.force_retranslate,
+                open_when_done=payload.open_when_done,
+                batch_pages=payload.batch_pages,
+                translation_profile=payload.translation_profile,
+                text_filter_mode=payload.text_filter_mode,
+                skip_sighs=payload.skip_sighs,
+                skip_sfx=payload.skip_sfx,
+                min_text_length=payload.min_text_length,
+            )
         )
-    )
 
-    return {
-        "status": "started",
-        "source_dir": str(source_dir),
-        "output_dir": str(output_dir),
-        "total_images": len(images),
-        "already_translated": already_done,
-        "remaining_images": max(0, len(images) - already_done),
-        "lang": req_lang,
-        "target_lang": target_lang,
-    }
-
+        _folder_task.add_done_callback(_on_folder_job_task_done)
+        _job_started = True
+        return {
+            "status": "started",
+            "source_dir": str(source_dir),
+            "output_dir": str(output_dir),
+            "total_images": len(images),
+            "already_translated": already_done,
+            "remaining_images": max(0, len(images) - already_done),
+            "lang": req_lang,
+            "target_lang": target_lang,
+        }
+    finally:
+        if not _job_started:
+            # Подготовка не дошла до запуска задачи (отмена выбора папки,
+            # пустая папка, ошибка валидации) — откатываем резервацию.
+            folder_job_state.clear()
+            folder_job_state.update(_prev_folder_state)
 
 @app.post("/folder_stop")
 async def stop_folder_translation_endpoint() -> dict[str, Any]:
