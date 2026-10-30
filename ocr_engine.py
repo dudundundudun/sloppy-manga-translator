@@ -1634,6 +1634,8 @@ class MangaOCREngine:
                 closed_int[lbl_inv2 == idx2] = 255
 
         added = cv2.subtract(closed_int, interior)
+        ext_light = cv2.subtract(light_pixels, interior)
+        added = cv2.bitwise_and(added, cv2.bitwise_not(ext_light))
         n_add, lbl_add, st_add, _ = cv2.connectedComponentsWithStats(added, connectivity=8)
         for idx_a in range(1, n_add):
             aw = st_add[idx_a, cv2.CC_STAT_WIDTH]

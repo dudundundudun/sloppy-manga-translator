@@ -2549,7 +2549,7 @@
       <div class="pill-group">
         <button class="pill-btn active" id="pill-en" onclick="setTargetLang('en')">🇬🇧 English</button>
         <button class="pill-btn" id="pill-ru" onclick="setTargetLang('ru')">🇷🇺 Русский</button>
-        <button class="pill-btn" id="pill-romaji" onclick="setTargetLang('romaji')">🔤 Ромадзи</button>
+        <button class="pill-btn" id="pill-romaji" onclick="setTargetLang('romaji')" style="display:none;">🔤 Ромадзи</button>
       </div>
       <select id="sel-translation-profile" class="lang-select" onchange="onTranslationProfileChange(this.value, true)" title="Профиль пакетного перевода: управляет числом запросов к API, режимом Книги главы и оффлайн-режимом">
         <option value="eco_book">💎 Эконом + Книга (1–2 запроса)</option>
@@ -2560,10 +2560,10 @@
     </div>
 
     <div class="topbar-right">
-      <div class="summary-chip" id="summary-chip" onclick="openSettingsOnTab('tab-ai')" title="Нажмите для быстрой настройки ИИ, фильтрации текста и интерфейса">
+      <div class="summary-chip" id="summary-chip" onclick="openSettingsOnTab('tab-ai')" style="display:none;" title="Нажмите для быстрой настройки ИИ, фильтрации текста и интерфейса">
         Шрифт: 12–32px · Только диалоги · ИИ: Авто
       </div>
-      <button class="icon-action-btn" id="btn-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="border-color:rgba(52, 211, 153, 0.45); color:#a7f3d0;" title="Открыть полный текст перевода главы (_chapter_book.md), импортировать правки или вычитать стиль всей главы за 1 запрос">
+      <button class="icon-action-btn" id="btn-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="display:none;" title="Открыть полный текст перевода главы (_chapter_book.md)">
         <span>📖</span>
         <span>Текст главы (Книга)</span>
       </button>
@@ -2571,19 +2571,11 @@
         <span>🔎</span>
         <span>Глоссарий / Поиск</span>
       </button>
-      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-diag')" title="Открыть панель диагностики, таймингов этапов (OCR / ИИ / Рендер), живой лог и скопировать отчет для чата в 1 клик">
-        <span>🩺</span>
-        <span>Диагностика</span>
-      </button>
-      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ui')" title="Настроить расположение редактора, всплывающий попап у бабблов и внешний вид">
-        <span>🎨</span>
-        <span>Вид / Редактор</span>
-      </button>
-      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ai')" title="Открыть все настройки моделей, API, фильтра вздохов и шрифта">
+      <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ai')" title="Открыть все настройки моделей, API, фильтра вздохов, интерфейса и диагностики">
         <span>⚙️</span>
         <span>Настройки</span>
       </button>
-      <button class="icon-action-btn" id="btn-fullscreen" onclick="toggleFullscreenMode()" title="Развернуть программу на полный экран (F11)">
+      <button class="icon-action-btn" id="btn-fullscreen" onclick="toggleFullscreenMode()" style="display:none;" title="Развернуть программу на полный экран (F11)">
         <span id="fullscreen-icon">⛶</span>
       </button>
     </div>
@@ -2593,7 +2585,7 @@
   <div class="bento-workspace">
     <!-- Left Sidebar (Mascot + Pages List) -->
     <div class="bento-left" id="bento-left">
-      <div class="bento-card mascot-card" id="mascot-card">
+      <div class="bento-card mascot-card compact-mascot" id="mascot-card">
         <div class="mascot-avatar-wrap">
           <img src="/mascot.png" alt="Miko-chan" onerror="this.style.display='none'" />
         </div>
@@ -2606,18 +2598,18 @@
             </div>
           </div>
           <div class="mascot-bubble" id="miko-speech">
-            Привет! Теперь редактор можно закрепить ➡ Сбоку, ⬇ Снизу или 🪟 Плавающим окном, а клик по кружку #N открывает быстрый попап прямо на странице! 🌸
+            Выбери папку с мангой и нажми «Перевести папку»! Клик по рамке #N меняет текст, колесико мыши — размер шрифта 🌸
           </div>
         </div>
       </div>
 
       <div class="bento-card chapter-card">
-        <div class="source-pickers">
-          <button class="soft-btn" onclick="pickFolderDialog()">
+        <div class="source-pickers" style="grid-template-columns: 1fr;">
+          <button class="soft-btn" onclick="pickFolderDialog()" style="justify-content:center; font-weight:700; padding:9px 12px;">
             <span>📁</span>
-            <span>Выбрать папку</span>
+            <span>Выбрать папку с мангой</span>
           </button>
-          <button class="soft-btn" onclick="pickSingleFileDialog()">
+          <button class="soft-btn" onclick="pickSingleFileDialog()" style="display:none;">
             <span>📄</span>
             <span>Одна страница</span>
           </button>
@@ -2646,16 +2638,26 @@
         </div>
 
         <div class="cta-stack">
+          <div style="display:flex; flex-direction:column; gap:4px; background:rgba(15, 23, 42, 0.55); border:1px solid rgba(255,255,255,0.08); border-radius:9px; padding:6px 9px; font-size:11.5px;">
+            <label style="display:flex; align-items:center; justify-content:space-between; gap:6px; cursor:pointer; user-select:none;" title="Если включено — пропускает уже переведенные страницы и допереводит только оставшиеся. Если выключить — перерисует все страницы папки (переводы мгновенно возьмутся из кэша .translation_state.json без траты токенов ИИ!)">
+              <span style="color:var(--text-primary); font-weight:600;">⏩ Пропускать уже готовые</span>
+              <input id="chk-sidebar-skip-existing" type="checkbox" checked onchange="onSidebarFolderFlagsChange('skip')" style="accent-color:var(--mint); width:15px; height:15px; cursor:pointer;" />
+            </label>
+            <label style="display:flex; align-items:center; justify-content:space-between; gap:6px; cursor:pointer; user-select:none;" title="Включайте ТОЛЬКО если нужно стереть кэш .translation_state.json и заново отправить все реплики в ИИ. Оставьте выключенной, чтобы брать готовые переводы из кэша (0 токенов ИИ)!">
+              <span style="color:var(--text-secondary);">🔄 Принудительно заново (сброс кэша ИИ)</span>
+              <input id="chk-force-retranslate" type="checkbox" onchange="onSidebarFolderFlagsChange('force')" style="accent-color:var(--sakura); width:15px; height:15px; cursor:pointer;" />
+            </label>
+          </div>
           <button class="cta-main" id="btn-primary-folder" onclick="onPrimaryFolderButtonClick()">
             ▶ Перевести папку
           </button>
           <button class="cta-sub" id="btn-contextual-page" onclick="translateSelectedPage()" style="display:none;">
             🎯 Перевести выбранную страницу
           </button>
-          <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none; border-color:rgba(52, 211, 153, 0.45); color:#a7f3d0;">
+          <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none !important;">
             ✏️ Редактировать перевод и Ромадзи
           </button>
-          <button class="cta-sub" id="btn-sidebar-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="border-color:rgba(129, 140, 248, 0.45); color:#c7d2fe;">
+          <button class="cta-sub" id="btn-sidebar-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="display:none !important;">
             📖 Текст главы (Книга)
           </button>
         </div>
@@ -2686,32 +2688,29 @@
             <button class="pill-btn" id="vmode-orig" onclick="setViewMode('original')" title="Только оригинал (или зажмите Space / V)">🇯🇵 Оригинал</button>
           </div>
 
-          <!-- Zoom & Fit Controls -->
-          <div class="toolbar-section">
-            <div class="zoom-pill">
-              <button class="zoom-btn active" id="zmode-width" onclick="setZoomMode('fit_width')" title="Вписать страницу по ширине области просмотра">↔ Шир.</button>
-              <button class="zoom-btn" id="zmode-height" onclick="setZoomMode('fit_height')" title="Вписать страницу целиком по высоте экрана">↕ Выс.</button>
-              <button class="zoom-btn" onclick="adjustZoomPct(-15)" title="Уменьшить масштаб (Ctrl + колесико вниз)">➖</button>
-              <span class="zoom-lbl" id="zoom-pct-lbl">Авто</span>
-              <button class="zoom-btn" onclick="adjustZoomPct(15)" title="Увеличить масштаб (Ctrl + колесико вверх)">➕</button>
-            </div>
-          </div>
-
-          <!-- Primary Canvas Tools (Top 5 User Actions in 1 Click!) -->
+          <!-- Primary Canvas Tools (Streamlined by UX Telemetry: Only Top Used Buttons!) -->
           <div class="toolbar-section">
             <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения или удаления рамок">⏳ Авто-сохранение...</span>
-            <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (СКМ или Alt+Клик по рамке — мгновенное удаление без попапа!)">📌 Рамки #N</button>
-            <button class="pill-btn" id="btn-frame-eraser" onclick="toggleFrameEraserMode()" title="Режим Ластика рамок (Клавиша E): кликайте или зажмите ЛКМ и проведите по лишним рамкам #N, чтобы мгновенно стереть их серией!">🗑 Ластик (E)</button>
-            <button class="pill-btn" id="btn-clean-page-noise" onclick="cleanPageNoiseBlocks(event)" style="border-color:rgba(244, 63, 94, 0.45); color:#fda4af;" title="В 1 клик удалить на этой странице все рамки фона (вне бабблов), вздохи, SFX и пустые блоки (Клавиша X). Shift+Клик — очистить сразу во всей главе!">🧹 Убрать шум</button>
-            <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице (со снайперским 👁 VLM-OCR по умолчанию)">➕ Обвести</button>
-            <button class="pill-btn" id="btn-vlm-draw-toggle" onclick="toggleVlmForManualDraw()" title="Режим 👁 VLM-OCR для «➕ Обвести»: АВТО (сначала мгновенный локальный GPU OCR за 0.08с, авто-подхват VLM на сложных SFX) или ВКЛ (всегда VLM)">👁 VLM: АВТО</button>
-            <button class="pill-btn subtle-active" id="btn-quick-filter-toggle" onclick="toggleQuickBubbleFilterMode()" title="Быстрое переключение режима распознавания: 💬 Только бабблы (без мусора на фоне) ⟷ 💭 Бабблы + Надписи на фоне">💬 Только бабблы</button>
+            <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (Колесико мыши по рамке — шрифт, 🗑 на рамке — удалить)">📌 Рамки #N</button>
+            <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице">➕ Обвести</button>
+            <button class="pill-btn" id="btn-clean-page-noise" onclick="cleanPageNoiseBlocks(event)" style="border-color:rgba(244, 63, 94, 0.45); color:#fda4af;" title="В 1 клик удалить на этой странице все рамки фона (вне бабблов), вздохи, SFX и пустые блоки (Клавиша X)">🧹 Убрать шум</button>
 
             <!-- Compact "⋯ Еще" Menu for Secondary / Rarely Used Tools -->
             <details class="toolbar-more-menu" id="toolbar-more-details">
-              <summary class="pill-btn" title="Дополнительные инструменты: Боковой список, Очистка всей главы, Вписывание текста, Кисть маски, Ромадзи, Папка и Отчеты">⋯ Еще</summary>
+              <summary class="pill-btn" title="Масштаб, VLM-режим, Ластик, Боковой список, Вписывание текста, Кисть маски, Папка и Отчеты">⋯ Еще</summary>
               <div class="toolbar-more-dropdown">
-                <div style="font-size:10px; font-weight:700; color:var(--text-muted); padding:2px 6px;">ИНСТРУМЕНТЫ И ПАПКА</div>
+                <div style="font-size:10px; font-weight:700; color:var(--text-muted); padding:2px 6px;">МАСШТАБ И РЕЖИМЫ ХОЛСТА</div>
+                <div class="zoom-pill" style="display:flex; justify-content:space-between; margin-bottom:4px;">
+                  <button class="zoom-btn active" id="zmode-width" onclick="setZoomMode('fit_width')" title="Вписать страницу по ширине">↔ Шир.</button>
+                  <button class="zoom-btn" id="zmode-height" onclick="setZoomMode('fit_height')" title="Вписать страницу по высоте">↕ Выс.</button>
+                  <button class="zoom-btn" onclick="adjustZoomPct(-15)" title="Уменьшить масштаб">➖</button>
+                  <span class="zoom-lbl" id="zoom-pct-lbl">Авто</span>
+                  <button class="zoom-btn" onclick="adjustZoomPct(15)" title="Увеличить масштаб">➕</button>
+                </div>
+                <button class="pill-btn" id="btn-vlm-draw-toggle" onclick="toggleVlmForManualDraw()" title="Режим 👁 VLM-OCR для «➕ Обвести»">👁 VLM: АВТО</button>
+                <button class="pill-btn subtle-active" id="btn-quick-filter-toggle" onclick="toggleQuickBubbleFilterMode()" title="Переключение режима: 💬 Только бабблы ⟷ 💭 Бабблы + Фон">💬 Только бабблы</button>
+                <button class="pill-btn" id="btn-frame-eraser" onclick="closeToolbarMoreMenu(); toggleFrameEraserMode();" title="Режим Ластика рамок (Клавиша E)">🗑 Ластик рамок (E)</button>
+                <div style="font-size:10px; font-weight:700; color:var(--text-muted); padding:4px 6px 2px 6px; border-top:1px solid rgba(255,255,255,0.08);">ИНСТРУМЕНТЫ И ПАПКА</div>
                 <button class="pill-btn" id="btn-toggle-drawer" onclick="closeToolbarMoreMenu(); openPageEditor();" title="Открыть или скрыть боковую панель со списком всех карточек">✏️ Список блоков (0)</button>
                 <button class="pill-btn" id="btn-clean-folder-noise" onclick="closeToolbarMoreMenu(); cleanFolderNoiseInStudio();" style="color:#fda4af;" title="Автоматически удалить рамки фона, вздохи и пустые рамки сразу на ВСЕХ переведенных страницах открытой главы (0 токенов ИИ)">🧹 Убрать шум во всей главе</button>
                 <button class="pill-btn" id="btn-top-mask-brush" onclick="closeToolbarMoreMenu(); toggleMaskBrushMode();" title="Кисть ретуши замазки: ЛКМ — дотереть остатки оригинала, ПКМ — восстановить задетый рисунок (Клавиша B)">🖌 Живая кисть маски (B)</button>
@@ -2980,18 +2979,18 @@
     </details>
 
     <div class="inline-popup-footer">
-      <div style="display:flex; align-items:center; gap:5px; flex-wrap:wrap;">
-        <button type="button" class="btn-save-edit" style="padding:5px 13px; font-size:12px;" onclick="saveFromInlinePopup(true)" title="Сохранить изменения и сразу закрыть попап (Ctrl+Enter или Enter)">✅ Применить</button>
-        <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Полностью удалить эту рамку с картинки (Delete)">🗑 Удалить</button>
+      <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+        <button type="button" class="btn-save-edit" style="padding:6px 16px; font-size:12.5px; font-weight:700;" onclick="saveFromInlinePopup(true)" title="Сохранить изменения и сразу закрыть попап (Ctrl+Enter или Enter)">✅ Применить</button>
         <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event, false)" title="Принудительно перевести этот кружок заново через ИИ">🔄 ИИ</button>
-        <button type="button" class="btn-retranslate-block" onclick="retranslateFromInlinePopup(event, true)" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;" title="Снайперский 👁 VLM-OCR: заново прочитать сложный шрифт или SFX через Vision-модель и перевести">👁 VLM</button>
-        <button type="button" class="btn-diamond-wrap" onclick="applyDiamondWrapFromPopup(event)" title="💎 Алмазная разбивка: пересчитать переносы строк (\n) по профилю суперэллипса Ламе">💎 Алмаз</button>
-        <button type="button" class="btn-shorten-ai" id="popup-shorten-ai-btn" onclick="shortenFromInlinePopup(event)" title="✂️ Сократить под бабл (AI): сжать длину фразы на 25–35% через ИИ с сохранением смысла и тона персонажа">✂️ Сжать (AI)</button>
-        <button type="button" class="btn-merge-blocks" id="popup-merge-btn" onclick="mergeSelectedBlocks(event)" title="Объединить выделенные через Shift+Клик рамки в один блок (M)">🔗 Объединить (M)</button>
+        <button type="button" class="btn-delete-block" id="popup-del-btn" onclick="deleteFromInlinePopup(event)" title="Полностью удалить эту рамку с картинки (Delete)">🗑 Удалить</button>
       </div>
       <details class="popup-more-menu" id="popup-more-details">
-        <summary class="romaji-copy-btn" style="padding:4px 8px; font-weight:700;" title="Дополнительные действия с рамкой (Разделить, Очистить только текст, Открыть в боковой панели)">⋯</summary>
+        <summary class="romaji-copy-btn" style="padding:4px 8px; font-weight:700;" title="Дополнительные действия с рамкой (VLM-OCR, Сжать через ИИ, Алмазная разбивка, Объединить, Разделить)">⋯</summary>
         <div class="popup-more-dropdown">
+          <button type="button" class="btn-retranslate-block" onclick="document.getElementById('popup-more-details').open=false; retranslateFromInlinePopup(event, true)" style="border-color:rgba(56, 189, 248, 0.55); color:#bae6fd;">👁 Прочитать через VLM-OCR</button>
+          <button type="button" class="btn-shorten-ai" id="popup-shorten-ai-btn" onclick="document.getElementById('popup-more-details').open=false; shortenFromInlinePopup(event)">✂️ Сжать фразу под баббл (AI)</button>
+          <button type="button" class="btn-diamond-wrap" onclick="document.getElementById('popup-more-details').open=false; applyDiamondWrapFromPopup(event)">💎 Алмазная разбивка строк</button>
+          <button type="button" class="btn-merge-blocks" id="popup-merge-btn" onclick="document.getElementById('popup-more-details').open=false; mergeSelectedBlocks(event)">🔗 Объединить рамки (M)</button>
           <button type="button" class="btn-split-block" id="popup-split-btn" onclick="document.getElementById('popup-more-details').open=false; splitFromInlinePopup(event)">✂️ Разделить рамку на 2</button>
           <button type="button" class="romaji-copy-btn" id="popup-clear-btn" onclick="document.getElementById('popup-more-details').open=false; clearTextFromInlinePopup(event)">🧹 Очистить только текст</button>
           <button type="button" class="btn-restore-block" id="popup-restore-btn" onclick="document.getElementById('popup-more-details').open=false; restoreFromInlinePopup(event)" style="display:none;">↩ Вернуть текст</button>
@@ -5400,18 +5399,14 @@
       const pct = total > 0 ? Math.round((done / total) * 100) : 0;
       document.getElementById("progress-fill").style.width = pct + "%";
 
-      const mainBtn = document.getElementById("btn-primary-folder");
+      updatePrimaryFolderButtonState();
       if (!isJobRunning) {
-        mainBtn.classList.remove("stopping");
         if (done > 0 && rem > 0) {
-          mainBtn.textContent = `▶ Продолжить перевод папки (осталось ${rem} стр.)`;
-          sayMiko(`В папке «${folderName}» уже переведено ${done} из ${total} стр.! Нажми кнопку ниже, чтобы продолжить с места остановки~ 🌸`);
+          sayMiko(`В папке «${folderName}» готово ${done} из ${total} стр. Нажми кнопку ниже — оставшиеся ${rem} стр. мгновенно подтянут переводы из кэша! 🌸`);
         } else if (total > 0 && rem === 0) {
-          mainBtn.textContent = `✅ Вся папка переведена (${total} стр.)`;
-          sayMiko(`Ура! Все ${total} страниц в этой папке уже переведены! Можешь выбрать любую страницу или кликнуть по кружку #N ✨`);
+          sayMiko(`Все ${total} страниц в этой папке готовы! Кликни по любому кружку #N для правки ✨`);
         } else {
-          mainBtn.textContent = `▶ Перевести всю папку (${total} стр.)`;
-          sayMiko(`Открыта папка «${folderName}» (${total} стр.). Нажми «Перевести всю папку» или выбери отдельную страницу в списке!`);
+          sayMiko(`Открыта папка «${folderName}» (${total} стр.). Нажми «Перевести всю папку»!`);
         }
       }
 
@@ -10051,6 +10046,49 @@
       }
     }
 
+    function onSidebarFolderFlagsChange(which) {
+      const sbSkip = document.getElementById("chk-sidebar-skip-existing");
+      const modalSkip = document.getElementById("chk-skip-existing");
+      const forceChk = document.getElementById("chk-force-retranslate");
+      if (which === "force" && forceChk && forceChk.checked) {
+        if (sbSkip) sbSkip.checked = false;
+        if (modalSkip) modalSkip.checked = false;
+      } else if (which === "skip" && sbSkip) {
+        if (modalSkip) modalSkip.checked = sbSkip.checked;
+        if (sbSkip.checked && forceChk) forceChk.checked = false;
+      }
+      updatePrimaryFolderButtonState();
+    }
+
+    function updatePrimaryFolderButtonState() {
+      const mainBtn = document.getElementById("btn-primary-folder");
+      if (!mainBtn || isJobRunning) return;
+      mainBtn.classList.remove("stopping");
+      const total = Array.isArray(folderPages) ? folderPages.length : 0;
+      const done = Array.isArray(folderPages) ? folderPages.filter(p => Boolean(p.is_translated)).length : 0;
+      const rem = Math.max(0, total - done);
+      const sbSkip = document.getElementById("chk-sidebar-skip-existing");
+      const skipExisting = sbSkip ? sbSkip.checked : true;
+      const forceChk = document.getElementById("chk-force-retranslate");
+      const forceRetranslate = forceChk ? forceChk.checked : false;
+
+      if (total === 0) {
+        mainBtn.textContent = "▶ Перевести папку";
+        return;
+      }
+      if (forceRetranslate) {
+        mainBtn.textContent = `🔄 Перевести с нуля через ИИ (${total} стр.)`;
+      } else if (!skipExisting) {
+        mainBtn.textContent = `🎨 Перерисовать все ${total} стр. (из кэша)`;
+      } else if (done > 0 && rem > 0) {
+        mainBtn.textContent = `▶ Доперевести папку (осталось ${rem} стр.)`;
+      } else if (total > 0 && rem === 0) {
+        mainBtn.textContent = `🎨 Перерисовать папку из кэша (${total} стр.)`;
+      } else {
+        mainBtn.textContent = `▶ Перевести всю папку (${total} стр.)`;
+      }
+    }
+
     async function onPrimaryFolderButtonClick() {
       if (isJobRunning) {
         await fetch("/folder_stop", { method: "POST" });
@@ -10063,9 +10101,15 @@
         if (!currentFolder) return;
       }
 
-      const skipExistingChecked = document.getElementById("chk-skip-existing").checked;
+      const sbSkip = document.getElementById("chk-sidebar-skip-existing");
+      const modalSkip = document.getElementById("chk-skip-existing");
+      const skipExistingChecked = sbSkip ? sbSkip.checked : (modalSkip ? modalSkip.checked : true);
+      const forceChk = document.getElementById("chk-force-retranslate");
+      const shouldForceRetranslate = Boolean(forceChk && forceChk.checked);
       const allAlreadyDone = Array.isArray(folderPages) && folderPages.length > 0 && folderPages.every(p => Boolean(p.is_translated));
-      const shouldForceRetranslate = !skipExistingChecked || allAlreadyDone;
+      // Если все страницы помечены готовыми или снята галочка "Пропускать готовые", не пропускаем файлы (skip_existing=false),
+      // НО сохраняем кэш переводов (force_retranslate=false), если пользователь явно не включил "Принудительно заново"!
+      const effectiveSkipExisting = (shouldForceRetranslate || allAlreadyDone) ? false : skipExistingChecked;
       const payload = {
         folder_path: currentFolder,
         lang: document.getElementById("sel-source-lang").value,
@@ -10080,7 +10124,7 @@
         skip_sighs: document.getElementById("chk-skip-sighs").checked,
         skip_sfx: document.getElementById("chk-skip-sfx").checked,
         min_text_length: parseInt(document.getElementById("inp-min-text-len").value, 10) || 2,
-        skip_existing: shouldForceRetranslate ? false : skipExistingChecked,
+        skip_existing: effectiveSkipExisting,
         batch_pages: parseInt(document.getElementById("inp-batch-pages")?.value, 10) || 15,
         translation_profile: document.getElementById("sel-translation-profile")?.value || translationProfile || "balanced",
         force_retranslate: shouldForceRetranslate,

@@ -1543,7 +1543,7 @@ def _generate_and_save_folder_report(
 
         p_min_fs = int(p_meta.get("min_font_size") or default_min_fs)
         ocr_diag = p_meta.get("ocr_diag", {}) if isinstance(p_meta.get("ocr_diag"), dict) else {}
-        ocr_err = str(p_meta.get("ocr_error") or "").strip()
+        ocr_err = str(p_meta.get("ocr_error") or p_meta.get("render_error") or "").strip()
         if ocr_err:
             error_pages.append({"index": idx_p, "rel_path": rel_norm, "error": ocr_err})
 
@@ -2162,8 +2162,24 @@ def is_page_already_translated(
     except OSError:
         return False
 
+    # Если в выходной папке ведется .translation_state.json, но у страницы нет записи blocks
+    # (например, предыдущий рендер упал в except и скопировал оригинал через shutil.copy2),
+    # страница НЕ является переведенной!
+    if not isinstance(page_meta, dict) or ("blocks" not in page_meta and not bool(page_meta.get("manually_edited"))):
+        try:
+            state_f1 = dest_path.parent / ".translation_state.json"
+            state_f2 = dest_path.parent.parent / ".translation_state.json"
+            if state_f1.exists() or state_f2.exists():
+                return False
+        except OSError:
+            pass
+
     if isinstance(page_meta, dict):
-        if bool(page_meta.get("needs_retranslate")):
+        if (
+            bool(page_meta.get("needs_retranslate"))
+            or bool(str(page_meta.get("render_error") or "").strip())
+            or bool(str(page_meta.get("ocr_error") or "").strip())
+        ):
             return False
         if "blocks" in page_meta and isinstance(page_meta.get("blocks"), list):
             saved_blocks = page_meta["blocks"]
@@ -3100,15 +3116,36 @@ async def _run_folder_translation_job(
                     cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in)
                     _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
                 eff_overflow = overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
-                final_im = renderer_engine.render_blocks(
-                    cleaned_im,
-                    active_in,
-                    uppercase,
-                    max_font_size,
-                    min_font_size,
-                    None,
-                    eff_overflow,
-                )
+                try:
+                    final_im = renderer_engine.render_blocks(
+                        cleaned_im,
+                        active_in,
+                        uppercase,
+                        max_font_size,
+                        min_font_size,
+                        None,
+                        eff_overflow,
+                    )
+                except Exception as ren_err:
+                    logger.warning(
+                        "Сбой контурной верстки на %s (%s) — выполняем резервную прямоугольную верстку на очищенном слое.",
+                        src_p.name,
+                        ren_err,
+                    )
+                    fallback_blocks = []
+                    for fb in active_in:
+                        fb_copy = dict(fb)
+                        fb_copy["is_modified"] = True
+                        fallback_blocks.append(fb_copy)
+                    final_im = renderer_engine.render_blocks(
+                        cleaned_im,
+                        fallback_blocks,
+                        uppercase,
+                        max_font_size,
+                        min_font_size,
+                        None,
+                        eff_overflow,
+                    )
                 ext = dst_p.suffix.lower()
                 if ext == ".webp":
                     final_im.save(dst_p, format="WEBP", quality=92, method=2)
@@ -3145,6 +3182,7 @@ async def _run_folder_translation_job(
 
                     manifest["pages"][rel_norm] = {
                         "needs_retranslate": False,
+                        "render_error": "",
                         "blocks_count": len(p_blocks),
                         "free_text_count": sum(1 for b in p_blocks if b.get("is_free_text")),
                         "detected_lang": det_lang,
@@ -3163,7 +3201,24 @@ async def _run_folder_translation_job(
                         _save_folder_manifest(output_dir, manifest)
                 except Exception as render_exc:
                     logger.exception("Ошибка при сохранении страницы %s: %s", img_path, render_exc)
-                    shutil.copy2(img_path, dest_path)
+                    manifest["pages"][rel_norm] = {
+                        "needs_retranslate": True,
+                        "render_error": str(render_exc),
+                        "blocks_count": len(p_blocks),
+                        "free_text_count": sum(1 for b in p_blocks if b.get("is_free_text")),
+                        "detected_lang": det_lang,
+                        "model": active_mod,
+                        "uppercase": uppercase,
+                        "min_font_size": min_font_size,
+                        "max_font_size": max_font_size,
+                        "overflow_mode": overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink"),
+                        "ocr_diag": sp_item.get("ocr_diag", {}),
+                        "updated_at": int(time.time()),
+                        "blocks": p_blocks,
+                    }
+                    manifest["rolling_context"] = rolling_context
+                    manifest["phrase_cache"] = phrase_cache
+                    _save_folder_manifest(output_dir, manifest)
                 finally:
                     sp_item["pil_img"] = None
 
