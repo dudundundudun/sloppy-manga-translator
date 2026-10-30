@@ -40,6 +40,14 @@ from PIL import Image, ImageDraw, ImageFont
 
 from cleaner import analyze_bubble_geometry
 
+try:
+    import pyphen
+    _pyphen_ru = pyphen.Pyphen(lang="ru_RU")
+    _pyphen_en = pyphen.Pyphen(lang="en_US")
+except Exception:
+    _pyphen_ru = None
+    _pyphen_en = None
+
 logger = logging.getLogger(__name__)
 
 
@@ -1279,6 +1287,36 @@ class MangaRenderer:
         if n < max(min_word_len, eff_min_part * 2):
             return []
 
+        if is_cyrillic and _pyphen_ru is not None:
+            try:
+                hyph = _pyphen_ru.inserted(core_word)
+                parts = hyph.split("-")
+                curr_idx = 0
+                splits = []
+                for p in parts[:-1]:
+                    curr_idx += len(p)
+                    if eff_min_part <= curr_idx <= n - eff_min_part:
+                        splits.append(curr_idx)
+                if splits:
+                    return sorted(set(splits))
+            except Exception:
+                pass
+
+        if is_latin and _pyphen_en is not None:
+            try:
+                hyph = _pyphen_en.inserted(core_word)
+                parts = hyph.split("-")
+                curr_idx = 0
+                splits = []
+                for p in parts[:-1]:
+                    curr_idx += len(p)
+                    if eff_min_part <= curr_idx <= n - eff_min_part:
+                        splits.append(curr_idx)
+                if splits:
+                    return sorted(set(splits))
+            except Exception:
+                pass
+
         if is_latin:
             morpheme_splits: set[int] = set()
             for pfx in cls._EN_PREFIXES:
@@ -1981,6 +2019,58 @@ class MangaRenderer:
             return max(3, font_size // 8)
         return max(2, font_size // 10)
 
+    @staticmethod
+    def find_optimal_box_center_integral(
+        safe_mask_roi: np.ndarray,
+        tw: int,
+        th: int,
+        centroid_y: float | None = None,
+    ) -> tuple[int, int, float] | None:
+        """
+        Находит оптимальное положение центра прямоугольника (tw, th) внутри safe_mask_roi за O(1)
+        через cv2.integral с максимизацией зазора (clearance margin) до стенок баббла.
+        """
+        if safe_mask_roi is None or safe_mask_roi.size == 0:
+            return None
+        rh, rw = safe_mask_roi.shape[:2]
+        if tw <= 0 or th <= 0 or tw >= rw or th >= rh:
+            return None
+
+        II = cv2.integral((safe_mask_roi > 0).astype(np.uint8), sdepth=cv2.CV_32S)
+        rect_sums = (
+            II[th:, tw:]
+            - II[:-th, tw:]
+            - II[th:, :-tw]
+            + II[:-th, :-tw]
+        )
+        valid_tl = (rect_sums == (tw * th)).astype(np.uint8) * 255
+        y_off, x_off = th // 2, tw // 2
+
+        if centroid_y is None:
+            ys_v = np.where(safe_mask_roi > 0)[0]
+            centroid_y = float(np.mean(ys_v)) if len(ys_v) > 0 else float(rh / 2.0)
+
+        if np.any(valid_tl > 0):
+            feasible_centers = np.zeros((rh, rw), dtype=np.uint8)
+            feasible_centers[
+                y_off : y_off + valid_tl.shape[0], x_off : x_off + valid_tl.shape[1]
+            ] = valid_tl
+            margin_map = cv2.distanceTransform(feasible_centers, cv2.DIST_L2, 5)
+            y_grid = np.arange(rh, dtype=np.float32)[:, None]
+            gravity_penalty = 1.2 * np.abs(y_grid - centroid_y) / max(1.0, float(rh))
+            score_map = np.where(feasible_centers > 0, margin_map - gravity_penalty, -1e6)
+            best_idx = int(np.argmax(score_map))
+            opt_cy, opt_cx = divmod(best_idx, rw)
+            best_margin = float(margin_map[opt_cy, opt_cx])
+            return opt_cx, opt_cy, best_margin
+        else:
+            y_grid = np.arange(rect_sums.shape[0], dtype=np.float32)[:, None]
+            grav = 0.5 * np.abs((y_grid + y_off) - centroid_y) / max(1.0, float(rh))
+            score_map = rect_sums.astype(np.float32) / float(tw * th) - grav
+            best_idx = int(np.argmax(score_map))
+            best_y, best_x = divmod(best_idx, rect_sums.shape[1])
+            return best_x + x_off, best_y + y_off, 0.0
+
     def _analyze_bubble_geometry(
         self,
         cleaned_img_np: np.ndarray,
@@ -2476,6 +2566,8 @@ class MangaRenderer:
 
             prepared_items.append(
                 {
+                    "safe_mask_roi": geom.get("safe_mask_roi"),
+                    "roi_offset": geom.get("roi_offset", (rx1, y1)),
                     "block": block,
                     "raw_text": raw_text,
                     "text": text,
@@ -2585,6 +2677,18 @@ class MangaRenderer:
             it["t_bbox"] = tb_v
             it["tw"] = tw_v
             it["th"] = th_v
+
+            if it.get("safe_mask_roi") is not None and not it.get("is_free_text") and not it.get("is_modified"):
+                opt_res = self.find_optimal_box_center_integral(
+                    it["safe_mask_roi"],
+                    tw_v,
+                    th_v,
+                )
+                if opt_res is not None:
+                    rx1_off, ry1_off = it["roi_offset"]
+                    it["center_x"] = float(rx1_off + opt_res[0])
+                    it["center_y"] = float(ry1_off + opt_res[1])
+                    it["block"]["optical_center"] = [int(round(it["center_x"])), int(round(it["center_y"]))]
 
         def _clamp_item_center_to_safe_box(it: dict[str, Any]) -> None:
             if it["is_free_text"]:
