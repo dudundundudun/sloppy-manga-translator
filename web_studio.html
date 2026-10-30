@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Miko-chan Manga Studio v1.0.6</title>
+  <title>Miko-chan Manga Studio v1.0.8</title>
   <style>
     :root {
       --bg-deep: #0f0d18;
@@ -1352,7 +1352,7 @@
       align-items: center;
       justify-content: center;
       text-align: center;
-      font-family: "CC Wild Words", "Anime Ace v05", "Manga Temple", "Segoe UI Semibold", "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+      font-family: "CC Wild Words", "Anime Ace v05", "Manga Temple", "Comic Sans MS", "Segoe UI Semibold", "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
       font-weight: 800;
       color: #0f0f0f;
       text-shadow:
@@ -2828,7 +2828,7 @@
         </div>
 
         <div class="scanlation-font-hint-banner" id="drawer-font-hint-banner">
-          <span>💡 <b>Сканлейт-шрифты:</b> сейчас используется системный гротеск (<i>Segoe UI Semibold / Trebuchet MS</i>, без Comic Sans). Для эталонной верстки рекомендуем положить в папку <code>fonts/</code>: <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b>.</span>
+          <span>💡 <b>Сканлейт-шрифты:</b> по умолчанию используется системный комиксный шрифт <b>Comic Sans MS Bold</b>. Для профессиональной сканлейт-верстки рекомендуем положить в папку <code>fonts/</code>: <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b>.</span>
           <button type="button" class="romaji-copy-btn" onclick="this.parentElement.style.display='none'" title="Скрыть подсказку">✕</button>
         </div>
         <div class="blocks-scroll-area" id="blocks-container">
@@ -3119,7 +3119,7 @@
             </div>
             <details class="style-retouch-details" style="margin-top:2px;">
               <summary>
-                <span>📖 Справка по всем 8 локальным моделям (какую выбрать под вашу задачу)</span>
+                <span>📖 Справка по всем 10 локальным моделям (8 моделей перевода + 2 модели VLM-OCR)</span>
                 <span style="font-size:10.5px; color:var(--text-muted);">Нажмите, чтобы развернуть шпаргалку</span>
               </summary>
               <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px; font-size:11.5px; line-height:1.4;">
@@ -3131,6 +3131,8 @@
                 <div>• <b style="color:var(--mint);">🌍 Aya Expanse 8B</b> (~5.1 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — легкая мультиязычная модель от Cohere Labs (23 языка). Очень быстрая, почти без цензуры, отлично переводит диалоги манги, корейской манхвы и китайской маньхуа.</div>
                 <div>• <b style="color:#c084fc;">💎 Gemma 3 12B</b> (~7.3 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — базовая модель Google с живым художественным русским и английским языком.</div>
                 <div>• <b style="color:#818cf8;">🐉 Qwen 2.5 14B</b> (~8.4 ГБ, <b>JA/KO/ZH ➔ RU/EN + Ромадзи</b>) — универсал для японской манги, корейской манхвы, китайской маньхуа и точного чтения кандзи в Ромадзи.</div>
+                <div>• <b style="color:#34d399;">👁 GLM-OCR 0.9B (Vision)</b> (~1.9 ГБ, <b>VLM-OCR: JA/KO/ZH/EN</b>) — снайперский OCR для сложных рукописных звуковых эффектов (SFX), стилизованных шрифтов и цветных обложек по кнопке «👁 VLM-OCR» и «➕ Обвести».</div>
+                <div>• <b style="color:#34d399;">👁 Qwen 2.5 VL 7B (Vision)</b> (~5.0 ГБ, <b>VLM-OCR + Перевод</b>) — мощная мультимодальная модель для чтения декоративных плашек, наклонных SFX и каллиграфических шрифтов.</div>
               </div>
             </details>
             <button class="cta-main" id="btn-pull-model" style="padding:9px 14px; font-size:12.5px;" onclick="pullRecommendedModel()">
@@ -3335,7 +3337,7 @@
         <!-- TAB 4: FONT & SAVING -->
         <div class="settings-tab-pane" id="tab-font">
           <div class="scanlation-font-hint-banner" id="settings-font-hint-banner" style="margin:0 0 10px 0; display:flex;">
-            <span>💡 <b>Рекомендуемые сканлейт-шрифты (v3.5 Pro Scanlation):</b> положите <code>.ttf</code> файлы <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b> в папку <code>fonts/</code>. При пустой папке <code>fonts/</code> программа никогда не использует Comic Sans MS, а выбирает чистый <b>Segoe UI Semibold / Trebuchet MS</b>.</span>
+            <span>💡 <b>Рекомендуемые сканлейт-шрифты (v3.5 Pro Scanlation):</b> положите <code>.ttf</code> файлы <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b> в папку <code>fonts/</code>. При пустой папке <code>fonts/</code> программа по умолчанию использует системный комиксный шрифт <b>Comic Sans MS Bold</b> (также доступны Segoe UI Semibold и Trebuchet MS в списке шрифтов кружка).</span>
           </div>
           <div class="section-box">
             <div class="section-title">🔤 Размер шрифта и стиль верстки</div>
@@ -3576,7 +3578,7 @@
         <div class="settings-tab-pane" id="tab-diag">
           <div class="section-box">
             <div class="section-title">
-              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.6)</span>
+              <span>🩺 Панель живой диагностики, профилирования и логов (v1.0.8)</span>
               <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер обмена!</span>
             </div>
             <div class="section-desc">
@@ -4143,7 +4145,7 @@
           cardsEl.innerHTML =
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--sakura);">🖥 Сервер и процесс:</b><br>` +
-              `Версия: <b>v${escapeHtml(srv.version || "1.0.6")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
+              `Версия: <b>v${escapeHtml(srv.version || "1.0.8")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
               `Лог: <b>${srv.log_file_size_kb || 0} КБ</b> (logs/miko_studio.log)` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
@@ -5035,10 +5037,11 @@
       document.getElementById("pull-status-lbl").textContent = `Запуск скачивания ${tag}...`;
       sayMiko(`Начинаю скачивать модель «${tag}» напрямую через Ollama! Никакой Unsloth запускать не нужно~ 🌸`);
 
+      const isPureOcr = String(tag || "").toLowerCase().includes("glm-ocr");
       await fetch("/pull_model", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ model: tag, set_as_default: true })
+        body: JSON.stringify({ model: tag, set_as_default: !isPureOcr })
       });
 
       if (pullPollTimer) clearInterval(pullPollTimer);
@@ -5179,6 +5182,9 @@
         sel.appendChild(optAuto);
 
         models.forEach(m => {
+          const isNotInstalled = m.installed === false || String(m.installed).toLowerCase() === "false";
+          const isPureOcr = String(m.id || "").toLowerCase().includes("glm-ocr");
+          if ((isNotInstalled || isPureOcr) && m.id !== data.selected_model) return;
           const opt = document.createElement("option");
           opt.value = m.id;
           opt.textContent = m.name;

@@ -1,5 +1,5 @@
 @echo off
-title Local Manga Translator v1.0.0 - Single Page Translation
+title Local Manga Translator v1.0.8 - Single Page Translation
 cd /d "%~dp0"
 
 set PYTHONUTF8=1

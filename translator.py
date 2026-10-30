@@ -1,5 +1,5 @@
 """
-Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.6).
+Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.8).
 
 Изменения v1.0.6 (Шаг 4):
 1. Глобальный глоссарий в `config.json` (`glossary: list[dict[str, str]]` с полями `src`, `dst`, `note`, `target_lang`)
@@ -370,22 +370,28 @@ MAX_CONCURRENT_CLOUD_REQUESTS = 3
 REFUSAL_PATTERNS_REGEX = re.compile(
     r"(?i)(?:\bi\s*(?:can['\u2019]?t|cannot|am\s+unable\s+to|won['\u2019]?t|must\s+decline|refuse\s+to)\b.*"
     r"\b(?:translat|intensif|explicit|sexual|content|request|assist|fulfill|generate|rewrite|child|minor|nsfw|adult|inappropriate)\b"
-    r"|\b(?:unable\s+to\s+translate|cannot\s+translate|can['\u2019]?t\s+translate|translation\s+(?:unavailable|refused|blocked|failed)|refused\s+to\s+translate)\b"
-    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+sexual\s+content|violates?\s+(?:our|the)\s+policy|content_filter|data_inspection_failed|censored\s+content)\b"
-    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь|продолжить)|невозможно\s+перевести|не\s+удалось\s+перевести|перевод\s+(?:невозможен|недоступен|заблокирован)|откровенн\w+\s+сексуальн\w+|наруша\w+\s+правил\w+)\b"
-    r"|(?:抱歉.*(?:无法|不能).*(?:翻译|提供|生成|处理)|无法翻译|不能翻译|内容.*(?:违规|敏感|不当)))"
+    r"|\b(?:unable\s+to\s+translate|cannot\s+translate|can['\u2019]?t\s+translate|translation\s+(?:unavailable|refused|blocked|failed|omitted)|refused\s+to\s+translate)\b"
+    r"|\b(?:as\s+an\s+ai|content\s+policy|safety\s+guidelines|explicit\s+(?:\w+\s+){0,3}content|incestuous\s+content|violates?\s+(?:our|the)\s+policy|content_filter|data_inspection_failed|censored\s+content)\b"
+    r"|\b(?:content|dialogue|text|sound|sfx|line|speech|phrase|audio)\s+(?:omitted|redacted|censored|filtered|blocked|removed)\b"
+    r"|\b(?:omitted|redacted|censored)\s+(?:due\s+to|for)\s+(?:safety|policy|explicit|nsfw|content)\b"
+    r"|\b(?:я\s+не\s+могу\s+(?:перевести|выполнить|помочь|продолжить)|невозможно\s+перевести|не\s+удалось\s+перевести|перевод\s+(?:невозможен|недоступен|заблокирован|пропущен)|откровенн\w+\s+сексуальн\w+|наруша\w+\s+правил\w+|контент\s+(?:скрыт|удален|пропущен|заблокирован)|звук\s+пропущен)\b"
+    r"|(?:抱歉.*(?:无法|不能).*(?:翻译|提供|生成|处理)|无法翻译|不能翻译|内容.*(?:违规|敏感|不当|省略|已省略)))"
 )
 
 BUBBLE_REFUSAL_VALUE_REGEX = re.compile(
-    r"(?i)(?:\b(?:unable\s+to\s+translate|cannot\s+translate|can['\u2019]?t\s+translate|"
+    r"(?i)(?:\b(?:unable\s+to\s+translate|cannot\s+translate|can['\u2019]?t\s+translate|won['\u2019]?t\s+translate|"
     r"i\s+cannot\s+translate|i\s+can['\u2019]?t\s+translate|i\s+am\s+unable\s+to\s+translate|"
-    r"translation\s+(?:unavailable|blocked|refused|failed|error)|content\s+(?:filtered|blocked|censored|policy)|"
-    r"safety\s+(?:filter|policy|guidelines)|inappropriate\s+content|explicit\s+content|"
-    r"not\s+able\s+to\s+translate|refuse\s+to\s+translate)\b|"
-    r"^\s*[\[\(\<\*\-]*\s*(?:unable\s+to\s+translate|cannot\s+translate|untranslatable|censored|filtered|blocked|nsfw|error|refused|"
-    r"не\s+удалось\s+перевести|невозможно\s+перевести|цензура|заблокировано|ошибка\s+перевода)\s*[\]\)\>\*\-\!\.]*\s*$|"
-    r"\b(?:не\s+удалось\s+перевести|невозможно\s+перевести|я\s+не\s+могу\s+перевести|перевод\s+заблокирован)\b|"
-    r"(?:无法翻译|不能翻译|内容违规|敏感内容))"
+    r"translation\s+(?:is\s+|was\s+)?(?:unavailable|blocked|refused|failed|error|omitted)|"
+    r"content\s+(?:is\s+|was\s+|has\s+been\s+)?(?:filtered|blocked|censored|policy|omitted|redacted|removed)|"
+    r"safety\s+(?:filter|policy|guidelines)|inappropriate\s+content|explicit\s+(?:\w+\s+){0,3}(?:content|dialogue|text|line|language)|incestuous\s+(?:content|dialogue|text)|minor[\-\s]coded|"
+    r"(?:sound|sfx|dialogue|text|line|speech|explicit|nsfw|sexual|part|section|phrase|audio)\s+(?:was\s+|is\s+|has\s+been\s+)?(?:omitted|redacted|censored|filtered|blocked|removed)|"
+    r"(?:was|is|has\s+been)\s+(?:omitted|redacted|censored|filtered)\s+(?:due\s+to|for|because)|"
+    r"omitted\s+due\s+to|not\s+able\s+to\s+translate|refuse\s+to\s+translate)\b|"
+    r"[\[\(\<\*]\s*[^\]\)\>\*]{0,60}\b(?:omit(?:ted)?|censor(?:ed)?|redact(?:ed)?|filter(?:ed)?|block(?:ed)?|refus(?:ed)?|untranslat(?:able|ed)|explicit|incest\w*|nsfw|inappropriate|safety\s+policy)\b[^\]\)\>\*]{0,40}[\]\)\>\*]|"
+    r"^\s*[\[\(\<\*\-]*\s*(?:unable\s+to\s+translate|cannot\s+translate|untranslatable|censored|filtered|blocked|nsfw|error|refused|omitted|redacted|sound\s+omitted|content\s+omitted|explicit\s+content\s+was\s+omitted|explicit\s+content\s+omitted|"
+    r"не\s+удалось\s+перевести|невозможно\s+перевести|цензура|заблокировано|ошибка\s+перевода|пропущено|звук\s+пропущен|контент\s+пропущен)\s*[\]\)\>\*\-\!\.]*\s*$|"
+    r"\b(?:не\s+удалось\s+перевести|невозможно\s+перевести|я\s+не\s+могу\s+перевести|перевод\s+заблокирован|контент\s+пропущен|звук\s+пропущен|откровенный\s+контент\s+пропущен)\b|"
+    r"(?:无法翻译|不能翻译|内容违规|敏感内容|内容已省略|省略))"
 )
 
 CLOUD_CENSORSHIP_ERROR_REGEX = re.compile(
@@ -453,7 +459,6 @@ SHORT_INTERJECTIONS_RU = {
     "ほんと": "Правда?",
     "ホント": "Правда?",
     "本当": "Правда?",
-    "うそ": "Не может быть!",
     "ウソ": "Не может быть!",
     "嘘": "Ложь!",
     "いや": "Нет!",
@@ -512,6 +517,84 @@ SHORT_INTERJECTIONS_RU = {
     "운": "Угу!",
     "はい": "Да!",
     "いいえ": "Нет!",
+    "お": "О!",
+    "おっ": "О!",
+    "おお": "Ого!",
+    "おおっ": "Ого!",
+    "あぁ": "А-ах...",
+    "あぁっ": "А-ах!",
+    "ああん": "А-ахн!",
+    "あふ": "Ахф...",
+    "あふっ": "Ахф!",
+    "う": "Ух...",
+    "うっ": "Ух!",
+    "うぅ": "У-ух...",
+    "うぅっ": "У-ух!",
+    "うう": "У-у...",
+    "ううっ": "У-ух!",
+    "んぅ": "Мм...",
+    "んぅっ": "Ммх!",
+    "んあ": "Мм-ах!",
+    "んあっ": "Мм-ах!",
+    "はあ": "Ха-а...",
+    "はあっ": "Ха-а!",
+    "はあはあ": "Ха-а... ха-а...",
+    "はふ": "Хаф...",
+    "はふっ": "Хаф!",
+    "ふぅ": "Фух...",
+    "ふぅっ": "Фух!",
+    "ふう": "Фух...",
+    "ふうっ": "Фух!",
+    "ア": "Ах!",
+    "アッ": "Ах!",
+    "アア": "А-ах...",
+    "アアッ": "А-ах!",
+    "アン": "Ахн!",
+    "アンッ": "Ахн!",
+    "ウ": "Ух...",
+    "ウッ": "Ух!",
+    "ン": "Мм...",
+    "ンッ": "Мм!",
+    "ハァ": "Ха-а...",
+    "ハァッ": "Ха-а!",
+    "フゥ": "Фух...",
+    "フゥッ": "Фух!",
+    "わっ": "Вах!",
+    "ワッ": "Вах!",
+    "くっ": "Кх!",
+    "クッ": "Кх!",
+    "ちっ": "Ц!",
+    "チッ": "Ц!",
+    "へっ": "Хех!",
+    "ヘッ": "Хех!",
+    "へぇ": "Ого...",
+    "ヘェ": "Ого...",
+    "ほっ": "Фух...",
+    "ホッ": "Фух...",
+    "ちゅ": "Чмок!",
+    "ちゅっ": "Чмок!",
+    "チュ": "Чмок!",
+    "チュッ": "Чмок!",
+    "ぎゅ": "Сжим!",
+    "ぎゅっ": "Сжим!",
+    "ギュ": "Сжим!",
+    "ギュッ": "Сжим!",
+    "どき": "Тук-тук!",
+    "どきっ": "Тук!",
+    "ドキ": "Тук-тук!",
+    "ドキッ": "Тук!",
+    "びく": "Дёрг!",
+    "びくっ": "Дёрг!",
+    "ビク": "Дёрг!",
+    "ビクッ": "Дёрг!",
+    "くす": "Хи-хи...",
+    "くすっ": "Хи-хи!",
+    "クス": "Хи-хи...",
+    "クスッ": "Хи-хи!",
+    "ごく": "Глоть!",
+    "ごくっ": "Глоть!",
+    "ゴク": "Глоть!",
+    "ゴクッ": "Глоть!",
 }
 
 SHORT_INTERJECTIONS_EN = {
@@ -615,6 +698,86 @@ SHORT_INTERJECTIONS_EN = {
     "うん": "Yeah!",
     "はい": "Yes!",
     "いいえ": "No!",
+    "お": "Oh!",
+    "おっ": "Oh!",
+    "おお": "Ooh!",
+    "おおっ": "Whoa!",
+    "あぁ": "Aah...",
+    "あぁっ": "Aah!",
+    "ああん": "Aahn!",
+    "あふ": "Ahf...",
+    "あふっ": "Ahf!",
+    "う": "Ugh...",
+    "うっ": "Ugh!",
+    "うぅ": "Uugh...",
+    "うぅっ": "Uugh!",
+    "うう": "Uuu...",
+    "ううっ": "Uugh!",
+    "んぅ": "Mmn...",
+    "んぅっ": "Mmnh!",
+    "んあ": "Mmah!",
+    "んあっ": "Mmah!",
+    "はあ": "Haa...",
+    "はあっ": "Haa!",
+    "はあはあ": "Haa... haa...",
+    "はふ": "Haf...",
+    "はふっ": "Haf!",
+    "ふぅ": "Phew...",
+    "ふぅっ": "Phew!",
+    "ふう": "Phew...",
+    "ふうっ": "Phew!",
+    "ア": "Ah!",
+    "アッ": "Ah!",
+    "アア": "Aah...",
+    "アアッ": "Aah!",
+    "アン": "Ahn!",
+    "アンッ": "Ahn!",
+    "ウ": "Ugh...",
+    "ウッ": "Ugh!",
+    "ン": "Mm...",
+    "ンッ": "Mm!",
+    "ハァ": "Haa...",
+    "ハァッ": "Haa!",
+    "フゥ": "Phew...",
+    "フゥッ": "Phew!",
+    "わっ": "Wah!",
+    "ワッ": "Wah!",
+    "くっ": "Ghh!",
+    "クッ": "Ghh!",
+    "ちっ": "Tsk!",
+    "チッ": "Tsk!",
+    "へっ": "Heh!",
+    "ヘッ": "Heh!",
+    "へぇ": "Oh...",
+    "ヘェ": "Oh...",
+    "ほっ": "Phew...",
+    "ホッ": "Phew...",
+    "いたっ": "Ow!",
+    "痛っ": "Ow!",
+    "ちゅ": "Chu!",
+    "ちゅっ": "Mwah!",
+    "チュ": "Chu!",
+    "チュッ": "Mwah!",
+    "ぎゅ": "Squeeze!",
+    "ぎゅっ": "Squeeze!",
+    "ギュ": "Squeeze!",
+    "ギュッ": "Squeeze!",
+    "どき": "Badump!",
+    "どきっ": "Thump!",
+    "ドキ": "Badump!",
+    "ドキッ": "Thump!",
+    "びく": "Twitch!",
+    "びくっ": "Flinch!",
+    "ビク": "Twitch!",
+    "ビクッ": "Flinch!",
+    "くす": "Heh...",
+    "くすっ": "Giggle!",
+    "クス": "Heh...",
+    "クスッ": "Giggle!",
+    "ごく": "Gulp!",
+    "ごくっ": "Gulp!",
+    "ゴク": "Gulp!",
+    "ゴクッ": "Gulp!",
 }
 
 SHORT_INTERJECTIONS_ROMAJI = {
@@ -660,7 +823,7 @@ PURE_SIGH_KEYS_JA: set[str] = {
     "ん", "んっ", "んん", "んんっ",
     "はぁ", "はぁっ", "はぁはぁ",
     "ひゃ", "ひゃっ", "きゃ", "きゃっ",
-    "え", "えっ", "お", "おっ", "おお", "う", "うっ", "ふぅ", "ふっ",
+    "う", "うっ", "ふぅ", "ふっ",
 }
 
 TRANSLATED_SIGH_REGEX = re.compile(
@@ -1528,11 +1691,12 @@ class OllamaTranslator:
         }
         self.auto_save_web_pages: bool = True
         self.web_save_dir: str = str(self.config_path.resolve().parent / "Saved_Manga")
-        self.text_filter_mode: str = "dialogue_only"
-        self.skip_sighs: bool = True
+        self.text_filter_mode: str = "bubbles_only"
+        self.skip_sighs: bool = False
         self.skip_sfx: bool = True
         self.detect_free_text: bool = False
-        self.min_text_length: int = 2
+        self.min_text_length: int = 1
+        self._filter_v109_migrated: bool = True
         self.min_font_size: int = 12
         self.max_font_size: int = 32
         self.uppercase: bool = False
@@ -1793,6 +1957,20 @@ class OllamaTranslator:
                     self.ui_settings.update(data["ui_settings"])
                 if isinstance(data.get("glossary"), list):
                     self.glossary = normalize_glossary_entries(data["glossary"])
+                # Автоматическая миграция старых настроек фильтрации (v1.0.9), чтобы реплики внутри бабблов не пропускались без ведома пользователя
+                if not data.get("filter_v109_migrated"):
+                    self.text_filter_mode = "bubbles_only"
+                    self.skip_sighs = False
+                    self.min_text_length = 1
+                    self._filter_v109_migrated = True
+                    try:
+                        data["text_filter_mode"] = "bubbles_only"
+                        data["skip_sighs"] = False
+                        data["min_text_length"] = 1
+                        data["filter_v109_migrated"] = True
+                        self.config_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+                    except Exception:
+                        pass
             except Exception as exc:
                 logger.warning("Не удалось прочитать config.json: %s", exc)
 
@@ -1900,6 +2078,7 @@ class OllamaTranslator:
             self._cached_cloud_probe.clear()
 
         cfg: dict[str, Any] = {
+            "filter_v109_migrated": True,
             "unsloth_url": self.unsloth_url,
             "unsloth_api_key": self.unsloth_api_key,
             "selected_model": self._resolved_model or "auto",
@@ -1939,7 +2118,7 @@ class OllamaTranslator:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "MikoMangaStudio/1.0.0",
+            "User-Agent": "MikoMangaStudio/1.0.8",
         }
         if self.unsloth_api_key:
             headers["Authorization"] = f"Bearer {self.unsloth_api_key}"
@@ -2147,7 +2326,7 @@ class OllamaTranslator:
 
         target_filename = default_filename
         api_url = f"https://huggingface.co/api/models/{hf_repo}"
-        dl_headers = {"User-Agent": "MikoMangaStudio/1.0.0 (Python-GGUF-Bypass)"}
+        dl_headers = {"User-Agent": "MikoMangaStudio/1.0.8 (Python-GGUF-Bypass)"}
         hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
         if hf_token:
             dl_headers["Authorization"] = f"Bearer {hf_token}"
@@ -2280,7 +2459,8 @@ class OllamaTranslator:
             raise RuntimeError(f"Ошибка `ollama create {local_tag}`: {err_out}")
 
         full_id = f"ollama::{local_tag}"
-        if set_as_default:
+        is_pure_ocr = "glm-ocr" in local_tag.lower()
+        if set_as_default and not is_pure_ocr:
             self.save_config(selected_model=full_id)
         else:
             self._cache_timestamp = 0.0
@@ -2412,17 +2592,23 @@ class OllamaTranslator:
                             self.pull_state["message"] = status_text
 
             full_id = f"ollama::{clean_tag}"
-            if set_as_default:
+            is_pure_ocr = "glm-ocr" in clean_tag.lower()
+            if set_as_default and not is_pure_ocr:
                 self.save_config(selected_model=full_id)
             else:
                 self._cache_timestamp = 0.0
 
             await self.list_available_models(force_refresh=True)
+            done_msg = (
+                f"Vision-OCR модель {clean_tag} успешно скачана и готова для VLM-OCR!"
+                if is_pure_ocr
+                else f"Модель {clean_tag} успешно скачана и установлена по умолчанию!"
+            )
             self.pull_state.update(
                 {
                     "status": "completed",
                     "progress_pct": 100.0,
-                    "message": f"Модель {clean_tag} успешно скачана и установлена по умолчанию!",
+                    "message": done_msg,
                 }
             )
             print(f"[Ollama Pull] УСПЕХ! Модель {clean_tag} готова и выбрана по умолчанию.\n", flush=True)
@@ -2637,6 +2823,7 @@ class OllamaTranslator:
                         "name": f"{rec['title']} [📥 Скачать в Ollama]",
                         "provider": "ollama",
                         "installed": "false",
+                        "size_gb": rec.get("size_gb", ""),
                     }
                 )
 
@@ -2696,7 +2883,11 @@ class OllamaTranslator:
                 return cloud_models[0]["id"]
 
         installed_ollama = [
-            m for m in available if m["provider"] == "ollama" and m.get("installed") == "true"
+            m
+            for m in available
+            if m["provider"] == "ollama"
+            and str(m.get("installed")).lower() == "true"
+            and "glm-ocr" not in m["id"].lower()
         ]
 
         for m in installed_ollama:
@@ -2865,8 +3056,19 @@ class OllamaTranslator:
             "translation error",
             "translation blocked",
             "translation refused",
+            "translation omitted",
             "content filtered",
             "content blocked",
+            "content omitted",
+            "explicit content omitted",
+            "explicit incestuous content omitted",
+            "explicit sexual content omitted",
+            "sound omitted",
+            "sfx omitted",
+            "dialogue omitted",
+            "text omitted",
+            "omitted",
+            "redacted",
             "censored",
             "filtered",
             "nsfw",
@@ -2875,6 +3077,32 @@ class OllamaTranslator:
             "перевод невозможен",
             "перевод недоступен",
             "цензура",
+            "пропущено",
+            "звук пропущен",
+            "контент пропущен",
+        ):
+            return True
+        if any(kw in low for kw in ("omitted", "redacted", "censored")) and any(
+            w in low
+            for w in (
+                "explicit",
+                "incest",
+                "sexual",
+                "content",
+                "sound",
+                "sfx",
+                "dialogue",
+                "text",
+                "line",
+                "speech",
+                "part",
+                "section",
+                "censored",
+                "policy",
+                "safety",
+                "was",
+                "is",
+            )
         ):
             return True
         if low.startswith((
@@ -3039,22 +3267,12 @@ class OllamaTranslator:
         if not norm_cand:
             return False
 
-        if norm_cand in ROMAJI_PHRASE_FALLBACK_EN:
+        if norm_cand in ROMAJI_PHRASE_FALLBACK_EN or norm_cand.replace(" ", "") in ROMAJI_PHRASE_FALLBACK_EN:
             return True
 
-        # Проверяем прямое совпадение с автоматической транслитерацией японского оригинала в Ромадзи
-        if orig_text and CJK_REGEX.search(orig_text):
-            rom_local = re.sub(r"[^a-zA-Z\s']", " ", japanese_to_romaji_local(orig_text).lower()).strip()
-            rom_local = re.sub(r"\s+", " ", rom_local)
-            rom_kana = re.sub(r"[^a-zA-Z\s']", " ", kana_to_romaji(orig_text).lower()).strip()
-            rom_kana = re.sub(r"\s+", " ", rom_kana)
-            cand_compact = norm_cand.replace(" ", "")
-            if len(cand_compact) >= 3:
-                if rom_local and cand_compact == rom_local.replace(" ", ""):
-                    return True
-                if rom_kana and cand_compact == rom_kana.replace(" ", ""):
-                    return True
-
+        # ВАЖНО: Не сравниваем слепо `cand_compact == kana_to_romaji(orig_text)`, так как имена персонажей
+        # (スズネ -> Suzune, タダシ -> Tadashi, カズ -> Kazu) и заимствования катаканой (ビデオ -> Video, ホテル -> Hotel)
+        # при правильном переводе на английский совпадают с транслитерацией! Проверяем только по словарю японских слов `ROMAJI_LEAK_WORDS_SET`.
         words = [w.strip("'") for w in norm_cand.split() if w.strip("'")]
         if not words:
             return False
@@ -3104,6 +3322,10 @@ class OllamaTranslator:
                 compact_p = norm_p.replace(" ", "")
                 if compact_p in fb_map:
                     return fb_map[compact_p]
+                # Пословное спасение одиночных японских слов из ROMAJI_PHRASE_FALLBACK
+                words_p = norm_p.split()
+                if 1 <= len(words_p) <= 3 and all(w in fb_map for w in words_p):
+                    return " ".join(fb_map[w] for w in words_p)
         return ""
 
     @staticmethod
@@ -3232,7 +3454,7 @@ class OllamaTranslator:
             "Rules:\n"
             "1. Translate the MEANING of every dialogue line, exclamation, and interjection into natural, idiomatic English. NEVER transliterate sentences or words into Japanese Romaji (e.g., write 'Stop it!', NEVER 'Yamete!'; write 'Wait!', NEVER 'Chotto matte!'; write 'Feels so good...', NEVER 'Kimochiii').\n"
             "2. Only personal character names should be romanized phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei).\n"
-            "3. Output zero Japanese/Korean/Chinese characters and NEVER skip any JSON key.\n"
+            "3. Output zero Japanese/Korean/Chinese characters, NEVER skip any JSON key, and NEVER output censorship/omission placeholders like '[Explicit content omitted]', '[Sound omitted]', or '[Censored]'.\n"
             "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys.\n"
             f"{TYPESETTING_AWARE_RULE_EN}"
             f"{small_batch_guard}{context_block_en}"
@@ -3604,15 +3826,13 @@ class OllamaTranslator:
                 pass
         expected_keys_list = list(extracted_input_dict.keys()) if extracted_input_dict else None
         if is_sugoi:
-            # Защита Блока 3: если исходный язык в промпте — китайский или корейский, не делаем холостых запросов к Sugoi!
-            low_prompts = (system_prompt + " " + user_prompt).lower()
+            # Защита Блока 3: проверяем ТОЛЬКО первую строку system_prompt, чтобы слова в диалогах/контексте не отменяли вызов Sugoi!
+            first_sys_line = (system_prompt.splitlines()[0] if system_prompt else "").lower()
             is_non_ja_source = any(
-                marker in low_prompts
+                marker in first_sys_line
                 for marker in (
                     "chinese manhua",
                     "korean manhwa",
-                    "from chinese",
-                    "from korean",
                     "китайской маньхуа",
                     "корейской манхвы",
                 )
@@ -3762,18 +3982,20 @@ class OllamaTranslator:
                 except Exception:
                     pass
             items_cnt = len(expected_keys_list) if expected_keys_list is not None else 20
-            # Ступенчатые адаптивные таймауты (<=15 фраз -> 22с, 16..70 фраз -> 45с, >70 фраз -> 65с вместо висения по 90с!)
+            # Адаптивные таймауты с запасом (<=15 фраз -> 48с, 16..70 фраз -> 68с, >70 фраз -> 90с),
+            # чтобы не обрывать почти готовый ответ облачного ИИ по ReadTimeout на 22-й секунде!
             if items_cnt <= 15:
-                req_timeout = httpx.Timeout(22.0, connect=10.0)
+                req_timeout = httpx.Timeout(48.0, connect=10.0)
             elif items_cnt <= 70:
-                req_timeout = httpx.Timeout(45.0, connect=12.0)
+                req_timeout = httpx.Timeout(68.0, connect=12.0)
             else:
-                req_timeout = httpx.Timeout(min(65.0, float(self.timeout_sec)), connect=15.0)
+                req_timeout = httpx.Timeout(max(85.0, float(self.timeout_sec)), connect=15.0)
 
             # Для внешних облачных API (ModuleAPI, DeepSeek, OpenRouter) используем строго выбранную модель
             # и НИКОГДА не переключаем deepseek-v4-flash на дорогую deepseek-v4-pro!
             if is_cloud:
-                # БЛОК 4.2: Включаем response_format={"type": "json_object"} и max_tokens=8192 (чтобы JSON никогда не обрезался на 200 репликах!)
+                is_moduleapi = "moduleapi" in self.unsloth_url.lower()
+                omit_resp_fmt = bool(getattr(self, "_cloud_omit_response_format", False)) or is_moduleapi
                 payload_cloud: dict[str, Any] = {
                     "model": model_name,
                     "messages": [
@@ -3781,10 +4003,11 @@ class OllamaTranslator:
                         {"role": "user", "content": user_prompt},
                     ],
                     "temperature": 0.1,
-                    "max_tokens": 8192 if items_cnt > 80 else 4096,
+                    "max_tokens": 4096 if (omit_resp_fmt or items_cnt <= 80) else 8192,
                     "stream": False,
-                    "response_format": {"type": "json_object"},
                 }
+                if not omit_resp_fmt:
+                    payload_cloud["response_format"] = {"type": "json_object"}
                 last_cloud_err: Exception | None = None
                 max_attempts = 2 if items_cnt <= 15 else 3
                 for attempt in range(max_attempts):
@@ -3807,6 +4030,7 @@ class OllamaTranslator:
                                 self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
                                 return {"__refusal__": self.last_refusal_message}
                             if response.status_code in (400, 422) and ("response_format" in payload_cloud or payload_cloud.get("max_tokens", 4096) > 4096):
+                                self._cloud_omit_response_format = True
                                 payload_cloud.pop("response_format", None)
                                 payload_cloud["max_tokens"] = 4096
                                 response = await client.post(
@@ -4075,6 +4299,10 @@ class OllamaTranslator:
             c = self._clean_translated_text(cand_str, target_lang=t_lang)
             if not c or self._is_bubble_refusal_value(c) or self._is_hallucinated_translation(c, orig_val):
                 return False
+            if orig_val and not self._contains_cjk(orig_val):
+                return True
+            if re.search(r"[0-9]", c) and not re.search(r"[A-Za-zА-Яа-яЁё]", c):
+                return True
             if t_lang == "ru":
                 return bool(re.search(r"[А-Яа-яЁё]", c))
             if t_lang == "en":
@@ -4197,23 +4425,30 @@ class OllamaTranslator:
                         user_prompt=min_usr,
                     )
                     sub_res.pop("__refusal__", None)
+                    sub_res.pop("__partial_refusal__", None)
+                    for rk_san in [ks for ks, vs in list(sub_res.items()) if self._is_bubble_refusal_value(vs)]:
+                        sub_res.pop(rk_san, None)
                     if sub_res:
                         translated_map.update(sub_res)
                         for k_san, v_san in sub_res.items():
-                            if v_san:
+                            if v_san and not self._is_bubble_refusal_value(v_san):
                                 chunk_prov[k_san] = {
                                     "source": "llm_sanitized_retry",
                                     "note": f"Переведено через API ({active_model}) после санитизации триггеров цензуры",
                                 }
 
-        # Сначала подставляем только точные короткие междометия по оригиналу (<= 5 символов),
-        # а все длинные фразы и фразы с ошибочным Ромадзи отправляем на полноценный доперевод через ИИ!
+        # Сначала мгновенно (за 0 мс и 0 токенов) спасаем короткие междометия и известные фразы из словаря Ромадзи,
+        # чтобы не запускать лишний проход ИИ ради одиночных восклицаний вроде 'Yamete!' / 'Dame!'
         for k, orig_val in source_map.items():
             cur_v = translated_map.get(k, "")
             if not cur_v or not _is_valid_target_translation(cur_v, orig_val):
-                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_val)
+                has_q_inner = ("?" in orig_val) or ("？" in orig_val)
+                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_val)
                 if norm_orig in interj_dict and len(norm_orig) <= 5:
-                    translated_map[k] = interj_dict[norm_orig]
+                    d_val = interj_dict[norm_orig]
+                    if has_q_inner and not d_val.endswith("?"):
+                        d_val = re.sub(r"[!\.…]+$", "", d_val) + "?"
+                    translated_map[k] = d_val
                     self.diagnostics_stats["dict_interjections_used_count"] = (
                         int(self.diagnostics_stats.get("dict_interjections_used_count") or 0) + 1
                     )
@@ -4221,7 +4456,16 @@ class OllamaTranslator:
                         "source": "interjection_dict",
                         "note": "Переведено по встроенному словарю коротких междометий",
                     }
-                elif t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
+                    continue
+                rescued_pre = self._rescue_romaji_or_interjection(cur_v, orig_val, t_lang)
+                if rescued_pre and _is_valid_target_translation(rescued_pre, orig_val):
+                    translated_map[k] = rescued_pre
+                    chunk_prov[k] = {
+                        "source": "romaji_rescue_dict",
+                        "note": "Мгновенный перевод частой фразы по встроенному словарю (0 запросов к ИИ)",
+                    }
+                    continue
+                if t_lang == "romaji" and KANA_ANY_REGEX.search(orig_val) and not re.search(r"[\u4e00-\u9fff]", orig_val):
                     translated_map[k] = self._clean_translated_text(kana_to_romaji(orig_val), target_lang="romaji")
                     chunk_prov[k] = {
                         "source": "romaji_local",
@@ -4258,6 +4502,40 @@ class OllamaTranslator:
                         )
                     else:
                         bad_reason_by_k[k] = "невалидный ответ ИИ"
+
+            # Если отказа цензуры НЕ было (not was_refusal) и остался всего 1–2 мелких блока (например, вздох/шум/имя),
+            # не тратим время и запросы на повторный вызов ИИ: пробуем спасти существующий ответ или локальный словарь!
+            if bad_keys and not was_refusal and len(bad_keys) <= 2:
+                still_bad: list[str] = []
+                for bk_minor in bad_keys:
+                    cand_minor = self._clean_translated_text(translated_map.get(bk_minor, ""), target_lang=t_lang)
+                    orig_minor = source_map[bk_minor]
+                    resc_minor = self._rescue_romaji_or_interjection(cand_minor, orig_minor, t_lang)
+                    if resc_minor:
+                        translated_map[bk_minor] = resc_minor
+                        chunk_prov[bk_minor] = {
+                            "source": "romaji_rescue_dict",
+                            "note": "Спасено локальным словарем без повторного запроса к ИИ",
+                        }
+                    elif cand_minor and not self._contains_cjk(cand_minor) and not self._is_bubble_refusal_value(cand_minor):
+                        translated_map[bk_minor] = cand_minor
+                        chunk_prov[bk_minor] = {
+                            "source": "llm",
+                            "note": f"Сохранен ответ первого прохода ({active_model}) без лишнего ретрая",
+                        }
+                    else:
+                        has_q_m = ("?" in orig_minor) or ("？" in orig_minor)
+                        norm_m = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_minor)
+                        if not has_q_m and norm_m in PURE_SIGH_KEYS_JA:
+                            # Только чистый вздох из PURE_SIGH_KEYS_JA пропускаем без доперевода; короткие реплики (1-3 кандзи/каны) отправляем в локальный фоллбэк!
+                            translated_map[bk_minor] = ""
+                            chunk_prov[bk_minor] = {
+                                "source": "skipped_sigh_orig",
+                                "note": f"Короткий вздох «{orig_minor}» пропущен без повторного запроса к ИИ",
+                            }
+                        else:
+                            still_bad.append(bk_minor)
+                bad_keys = still_bad
 
             if bad_keys:
                 sample_bad = "; ".join(
@@ -4388,18 +4666,19 @@ class OllamaTranslator:
                                         kr: source_map[kr]
                                         for kr in (missing_after_cloud_retry if missing_after_cloud_retry else b_sub)
                                     }
-                                    raw_json = json.dumps(loc_target_source, ensure_ascii=False, separators=(",", ":"))
-                                    loc_sys, loc_usr = self._get_minimal_retry_prompts(t_lang, raw_json)
-                                    loc_retry_res = await self._call_ollama_direct(
+                                    loc_retry_res = await self._translate_map_via_local_ollama(
                                         client=client,
-                                        ollama_model_name=loc_model,
-                                        system_prompt=loc_sys,
-                                        user_prompt=loc_usr,
-                                        persist_as_default=False,
+                                        source_map=loc_target_source,
+                                        source_lang=source_lang,
+                                        target_lang=t_lang,
+                                        context_lines=context_lines,
+                                        glossary_entries=eff_glossary,
+                                        local_model_id=loc_model,
                                     )
-                                    loc_retry_res.pop("__refusal__", None)
                                     if loc_retry_res:
-                                        retry_map.update(loc_retry_res)
+                                        for kr_l, vr_l in loc_retry_res.items():
+                                            if vr_l and not self._is_bubble_refusal_value(vr_l):
+                                                retry_map[kr_l] = vr_l
                         except Exception as retry_exc:
                             logger.warning("Подгруппа доперевода (%d блоков) не удалась: %s", len(b_sub), retry_exc)
 
@@ -4611,9 +4890,31 @@ class OllamaTranslator:
                 }
                 continue
 
+            # 0. Если в блоке вообще нет CJK-символов (например, числовой шум штриховки '7755', '111' или уже латиница/кириллица) —
+            # никогда не отправляем его в ИИ и не тратим токены/запросы!
+            if not self._contains_cjk(orig_raw):
+                if not re.search(r"[A-Za-zА-Яа-яЁё]", orig_raw):
+                    translated_map[k] = ""
+                    cached_hits += 1
+                    block_prov[k] = {
+                        "source": "skipped_sigh_orig",
+                        "note": f"Числовой/символьный артефакт без букв «{orig_raw}» пропущен (0 токенов)",
+                    }
+                else:
+                    translated_map[k] = self._clean_translated_text(orig_raw, target_lang=t_lang)
+                    cached_hits += 1
+                    block_prov[k] = {
+                        "source": "cache",
+                        "note": "Текст уже без CJK-символов (оставлен без запроса к ИИ, 0 токенов)",
+                    }
+                continue
+
             # 1. Обработка коротких одиночных междометий/вздохов
-            norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_raw)
-            if eff_skip_sighs and norm_orig in PURE_SIGH_KEYS_JA:
+            # ВАЖНО: Если в реплике есть вопросительный знак ('?' / '？'), это осмысленный вопрос («ん?» -> «Hm?», «はぁ?» -> «Huh?»),
+            # его НИКОГДА нельзя пропускать как беззвучный вздох или превращать в утверждение с '!'
+            has_question_mark = ("?" in orig_raw) or ("？" in orig_raw)
+            norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_raw)
+            if eff_skip_sighs and not has_question_mark and norm_orig in PURE_SIGH_KEYS_JA:
                 translated_map[k] = ""
                 cached_hits += 1
                 self.diagnostics_stats["sighs_skipped_count"] = (
@@ -4624,8 +4925,23 @@ class OllamaTranslator:
                     "note": f"Короткий вздох/стон «{orig_raw}» намеренно пропущен (skip_sighs=True)",
                 }
                 continue
-            if norm_orig in interj_dict and len(norm_orig) <= 4:
-                translated_map[k] = interj_dict[norm_orig]
+            collapsed_orig = re.sub(r"(.)\1+", r"\1", norm_orig)
+            matched_interj_key = norm_orig if (norm_orig in interj_dict and len(norm_orig) <= 5) else (
+                collapsed_orig if (collapsed_orig in interj_dict and len(norm_orig) <= 7 and not re.search(r"[\u4e00-\u9fff]", norm_orig)) else ""
+            )
+            if matched_interj_key:
+                dict_val = interj_dict[matched_interj_key]
+                if has_question_mark:
+                    # Корректная передача вопросительной интонации («ん?» -> «Hm?», «はぁ?» -> «Huh?», «うん?» -> «Yeah?»)
+                    q_overrides_en = {"ん": "Hm?", "んっ": "Mm?!", "んん": "Mmm?", "はぁ": "Huh?", "え": "Eh?", "えっ": "Eh?!", "ええ": "What?!", "うん": "Yeah?", "はい": "Yes?", "お": "Oh?", "おっ": "Oh?"}
+                    q_overrides_ru = {"ん": "Мм?", "んっ": "Мм?!", "んん": "Мм-м?", "はぁ": "Ась?", "え": "Э?", "えっ": "Э?!", "ええ": "Чего?!", "うん": "Угу?", "はい": "Да?", "お": "О?", "おっ": "О?"}
+                    if t_lang == "en" and norm_orig in q_overrides_en:
+                        dict_val = q_overrides_en[norm_orig]
+                    elif t_lang == "ru" and norm_orig in q_overrides_ru:
+                        dict_val = q_overrides_ru[norm_orig]
+                    elif not dict_val.endswith("?"):
+                        dict_val = re.sub(r"[!\.…]+$", "", dict_val) + "?"
+                translated_map[k] = dict_val
                 cached_hits += 1
                 self.diagnostics_stats["dict_interjections_used_count"] = (
                     int(self.diagnostics_stats.get("dict_interjections_used_count") or 0) + 1
@@ -4703,7 +5019,7 @@ class OllamaTranslator:
                 if not cl or "=>" not in cl:
                     continue
                 lhs, rhs = [p.strip() for p in cl.split("=>", 1)]
-                if self._is_hallucinated_translation(rhs, lhs):
+                if self._is_bubble_refusal_value(rhs) or self._is_hallucinated_translation(rhs, lhs):
                     continue
                 if t_lang == "ru" and not re.search(r"[А-Яа-яЁё]", rhs):
                     continue

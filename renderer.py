@@ -64,6 +64,8 @@ DEFAULT_FONT_PATHS: list[str] = [
     "MangaTemple.ttf",
     "mangat.ttf",
     "Chinacat.ttf",
+    "C:/Windows/Fonts/comicbd.ttf",
+    "C:/Windows/Fonts/comic.ttf",
     "C:/Windows/Fonts/seguisb.ttf",
     "C:/Windows/Fonts/trebucbd.ttf",
     "C:/Windows/Fonts/segoeuib.ttf",
@@ -89,12 +91,22 @@ SYSTEM_FONT_PRESETS: dict[str, list[str]] = {
         "Manga Temple.ttf",
         "MangaTemple.ttf",
         "mangat.ttf",
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/comic.ttf",
         "C:/Windows/Fonts/seguisb.ttf",
         "C:/Windows/Fonts/trebucbd.ttf",
         "C:/Windows/Fonts/segoeuib.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
         "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
         "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+    ],
+    "Comic": [
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/comic.ttf",
+        "v_CCWildWordsLower.ttf",
+        "v_CCWildWords.ttf",
+        "C:/Windows/Fonts/seguisb.ttf",
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     ],
     "thought": [
         "v_CCWildWordsItalic.ttf",
@@ -175,6 +187,8 @@ SYSTEM_FONT_PRESETS: dict[str, list[str]] = {
         "v_CCWildWords.ttf",
         "ccwildwords.ttf",
         "wildwords.ttf",
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/comic.ttf",
         "C:/Windows/Fonts/seguisb.ttf",
         "C:/Windows/Fonts/trebucbd.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -469,7 +483,7 @@ class MangaRenderer:
             "hint_message": (
                 ""
                 if has_custom
-                else "Папка fonts/ пуста — используется системный гротеск (Segoe UI Semibold / Trebuchet MS). "
+                else "Папка fonts/ пуста — по умолчанию используется встроенный комиксный шрифт Comic Sans MS Bold (comicbd.ttf). "
                      "Для эталонного сканлейта рекомендуем положить в папку fonts/ шрифты: "
                      "CC Wild Words, Anime Ace v05, Manga Temple, Chinacat."
             ),
@@ -505,7 +519,8 @@ class MangaRenderer:
     def list_available_fonts(self) -> list[dict[str, str]]:
         """Возвращает список доступных шрифтовых пресетов и пользовательских `.ttf`/`.otf` файлов из папки `fonts/` (без Comic Sans)."""
         items: list[dict[str, str]] = [
-            {"id": "default", "name": "✨ По умолчанию (Авто по роли бабла)"},
+            {"id": "default", "name": "✨ По умолчанию (Comic Sans Bold / CC Wild Words)"},
+            {"id": "Comic", "name": "💬 Comic Sans MS Bold (Встроенный комиксный Windows)"},
             {"id": "WildWords", "name": "🌸 CC Wild Words / Комикс (Диалог)"},
             {"id": "AnimeAce", "name": "🎌 Anime Ace v05 / Сканлейт"},
             {"id": "MangaTemple", "name": "🏮 Manga Temple (Диалог / Нарратив)"},
@@ -537,9 +552,9 @@ class MangaRenderer:
         if preset not in ("dialogue", "thought", "shout", "whisper", "narration", "sfx"):
             preset = "dialogue"
 
-        # Защита от устаревших ссылок на Comic Sans в сохраненных проектах
+        # Поддержка встроенного комиксного шрифта Windows Comic Sans MS Bold
         if fam.lower() in ("comic", "comicbd.ttf", "comic.ttf", "comic sans", "comic sans ms"):
-            fam = "Segoe"
+            fam = "Comic"
 
         if fam and fam.lower() not in ("default", "auto", "none"):
             local_cand = self.fonts_dir / fam
@@ -1240,13 +1255,12 @@ class MangaRenderer:
         is_narrow_bubble: bool = False,
     ) -> list[int]:
         """
-        Блок 3.3: Раздельная политика переноса слов (RU vs EN):
-        - Для русского языка (RU): порог длины слова от 9 букв (в узких баблах `safe_w < 140px`)
-          и от 11 букв (в обычных баблах), минимум 3 буквы до и после дефиса, соблюдение правил Грамота.ру
-          (запрет отрыва одной гласной, запрет переноса `й`, `ъ`, `ь`, `ы`, разделение удвоенных согласных посередине,
-          сохранение русских приставок `пре-`, `под-`, `раз-`, `бес-`).
-        - Для английского языка (EN): перенос только для слов >= 11 букв строго по морфемным границам
-          (`un-`, `under-`, `inter-`, `-tion`, `-ment`, `-ing`, `-able`).
+        Блок 3.3: Слоговой и морфемный перенос длинных слов (RU + EN):
+        - Для русского языка (RU): порог длины слова от 8 букв (в узких баблах) и от 10 букв (в обычных баблах),
+          минимум 3 буквы до и после дефиса, соблюдение правил слогораздела и сохранение приставок.
+        - Для английского языка (EN): морфемные границы (приставки/суффиксы) + чистый фонетический слогораздел
+          (удвоенные согласные `cancel-lation`, `ap-preciate`, `mes-saged` и границы слогов `V-C-V` / `V-C-C-V`)
+          для длинных слов в узких вертикальных баблах манги.
         """
         if "'" in core_word or "’" in core_word:
             return []
@@ -1256,29 +1270,62 @@ class MangaRenderer:
         is_cyrillic = bool(re.search(r"[а-яА-ЯёЁ]", core_word))
         is_latin = bool(re.search(r"[a-zA-Z]", core_word)) and not is_cyrillic
 
+        eff_min_part = max(3, min_part_len)
         if is_latin:
-            min_word_len = 11
-            eff_min_part = max(3, min_part_len)
+            min_word_len = 8 if is_narrow_bubble else 10
         else:
-            min_word_len = 9 if is_narrow_bubble else 11
-            eff_min_part = max(3, min_part_len)
+            min_word_len = 8 if is_narrow_bubble else 10
 
         if n < max(min_word_len, eff_min_part * 2):
             return []
 
         if is_latin:
-            morpheme_splits: list[int] = []
+            morpheme_splits: set[int] = set()
             for pfx in cls._EN_PREFIXES:
                 if low_word.startswith(pfx) and eff_min_part <= len(pfx) <= n - eff_min_part:
                     idx_p = len(pfx)
                     if any(ch in cls._VOWELS_EN for ch in core_word[idx_p:]):
-                        morpheme_splits.append(idx_p)
+                        morpheme_splits.add(idx_p)
             for sfx in cls._EN_SUFFIXES:
                 idx_s = n - len(sfx)
                 if low_word.endswith(sfx) and eff_min_part <= idx_s <= n - eff_min_part:
                     if any(ch in cls._VOWELS_EN for ch in core_word[:idx_s]):
-                        morpheme_splits.append(idx_s)
-            return sorted(set(morpheme_splits))
+                        morpheme_splits.add(idx_s)
+
+            # Дополнительный слогораздел для длинных английских слов в узких вертикальных баблах
+            for i in range(eff_min_part, n - eff_min_part + 1):
+                left_low = low_word[:i]
+                right_low = low_word[i:]
+                if not any(ch in cls._VOWELS_EN for ch in left_low):
+                    continue
+                if not any(ch in cls._VOWELS_EN for ch in right_low):
+                    continue
+                # Silent trailing 'e' protection (e.g. don't split before final -ed/-es if only vowel in right is silent e)
+                if len(right_low) <= 3 and right_low.endswith(("e", "ed", "es")):
+                    non_silent = right_low[:-1] if right_low.endswith("e") else right_low[:-2]
+                    if not any(ch in cls._VOWELS_EN for ch in non_silent) and not any(ch in cls._VOWELS_EN for ch in left_low[-2:]):
+                        continue
+                pair = left_low[-1] + right_low[0]
+                if pair in cls._EN_UNBREAKABLE_DIGRAPHS:
+                    continue
+                # 1) Разделение удвоенных согласных посередине (can-cel-la-tion, ap-pre-ci-ate, mes-saged)
+                if left_low[-1] == right_low[0] and left_low[-1] not in cls._VOWELS_EN:
+                    morpheme_splits.add(i)
+                    continue
+                # 2) Разделение между двумя согласными (V-C | C-V), например can-cel, fur-ni-ture, laun-dry
+                if left_low[-1] not in cls._VOWELS_EN and right_low[0] not in cls._VOWELS_EN:
+                    if len(left_low) >= 2 and left_low[-2] == left_low[-1]:
+                        continue
+                    if len(right_low) >= 2 and right_low[0] == right_low[1]:
+                        continue
+                    morpheme_splits.add(i)
+                    continue
+                # 3) Открытый слог перед одиночной согласной и гласной (V | C-V) для слов >= 8 букв (например fu-ji-mu-ra, no-ti-ce)
+                if n >= 8 and left_low[-1] in cls._VOWELS_EN and right_low[0] not in cls._VOWELS_EN:
+                    if len(right_low) >= 2 and right_low[1] in cls._VOWELS_EN:
+                        morpheme_splits.add(i)
+
+            return sorted(morpheme_splits)
 
         # Русский язык: морфемные приставки + фонетический слогораздел Liang-Knuth / Грамота.ру
         ru_prefix_indices: set[int] = set()
@@ -1340,10 +1387,11 @@ class MangaRenderer:
         safe_h: int = 160,
     ) -> list[str]:
         """
-        Блок 3.3: Слоговой/морфемный перенос длинных слов с раздельной политикой RU vs EN.
+        Блок 3.3: Слоговой/морфемный перенос длинных слов (вызывается при allow_hyphenation=True).
         """
         draw = self_draw
-        if self._measure_line_width(draw, word, font) <= max_width * 0.52:
+        word_px_w = self._measure_line_width(draw, word, font)
+        if word_px_w <= max_width * 0.62:
             return [word]
 
         if "-" in word and not word.startswith("-") and not word.endswith("-") and "--" not in word:
@@ -1365,13 +1413,13 @@ class MangaRenderer:
         is_cyrillic = bool(re.search(r"[а-яА-ЯёЁ]", core))
         is_latin = bool(re.search(r"[a-zA-Z]", core)) and not is_cyrillic
 
-        # Для английского языка переносы разрешены только в экстремально узких баблах (safe_w / safe_h < 0.48) и для слов >= 11 букв
+        is_narrow_bubble = (safe_w < 165) or ((safe_w / max(1.0, float(safe_h))) < 0.82)
         if is_latin:
-            if (safe_w / max(1.0, float(safe_h))) >= 0.48 or len(core) < 11:
+            min_en_len = 8 if (is_narrow_bubble or word_px_w > max_width * 0.82) else 10
+            if len(core) < min_en_len:
                 return [word]
 
-        is_narrow_bubble = safe_w < 140
-        min_ru_len = 9 if is_narrow_bubble else 11
+        min_ru_len = 8 if is_narrow_bubble else 10
         if is_cyrillic and len(core) < min_ru_len:
             return [word]
 
@@ -1390,7 +1438,7 @@ class MangaRenderer:
             part2 = f"{core[idx:]}{trail_punct}"
             w1 = self._measure_line_width(draw, part1, font)
             w2 = self._measure_line_width(draw, part2, font)
-            if w1 <= max_width * 1.15 and w2 <= max_width * 1.18:
+            if w1 <= max_width * 1.08 and w2 <= max_width * 1.12:
                 fitting_splits.append((abs(idx - mid), idx))
 
         if fitting_splits:
@@ -1403,11 +1451,11 @@ class MangaRenderer:
     @classmethod
     def _preprocess_tokens_no_orphans(cls, raw_words: list[str]) -> list[str]:
         """
-        Блок 3.2 п.4: Запрет висячих предлогов, союзов и частиц (No Orphans / Widows):
+        Блок 3.2 п.4: Обработка частиц и предлогов без принудительного склеивания длинных словосочетаний:
         - Частицы (`бы`, `ли`, `же`, `то`, `ка`, `—`, `--`, `?!`, `...`) жестко склеиваются с предыдущим словом.
-        - Однобуквенные и двухбуквенные предлоги/союзы/артикли (`в`, `к`, `с`, `у`, `о`, `а`, `и`, `не`, `ни`, `на`, `но`,
-          `по`, `за`, `из`, `от`, `до`, `I`, `a`, `an`, `the`, `to`, `in`, `of`, `on`, `at`, `or`, `by`)
-          склеиваются со следующим словом.
+        - Короткие предлоги/артикли (`THE`, `I`, `A`, `TO`, `В`, `НА`, `НЕ`) НЕ склеиваются намертво с длинными словами
+          (чтобы не образовывать неделимые 12-буквенные токены вроде `THE FUJIMURA` или `THE LAUNDRY.`, которые обрушивают кегль!),
+          а удерживаются от висения в конце строки мягким штрафом `hanging_pen` в 2D-DP!
         """
         if not raw_words:
             return []
@@ -1431,10 +1479,11 @@ class MangaRenderer:
             if (
                 i + 1 < len(step1)
                 and not has_trailing_punct
-                and clean_low in cls._SHORT_WORDS_BIND_NEXT
+                and len(clean_low) == 1
+                and clean_low in {"в", "к", "с", "у", "о", "а", "и", "a", "i"}
             ):
                 next_clean = re.sub(r"[^a-zA-Zа-яА-ЯёЁ]", "", step1[i + 1])
-                if len(next_clean) <= 9:
+                if 1 <= len(next_clean) <= 2:
                     merged.append(f"{tok} {step1[i + 1]}")
                     i += 2
                     continue
@@ -1453,18 +1502,15 @@ class MangaRenderer:
     @staticmethod
     def _lame_superellipse_factor(k: int, total_lines: int, p: float = 1.85) -> float:
         """
-        Блок 3.1: Вычисляет целевой коэффициент ширины строки k из total_lines по кривой суперэллипса Ламе (p = 1.85):
-        Для K=3 -> [0.78, 1.00, 0.78]
-        Для K=4 -> [0.72, 0.96, 0.96, 0.72]
-        Для K=5 -> [0.68, 0.91, 1.00, 0.91, 0.68]
+        Блок 3.1: Вычисляет целевой коэффициент ширины строки k из total_lines по кривой суперэллипса Ламе (p = 1.85).
         """
         if total_lines <= 1:
             return 1.0
         if total_lines == 2:
-            return 0.90
-        t_k = ((2.0 * (k + 0.5)) / float(total_lines) - 1.0) * 0.85
-        t_abs = min(0.88, abs(t_k))
-        val = max(0.55, (1.0 - (t_abs ** p)) ** (1.0 / p))
+            return 0.94
+        t_k = ((2.0 * (k + 0.5)) / float(total_lines) - 1.0) * 0.78
+        t_abs = min(0.84, abs(t_k))
+        val = max(0.68, (1.0 - (t_abs ** p)) ** (1.0 / p))
         return float(val)
 
     def _wrap_text_contour_dp(
@@ -1479,9 +1525,7 @@ class MangaRenderer:
         chord_profile: list[int] | None = None,
     ) -> str:
         """
-        Блок 3: 2D-DP алгоритм «алмазной/овальной» верстки (`Diamond / Contour Shaping`):
-        Укладывает слова по кривой суперэллипса Ламе ($p = 1.85$) и реальным хордам `safe_mask` бабла,
-        исключая формы «песочных часов», «перевернутой пирамиды», «лесенки дефисов» и висячие предлоги.
+        Блок 3: 2D-DP алгоритм «алмазной/овальной» верстки (`Diamond / Contour Shaping`).
         """
         raw_words = text.split()
         if not raw_words:
@@ -1495,24 +1539,18 @@ class MangaRenderer:
         safe_h = max(16, int(target_h if target_h and target_h > 0 else max_width))
         has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", text))
 
-        # Раздельная политика переноса слов (Блок 3.3):
-        # В русском языке умный перенос длинных слов активен в узких/средних баблах;
-        # в английском — только при allow_hyphenation=True И экстремально узком бабле (safe_w / safe_h < 0.48).
-        eff_allow_hyph = allow_hyphenation or (has_cyrillic and safe_w < 165)
-        if not has_cyrillic and (safe_w / max(1.0, float(safe_h))) >= 0.48:
-            eff_allow_hyph = False
+        eff_allow_hyph = bool(allow_hyphenation) or (has_cyrillic and safe_w < 145)
 
-        # Если вся фраза короткая (1–2 токена) и легко помещается на 1 строку в широком/круглом бабле — не дробим
         full_joined = " ".join(tokens)
         full_w = self._measure_line_width(draw, full_joined, font)
-        if len(tokens) <= 2 and full_w <= safe_w * (0.92 if elliptical_shaping else 1.02) and safe_w >= safe_h * 0.62:
+        if len(tokens) <= 2 and full_w <= safe_w * (0.95 if elliptical_shaping else 1.02) and safe_w >= safe_h * 0.55:
             return full_joined
 
         words: list[str] = []
         is_soft_hyph: list[bool] = []
         for w in tokens:
             w_len = self._measure_line_width(draw, w, font)
-            if eff_allow_hyph and " " not in w and (w_len > safe_w * 0.56 or len(w) >= (9 if safe_w < 140 else 11)):
+            if eff_allow_hyph and " " not in w and (w_len > safe_w * 0.65 or len(w) >= (8 if safe_w < 160 else 10)):
                 parts = self._split_long_word(draw, w, font, safe_w, safe_w=safe_w, safe_h=safe_h)
                 if len(parts) == 2 and parts[0].endswith("-"):
                     words.append(parts[0])
@@ -1532,7 +1570,6 @@ class MangaRenderer:
             return words[0]
 
         word_widths = [self._measure_line_width(draw, w, font) for w in words]
-        # Ширина первой половины слова без дефиса, если обе половины остаются на одной строке
         stem_widths = [
             self._measure_line_width(draw, w[:-1], font) if (sh and w.endswith("-")) else ww
             for w, ww, sh in zip(words, word_widths, is_soft_hyph)
@@ -1540,14 +1577,13 @@ class MangaRenderer:
         space_w = max(2.0, self._measure_line_width(draw, " ", font))
         fs = self._get_font_pixel_size(font)
         ba_y1, ref_y0, ref_y1, m_def = self._get_font_line_metrics(font=font, font_size=fs, use_upper=True, has_tall_cyr=True)
-        line_h_est = max(float(max(ref_y1 - ref_y0, ba_y1 + m_def)) + float(fs) * 0.22, float(fs) * 1.28, 12.0)
+        line_h_est = max(float(max(ref_y1 - ref_y0, ba_y1 + m_def)) + float(fs) * 0.20, float(fs) * 1.24, 12.0)
 
         def _join_line_tokens(p_idx: int, i_idx: int) -> str:
             out_parts: list[str] = []
             idx = p_idx
             while idx < i_idx:
                 if is_soft_hyph[idx] and (idx + 1) < i_idx and words[idx].endswith("-"):
-                    # Обе части мягкого переноса попали на одну строку — склеиваем обратно в целое слово без дефиса!
                     out_parts.append(words[idx][:-1] + words[idx + 1])
                     idx += 2
                 else:
@@ -1573,32 +1609,36 @@ class MangaRenderer:
         max_single_w = max(word_widths, default=float(safe_w))
         w_base = max(float(safe_w), max_single_w)
 
-        # Оценка оптимального числа строк по емкости и аспектному соотношению бабла (формула manga2eng / TypeR)
-        bubble_aspect = max(0.28, min(3.5, float(safe_w) / max(1.0, float(safe_h))))
-        min_phys_lines = max(1, int(math.ceil(total_text_w / max(1.0, w_base * (0.82 if elliptical_shaping else 0.94)))))
-        if elliptical_shaping and total_text_w > w_base * 0.78 and min_phys_lines == 1 and n >= 2:
+        bubble_aspect = max(0.32, min(3.5, float(safe_w) / max(1.0, float(safe_h))))
+        min_phys_lines = max(1, int(math.ceil(total_text_w / max(1.0, w_base * (0.88 if elliptical_shaping else 0.96)))))
+        if elliptical_shaping and total_text_w > w_base * 0.84 and min_phys_lines == 1 and n >= 2:
             min_phys_lines = 2
-        ideal_block_w = math.sqrt(max(1.0, (total_text_w / 0.82) * line_h_est * bubble_aspect))
-        ideal_block_w = min(w_base * 0.95, max(w_base * 0.55, ideal_block_w))
-        k_est = max(min_phys_lines, int(round(total_text_w / max(1.0, ideal_block_w * 0.84))))
+        ideal_block_w = math.sqrt(max(1.0, (total_text_w / 0.86) * line_h_est * max(0.52, bubble_aspect)))
+        ideal_block_w = min(w_base * 0.96, max(w_base * 0.68, ideal_block_w))
+        k_est = max(min_phys_lines, int(round(total_text_w / max(1.0, ideal_block_w * 0.88))))
 
         k_min = max(1, min(min_phys_lines, k_est - 1))
-        k_max = min(n, max(k_est + 2, min_phys_lines + 3))
+        extra_k = 4 if bubble_aspect < 0.55 else 3
+        k_max = min(n, max(k_est + extra_k - 1, min_phys_lines + extra_k))
 
         def _get_line_cap_and_target(k_idx: int, total_k: int) -> tuple[float, float]:
             lame_factor = self._lame_superellipse_factor(k_idx, total_k, p=1.85) if elliptical_shaping else 1.0
             w_target = w_base * lame_factor
             if chord_profile and len(chord_profile) >= 4 and elliptical_shaping:
                 ch_len = len(chord_profile)
-                y_start = int(round((k_idx / float(total_k)) * (ch_len - 1)))
-                y_end = int(round(((k_idx + 1) / float(total_k)) * (ch_len - 1)))
-                y_start = max(0, min(ch_len - 1, y_start))
-                y_end = max(y_start + 1, min(ch_len, y_end + 1))
-                chord_min = float(min(chord_profile[y_start:y_end]))
-                w_cap = max(max_single_w, min(w_base * 1.04, max(chord_min, w_base * lame_factor * 1.06)))
-                w_target = min(w_target, w_cap * 0.95)
+                # Учитываем реальную вертикальную высоту текстового блока из total_k строк, центрированного в бабле,
+                # чтобы первая и последняя строка не привязывались к узким полюсам овала (y=0 и y=ch_len-1)!
+                span_ratio = min(0.90, (total_k * line_h_est) / max(1.0, float(safe_h)))
+                top_ratio = (1.0 - span_ratio) * 0.5
+                rel_y = top_ratio + ((k_idx + 0.5) / float(total_k)) * span_ratio
+                y_mid = max(0, min(ch_len - 1, int(round(rel_y * (ch_len - 1)))))
+                y_s = max(0, y_mid - 2)
+                y_e = min(ch_len, y_mid + 3)
+                chord_val = float(np.median(chord_profile[y_s:y_e]))
+                w_cap = max(max_single_w, min(w_base * 1.05, max(chord_val * 1.04, w_base * lame_factor)))
+                w_target = min(w_base * 0.96, max(w_target, chord_val * 0.92))
             else:
-                w_cap = max(max_single_w, w_base * (min(1.02, lame_factor * 1.22) if elliptical_shaping else 1.02))
+                w_cap = max(max_single_w, w_base * (min(1.04, lame_factor * 1.24) if elliptical_shaping else 1.03))
             return w_cap, w_target
 
         INF = 1e18
@@ -1629,7 +1669,11 @@ class MangaRenderer:
                     if is_last_line and is_soft_hyph[i - 1]:
                         continue
                     last_tok = words[i - 1]
-                    hanging_pen = 260.0 if (not is_last_line and self._is_hanging_short_word(last_tok)) else 0.0
+                    hanging_pen = (
+                        (35.0 if (k == 1 and elliptical_shaping and K >= 5 and bubble_aspect < 0.58) else 110.0)
+                        if (not is_last_line and self._is_hanging_short_word(last_tok))
+                        else 0.0
+                    )
                     hyph_pen = 28.0 if (not is_last_line and is_soft_hyph[i - 1]) else 0.0
 
                     candidates_for_i: list[tuple[float, int, float, int]] = []
@@ -1649,8 +1693,8 @@ class MangaRenderer:
                         # 2. Contour Shaping Penalty (суперэллипс Ламе p=1.85)
                         base_step += ((lw - w_target) / w_base) ** 2 * 100.0
 
-                        # 4. Запрет коротких «сирот» на первой и последней строке
-                        if k == 1 and K >= 3 and lw < 0.34 * w_base:
+                        # 4. Запрет коротких «сирот» на первой и последней строке (кроме узких вертикальных овалов при K >= 5)
+                        if k == 1 and K >= 3 and lw < 0.34 * w_base and not (elliptical_shaping and K >= 5 and bubble_aspect < 0.58):
                             base_step += 200.0
                         if is_last_line and K >= 3 and lw < 0.35 * w_base:
                             base_step += 220.0
@@ -1852,27 +1896,32 @@ class MangaRenderer:
             total_h = bbox[3] - bbox[1]
 
         allowed_w = target_w * max(1.0, float(width_tolerance_ratio))
-        if total_w > allowed_w or total_h > target_h:
+        if total_w > allowed_w * 1.06 or total_h > target_h:
             return False
 
         if not elliptical or len(lines) <= 1:
             return True
 
         n_lines = len(lines)
+        span_ratio = min(0.92, float(total_h) / max(1.0, float(target_h)))
+        top_ratio = (1.0 - span_ratio) * 0.5
         for idx, line in enumerate(lines):
             line_w = self._measure_line_width(draw, line, font) + 2 * stroke_w
             if chord_profile and len(chord_profile) >= 4:
                 ch_len = len(chord_profile)
-                y_mid = int(round(((idx + 0.5) / float(n_lines)) * (ch_len - 1)))
+                rel_y = top_ratio + ((idx + 0.5) / float(n_lines)) * span_ratio
+                y_mid = int(round(rel_y * (ch_len - 1)))
                 y_mid = max(0, min(ch_len - 1, y_mid))
-                chord_w = float(chord_profile[y_mid]) * max(1.0, float(width_tolerance_ratio))
+                y_s = max(0, y_mid - 2)
+                y_e = min(ch_len, y_mid + 3)
+                chord_w = float(np.median(chord_profile[y_s:y_e])) * max(1.0, float(width_tolerance_ratio))
             else:
                 lame_f = self._lame_superellipse_factor(idx, n_lines, p=1.85)
-                chord_w = allowed_w * min(1.04, lame_f * 1.15)
+                chord_w = allowed_w * min(1.02, lame_f * 1.14)
             if line.strip().count(" ") == 0:
-                if line_w > allowed_w * 1.02:
+                if line_w > allowed_w * 1.05:
                     return False
-            elif line_w > max(chord_w, allowed_w * 0.78):
+            elif line_w > max(chord_w * 1.02, allowed_w * 0.82):
                 return False
 
         return True
@@ -1985,13 +2034,14 @@ class MangaRenderer:
         if unconstrained_size:
             start_size = min(
                 max_lim,
-                max(min_lim, int(min(target_w, target_h) * 0.88)),
+                max(min_lim, int(max(min(target_w, target_h) * 0.88, math.sqrt(float(target_w * target_h)) * 0.55))),
             )
         else:
-            ratio = 0.45 if (is_free_text or preset in ("shout", "sfx")) else 0.40
+            ratio = 0.48 if (is_free_text or preset in ("shout", "sfx")) else 0.44
+            geom_ref = max(float(min(target_w, target_h)) * ratio, math.sqrt(float(target_w * target_h)) * 0.32)
             start_size = min(
                 max_lim,
-                max(min_lim, int(min(target_w, target_h) * ratio)),
+                max(min_lim, int(round(geom_ref))),
             )
 
         has_explicit_nl = preserve_explicit_newlines and ("\n" in text)
@@ -2026,7 +2076,7 @@ class MangaRenderer:
                     target_h=target_h,
                     allow_hyphenation=allow_hyphenation,
                     elliptical_shaping=use_ellipse,
-                    chord_profile=chord_profile if width_slack <= 1.05 else None,
+                    chord_profile=chord_profile if width_slack <= 1.06 else None,
                 )
             fits = self._fits_in_box(
                 draw,
@@ -2039,7 +2089,7 @@ class MangaRenderer:
                 elliptical=use_ellipse and not has_explicit_nl,
                 align=align,
                 width_tolerance_ratio=eff_tol,
-                chord_profile=chord_profile if width_slack <= 1.05 else None,
+                chord_profile=chord_profile if width_slack <= 1.06 else None,
             )
             return fits, wrapped, font, stroke_w, spacing
 
@@ -2079,17 +2129,38 @@ class MangaRenderer:
 
         # Проход 1: бинарный поиск без переносов слов строго внутри безопасной зоны бабла (safe_mask)
         best_no_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=False, width_slack=1.0)
+
+        # Если без переноса слов кегль зажался из-за одного длинного слова (например, CANCELLATION / FUJIMURA / LAUNDRY),
+        # хотя по высоте бабла свободно >= 35% места, проверяем легкий допуск по ширине (1.05) и умный слоговой перенос!
         if best_no_hyph is not None:
+            nh_wrap, nh_font, nh_stroke, nh_space, nh_fs = best_no_hyph
+            if nh_fs < start_size - 1:
+                nh_bbox = draw.multiline_textbbox((0, 0), nh_wrap, font=nh_font, spacing=nh_space, align=align, stroke_width=nh_stroke)
+                nh_h = nh_bbox[3] - nh_bbox[1]
+                has_vertical_room = (nh_h < target_h * 0.68) or (nh_fs <= max(min_lim + 2, int(start_size * 0.72)))
+                if has_vertical_room:
+                    cand_slack = _binary_search_best_fit(nh_fs + 1, start_size, allow_hyphenation=False, width_slack=1.05)
+                    if cand_slack is not None and cand_slack[4] > nh_fs:
+                        best_no_hyph = cand_slack
+                        nh_wrap, nh_font, nh_stroke, nh_space, nh_fs = best_no_hyph
+
+                    # Если даже с микро-допуском кегль существенно ниже емкости бабла — пробуем слоговой перенос длинного слова:
+                    # применяем его, если перенос дает выигрыш >= +2px к размеру шрифта всего бабла!
+                    if nh_fs + 2 <= start_size and (nh_h < target_h * 0.65 or nh_fs <= max(min_lim + 3, int(start_size * 0.78))):
+                        cand_hyph = _binary_search_best_fit(nh_fs + 2, start_size, allow_hyphenation=True, width_slack=1.04)
+                        if cand_hyph is not None and cand_hyph[4] >= nh_fs + 2:
+                            return (*cand_hyph, True)
+
             return (*best_no_hyph, True)
 
-        # Проход 2: умный слоговой/морфемный перенос (для RU от 9/11 букв, для EN в узких баблах) строго в границах бабла
-        best_with_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=True, width_slack=1.04)
+        # Проход 2: умный слоговой/морфемный перенос в границах бабла
+        best_with_hyph = _binary_search_best_fit(min_lim, start_size, allow_hyphenation=True, width_slack=1.06)
         if best_with_hyph is not None:
             return (*best_with_hyph, True)
 
-        # Проход 3: умеренный допуск (+12%..+18% только если бабл не был замкнут или текст экстремально длинный)
+        # Проход 3: умеренный допуск (+14% только если бабл не был замкнут или текст экстремально длинный)
         if overflow_mode == "shrink":
-            hyph_start = max(min_lim, min(start_size, max(22 if unconstrained_size else 18, min_lim)))
+            hyph_start = max(min_lim, min(start_size, max(24 if unconstrained_size else 20, min_lim)))
             best_slack_hyph = _binary_search_best_fit(min_lim, hyph_start, allow_hyphenation=True, width_slack=1.14)
             if best_slack_hyph is not None:
                 return (*best_slack_hyph, True)
@@ -2225,17 +2296,17 @@ class MangaRenderer:
         prepared_items: list[dict[str, Any]] = []
         dialogue_fs_weights: list[tuple[int, float]] = []
 
-        all_active_bboxes: list[list[int]] = []
-        for b_cand in blocks:
+        all_active_bboxes: list[tuple[int, list[int]]] = []
+        for idx_cand, b_cand in enumerate(blocks):
             if bool(b_cand.get("is_deleted", False)):
                 continue
             if not (b_cand.get("translated_text") or "").strip():
                 continue
-            rb = b_cand.get("bbox")
+            rb = b_cand.get("text_bbox") or b_cand.get("bbox")
             if isinstance(rb, (list, tuple)) and len(rb) >= 4:
-                all_active_bboxes.append([int(round(float(c))) for c in rb[:4]])
+                all_active_bboxes.append((idx_cand, [int(round(float(c))) for c in rb[:4]]))
 
-        for block in blocks:
+        for blk_idx, block in enumerate(blocks):
             block["font_too_small_warning"] = False
             if bool(block.get("is_deleted", False)):
                 continue
@@ -2294,7 +2365,7 @@ class MangaRenderer:
                 continue
 
             other_boxes_for_blk = [
-                ob for ob in all_active_bboxes if ob != [x1, y1, x2, y2]
+                ob for idx_c, ob in all_active_bboxes if idx_c != blk_idx
             ]
 
             # Сегментация реальных границ бабла и поиск Pole of Inaccessibility (Блок 2)
@@ -2515,6 +2586,28 @@ class MangaRenderer:
             it["tw"] = tw_v
             it["th"] = th_v
 
+        def _clamp_item_center_to_safe_box(it: dict[str, Any]) -> None:
+            if it["is_free_text"]:
+                return
+            tw_c = float(it["tw"])
+            th_c = float(it["th"])
+            sx1_c, sy1_c, sx2_c, sy2_c = float(it["sx1"]), float(it["sy1"]), float(it["sx2"]), float(it["sy2"])
+            rx1_c, y1_c, rx2_c, y2_c = float(it["rx1"]), float(it["y1"]), float(it["rx2"]), float(it["y2"])
+
+            if tw_c <= (sx2_c - sx1_c):
+                it["center_x"] = max(sx1_c + tw_c / 2.0, min(sx2_c - tw_c / 2.0, float(it["center_x"])))
+            elif tw_c <= (rx2_c - rx1_c - 4.0):
+                it["center_x"] = max(rx1_c + 2.0 + tw_c / 2.0, min(rx2_c - 2.0 - tw_c / 2.0, float(it["center_x"])))
+            else:
+                it["center_x"] = (sx1_c + sx2_c) / 2.0
+
+            if th_c <= (sy2_c - sy1_c):
+                it["center_y"] = max(sy1_c + th_c / 2.0, min(sy2_c - th_c / 2.0, float(it["center_y"])))
+            elif th_c <= (y2_c - y1_c - 4.0):
+                it["center_y"] = max(y1_c + 2.0 + th_c / 2.0, min(y2_c - 2.0 - th_c / 2.0, float(it["center_y"])))
+            else:
+                it["center_y"] = (sy1_c + sy2_c) / 2.0
+
         for item in prepared_items:
             block = item["block"]
             raw_text = item["raw_text"]
@@ -2550,7 +2643,7 @@ class MangaRenderer:
                 chars_cnt = len(raw_text.strip())
 
                 if style_preset == "dialogue" and words_cnt <= 3 and chars_cnt <= 14:
-                    harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * 1.15))))
+                    harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * 1.30)), min(b_max, 24)))
                 elif style_preset == "whisper":
                     harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * 0.80))))
                 elif style_preset == "shout":
@@ -2636,6 +2729,7 @@ class MangaRenderer:
             item["center_y"] = float(item["opt_cy"])
 
             _measure_item_layer(item)
+            _clamp_item_center_to_safe_box(item)
 
         # ==================== ПРОХОД 2.5: ЗАЩИТА ОТ СТОЛКНОВЕНИЯ СОСЕДНИХ/СДВОЕННЫХ БАБЛОВ ====================
         # Если два соседних бабла расположены вплотную (или сдвоены) и их реальные текстовые слои [tx1, ty1, tx2, ty2]
@@ -2670,7 +2764,7 @@ class MangaRenderer:
                         dx_centers = abs(it_a["center_x"] - it_b["center_x"])
                         dy_centers = abs(it_a["center_y"] - it_b["center_y"])
 
-                        if dy_centers >= dx_centers * 0.65:
+                        if y_overlap < x_overlap * 0.85 or (dy_centers >= dx_centers * 1.35 and y_overlap <= x_overlap * 1.15):
                             # Вертикальное соседство (один бабл над другим)
                             up_it, dn_it = (it_a, it_b) if (
                                 it_a["center_y"] < it_b["center_y"]
@@ -2753,6 +2847,9 @@ class MangaRenderer:
                             right_max_cx = min(float(img_w) - float(right_it["tw"]) / 2.0 - 2.0, float(right_it["x2"]) - float(right_it["tw"]) / 2.0 - 3.0)
                             left_it["center_x"] = max(left_min_cx, left_it["center_x"] - needed_shift_x)
                             right_it["center_x"] = min(right_max_cx, right_it["center_x"] + needed_shift_x)
+
+                        _clamp_item_center_to_safe_box(it_a)
+                        _clamp_item_center_to_safe_box(it_b)
 
                 if not any_collision:
                     break

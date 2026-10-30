@@ -6,11 +6,11 @@
   "local_fallback_model_multilang": "auto",
   "auto_save_web_pages": true,
   "web_save_dir": "Saved_Manga",
-  "text_filter_mode": "dialogue_only",
-  "skip_sighs": true,
+  "text_filter_mode": "bubbles_only",
+  "skip_sighs": false,
   "skip_sfx": true,
   "detect_free_text": false,
-  "min_text_length": 2,
+  "min_text_length": 1,
   "min_font_size": 12,
   "max_font_size": 32,
   "uppercase": false,
@@ -29,5 +29,6 @@
     "left_sidebar_width": 360,
     "auto_save_after_idle": true
   },
-  "overflow_mode": "shrink"
+  "overflow_mode": "shrink",
+  "filter_v109_migrated": true
 }

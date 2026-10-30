@@ -971,9 +971,18 @@
     return raw.replace(/^(?:unsloth|ollama)::/, "");
   }
 
+  function isModelInstalled(m) {
+    return Boolean(m && m.installed !== false && String(m.installed).toLowerCase() !== "false");
+  }
+
   function getBestInstalledLocalModel() {
     const installedLocal = availableModelsCache.filter(
-      (m) => m && m.provider === "ollama" && m.installed !== false && String(m.id || "").startsWith("ollama::")
+      (m) =>
+        m &&
+        m.provider === "ollama" &&
+        isModelInstalled(m) &&
+        String(m.id || "").startsWith("ollama::") &&
+        !String(m.id || "").toLowerCase().includes("glm-ocr")
     );
     if (settings.lastLocalModel && installedLocal.some((m) => m.id === settings.lastLocalModel)) {
       return settings.lastLocalModel;
@@ -1120,10 +1129,11 @@
     pullProgressText.textContent = `📥 Запуск скачивания ${cleanTag} в Ollama...`;
     statusText.textContent = `📥 Скачивание модели ${cleanTag}...`;
 
+    const isPureOcrModel = cleanTag.toLowerCase().includes("glm-ocr");
     const res = await safeSendMessage({
       action: "PULL_MODEL",
       model: cleanTag,
-      setAsDefault: true,
+      setAsDefault: !isPureOcrModel,
     });
 
     if (!res || !res.ok) {
@@ -1148,8 +1158,10 @@
         pullProgressFill.style.width = "100%";
         pullProgressText.textContent = `✅ Модель ${cleanTag} скачана и готова!`;
         const fullId = `ollama::${cleanTag}`;
-        settings.lastLocalModel = fullId;
-        await applySelectedModel(fullId);
+        if (!isPureOcrModel) {
+          settings.lastLocalModel = fullId;
+          await applySelectedModel(fullId);
+        }
         await checkServerAndLoadModels(true, true);
         setTimeout(() => {
           pullProgressWrap.style.display = "none";
@@ -1511,11 +1523,19 @@
       });
     }
 
+    const formatSizeLabel = (sz, prefix = "") => {
+      if (!sz) return prefix || "Локально";
+      const s = String(sz).trim();
+      const withUnit = s.toUpperCase().includes("ГБ") || s.toUpperCase().includes("GB") ? s : `${s} ГБ`;
+      return prefix ? `${prefix} ~${withUnit}` : withUnit;
+    };
+
     const installedOllama = list.filter(
       (m) =>
         m &&
         (m.provider === "ollama" || String(m.id || "").startsWith("ollama::")) &&
-        m.installed !== false &&
+        isModelInstalled(m) &&
+        !String(m.id || "").toLowerCase().includes("glm-ocr") &&
         (!query ||
           String(m.name || "").toLowerCase().includes(query) ||
           String(m.id || "").toLowerCase().includes(query))
@@ -1524,14 +1544,14 @@
       addGroupHeader("🦙 Установленные локальные модели (Ollama GPU)");
       installedOllama.forEach((m) => {
         const cleanName = String(m.name || m.id).replace(/^\[Ollama\]\s*/, "🦙 ");
-        createItemButton({ ...m, name: cleanName }, m.size_gb ? `${m.size_gb} ГБ` : "Локально", false);
+        createItemButton({ ...m, name: cleanName }, formatSizeLabel(m.size_gb), false);
       });
     }
 
     const downloadableOllama = list.filter(
       (m) =>
         m &&
-        m.installed === false &&
+        !isModelInstalled(m) &&
         (!query ||
           String(m.name || "").toLowerCase().includes(query) ||
           String(m.id || "").toLowerCase().includes(query))
@@ -1539,10 +1559,10 @@
     if (downloadableOllama.length > 0) {
       addGroupHeader("📥 Скачать в Ollama в 1 клик (Без цензуры)");
       downloadableOllama.forEach((m) => {
-        const cleanName = String(m.name || m.id).replace(/^\[📥 Скачать в Ollama\]\s*/, "📥 ");
+        const cleanName = String(m.name || m.id).replace(/\s*\[📥 Скачать в Ollama\]\s*/g, "").trim();
         createItemButton(
-          { ...m, name: cleanName },
-          m.size_gb ? `Скачать ~${m.size_gb} ГБ` : "Скачать",
+          { ...m, name: `📥 ${cleanName}` },
+          formatSizeLabel(m.size_gb, "Скачать"),
           true
         );
       });

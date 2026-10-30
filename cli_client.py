@@ -1,6 +1,6 @@
 """
 Консольный клиент для выбора модели, пакетного перевода папок (с продолжением с места остановки)
-и перевода отдельных страниц (v1.0.0).
+и перевода отдельных страниц (v1.0.8).
 Вызывается из translate_folder.bat и test_page.bat.
 """
 
@@ -33,7 +33,11 @@ def run_select_model(server_url: str = "http://127.0.0.1:5000") -> int:
             resp.raise_for_status()
             data = resp.json()
 
-            models = data.get("models", [])
+            models = [
+                m for m in data.get("models", [])
+                if str(m.get("installed", "true")).lower() != "false"
+                and "glm-ocr" not in str(m.get("id", "")).lower()
+            ]
             active = data.get("active_model", "auto")
             unsloth_url = data.get("unsloth_url", "http://127.0.0.1:8888")
             u_stat = data.get("unsloth_status", {})

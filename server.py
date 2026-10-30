@@ -1,5 +1,5 @@
 """
-FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.6).
+FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.8).
 
 Изменения v1.0.6:
 - Расширение схемы `TextBlock` полями профессиональной верстки и локальной ретуши маски:
@@ -36,10 +36,15 @@ import sys
 import threading
 import time
 import uuid
+import warnings
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any
+
+warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
+warnings.filterwarnings("ignore", module="triton.*")
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -353,7 +358,7 @@ def _compute_clean_state_hash(
     eff_dilate = int(
         dilate_size
         if dilate_size is not None
-        else (cleaner_engine.dilate_size if cleaner_engine is not None else 7)
+        else (cleaner_engine.dilate_size if cleaner_engine is not None else 11)
     )
     if cleaner_engine is not None and hasattr(cleaner_engine, "compute_clean_state_hash"):
         return cleaner_engine.compute_clean_state_hash(blocks=blocks, src_file=src_file)
@@ -555,8 +560,14 @@ async def lifespan(app: FastAPI):
     print("  [1/4] Инициализация детектора YOLOv8 и MangaOCR (GPU/CPU)...", flush=True)
     ocr_engine = MangaOCREngine(models_dir=BASE_DIR / "models")
 
-    print("  [2/4] Инициализация нейросетевой очистки SimpleLama...", flush=True)
-    cleaner_engine = BubbleCleaner(use_lama=True, dilate_size=7, cache_max_pages=8, disk_cache_dir=TEMP_DIR / "clean_cache")
+    print("  [2/4] Инициализация нейросетевой очистки LaMa (big-lama.pt)...", flush=True)
+    cleaner_engine = BubbleCleaner(
+        use_lama=True,
+        dilate_size=11,
+        cache_max_pages=8,
+        disk_cache_dir=TEMP_DIR / "clean_cache",
+        models_dir=BASE_DIR / "models",
+    )
 
     print("  [3/4] Инициализация шрифтового движка и клиента Ollama/Cloud API...", flush=True)
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
@@ -567,7 +578,7 @@ async def lifespan(app: FastAPI):
     )
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.6)", flush=True)
+    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.8)", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -590,7 +601,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.6",
+    version="1.0.8",
     lifespan=lifespan,
 )
 
@@ -941,7 +952,6 @@ class SaveEditedPageRequest(BaseModel):
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
-    overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     prefer_url: bool = Field(
         default=True,
@@ -968,7 +978,6 @@ class ManualRegionTranslateRequest(BaseModel):
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
     overflow_mode: str | None = Field(default=None)
-    overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
     custom_original_text: str | None = Field(default=None)
@@ -992,7 +1001,6 @@ class RetranslateSingleBlockRequest(BaseModel):
     uppercase: bool = Field(default=False)
     min_font_size: int = Field(default=12)
     max_font_size: int = Field(default=32)
-    overflow_mode: str | None = Field(default=None)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
@@ -1077,6 +1085,78 @@ def collect_images_in_folder(folder: Path) -> list[Path]:
     return images
 
 
+def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
+    from translator import PURE_SIGH_KEYS_JA
+    """
+    Автоматически очищает загруженный `.translation_state.json` от следов отказов цензуры API
+    (`[Explicit incestuous content omitted]`, `[Sound omitted]`), ошибочно скрытых вопросов (`え?`, `ん?`, `おっ`)
+    и ошибочных меток китайского языка (`zh`) на страницах японской манги.
+    """
+    pc = data.get("phrase_cache")
+    if isinstance(pc, dict):
+        for ck, cv in list(pc.items()):
+            if not isinstance(cv, str) or OllamaTranslator._is_bubble_refusal_value(cv):
+                pc.pop(ck, None)
+
+    rc = data.get("rolling_context")
+    if isinstance(rc, list):
+        clean_rc = []
+        for line in rc:
+            if isinstance(line, str) and "=>" in line:
+                _, rhs = [p.strip() for p in line.split("=>", 1)]
+                if OllamaTranslator._is_bubble_refusal_value(rhs):
+                    continue
+                clean_rc.append(line)
+        data["rolling_context"] = clean_rc
+
+    pages = data.get("pages")
+    if isinstance(pages, dict) and pages:
+        lang_counts: dict[str, int] = {}
+        for p_meta in pages.values():
+            if isinstance(p_meta, dict):
+                dl = str(p_meta.get("detected_lang") or "ja")
+                lang_counts[dl] = lang_counts.get(dl, 0) + 1
+        ja_pages = lang_counts.get("ja", 0)
+        total_p = max(1, sum(lang_counts.values()))
+        chapter_is_ja = (ja_pages / total_p) >= 0.5
+
+        for rel_k, p_meta in pages.items():
+            if not isinstance(p_meta, dict):
+                continue
+            if chapter_is_ja and p_meta.get("detected_lang") == "zh":
+                p_meta["detected_lang"] = "ja"
+            p_blocks = p_meta.get("blocks")
+            if not isinstance(p_blocks, list):
+                continue
+            page_needs_retranslate = False
+            for b in p_blocks:
+                if not isinstance(b, dict):
+                    continue
+                orig_t = str(b.get("original_text") or "").strip()
+                tr_t = str(b.get("translated_text") or "").strip()
+                tsrc = str(b.get("translation_source") or "").strip()
+
+                if tr_t and OllamaTranslator._is_bubble_refusal_value(tr_t):
+                    b["translated_text"] = ""
+                    b["is_deleted"] = False
+                    b["translation_source"] = "untranslated_error"
+                    b["api_censored"] = True
+                    b["needs_retranslate"] = True
+                    b["skip_reason"] = f"Отказ цензуры облачного API («{tr_t[:42]}») — требуется доперевод локальной моделью"
+                    page_needs_retranslate = True
+                elif (tsrc in ("skipped_sigh_orig", "skipped_sigh_trans", "untranslated_error") or b.get("api_censored")) and orig_t and not tr_t:
+                    if OllamaTranslator._contains_cjk(orig_t):
+                        b["is_deleted"] = False
+                        b["translation_source"] = "untranslated_error"
+                        b["needs_retranslate"] = True
+                        if not b.get("skip_reason"):
+                            b["skip_reason"] = f"Реплика «{orig_t}» восстановлена для автоматического доперевода"
+                        page_needs_retranslate = True
+            if page_needs_retranslate:
+                p_meta["needs_retranslate"] = True
+    return data
+
+
 def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
     manifest_path = output_dir / MANIFEST_FILENAME
     if manifest_path.exists():
@@ -1089,7 +1169,7 @@ def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
                 data.setdefault("glossary", [])
                 data.setdefault("run_history", [])
                 data.setdefault("batches_log", [])
-                return data
+                return _sanitize_loaded_manifest(data)
         except Exception as exc:
             logger.warning("Не удалось прочитать %s: %s", manifest_path, exc)
     return {
@@ -1537,7 +1617,7 @@ def _generate_and_save_folder_report(
                     }
                 )
 
-            if trans_t and not is_del:
+            if trans_t and not is_del and not OllamaTranslator._is_bubble_refusal_value(trans_t):
                 p_trans_ok += 1
                 tot_translated_ok += 1
                 if not tsrc or tsrc in ("untranslated_error", "skipped_sigh_orig", "skipped_sigh_trans", "deleted_by_user"):
@@ -1724,7 +1804,7 @@ def _generate_and_save_folder_report(
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v1.0.7",
+        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v1.0.8",
         "========================================================================================",
         f"• Исходная папка манги     : {source_dir}",
         f"• Папка готового перевода  : {output_dir}",
@@ -2083,19 +2163,35 @@ def is_page_already_translated(
         return False
 
     if isinstance(page_meta, dict):
-        if bool(page_meta.get("manually_edited")):
-            return True
+        if bool(page_meta.get("needs_retranslate")):
+            return False
         if "blocks" in page_meta and isinstance(page_meta.get("blocks"), list):
             saved_blocks = page_meta["blocks"]
             if not saved_blocks:
                 return True
+            for b_chk in saved_blocks:
+                if not isinstance(b_chk, dict):
+                    continue
+                if bool(b_chk.get("needs_retranslate")) or bool(b_chk.get("api_censored")):
+                    return False
+                tr_chk = str(b_chk.get("translated_text") or "").strip()
+                orig_chk = str(b_chk.get("original_text") or "").strip()
+                tsrc_chk = str(b_chk.get("translation_source") or "").strip()
+                if tr_chk and OllamaTranslator._is_bubble_refusal_value(tr_chk):
+                    return False
+                if not tr_chk and orig_chk and OllamaTranslator._contains_cjk(orig_chk) and tsrc_chk in ("untranslated_error", "skipped_sigh_orig", "skipped_sigh_trans"):
+                    return False
+        if bool(page_meta.get("manually_edited")):
+            return True
+        if "blocks" in page_meta and isinstance(page_meta.get("blocks"), list):
+            saved_blocks = page_meta["blocks"]
             active_blocks = [
                 b
                 for b in saved_blocks
                 if isinstance(b, dict)
                 and not bool(b.get("is_deleted", False))
                 and not str(b.get("skip_reason") or "").strip()
-                and str(b.get("translation_source") or "") != "skipped_sigh"
+                and str(b.get("translation_source") or "") not in ("skipped_sigh", "skipped_sigh_orig", "skipped_sigh_trans")
                 and bool(str(b.get("translated_text") or "").strip())
             ]
             if not active_blocks:
@@ -2348,12 +2444,12 @@ def _resolve_filter_params(
     eff_mode = (
         text_filter_mode.strip()
         if (text_filter_mode and text_filter_mode.strip())
-        else (t_eng.text_filter_mode if t_eng else "dialogue_only")
+        else (t_eng.text_filter_mode if t_eng else "bubbles_only")
     )
     eff_skip_sighs = (
         bool(skip_sighs)
         if skip_sighs is not None
-        else (t_eng.skip_sighs if t_eng else True)
+        else (t_eng.skip_sighs if t_eng else False)
     )
     eff_skip_sfx = (
         bool(skip_sfx)
@@ -2368,7 +2464,7 @@ def _resolve_filter_params(
     eff_min_len = (
         max(1, int(min_text_length))
         if min_text_length is not None
-        else (t_eng.min_text_length if t_eng else 2)
+        else (t_eng.min_text_length if t_eng else 1)
     )
     return eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len
 
@@ -2616,6 +2712,8 @@ async def _run_folder_translation_job(
     for rc_line in raw_rolling:
         if isinstance(rc_line, str) and "=>" in rc_line:
             lhs, rhs = [p.strip() for p in rc_line.split("=>", 1)]
+            if OllamaTranslator._is_bubble_refusal_value(rhs):
+                continue
             if t_lang_norm == "ru" and not re.search(r"[А-Яа-яЁё]", rhs):
                 continue
             if t_lang_norm == "en" and OllamaTranslator._is_romaji_leak(rhs, lhs, "en"):
@@ -2777,17 +2875,33 @@ async def _run_folder_translation_job(
                             eff_min_len,
                         )
                         p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
-                    if chapter_detected_lang is None and det_lang in ("ja", "ko", "zh"):
-                        chapter_detected_lang = det_lang
-                        if active_profile_id == "local_only":
+                    # Фиксируем язык главы как 'ja' или 'ko' только при наличии каны/хангыля,
+                    # чтобы обложка без каны (только с кандзи) никогда не переключала всю японскую мангу на китайский ('zh')!
+                    has_kana_on_page = any(
+                        bool(re.search(r"[\u3040-\u309f\u30a0-\u30ff]", str(b.get("original_text") or "")))
+                        for b in p_blocks
+                    )
+                    if det_lang == "zh" and chapter_detected_lang == "ja":
+                        det_lang = "ja"
+                    if chapter_detected_lang is None:
+                        if det_lang == "ja" and has_kana_on_page:
+                            chapter_detected_lang = "ja"
+                            for prev_sp in scanned_pages:
+                                if prev_sp.get("detected_lang") == "zh":
+                                    prev_sp["detected_lang"] = "ja"
+                        elif det_lang == "ko" and len(p_blocks) >= 2:
+                            chapter_detected_lang = "ko"
+                        elif det_lang == "zh" and len(p_blocks) >= 4 and p_idx >= 3:
+                            chapter_detected_lang = "zh"
+                        if chapter_detected_lang and active_profile_id == "local_only":
                             active_mod = await translator_engine.resolve_model(
                                 ollama_model,
-                                source_lang=det_lang,
+                                source_lang=chapter_detected_lang,
                                 target_lang=target_lang,
                                 profile=active_profile_id,
                             )
-                    batch_detected_lang = det_lang
-                    folder_job_state["detected_lang"] = det_lang
+                    batch_detected_lang = chapter_detected_lang or det_lang or "ja"
+                    folder_job_state["detected_lang"] = batch_detected_lang
 
                     # БЛОК 2.1: Упорядочиваем блоки каждой страницы в естественном порядке чтения комикса (ja -> RTL, zh/ko -> LTR)
                     p_blocks = _sort_page_blocks_reading_order(p_blocks, lang=det_lang)
@@ -2915,58 +3029,18 @@ async def _run_folder_translation_job(
                     cb_copy["api_failed"] = api_failed_by_gid.get(gid_c, False)
                     missing_combined.append(cb_copy)
 
-            if missing_combined and not _folder_stop_requested:
-                # Определяем, нужно ли переводить остатки строго через локальную модель (без облака)
-                any_censored_or_failed = any(
-                    bool(b.get("api_censored")) or bool(b.get("api_failed")) for b in missing_combined
-                )
-                force_local_rescue = (
-                    active_mod.startswith("unsloth::")
-                    and (any_censored_or_failed or len(missing_combined) <= 2)
-                )
-                rescue_model: str | None = active_mod
-                if force_local_rescue:
-                    rescue_model = await translator_engine._resolve_local_fallback_model(
-                        target_lang=target_lang,
-                        source_lang=batch_detected_lang,
-                    )
-                    if not rescue_model:
-                        logger.info(
-                            "🛡 [БЛОК 3] Пропуск повторной отправки %d отцензуренных/пропущенных бабблов в облако "
-                            "(подходящая локальная модель для '%s' не установлена).",
-                            len(missing_combined),
-                            batch_detected_lang,
-                        )
-                if rescue_model:
-                    logger.info(
-                        "Доперевод %d оставшихся пустыми бабблов в пачке #%d через '%s' (skip_sighs=False)...",
-                        len(missing_combined),
-                        _batch_num,
-                        rescue_model,
-                    )
-                    try:
-                        rescued_list = await translator_engine.translate_blocks(
-                            blocks=missing_combined,
-                            source_lang=batch_detected_lang,
-                            target_lang=target_lang,
-                            model=rescue_model,
-                            context_lines=rolling_context if rolling_context else None,
-                            external_cache=phrase_cache,
-                            use_cache=False,
-                            skip_sighs=False,
-                            profile="local_only" if force_local_rescue else active_profile_id,
-                        )
-                        for rb in rescued_list:
-                            gid_r = str(rb["id"])
-                            r_txt = str(rb.get("translated_text") or "").strip()
-                            if r_txt:
-                                translated_by_gid[gid_r] = r_txt
-                                source_by_gid[gid_r] = str(rb.get("translation_source") or "llm_micro_retry")
-                                skip_reason_by_gid[gid_r] = ""
-                            elif rb.get("skip_reason"):
-                                skip_reason_by_gid[gid_r] = str(rb.get("skip_reason"))
-                    except Exception as rescue_exc:
-                        logger.warning("Доперевод оставшихся блоков пачки не удался: %s", rescue_exc)
+            # ВАЖНО: translator_engine.translate_blocks() уже выполняет внутри себя локальный обход цензуры,
+            # словарное спасение междометий и микро-доперевод. Повторный внешний вызов translate_blocks() для missing_combined
+            # отключен, чтобы не дублировать запросы к ИИ и не тратить время на шумовые/отфильтрованные бабблы!
+            if missing_combined:
+                for mb in missing_combined:
+                    gid_m = str(mb["id"])
+                    orig_m = str(mb.get("original_text") or "").strip()
+                    resc_m = translator_engine._rescue_romaji_or_interjection("", orig_m, target_lang)
+                    if resc_m:
+                        translated_by_gid[gid_m] = resc_m
+                        source_by_gid[gid_m] = "romaji_rescue_dict"
+                        skip_reason_by_gid[gid_m] = "" 
 
             # Шаг 3: Быстрая параллельная очистка бабблов, верстка и сохранение всех страниц пачки!
             _render_t0 = time.perf_counter()
@@ -3070,6 +3144,7 @@ async def _run_folder_translation_job(
                             await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
 
                     manifest["pages"][rel_norm] = {
+                        "needs_retranslate": False,
                         "blocks_count": len(p_blocks),
                         "free_text_count": sum(1 for b in p_blocks if b.get("is_free_text")),
                         "detected_lang": det_lang,
@@ -3277,7 +3352,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.6 Server Running</h1>")
+    return HTMLResponse(content="<h1>Manga Translator v1.0.8 Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -3324,7 +3399,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.6",
+        "version": "1.0.8",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -4095,18 +4170,96 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
 
     if isinstance(saved_blocks, list) and not payload.force_rescan:
         blocks = []
+        indices_to_heal: list[int] = []
         for b in saved_blocks:
             if not isinstance(b, dict):
                 continue
             b_copy = _ensure_block_clean_bbox(dict(b))
+            orig_val = str(b_copy.get("original_text") or "").strip()
             tr_val = str(b_copy.get("translated_text") or "").strip()
-            if b_copy.get("is_deleted") or not tr_val:
+            tsrc_val = str(b_copy.get("translation_source") or "").strip()
+            if tr_val and OllamaTranslator._is_bubble_refusal_value(tr_val):
+                tr_val = ""
+                b_copy["translated_text"] = ""
+                b_copy["needs_retranslate"] = True
+            needs_auto_heal = (
+                not tr_val
+                and bool(orig_val)
+                and OllamaTranslator._contains_cjk(orig_val)
+                and (
+                    bool(b_copy.get("needs_retranslate"))
+                    or bool(b_copy.get("api_censored"))
+                    or tsrc_val in ("untranslated_error", "skipped_sigh_orig", "skipped_sigh_trans")
+                )
+            )
+            if needs_auto_heal:
+                b_copy["is_deleted"] = False
+                b_copy["translated_text"] = ""
+                indices_to_heal.append(len(blocks))
+            elif b_copy.get("is_deleted") or not tr_val:
                 b_copy["is_deleted"] = True
                 b_copy["translated_text"] = ""
             else:
                 b_copy["is_deleted"] = False
                 b_copy["translated_text"] = tr_val
             blocks.append(b_copy)
+
+        if indices_to_heal and translator_engine is not None and cleaner_engine is not None and renderer_engine is not None:
+            try:
+                heal_inputs = [dict(blocks[i]) for i in indices_to_heal]
+                folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
+                healed_list = await translator_engine.translate_blocks(
+                    blocks=heal_inputs,
+                    source_lang=det_lang or "ja",
+                    target_lang=t_lang,
+                    model=payload.ollama_model,
+                    external_cache=phrase_cache,
+                    use_cache=True,
+                    skip_sighs=False,
+                    glossary_entries=folder_glossary_entries,
+                )
+                any_healed = False
+                for idx_h, healed_b in zip(indices_to_heal, healed_list):
+                    h_tr = str(healed_b.get("translated_text") or "").strip()
+                    if h_tr and not OllamaTranslator._is_bubble_refusal_value(h_tr):
+                        blocks[idx_h]["translated_text"] = h_tr
+                        blocks[idx_h]["is_deleted"] = False
+                        blocks[idx_h]["needs_retranslate"] = False
+                        blocks[idx_h]["api_censored"] = False
+                        blocks[idx_h]["skip_reason"] = ""
+                        blocks[idx_h]["translation_source"] = str(healed_b.get("translation_source") or "llm")
+                        any_healed = True
+                    else:
+                        blocks[idx_h]["is_deleted"] = True
+                if any_healed or bool(page_meta.get("needs_retranslate")):
+                    page_meta["needs_retranslate"] = False
+                    with Image.open(src_file) as raw_im_h:
+                        pil_im_h = _pil_to_rgb_clean(raw_im_h)
+                    active_h = [
+                        bh for bh in blocks
+                        if not bool(bh.get("is_deleted")) and str(bh.get("translated_text") or "").strip()
+                    ]
+                    async with gpu_lock:
+                        cleaned_h, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_im_h, active_h, src_file)
+                    final_h = renderer_engine.render_blocks(
+                        cleaned_h,
+                        active_h,
+                        bool(getattr(translator_engine, "uppercase", False)),
+                        int(getattr(translator_engine, "max_font_size", 32)),
+                        int(getattr(translator_engine, "min_font_size", 12)),
+                        None,
+                        str(getattr(translator_engine, "overflow_mode", "shrink")),
+                    )
+                    dest_path.parent.mkdir(parents=True, exist_ok=True)
+                    ext_h = dest_path.suffix.lower()
+                    if ext_h == ".webp":
+                        final_h.save(dest_path, format="WEBP", quality=92, method=2)
+                    elif ext_h in (".jpg", ".jpeg"):
+                        final_h.save(dest_path, format="JPEG", quality=95, optimize=True)
+                    else:
+                        final_h.save(dest_path)
+            except Exception as heal_exc:
+                logger.warning("Авто-исправление пропущенных блоков страницы %s: %s", rel_norm, heal_exc)
     else:
         eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
             detect_free_text=payload.detect_free_text,
@@ -4435,12 +4588,15 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
     y2 = max(y1 + 8, min(y2, img_h))
     clamped_bbox = [x1, y1, x2, y2]
 
+    pre_manifest = _load_folder_manifest(output_dir)
+    saved_p_lang = str((pre_manifest.get("pages", {}).get(rel_norm) or {}).get("detected_lang") or "")
+    eff_manual_lang = payload.lang if payload.lang in ("ja", "ko", "zh") else (saved_p_lang if saved_p_lang in ("ja", "ko", "zh") else payload.lang)
     async with gpu_lock:
         recognized_text, det_lang, is_free_text = await asyncio.to_thread(
             ocr_engine.recognize_manual_region,
             pil_image,
             clamped_bbox,
-            payload.lang,
+            eff_manual_lang,
             payload.use_vlm_ocr,
             payload.vlm_model,
             getattr(translator_engine, "base_url", "http://127.0.0.1:11434") if translator_engine else "http://127.0.0.1:11434",
@@ -4605,11 +4761,11 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
 
 @app.post("/retranslate_single_block")
 async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockRequest) -> dict[str, Any]:
-    t_lang = (payload.target_lang or "en").lower().strip()
     """
     Принудительно переводит один конкретный блок `#block_id` через активную ИИ-модель
     (с отключенным пропуском вздохов и сбросом кэша для этой фразы) и сразу перерисовывает страницу.
     """
+    t_lang = (payload.target_lang or "en").lower().strip()
     if (
         ocr_engine is None
         or translator_engine is None
@@ -4657,12 +4813,15 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
         # Всегда берем полный bbox баббла, а не урезанный text_bbox, который мог обрезать края иероглифов!
         ocr_coords = target_blk["bbox"]
         force_vlm = bool(payload.use_vlm_ocr or norm_old_tr in ("twitch", "twitches", "twitching"))
+        pre_manifest_rt = _load_folder_manifest(output_dir)
+        saved_rt_lang = str((pre_manifest_rt.get("pages", {}).get(rel_norm) or {}).get("detected_lang") or "")
+        eff_rt_lang = payload.lang if payload.lang in ("ja", "ko", "zh") else (saved_rt_lang if saved_rt_lang in ("ja", "ko", "zh") else "ja")
         async with gpu_lock:
             rec_t, det_lang, _ = await asyncio.to_thread(
                 ocr_engine.recognize_manual_region,
                 pil_image,
                 ocr_coords,
-                payload.lang,
+                eff_rt_lang,
                 force_vlm,
                 payload.vlm_model,
                 getattr(translator_engine, "base_url", "http://127.0.0.1:11434") if translator_engine else "http://127.0.0.1:11434",
@@ -5070,7 +5229,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "1.0.6",
+            "version": "1.0.8",
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -6129,7 +6288,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
     }
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.6 ===",
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.8 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -6247,7 +6406,7 @@ async def clear_diagnostics_endpoint() -> dict[str, str]:
 
 
 # ==============================================================================
-#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v1.0.7)
+#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v1.0.8)
 # ==============================================================================
 
 _ux_telemetry_lock = threading.Lock()
@@ -6698,7 +6857,7 @@ def _generate_ux_usage_report(store: dict[str, Any] | None = None) -> tuple[str,
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v1.0.7",
+        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v1.0.8",
         "========================================================================================",
         f"• Файл отчета              : {UX_REPORT_TXT_FILE}",
         f"• База накопленной телеметрии: {UX_TELEMETRY_JSON_FILE}",
@@ -6960,10 +7119,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.6":
+                if running_ver != "1.0.8":
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.6...",
+                        f"Останавливаю старый процесс для запуска v1.0.8...",
                         flush=True,
                     )
                     try:
@@ -6988,5 +7147,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.6 на 127.0.0.1:5000...", flush=True)
+    print("Запуск локального сервера Manga Translator v1.0.8 на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)

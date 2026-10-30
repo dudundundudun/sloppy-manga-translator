@@ -1,7 +1,7 @@
 """
-Локальное графическое приложение (GUI) «Miko-chan Manga Studio» (v1.0.0).
+Локальное графическое приложение (GUI) «Miko-chan Manga Studio» (v1.0.8).
 
-Изменения v1.0.0:
+Изменения v1.0.8:
 1. В окно «⚙️ Настройки» добавлена секция скачивания в 1 клик лучших моделей манги
    (Shisa V2.1 14B, Shisa V2.1 8B, Shisa V2 12B Uncensored, Gemma 3 12B, Qwen 2.5 14B)
    напрямую через локальный сервер Ollama с прогресс-баром и автоматической установкой по умолчанию!
@@ -65,11 +65,16 @@ SOURCE_LANG_MAP = {
 }
 
 RECOMMENDED_DOWNLOAD_MAP = {
-    "🌸 Shisa V2.1 14B (Phi-4, Топ-1 JA➔EN/RU, ~9.0 ГБ)": "hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M",
+    "🌸 Shisa V2.1 14B (Phi-4, Топ-1 JA➔EN/RU, ~8.3 ГБ)": "hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M",
     "🌸 Shisa V2.1 8B (Qwen3, Быстрая JA➔EN/RU, ~5.0 ГБ)": "hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M",
-    "🔥 Shisa V2 12B Uncensored (Без цензуры 18+, ~7.5 ГБ)": "hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF",
-    "💎 Gemma 3 12B (Литературный слог RU/EN, ~8.1 ГБ)": "gemma3:12b",
-    "🐉 Qwen 2.5 14B (Универсал JA/KO/ZH + Ромадзи, ~9.0 ГБ)": "qwen2.5:14b",
+    "🔥 Shisa V2 12B Uncensored (Без цензуры 18+, ~7.0 ГБ)": "hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF",
+    "⚡ Sugoi 14B Ultra (Узкий спец. JA➔EN без цензуры, ~8.5 ГБ)": "hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M",
+    "🌐 TranslateGemma 12B (Спец. переводчик JA/KO/ZH➔RU/EN, ~7.3 ГБ)": "translategemma:12b",
+    "🌍 Aya Expanse 8B (Легкая мультиязычная JA/KO/ZH➔RU/EN, ~5.1 ГБ)": "aya-expanse:8b",
+    "💎 Gemma 3 12B (Литературный слог RU/EN, ~7.3 ГБ)": "gemma3:12b",
+    "🐉 Qwen 2.5 14B (Универсал JA/KO/ZH + Ромадзи, ~8.4 ГБ)": "qwen2.5:14b",
+    "👁 GLM-OCR 0.9B (Vision — Снайперский OCR для SFX, ~1.9 ГБ)": "glm-ocr:latest",
+    "👁 Qwen 2.5 VL 7B (Vision — Мультимодальный VLM-OCR, ~5.0 ГБ)": "qwen2.5vl:7b",
 }
 
 CLOUD_PRESET_MAP = {
@@ -94,12 +99,12 @@ OVERFLOW_LABEL_BY_CODE = {v: k for k, v in OVERFLOW_MODE_MAP.items()}
 
 
 class MikoMangaStudioGUI:
-    """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v1.0.0)."""
+    """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v1.0.8)."""
 
     def __init__(self, root: tk.Tk) -> None:
-        print("[GUI] Инициализация окна Miko-chan Manga Studio v1.0.5...", flush=True)
+        print("[GUI] Инициализация окна Miko-chan Manga Studio v1.0.8...", flush=True)
         self.root = root
-        self.root.title("🌸 Miko-chan Manga Studio v1.0.5")
+        self.root.title("🌸 Miko-chan Manga Studio v1.0.8")
         self.root.geometry("1460x880")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_DEEP)
@@ -227,7 +232,6 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
-            "overflow_mode": self.var_overflow_mode.get(),
             "uppercase": bool(self.var_uppercase.get()),
             "overflow_mode": self.var_overflow_mode.get(),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
@@ -485,7 +489,7 @@ class MikoMangaStudioGUI:
 
         self.lbl_miko_speech = tk.Label(
             speech_wrap,
-            text="Привет! Версия v1.0.0 готова: в редакторе есть кнопка «🗑 Удалить перевод», а в настройках — фильтр вздохов/SFX и пресеты DeepSeek Flash/Pro~ 🌸",
+            text="Привет! Версия v1.0.8 готова: двухконтурный детектор RT-DETR-v2, мультиязычный HayaiOCR v2.5 Nova, VLM-OCR и пресеты DeepSeek Flash/Pro~ 🌸",
             bg="#141122",
             fg=FG_PRIMARY,
             font=("Segoe UI", 9),
@@ -905,7 +909,7 @@ class MikoMangaStudioGUI:
 
     def _open_diagnostics_modal(self) -> None:
         win = tk.Toplevel(self.root)
-        win.title("🩺 Диагностика, Тайминги и Логи (v1.0.5)")
+        win.title("🩺 Диагностика, Тайминги и Логи (v1.0.8)")
         win.geometry("880x640")
         win.configure(bg=BG_BENTO)
         win.transient(self.root)
@@ -1067,7 +1071,7 @@ class MikoMangaStudioGUI:
             def _pull_worker() -> None:
                 try:
                     with httpx.Client(trust_env=False, timeout=15.0) as client:
-                        client.post(f"{SERVER_URL}/pull_model", json={"model": tag, "set_as_default": True})
+                        client.post(f"{SERVER_URL}/pull_model", json={"model": tag, "set_as_default": "glm-ocr" not in tag.lower()})
                     while True:
                         time.sleep(1.3)
                         with httpx.Client(trust_env=False, timeout=8.0) as client:
@@ -1100,7 +1104,10 @@ class MikoMangaStudioGUI:
         # 2. Выбор активной модели
         tk.Label(pad, text="🤖 Активная ИИ-модель (Ollama / Cloud API):", bg=BG_BENTO, fg=FG_SECONDARY).pack(anchor="w")
         model_names = ["✨ Автовыбор лучшей модели (auto)"] + [
-            str(m.get("name", m.get("id"))) for m in self.available_models
+            str(m.get("name", m.get("id")))
+            for m in self.available_models
+            if str(m.get("installed", "true")).lower() != "false"
+            and "glm-ocr" not in str(m.get("id", "")).lower()
         ]
         cb_mod = ttk.Combobox(pad, textvariable=self.var_model_display, values=model_names, state="readonly")
         cb_mod.pack(fill=tk.X, pady=(3, 10))
@@ -1703,11 +1710,11 @@ class MikoMangaStudioGUI:
                 "source_dir": str(self.current_folder) if self.current_folder else None,
                 "target_lang": self.target_lang,
                 "uppercase": bool(self.var_uppercase.get()),
-            "overflow_mode": self.var_overflow_mode.get(),
                 "min_font_size": int(self.var_min_font.get()),
                 "max_font_size": int(self.var_max_font.get()),
                 "overflow_mode": self.var_overflow_mode.get(),
                 "return_image": True,
+                "prefer_url": False,
                 "image_format": "webp",
                 "blocks": edited_blocks,
             }
@@ -1724,6 +1731,9 @@ class MikoMangaStudioGUI:
                     if b64_img:
                         raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
                         trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                    elif data.get("saved_output_path") and os.path.exists(data["saved_output_path"]):
+                        with Image.open(data["saved_output_path"]) as saved_im:
+                            trans_pil = saved_im.convert("RGB")
 
                     def _done() -> None:
                         if trans_pil is not None:
@@ -1855,8 +1865,8 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.5":
-                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v1.0.5...", flush=True)
+                if running_ver != "1.0.8":
+                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v1.0.8...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)
                     except Exception:
@@ -2270,11 +2280,11 @@ class MikoMangaStudioGUI:
             "source_dir": str(self.current_folder) if self.current_folder else None,
             "target_lang": self.target_lang,
             "uppercase": bool(self.var_uppercase.get()),
-            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
             "return_image": True,
+            "prefer_url": False,
             "image_format": "webp",
             "blocks": self.last_blocks,
         }
@@ -2290,6 +2300,9 @@ class MikoMangaStudioGUI:
                 if b64_img:
                     raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
                     trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                elif data.get("saved_output_path") and os.path.exists(data["saved_output_path"]):
+                    with Image.open(data["saved_output_path"]) as saved_im:
+                        trans_pil = saved_im.convert("RGB")
 
                 def _done() -> None:
                     if trans_pil is not None:
@@ -2482,7 +2495,6 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
-            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
@@ -2547,7 +2559,6 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
-            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
@@ -2557,7 +2568,7 @@ class MikoMangaStudioGUI:
             "skip_sfx": bool(self.var_skip_sfx.get()),
             "min_text_length": int(self.var_min_text_len.get()),
             "skip_existing": bool(self.var_skip_existing.get()),
-            "batch_pages": 12,
+            "batch_pages": 15,
             "force_retranslate": not bool(self.var_skip_existing.get()),
             "open_when_done": False,
         }
@@ -2643,7 +2654,6 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
-            "overflow_mode": self.var_overflow_mode.get(),
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),

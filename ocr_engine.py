@@ -1,5 +1,5 @@
 """
-Мультиязычный модуль детекции бабблов, свободных надписей и распознавания текста (v1.0.7 — Шаги 1 + 2 + 3 + 4).
+Мультиязычный модуль детекции бабблов, свободных надписей и распознавания текста (v1.0.8 — Шаги 1 + 2 + 3 + 4).
 
 Изменения v1.0.7:
 - Шаг 1 (Двухконтурная детекция и точный кроп текста):
@@ -40,8 +40,13 @@ import re
 import sys
 import time
 import unicodedata
+import warnings
 from pathlib import Path
 from typing import Any
+
+warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
+warnings.filterwarnings("ignore", module="triton.*")
+logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
 import cv2
 import httpx
@@ -162,13 +167,18 @@ SIGH_EXACT_SET: set[str] = {
 }
 
 # Слова из гласных и короткие реакции, которые являются осмысленными репликами диалога, а НЕ вздохами
+ZH_SPECIFIC_MARKERS_REGEX = re.compile(
+    r"[这那们么没着过还让给从向到得着了的吗呢吧啊呀哦哈你她它咱啥谁哪怎什因为所以虽然但是如果已经可以这个那个]"
+)
+
 DIALOGUE_VOWEL_WORDS_JA: set[str] = {
-    "おい", "オイ", "いい", "イイ", "いいえ", "イイエ", "うん", "ウン",
+    "おい", "オイ", "いい", "イイ", "いいえ", "イイエ",
+    "うん", "ウン", "うんっ", "ウンッ", "うんうん", "ウンウン", "ううん", "ウウン", "うーん", "ウーン",
     "ええ", "エエ", "え", "えっ", "えぇ", "エ", "エッ", "エェ",
-    "お", "おっ", "おお", "オ", "オッ", "オオ",
+    "お", "おっ", "おお", "おおっ", "オ", "オッ", "オオ", "オオッ",
     "おう", "オウ", "あい", "アイ", "うえ", "ウエ",
     "あおい", "アオイ", "おおい", "オオイ", "いう", "イウ", "あう", "アウ",
-    "わっ", "ワッ", "くっ", "クッ", "ぐっ", "グッ", "ちっ", "チッ", "ほっ", "ホッ", "へっ", "ヘッ",
+    "わっ", "ワッ", "くっ", "クッ", "ぐっ", "グッ", "ちっ", "チッ", "ほっ", "ホッ", "へっ", "ヘッ", "へ", "へぇ", "ヘ", "ヘェ",
 }
 
 # Регулярное выражение только для комбинаций чистых вздохов/стонов («あ…あっ», «はぁ…はぁ…», «んっ…あ»)
@@ -202,7 +212,7 @@ SFX_EXACT_SET: set[str] = {
 
 class MangaOCREngine:
     """
-    Мультиязычный движок v1.0.7 (Шаги 1 + 2 + 3 + 4):
+    Мультиязычный движок v1.0.8 (Шаги 1 + 2 + 3 + 4):
     - Двухконтурная детекция (`RT-DETR-v2` 3-class `bubble` / `text_bubble` / `text_free` + `YOLOv8m` + OpenCV)
     - Плотная подгонка кропа по чернилам (`_compute_tight_ink_bbox`)
     - Японский OCR (`muscgab/manga-ocr-nar-small` + `MangaOCR FP16`)
@@ -245,7 +255,7 @@ class MangaOCREngine:
         self.use_hayai_ocr = bool(use_hayai_ocr)
         self.ollama_base_url = ollama_base_url.rstrip("/")
 
-        logger.info("Инициализация MangaOCREngine (v1.0.7 Step 1+2+3+4) на устройстве: %s", self.device)
+        logger.info("Инициализация MangaOCREngine (v1.0.8 Step 1+2+3+4) на устройстве: %s", self.device)
         self.detector = self._load_detector()
         self.ja_recognizer = self._load_manga_ocr()
 
@@ -386,47 +396,62 @@ class MangaOCREngine:
             import transformers
             from transformers import AutoModel, AutoProcessor, PreTrainedTokenizerFast
 
-            # Загружаем быстрый токенизатор HayaiOCR
-            try:
-                tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir))
-            except Exception:
-                auto_tok_cls = getattr(transformers, "AutoTokenizer", None)
-                if auto_tok_cls is None:
-                    raise
-                tokenizer = auto_tok_cls.from_pretrained(str(local_dir), trust_remote_code=True)
+            hf_logging = getattr(transformers, "logging", None)
+            if hf_logging is not None and hasattr(hf_logging, "set_verbosity_error"):
+                try:
+                    hf_logging.set_verbosity_error()
+                except Exception:
+                    pass
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
-            # Загружаем процессор SigLIP2 NaFlex (скачиваем только легкие JSON-конфиги без весов SigLIP2!)
+            # Загружаем быстрый токенизатор HayaiOCR локально без лишних сетевых запросов
+            try:
+                tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir), local_files_only=True)
+            except Exception:
+                try:
+                    tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir))
+                except Exception:
+                    auto_tok_cls = getattr(transformers, "AutoTokenizer", None)
+                    if auto_tok_cls is None:
+                        raise
+                    tokenizer = auto_tok_cls.from_pretrained(str(local_dir), trust_remote_code=True)
+
+            # Загружаем процессор SigLIP2 NaFlex (сначала из локального кэша proc_dir без обращения к сети!)
             processor = None
-            try:
-                if (local_dir / "preprocessor_config.json").exists():
-                    processor = AutoProcessor.from_pretrained(str(local_dir))
-            except Exception:
-                processor = None
+            if not (proc_dir / "preprocessor_config.json").exists():
+                logger.info(
+                    "Скачивание конфигурации процессора %s...",
+                    HF_HAYAI_PROCESSOR_REPO,
+                )
+                snapshot_download(
+                    repo_id=HF_HAYAI_PROCESSOR_REPO,
+                    local_dir=str(proc_dir),
+                    allow_patterns=list(HF_HAYAI_PROCESSOR_ALLOW_PATTERNS),
+                )
 
-            if processor is None:
-                if not (proc_dir / "preprocessor_config.json").exists():
-                    logger.info(
-                        "Скачивание конфигурации процессора %s...",
-                        HF_HAYAI_PROCESSOR_REPO,
-                    )
-                    snapshot_download(
-                        repo_id=HF_HAYAI_PROCESSOR_REPO,
-                        local_dir=str(proc_dir),
-                        allow_patterns=list(HF_HAYAI_PROCESSOR_ALLOW_PATTERNS),
-                    )
-                img_proc_cls = getattr(transformers, "AutoImageProcessor", None)
-                if img_proc_cls is not None:
+            img_proc_cls = getattr(transformers, "AutoImageProcessor", None)
+            if img_proc_cls is not None:
+                try:
+                    processor = img_proc_cls.from_pretrained(str(proc_dir), local_files_only=True)
+                except Exception:
                     try:
-                        processor = img_proc_cls.from_pretrained(str(proc_dir), local_files_only=True)
-                    except Exception:
                         processor = img_proc_cls.from_pretrained(str(proc_dir))
-                if processor is None:
+                    except Exception:
+                        processor = None
+            if processor is None:
+                try:
+                    processor = AutoProcessor.from_pretrained(str(proc_dir), local_files_only=True)
+                except Exception:
                     try:
-                        processor = AutoProcessor.from_pretrained(str(proc_dir), local_files_only=True)
+                        if (local_dir / "preprocessor_config.json").exists():
+                            processor = AutoProcessor.from_pretrained(str(local_dir))
                     except Exception:
                         processor = AutoProcessor.from_pretrained(HF_HAYAI_PROCESSOR_REPO)
 
-            model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True)
+            try:
+                model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True, local_files_only=True)
+            except Exception:
+                model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True)
             model.to(self.device)
             model.eval()
 
@@ -542,7 +567,9 @@ class MangaOCREngine:
         elif KANA_REGEX.search(norm):
             det_lang = "ja"
         elif HANZI_REGEX.search(norm):
-            det_lang = "zh" if fallback_lang == "zh" else ("ja" if fallback_lang == "ja" else "zh")
+            # В японской манге бабблы без каны (только из кандзи: «母», «先生», «本当», «第一話») остаются японскими ('ja'),
+            # и переключаются на 'zh' только если язык страницы/запроса явно китайский ('zh') или есть >= 2 китайских маркеров
+            det_lang = "zh" if (fallback_lang == "zh" or len(ZH_SPECIFIC_MARKERS_REGEX.findall(norm)) >= 2) else "ja"
         return norm, det_lang
 
     @staticmethod
@@ -978,13 +1005,24 @@ class MangaOCREngine:
 
             import transformers
 
+            hf_logging = getattr(transformers, "logging", None)
+            if hf_logging is not None and hasattr(hf_logging, "set_verbosity_error"):
+                try:
+                    hf_logging.set_verbosity_error()
+                except Exception:
+                    pass
+            logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+
             proc_cls = getattr(transformers, "AutoImageProcessor", None) or getattr(
                 transformers, "RTDetrImageProcessor", None
             )
             if proc_cls is None:
                 raise RuntimeError("В установленной версии transformers отсутствует AutoImageProcessor.")
 
-            processor = proc_cls.from_pretrained(str(local_dir))
+            try:
+                processor = proc_cls.from_pretrained(str(local_dir), local_files_only=True)
+            except Exception:
+                processor = proc_cls.from_pretrained(str(local_dir))
 
             model = None
             last_err: Exception | None = None
@@ -1210,23 +1248,31 @@ class MangaOCREngine:
         border_pixels = np.concatenate([top_b, bot_b, left_b, right_b])
         border_median = float(np.median(border_pixels)) if border_pixels.size > 0 else p50
 
+        out_rgb = crop_rgb_np
         # 1. Белый текст на темном/черном фоне -> инвертируем в черный текст на белом фоне
         if p50 < 115.0 and border_median < 128.0 and (p95 - p20) >= 35.0:
             inv_gray = 255 - gray
             inv_p5, inv_p85 = [float(v) for v in np.percentile(inv_gray, [5, 85])]
             denom = max(25.0, inv_p85 - inv_p5)
             stretched = np.clip((inv_gray.astype(np.float32) - inv_p5) * (255.0 / denom), 0.0, 255.0).astype(np.uint8)
-            return cv2.cvtColor(stretched, cv2.COLOR_GRAY2RGB)
-
+            out_rgb = cv2.cvtColor(stretched, cv2.COLOR_GRAY2RGB)
         # 2. Бледный скан или серый скринтон на фоне баббла -> осветляем фон до белого и усиливаем штрихи
-        if border_median >= 145.0 and ((p95 - p5) < 140.0 or (170.0 <= p80 < 236.0)):
+        elif border_median >= 145.0 and ((p95 - p5) < 140.0 or (170.0 <= p80 < 236.0)):
             hi_ref = max(p80, border_median, p5 + 30.0)
             lo_ref = p5
             denom = max(25.0, hi_ref - lo_ref)
             stretched = np.clip((gray.astype(np.float32) - lo_ref) * (255.0 / denom), 0.0, 255.0).astype(np.uint8)
-            return cv2.cvtColor(stretched, cv2.COLOR_GRAY2RGB)
+            out_rgb = cv2.cvtColor(stretched, cv2.COLOR_GRAY2RGB)
 
-        return crop_rgb_np
+        # 3. Двукратный бикубический апскейл + легкий unsharp mask для мелких кропов (< 64px по меньшей стороне),
+        # чтобы тонкие штрихи кандзи и дакутэн не размывались при нарезке на ViT-патчи 14x14 / 16x16
+        oh, ow = out_rgb.shape[:2]
+        if min(oh, ow) < 64 or max(oh, ow) < 96:
+            up = cv2.resize(out_rgb, (ow * 2, oh * 2), interpolation=cv2.INTER_CUBIC)
+            blur = cv2.GaussianBlur(up, (0, 0), 1.0)
+            out_rgb = cv2.addWeighted(up, 1.28, blur, -0.28, 0)
+
+        return out_rgb
 
     @staticmethod
     def _pad_to_balanced_aspect_for_vit(
@@ -1264,15 +1310,15 @@ class MangaOCREngine:
         cls,
         rgb_image: Image.Image,
         bbox: tuple[int, int, int, int] | list[int],
-        pad: int = 8,
+        pad: int = 12,
         smart_preprocess: bool = True,
     ) -> Image.Image:
         img_w, img_h = rgb_image.size
         x1, y1, x2, y2 = bbox
-        cx1 = max(0, x1 - 4)
-        cy1 = max(0, y1 - 4)
-        cx2 = min(img_w, x2 + 4)
-        cy2 = min(img_h, y2 + 4)
+        cx1 = max(0, x1 - 6)
+        cy1 = max(0, y1 - 6)
+        cx2 = min(img_w, x2 + 6)
+        cy2 = min(img_h, y2 + 6)
         crop = rgb_image.crop((cx1, cy1, cx2, cy2))
         if smart_preprocess:
             crop_np = np.array(crop)
@@ -1512,10 +1558,11 @@ class MangaOCREngine:
     def _extract_bubble_interior_mask(roi_gray: np.ndarray, bg_level: float) -> np.ndarray:
         """
         Выделяет внутреннюю светлую область речевого облачка внутри темного контура баббла,
-        отсекая как сам контур баббла, так и 4 внешних угла прямоугольного бокса за пределами овала.
+        отсекая как сам контур баббла, так и 4 внешних угла прямоугольного бокса за пределами овала,
+        и морфологически замыкает вмятины от крайних иероглифов, касающихся стенок баббла.
         """
         rh, rw = roi_gray.shape[:2]
-        wall_thresh = max(145, int(bg_level - 55))
+        wall_thresh = max(150, int(bg_level - 52))
         light_pixels = (roi_gray >= wall_thresh).astype(np.uint8) * 255
 
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(light_pixels, connectivity=4)
@@ -1526,15 +1573,15 @@ class MangaOCREngine:
         best_label = -1
         best_score = -1.0
 
-        c_x1, c_x2 = int(rw * 0.20), max(int(rw * 0.20) + 1, int(rw * 0.80))
-        c_y1, c_y2 = int(rh * 0.16), max(int(rh * 0.16) + 1, int(rh * 0.84))
+        c_x1, c_x2 = int(rw * 0.22), max(int(rw * 0.22) + 1, int(rw * 0.78))
+        c_y1, c_y2 = int(rh * 0.18), max(int(rh * 0.18) + 1, int(rh * 0.82))
         center_slice = labels[c_y1:c_y2, c_x1:c_x2]
 
         selected_labels: list[int] = []
         for lbl in range(1, num_labels):
             area = float(stats[lbl, cv2.CC_STAT_AREA])
             center_hits = float(np.count_nonzero(center_slice == lbl))
-            if area < (rh * rw * 0.04) and center_hits < (center_slice.size * 0.03):
+            if area < (rh * rw * 0.03) and center_hits < (center_slice.size * 0.03):
                 continue
             dist = ((centroids[lbl][0] - cx_mid) ** 2 + ((centroids[lbl][1] - cy_mid) ** 2)) ** 0.5
             lx = stats[lbl, cv2.CC_STAT_LEFT]
@@ -1542,15 +1589,13 @@ class MangaOCREngine:
             lw = stats[lbl, cv2.CC_STAT_WIDTH]
             lh = stats[lbl, cv2.CC_STAT_HEIGHT]
             edge_touches = sum([lx <= 0, ly <= 0, (lx + lw) >= rw, (ly + lh) >= rh])
-            corner_penalty = 0.0
-            if edge_touches >= 2 and center_hits < area * 0.25:
-                corner_penalty = area * 0.75
+            corner_penalty = area * 0.85 if (edge_touches >= 2 and center_hits < area * 0.28) else 0.0
 
-            score = center_hits * 3.5 + area - dist * 4.0 - corner_penalty
+            score = center_hits * 4.0 + area - dist * 4.0 - corner_penalty
             if score > best_score:
                 best_score = score
                 best_label = lbl
-            if center_hits >= max(8.0, center_slice.size * 0.06) and edge_touches <= 2:
+            if edge_touches == 0 and center_hits >= max(10.0, center_slice.size * 0.08):
                 selected_labels.append(lbl)
 
         if best_label == -1:
@@ -1572,6 +1617,34 @@ class MangaOCREngine:
             if not touches_edge:
                 interior[lbl_inv == idx] = 255
 
+        close_d = max(15, min(27, int(round(min(rw, rh) * 0.26)) | 1))
+        k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_d, close_d))
+        padded = cv2.copyMakeBorder(interior, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
+        closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
+        closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
+
+        inv2 = cv2.bitwise_not(closed_int)
+        n_inv2, lbl_inv2, st_inv2, _ = cv2.connectedComponentsWithStats(inv2, connectivity=8)
+        for idx2 in range(1, n_inv2):
+            lx2 = st_inv2[idx2, cv2.CC_STAT_LEFT]
+            ly2 = st_inv2[idx2, cv2.CC_STAT_TOP]
+            lw2 = st_inv2[idx2, cv2.CC_STAT_WIDTH]
+            lh2 = st_inv2[idx2, cv2.CC_STAT_HEIGHT]
+            if lx2 > 0 and ly2 > 0 and (lx2 + lw2) < rw and (ly2 + lh2) < rh:
+                closed_int[lbl_inv2 == idx2] = 255
+
+        added = cv2.subtract(closed_int, interior)
+        n_add, lbl_add, st_add, _ = cv2.connectedComponentsWithStats(added, connectivity=8)
+        for idx_a in range(1, n_add):
+            aw = st_add[idx_a, cv2.CC_STAT_WIDTH]
+            ah = st_add[idx_a, cv2.CC_STAT_HEIGHT]
+            a_area = st_add[idx_a, cv2.CC_STAT_AREA]
+            fill_r = float(a_area) / max(1.0, float(aw * ah))
+            is_compact_dent = (aw <= rw * 0.46 and ah <= rh * 0.46 and a_area <= rw * rh * 0.16)
+            is_dense_char_dent = (fill_r >= 0.26 and aw <= rw * 0.70 and ah <= rh * 0.60 and a_area <= rw * rh * 0.25)
+            if is_compact_dent or is_dense_char_dent:
+                interior[lbl_add == idx_a] = 255
+
         erode_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
         return cv2.erode(interior, erode_k, iterations=1)
 
@@ -1585,9 +1658,8 @@ class MangaOCREngine:
     ) -> list[int]:
         """
         Вычисляет плотный внутренний прямоугольник реальных штрихов букв (`text_bbox`) внутри `bubble_bbox`,
-        отсекая внешние черные контуры самого речевого облачка, рамки фреймов и пустые белые поля.
-        Если передан `hint_text_bbox` (от класса `1: text_bubble` из RT-DETR-v2), объединяет его с реальными
-        штрихами букв внутри баббла, чтобы ни один знак препинания или фуригана не обрезался.
+        отсекая внешние черные контуры самого речевого облачка, рамки фреймов и пустые белые поля,
+        но сохраняя все краевые и выступающие за контур баббла иероглифы.
         """
         img_h, img_w = img_np.shape[:2]
         bx1, by1, bx2, by2 = [int(round(float(c))) for c in bubble_bbox[:4]]
@@ -1598,13 +1670,14 @@ class MangaOCREngine:
         bw = bx2 - bx1
         bh = by2 - by1
 
+        max_overhang = max(24, int(min(bw, bh) * 0.30))
         valid_hint: list[int] | None = None
         if isinstance(hint_text_bbox, (list, tuple)) and len(hint_text_bbox) >= 4:
             hx1, hy1, hx2, hy2 = [int(round(float(c))) for c in hint_text_bbox[:4]]
-            hx1 = max(max(0, bx1 - 4), min(hx1, img_w - 2))
-            hy1 = max(max(0, by1 - 4), min(hy1, img_h - 2))
-            hx2 = max(hx1 + 2, min(hx2, min(img_w, bx2 + 4)))
-            hy2 = max(hy1 + 2, min(hy2, min(img_h, by2 + 4)))
+            hx1 = max(max(0, bx1 - max_overhang), min(hx1, img_w - 2))
+            hy1 = max(max(0, by1 - max_overhang), min(hy1, img_h - 2))
+            hx2 = max(hx1 + 2, min(hx2, min(img_w, bx2 + max_overhang)))
+            hy2 = max(hy1 + 2, min(hy2, min(img_h, by2 + max_overhang)))
             if (hx2 - hx1) >= 10 and (hy2 - hy1) >= 10:
                 valid_hint = [hx1, hy1, hx2, hy2]
 
@@ -1614,9 +1687,8 @@ class MangaOCREngine:
         if is_free_text:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
 
-        # Отступаем на 3% от самого края бокса баббла, чтобы не захватывать внешнюю рамку фрейма
-        pad_in_x = max(1, int(bw * 0.03))
-        pad_in_y = max(1, int(bh * 0.03))
+        pad_in_x = max(1, int(bw * 0.02))
+        pad_in_y = max(1, int(bh * 0.02))
         ix1 = min(bx2 - 2, bx1 + pad_in_x)
         iy1 = min(by2 - 2, by1 + pad_in_y)
         ix2 = max(ix1 + 2, bx2 - pad_in_x)
@@ -1631,10 +1703,12 @@ class MangaOCREngine:
         p75 = float(np.percentile(roi_gray, 75))
         median_val = float(np.median(roi_gray))
 
+        has_clean_interior = False
         if p75 >= 210.0:
             interior_mask = cls._extract_bubble_interior_mask(roi_gray, p75)
             ink_thresh = max(165, int(p75 - 18))
             binary = ((roi_gray < ink_thresh) & (interior_mask > 0)).astype(np.uint8) * 255
+            has_clean_interior = True
         elif median_val >= 127.0:
             _, binary = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         else:
@@ -1661,20 +1735,18 @@ class MangaOCREngine:
             touches_b = (cy + ch) >= (rh - 1)
             edge_touches = sum([touches_l, touches_t, touches_r, touches_b])
 
-            # Отсекаем контур самого баббла и длинные линии рамки, касающиеся границ бокса
-            if edge_touches >= 2 and (cw > rw * 0.60 or ch > rh * 0.60):
+            if edge_touches >= 2 and (cw > rw * 0.65 or ch > rh * 0.65):
                 continue
-            if edge_touches >= 1 and (cw > rw * 0.72 or ch > rh * 0.72):
+            if edge_touches >= 1 and (cw > rw * 0.78 or ch > rh * 0.78):
                 continue
             if edge_touches >= 1 and (cw <= 4 or ch <= 4) and (cw > rw * 0.35 or ch > rh * 0.35):
                 continue
 
-            # Если компонент лежит в самом углу кропа и касается границы — это дуга овального баббла
-            if edge_touches >= 1:
+            if not has_clean_interior and edge_touches >= 1:
                 comp_cx = cx + cw / 2.0
                 comp_cy = cy + ch / 2.0
-                in_corner_x = comp_cx < rw * 0.16 or comp_cx > rw * 0.84
-                in_corner_y = comp_cy < rh * 0.16 or comp_cy > rh * 0.84
+                in_corner_x = comp_cx < rw * 0.14 or comp_cx > rw * 0.86
+                in_corner_y = comp_cy < rh * 0.14 or comp_cy > rh * 0.86
                 if in_corner_x and in_corner_y:
                     continue
 
@@ -1687,7 +1759,6 @@ class MangaOCREngine:
         if kept_ink_px < 12 or max_cx <= min_cx or max_cy <= min_cy:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
 
-        # Переводим координаты чернил обратно в систему страницы с небольшим запасом 4px вокруг штрихов
         ink_x1 = max(bx1, ix1 + min_cx - 4)
         ink_y1 = max(by1, iy1 + min_cy - 4)
         ink_x2 = min(bx2, ix1 + max_cx + 4)
@@ -1698,18 +1769,15 @@ class MangaOCREngine:
 
         if valid_hint is not None:
             hx1, hy1, hx2, hy2 = valid_hint
-            # Проверяем пересечение `hint_text_bbox` (от RT-DETR-v2) и найденных чернил
             inter_x1 = max(hx1, ink_x1)
             inter_y1 = max(hy1, ink_y1)
             inter_x2 = min(hx2, ink_x2)
             inter_y2 = min(hy2, ink_y2)
             if inter_x2 > inter_x1 and inter_y2 > inter_y1:
-                # Объединяем `hint_text_bbox` и чернила (но не шире внутренней области баббла),
-                # чтобы гарантированно не потерять крайние кавычки/точки и при этом не взять стенки баббла
-                ux1 = max(bx1, min(hx1, ink_x1))
-                uy1 = max(by1, min(hy1, ink_y1))
-                ux2 = min(bx2, max(hx2, ink_x2))
-                uy2 = min(by2, max(hy2, ink_y2))
+                ux1 = max(0, min(hx1, ink_x1))
+                uy1 = max(0, min(hy1, ink_y1))
+                ux2 = min(img_w, max(hx2, ink_x2))
+                uy2 = min(img_h, max(hy2, ink_y2))
                 return [ux1, uy1, ux2, uy2]
             return valid_hint
 
@@ -1834,17 +1902,22 @@ class MangaOCREngine:
             if (cw >= w * 0.90 and ch <= max(5, int(h * 0.18))) or (ch >= h * 0.90 and cw <= max(5, int(w * 0.18))):
                 long_wall_comps += 1
                 continue
-            if cw >= w * 0.94 and ch >= h * 0.94:
+            max_span_ratio = 0.88 if is_free_text else 0.97
+            if cw >= w * 0.96 and ch >= h * 0.96:
                 long_wall_comps += 1
                 continue
-            if 2 <= cw <= w * 0.88 and 3 <= ch <= h * 0.88:
+            if 2 <= cw <= w * max_span_ratio and 3 <= ch <= h * max_span_ratio:
                 char_like_comps += 1
 
-        # Если один гигантский кусок заливки/тени занимает >82% всех чернил и нет отдельных букв — это рисунок, а не текст
-        if largest_comp_area > total_ink_area * 0.82 and char_like_comps <= 1:
+        crop_box_area = max(1, w * h)
+        # Для свободного текста вне бабблов отсекаем одиночные пятна/тени
+        if is_free_text and largest_comp_area > total_ink_area * 0.82 and char_like_comps <= 1:
+            return False
+        # Внутри бабблов отсекаем только сплошную черную заливку (>68% площади всего кропа)
+        if not is_free_text and largest_comp_area > crop_box_area * 0.68 and char_like_comps == 0:
             return False
         # Если мелких точек скринтона в десятки раз больше, чем осмысленных штрихов — это скринтон
-        if tiny_specks > max(28, char_like_comps * 9) and char_like_comps < 4:
+        if tiny_specks > max(32, char_like_comps * 11) and (char_like_comps < 4 if is_free_text else char_like_comps == 0):
             return False
 
         min_req_comps = 2 if is_free_text else 1
@@ -1877,6 +1950,10 @@ class MangaOCREngine:
             return True
         if REPEATED_NOISE_REGEX.match(norm):
             return True
+        # Числовой шум штриховки (например '7755', '111', '00' из наклонных линий '////') без единой буквы/кандзи/каны
+        if re.fullmatch(r"[0-9０-９]+", norm):
+            if is_free_text or len(set(norm)) <= 2 or len(norm) >= 4:
+                return True
 
         # Проверка физической плотности чернил на символ: длинная фраза из 8+ символов не может возникнуть из пары точек
         char_len = len(norm)
@@ -1925,13 +2002,17 @@ class MangaOCREngine:
         if collapsed in SIGH_EXACT_SET and core not in DIALOGUE_VOWEL_WORDS_JA:
             return True
 
+        # Защита для диалогового согласия «うん» / «うんうん» («угу / да-да»), чтобы SIGH_COMBO_REGEX не путал его со стоном «う…ん»
+        if "うん" in core or "ウン" in core:
+            return False
+
         # Если строка состоит только из вздохов/стонов (до 7 символов без кандзи)
         if len(core) <= 7 and not HANZI_REGEX.search(core):
             if SIGH_COMBO_REGEX.match(core) or SIGH_COMBO_REGEX.match(collapsed):
                 return True
 
-        # Одиночный символ хираганы/катаканы/хангыля/латиницы/кириллицы (не кандзи!) — почти всегда звук/вздох
-        if len(core) == 1 and not HANZI_REGEX.search(core):
+        # Одиночный символ считается вздохом только если он входит в SIGH_EXACT_SET
+        if len(core) == 1 and core in SIGH_EXACT_SET:
             return True
 
         return False
@@ -1939,15 +2020,19 @@ class MangaOCREngine:
     @classmethod
     def is_sfx_or_onomatopoeia(cls, text: str, is_free_text: bool = False) -> bool:
         """
-        Определяет, является ли блок звуковым спецэффектом (SFX / ономатопеей).
-        ВАЖНО: Внутри кружков/бабблов (`is_free_text=False`) короткие слова катаканой (マジ, ダメ, ウソ, バカ, イヤ, ナニ, ココ)
-        являются живыми репликами персонажей, поэтому внутри бабблов отсекаются ТОЛЬКО явные звуки из `SFX_EXACT_SET`!
+        Определяет, является ли блок фоновым звуковым спецэффектом (SFX / ономатопеей).
+        ВАЖНО: Внутри речевых бабблов (`is_free_text=False`) любые слова, реакции и междометия
+        (включая チュッ, ドキッ, クスッ, ゴクッ, ダメ, ウソ, マジ) являются частью речи/реакции персонажа
+        и НИКОГДА не отбрасываются как фоновый SFX!
         """
         if not text:
             return True
         core = STRIP_PUNCT_REGEX.sub("", text.strip())
         if not core:
             return True
+        if not is_free_text:
+            return False
+
         if core in SFX_EXACT_SET or core.lower() in SFX_EXACT_SET:
             return True
 
@@ -1955,8 +2040,7 @@ class MangaOCREngine:
         if collapsed in SFX_EXACT_SET:
             return True
 
-        # Для текста ВНЕ бабблов (на фоне) отсекаем звуковую ономатопею катаканой и повторы слогов
-        if is_free_text and not HANZI_REGEX.search(core):
+        if not HANZI_REGEX.search(core):
             if len(core) <= 8 and REDUPLICATED_SFX_REGEX.match(core):
                 return True
             if KATAKANA_ONLY_REGEX.match(core) and len(core) <= 6:
@@ -1969,10 +2053,10 @@ class MangaOCREngine:
         cls,
         text: str,
         is_free_text: bool = False,
-        text_filter_mode: str = "dialogue_only",
-        skip_sighs: bool = True,
+        text_filter_mode: str = "bubbles_only",
+        skip_sighs: bool = False,
         skip_sfx: bool = True,
-        min_text_length: int = 2,
+        min_text_length: int = 1,
     ) -> tuple[str, str] | None:
         """
         Возвращает `(reason_code, reason_label_ru)`, если блок должен быть отсеян фильтром объема текста,
@@ -1982,19 +2066,22 @@ class MangaOCREngine:
         if not core:
             return ("empty_punct", "Только знаки препинания / пустая строка")
 
-        mode = (text_filter_mode or "dialogue_only").lower().strip()
-        eff_skip_sighs = bool(skip_sighs) or mode in ("dialogue_only", "bubbles_no_sighs", "long_only")
+        mode = (text_filter_mode or "bubbles_only").lower().strip()
+        eff_skip_sighs = bool(skip_sighs) or mode in ("bubbles_no_sighs", "long_only")
         eff_skip_sfx = bool(skip_sfx) or mode in ("dialogue_only", "bubbles_no_sighs", "bubbles_only", "long_only")
         eff_min_len = max(1, int(min_text_length or 1))
         if mode == "long_only":
             eff_min_len = max(eff_min_len, 4)
-        elif mode == "all" and not skip_sighs and not skip_sfx and min_text_length <= 1:
+        elif not is_free_text and mode != "long_only":
             eff_min_len = 1
 
         if mode in ("dialogue_only", "bubbles_only", "long_only") and is_free_text:
             return ("free_text_disabled", f"Надпись вне баббла (отключено в профиле {mode})")
 
-        # Одиночный кандзи внутри баббла (например 何 / 誰 / 嘘 / 嫌 / 悪) — это полноценное слово, никогда не отбрасываем при min_len <= 2!
+        # Чистые цифры без единой буквы или иероглифа ('7755', '100', '11') не требуют перевода и часто являются шумом штриховки
+        if mode != "all" and re.fullmatch(r"[0-9０-９]+", core):
+            return ("numeric_noise", "Числовой артефакт OCR / цифры без букв (не требует перевода)")
+
         has_kanji = bool(HANZI_REGEX.search(core))
         effective_char_len = len(core) + (1 if (has_kanji and len(core) == 1 and eff_min_len <= 2) else 0)
         if effective_char_len < eff_min_len:
@@ -2013,10 +2100,10 @@ class MangaOCREngine:
         cls,
         text: str,
         is_free_text: bool = False,
-        text_filter_mode: str = "dialogue_only",
-        skip_sighs: bool = True,
+        text_filter_mode: str = "bubbles_only",
+        skip_sighs: bool = False,
         skip_sfx: bool = True,
-        min_text_length: int = 2,
+        min_text_length: int = 1,
     ) -> bool:
         """
         Проверяет, нужно ли пропустить (не замазывать и не переводить) данный текстовый блок
@@ -2299,7 +2386,7 @@ class MangaOCREngine:
             pool,
             key=lambda d: (d["bbox"][2] - d["bbox"][0]) * (d["bbox"][3] - d["bbox"][1]),
             reverse=True,
-        )[:6]
+        )[:10]
 
         crops_data: list[tuple[tuple[int, int, int, int], Image.Image, np.ndarray, bool]] = []
         vertical_votes = 0
@@ -2345,22 +2432,27 @@ class MangaOCREngine:
                 pass
             return kana_chars, ja_hanzi_chars
 
-        # 1. Быстрая проверка японского (классическая японская манга и обложки с хираганой/катаканой — ~35 мс, без лишней подгрузки EasyOCR!)
+        # 1. Быстрая проверка японского (классическая японская манга и обложки с хираганой/катаканой — ~35 мс)
         _evaluate_ja()
         ja_total = kana_chars + ja_hanzi_chars
         kana_ratio = kana_chars / max(1, ja_total)
-        if vertical_votes > horizontal_votes and kana_chars >= 2 and kana_ratio >= 0.20:
+        # Если в бабблах есть кана и вертикальная верстка (или уверенная доля каны >= 18% при >= 2 символах каны) — это 100% японская манга
+        if vertical_votes >= horizontal_votes and kana_chars >= 1 and kana_ratio >= 0.12:
             self._last_detected_lang = "ja"
             return "ja"
-        if self._ja_nar_available and self._hayai_model is None and kana_chars >= 3 and kana_ratio >= 0.25:
+        if kana_chars >= 2 and kana_ratio >= 0.18:
             self._last_detected_lang = "ja"
+            return "ja"
+        # Если предыдущие страницы главы уже определены как японские ('ja') и на текущей странице только кандзи без каны
+        # (например, обложка, схема родства, табличка «第一話» или короткие восклицания «何?!», «本当?!»),
+        # при наличии вертикальных бабблов или малом числе иероглифов (< 14) сохраняем японский язык ('ja')!
+        if self._last_detected_lang == "ja" and kana_chars == 0 and (vertical_votes >= horizontal_votes or ja_hanzi_chars < 14):
             return "ja"
         if not self._check_multilang_ocr():
             self._last_detected_lang = "ja"
             return "ja"
 
-        # 2. Если на странице преобладают горизонтальные бабблы или мало каны, проверяем через мультиязычный HayaiOCR v2.5 Nova
-        # (если он уже загружен или если EasyOCR не установлен)
+        # 2. Если на странице преобладают горизонтальные бабблы и нет каны, проверяем через мультиязычный HayaiOCR v2.5 Nova
         if self.use_hayai_ocr and self._hayai_available is not False and (
             self._hayai_model is not None or not self._check_easyocr()
         ):
@@ -2370,6 +2462,7 @@ class MangaOCREngine:
                 h_hangul = 0
                 h_kana = 0
                 h_hanzi = 0
+                h_zh_markers = 0
                 for (bbox_key, _, _, _), h_txt in zip(crops_data, hayai_texts):
                     if not h_txt:
                         continue
@@ -2379,6 +2472,7 @@ class MangaOCREngine:
                     h_hangul += cnt_ko
                     h_kana += cnt_ja
                     h_hanzi += cnt_zh
+                    h_zh_markers += len(ZH_SPECIFIC_MARKERS_REGEX.findall(h_txt))
                     if cnt_ko > 0:
                         self._page_ocr_cache[(*bbox_key, "ko")] = h_txt
                     if cnt_zh > 0 and cnt_ja == 0:
@@ -2387,12 +2481,15 @@ class MangaOCREngine:
                 if h_hangul >= 2 and h_hangul >= h_kana:
                     self._last_detected_lang = "ko"
                     return "ko"
-                if h_kana >= 2 and (h_kana / max(1, h_kana + h_hanzi)) >= 0.18:
+                if h_kana >= 1 or kana_chars >= 1:
                     self._last_detected_lang = "ja"
                     return "ja"
-                if h_hanzi >= 2 and h_kana == 0 and h_hangul == 0:
-                    self._last_detected_lang = "zh"
-                    return "zh"
+                # Переключаем на китайский ('zh') ТОЛЬКО если есть специфичные китайские маркеры или длинный горизонтальный текст без каны
+                if h_hanzi >= 2 and h_kana == 0 and kana_chars == 0 and h_hangul == 0:
+                    if h_zh_markers >= 2 or (h_hanzi >= 6 and h_zh_markers >= 1 and horizontal_votes > vertical_votes):
+                        self._last_detected_lang = "zh"
+                        return "zh"
+                    return self._last_detected_lang or "ja"
             except Exception as exc:
                 logger.debug("HayaiOCR language detection skipped: %s", exc)
 
@@ -2463,16 +2560,20 @@ class MangaOCREngine:
         if (kana_chars + ja_hanzi_chars + hanzi_chars) <= 3 and vertical_votes >= horizontal_votes:
             return self._last_detected_lang
 
-        if hanzi_chars >= 2 and zh_score >= 0.60:
-            if kana_ratio < 0.20 or (horizontal_votes > vertical_votes and zh_score >= 0.65):
-                self._last_detected_lang = "zh"
-                return "zh"
-
-        if vertical_votes > horizontal_votes and kana_chars >= 1:
+        if kana_chars >= 1:
             self._last_detected_lang = "ja"
             return "ja"
 
-        if hanzi_chars >= 3 and zh_score >= 0.55 and kana_chars == 0:
+        zh_cached_joined = " ".join(
+            str(val) for k, val in self._page_ocr_cache.items() if isinstance(k, tuple) and len(k) >= 5 and k[-1] == "zh"
+        )
+        easy_zh_markers = len(ZH_SPECIFIC_MARKERS_REGEX.findall(zh_cached_joined))
+
+        if hanzi_chars >= 2 and zh_score >= 0.65 and easy_zh_markers >= 2:
+            self._last_detected_lang = "zh"
+            return "zh"
+
+        if hanzi_chars >= 4 and zh_score >= 0.60 and kana_chars == 0 and easy_zh_markers >= 1 and horizontal_votes > vertical_votes:
             self._last_detected_lang = "zh"
             return "zh"
 
@@ -3730,16 +3831,33 @@ class MangaOCREngine:
                     # Если manga-ocr-nar-small вернул пустую строку ("") на кропе — значит внутри нет японских букв,
                     # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
                     # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
-                    long_indices = [
-                        idx for idx, txt in enumerate(nar_texts) if len(txt) >= 54
+                    fallback_indices = [
+                        idx for idx, txt in enumerate(nar_texts) if len(txt) >= 54 or not txt.strip()
                     ]
-                    if long_indices:
-                        sub_crops = [crops_pil[idx] for idx in long_indices]
+                    if fallback_indices:
+                        sub_crops = [crops_pil[idx] for idx in fallback_indices]
                         fallback_texts = self._run_classic_manga_ocr_batch(sub_crops, batch_size=batch_size)
-                        for idx, fb_txt in zip(long_indices, fallback_texts):
-                            cur_nar = nar_texts[idx]
-                            if len(cur_nar) >= 54 and len(fb_txt) > len(cur_nar) and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(fb_txt):
-                                nar_texts[idx] = fb_txt
+                        for idx, fb_txt in zip(fallback_indices, fallback_texts):
+                            cur_nar = nar_texts[idx].strip()
+                            fb_clean = fb_txt.strip()
+                            if not fb_clean or KNOWN_OCR_HALLUCINATIONS_REGEX.search(fb_clean):
+                                continue
+                            if not cur_nar or (len(cur_nar) >= 54 and len(fb_clean) > len(cur_nar)):
+                                nar_texts[idx] = fb_clean
+                    # Если после NAR + MangaOCR какой-то баббл остался пустым или с галлюцинацией — дочитываем через HayaiOCR v2.5 Nova!
+                    if self.use_hayai_ocr and self._hayai_model is not None:
+                        hayai_rescue_indices = [
+                            idx
+                            for idx, txt in enumerate(nar_texts)
+                            if not txt.strip() or KNOWN_OCR_HALLUCINATIONS_REGEX.search(txt)
+                        ]
+                        if hayai_rescue_indices:
+                            hayai_sub_crops = [crops_pil[idx] for idx in hayai_rescue_indices]
+                            hayai_rescued = self._recognize_crops_batch_hayai(hayai_sub_crops, lang="ja")
+                            for idx, h_txt in zip(hayai_rescue_indices, hayai_rescued):
+                                h_clean = (h_txt or "").strip()
+                                if h_clean and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(h_clean):
+                                    nar_texts[idx] = h_clean
                     return nar_texts
             except Exception as nar_exc:
                 logger.debug("Ошибка пакетного вызова manga-ocr-nar-small (%s), переключаемся на MangaOCR.", nar_exc)
@@ -3786,16 +3904,16 @@ class MangaOCREngine:
         lang: str = "auto",
         min_box_size: int = 16,
         detect_free_text: bool = False,
-        text_filter_mode: str = "dialogue_only",
-        skip_sighs: bool = True,
+        text_filter_mode: str = "bubbles_only",
+        skip_sighs: bool = False,
         skip_sfx: bool = True,
-        min_text_length: int = 2,
+        min_text_length: int = 1,
     ) -> tuple[list[dict[str, Any]], str]:
         req_lang = (lang or "auto").lower().strip()
         if req_lang not in ("auto", "ja", "ko", "zh"):
             req_lang = "auto"
 
-        mode = (text_filter_mode or "dialogue_only").lower().strip()
+        mode = (text_filter_mode or "bubbles_only").lower().strip()
         # В режимах "dialogue_only", "bubbles_only" и "long_only" свободный текст на фоне принудительно отключен,
         # чтобы не замазывать рисунки и спецэффекты вне бабблов.
         effective_free_text = bool(detect_free_text) and mode not in ("dialogue_only", "bubbles_only", "long_only")
@@ -3963,6 +4081,19 @@ class MangaOCREngine:
                         resolved_lang,
                         is_free_text=is_free,
                     )
+
+            if not recognized_text and not is_free and has_ink and ink_pixels >= 28 and ocr_coords != [x1, y1, x2, y2]:
+                full_raw_np = img_np[y1:y2, x1:x2]
+                full_padded = self._crop_with_padding(rgb_image, [x1, y1, x2, y2], pad=12)
+                retry_full_txt = self._recognize_crop(
+                    full_padded,
+                    full_raw_np,
+                    resolved_lang,
+                    is_free_text=False,
+                )
+                if retry_full_txt:
+                    recognized_text = retry_full_txt
+                    ocr_coords = [x1, y1, x2, y2]
 
             if not recognized_text:
                 if not has_ink:
@@ -4254,7 +4385,9 @@ class MangaOCREngine:
                         recognized = cand_h
                         if HANGUL_REGEX.search(recognized):
                             resolved_lang = "ko"
-                        elif HANZI_REGEX.search(recognized) and not KANA_REGEX.search(recognized):
+                        elif KANA_REGEX.search(recognized):
+                            resolved_lang = "ja"
+                        elif HANZI_REGEX.search(recognized) and (req_lang == "zh" or len(ZH_SPECIFIC_MARKERS_REGEX.findall(recognized)) >= 2):
                             resolved_lang = "zh"
                 if (not recognized or PUNCT_ONLY_REGEX.match(recognized)) and self._check_easyocr():
                     for fallback_reader in (self._get_ko_reader(), self._get_zh_reader()):

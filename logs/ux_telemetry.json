@@ -1,53 +1,53 @@
 {
   "schema_version": 1,
   "created_at": "2026-10-24 12:37:52",
-  "updated_at": "2026-10-28 14:56:20",
-  "total_events": 393,
-  "total_mouse_clicks": 231,
-  "total_hotkey_presses": 0,
-  "total_canvas_manipulations": 137,
+  "updated_at": "2026-10-30 15:18:08",
+  "total_events": 585,
+  "total_mouse_clicks": 339,
+  "total_hotkey_presses": 67,
+  "total_canvas_manipulations": 154,
   "total_text_edits": 25,
-  "active_usage_sec": 2700.0,
+  "active_usage_sec": 4513.0,
   "actions": {
     "pickFolderDialog": {
       "action_id": "pickFolderDialog",
       "label": "📁 Выбрать папку",
       "zone": "left_sidebar",
       "event_type": "button_click",
-      "count": 7,
-      "last_used": "2026-10-28 14:36:51"
+      "count": 16,
+      "last_used": "2026-10-30 15:14:56"
     },
     "page-row-select": {
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar",
       "event_type": "button_click",
-      "count": 68,
-      "last_used": "2026-10-28 14:55:59"
+      "count": 116,
+      "last_used": "2026-10-30 08:00:28"
     },
     "btn-contextual-page": {
       "action_id": "btn-contextual-page",
-      "label": "🎯 Перевести только стр. #22 (022.jpg)",
+      "label": "🔁 Перевести стр. #162 заново (ИИ)",
       "zone": "left_sidebar",
       "event_type": "button_click",
-      "count": 16,
-      "last_used": "2026-10-28 14:53:59"
+      "count": 17,
+      "last_used": "2026-10-28 18:44:07"
     },
     "bbox-pin-del": {
       "action_id": "bbox-pin-del",
       "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
       "zone": "viewer_stage_pin",
       "event_type": "button_click",
-      "count": 51,
-      "last_used": "2026-10-27 15:18:00"
+      "count": 59,
+      "last_used": "2026-10-28 18:43:39"
     },
     "canvas:pin_click": {
       "action_id": "canvas:pin_click",
       "label": "Клик по рамке #N прямо на странице манги",
       "zone": "viewer_stage_pin",
       "event_type": "canvas_action",
-      "count": 39,
-      "last_used": "2026-10-27 15:43:32"
+      "count": 48,
+      "last_used": "2026-10-28 18:38:03"
     },
     "text_edit:inline_popup": {
       "action_id": "text_edit:inline_popup",
@@ -62,24 +62,24 @@
       "label": "✅ Применить",
       "zone": "inline_popup",
       "event_type": "button_click",
-      "count": 20,
-      "last_used": "2026-10-27 15:18:20"
+      "count": 22,
+      "last_used": "2026-10-28 18:37:59"
     },
     "closeInlineBubblePopup": {
       "action_id": "closeInlineBubblePopup",
       "label": "✕ (Закрыть попап)",
       "zone": "inline_popup",
       "event_type": "button_click",
-      "count": 14,
-      "last_used": "2026-10-25 15:41:15"
+      "count": 16,
+      "last_used": "2026-10-28 18:38:11"
     },
     "canvas:pin_wheel_font": {
       "action_id": "canvas:pin_wheel_font",
       "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
       "zone": "viewer_stage_pin",
       "event_type": "canvas_action",
-      "count": 84,
-      "last_used": "2026-10-27 15:18:28"
+      "count": 88,
+      "last_used": "2026-10-28 16:01:48"
     },
     "btn-clean-page-noise": {
       "action_id": "btn-clean-page-noise",
@@ -91,27 +91,27 @@
     },
     "openSettingsOnTab": {
       "action_id": "openSettingsOnTab",
-      "label": "⚙️ Настройки",
+      "label": "🔎 Глоссарий / Поиск",
       "zone": "topbar",
       "event_type": "button_click",
-      "count": 9,
-      "last_used": "2026-10-27 07:36:29"
+      "count": 11,
+      "last_used": "2026-10-28 18:39:55"
     },
     "toggleSettingsModal": {
       "action_id": "toggleSettingsModal",
       "label": "✕ Закрыть (Esc)",
       "zone": "settings_modal",
       "event_type": "button_click",
-      "count": 9,
-      "last_used": "2026-10-27 07:36:37"
+      "count": 10,
+      "last_used": "2026-10-28 18:40:19"
     },
     "bbox-pin-save": {
       "action_id": "bbox-pin-save",
       "label": "💾 Сохранить прямо на рамке #N",
       "zone": "viewer_stage_pin",
       "event_type": "button_click",
-      "count": 2,
-      "last_used": "2026-10-24 12:48:32"
+      "count": 3,
+      "last_used": "2026-10-28 16:01:52"
     },
     "sel-model": {
       "action_id": "sel-model",
@@ -142,32 +142,32 @@
       "label": "🔎 Найти совпадения (Предпросмотр)",
       "zone": "settings_modal",
       "event_type": "button_click",
-      "count": 1,
-      "last_used": "2026-10-24 12:55:56"
+      "count": 3,
+      "last_used": "2026-10-28 18:39:59"
     },
     "btn-exec-find-replace": {
       "action_id": "btn-exec-find-replace",
       "label": "⚡ Заменить везде и перерисовать затронутые страницы",
       "zone": "settings_modal",
       "event_type": "button_click",
-      "count": 1,
-      "last_used": "2026-10-24 12:56:16"
+      "count": 2,
+      "last_used": "2026-10-28 18:39:35"
     },
     "btn-draw-region": {
       "action_id": "btn-draw-region",
       "label": "➕ Обвести",
       "zone": "viewer_toolbar",
       "event_type": "button_click",
-      "count": 3,
-      "last_used": "2026-10-27 15:18:04"
+      "count": 5,
+      "last_used": "2026-10-28 16:01:20"
     },
     "canvas:manual_draw_vlm": {
       "action_id": "canvas:manual_draw_vlm",
       "label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
       "zone": "viewer_stage_pin",
       "event_type": "canvas_action",
-      "count": 2,
-      "last_used": "2026-10-24 12:58:04"
+      "count": 3,
+      "last_used": "2026-10-28 16:01:20"
     },
     "stab-btn-font": {
       "action_id": "stab-btn-font",
@@ -182,8 +182,8 @@
       "label": "Подложка под текстом: 🥚 Овал",
       "zone": "inline_popup",
       "event_type": "button_click",
-      "count": 1,
-      "last_used": "2026-10-24 13:02:56"
+      "count": 3,
+      "last_used": "2026-10-28 18:38:07"
     },
     "bg-style-text_box": {
       "action_id": "bg-style-text_box",
@@ -203,27 +203,27 @@
     },
     "btn-primary-folder": {
       "action_id": "btn-primary-folder",
-      "label": "▶ Перевести всю папку (250 стр.)",
+      "label": "▶ Перевести всю папку (41 стр.)",
       "zone": "left_sidebar",
       "event_type": "button_click",
-      "count": 5,
-      "last_used": "2026-10-27 15:11:48"
+      "count": 13,
+      "last_used": "2026-10-30 15:15:08"
     },
     "canvas:pin_resize": {
       "action_id": "canvas:pin_resize",
       "label": "📐 Растягивание рамки #N за края/уголки мышкой",
       "zone": "viewer_stage_pin",
       "event_type": "canvas_action",
-      "count": 11,
-      "last_used": "2026-10-24 13:27:48"
+      "count": 13,
+      "last_used": "2026-10-28 16:01:40"
     },
     "btn:⋯ Еще": {
       "action_id": "btn:⋯ Еще",
       "label": "⋯ Еще",
       "zone": "viewer_toolbar",
       "event_type": "button_click",
-      "count": 1,
-      "last_used": "2026-10-24 13:22:08"
+      "count": 2,
+      "last_used": "2026-10-28 15:10:43"
     },
     "tb-ovf-shrink": {
       "action_id": "tb-ovf-shrink",
@@ -262,73 +262,144 @@
       "label": "Выбор в списке [sel-source-lang]: 🇨🇳 Китайский (Маньхуа)",
       "zone": "topbar",
       "event_type": "control_change",
-      "count": 1,
-      "last_used": "2026-10-27 07:36:25"
+      "count": 2,
+      "last_used": "2026-10-29 07:57:53"
     },
     "canvas:manual_draw_region": {
       "action_id": "canvas:manual_draw_region",
       "label": "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
       "zone": "viewer_stage_pin",
       "event_type": "canvas_action",
-      "count": 1,
-      "last_used": "2026-10-27 15:18:08"
+      "count": 2,
+      "last_used": "2026-10-28 16:01:00"
     },
     "btn-pins-toggle": {
       "action_id": "btn-pins-toggle",
       "label": "📌 Рамки #N",
       "zone": "viewer_toolbar",
       "event_type": "button_click",
+      "count": 13,
+      "last_used": "2026-10-29 04:43:09"
+    },
+    "stepInlinePopupBlock": {
+      "action_id": "stepInlinePopupBlock",
+      "label": "▶ (Следующий кружок на странице)",
+      "zone": "inline_popup",
+      "event_type": "button_click",
       "count": 1,
-      "last_used": "2026-10-27 15:43:44"
+      "last_used": "2026-10-28 16:00:24"
+    },
+    "btn-vlm-draw-toggle": {
+      "action_id": "btn-vlm-draw-toggle",
+      "label": "👁 VLM: АВТО",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-28 16:01:16"
+    },
+    "btn:🎨 Доп. стиль, Поворот, Кист": {
+      "action_id": "btn:🎨 Доп. стиль, Поворот, Кист",
+      "label": "🎨 Доп. стиль, Поворот, Кисть и Символы Диалог · 0°",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-28 16:02:08"
+    },
+    "preset-narration": {
+      "action_id": "preset-narration",
+      "label": "Пресет стиля: ▭ Нарратив",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-10-28 16:02:20"
+    },
+    "popup-stroke-width": {
+      "action_id": "popup-stroke-width",
+      "label": "Выбор в списке [popup-stroke-width]: 6 px",
+      "zone": "inline_popup",
+      "event_type": "control_change",
+      "count": 1,
+      "last_used": "2026-10-28 16:02:32"
+    },
+    "hotkey:nav_page_next": {
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey",
+      "event_type": "hotkey_use",
+      "count": 45,
+      "last_used": "2026-10-30 15:17:52"
+    },
+    "hotkey:nav_page_prev": {
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey",
+      "event_type": "hotkey_use",
+      "count": 22,
+      "last_used": "2026-10-29 08:04:01"
     }
   },
   "zones": {
-    "left_sidebar": 96,
-    "viewer_stage_pin": 190,
-    "inline_popup": 64,
-    "viewer_toolbar": 10,
-    "topbar": 10,
-    "settings_modal": 23
+    "left_sidebar": 162,
+    "viewer_stage_pin": 216,
+    "inline_popup": 74,
+    "viewer_toolbar": 26,
+    "topbar": 13,
+    "settings_modal": 27,
+    "keyboard_hotkey": 67
   },
-  "hotkeys": {},
+  "hotkeys": {
+    "D / →": {
+      "hotkey": "D / →",
+      "label": "Клавиша D / → (Следующая страница)",
+      "count": 45
+    },
+    "A / ←": {
+      "hotkey": "A / ←",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 22
+    }
+  },
   "missed_hotkeys": {},
   "canvas_ops": {
     "canvas:pin_click": {
       "action_id": "canvas:pin_click",
       "label": "Клик по рамке #N прямо на странице манги",
-      "count": 39
+      "count": 48
     },
     "canvas:pin_wheel_font": {
       "action_id": "canvas:pin_wheel_font",
       "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "count": 84
+      "count": 88
     },
     "canvas:manual_draw_vlm": {
       "action_id": "canvas:manual_draw_vlm",
       "label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
-      "count": 2
+      "count": 3
     },
     "canvas:pin_resize": {
       "action_id": "canvas:pin_resize",
       "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "count": 11
+      "count": 13
     },
     "canvas:manual_draw_region": {
       "action_id": "canvas:manual_draw_region",
       "label": "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
-      "count": 1
+      "count": 2
     }
   },
   "features_used": {
-    "act:pin_click": 39,
-    "act:save_page": 22,
-    "act:pin_wheel_font": 84,
-    "act:folder_find_replace": 1,
-    "act:manual_draw_region": 4,
-    "act:vlm_ocr_sniper": 2,
-    "act:bg_style_backing": 2,
+    "act:pin_click": 48,
+    "act:save_page": 25,
+    "act:pin_wheel_font": 88,
+    "act:folder_find_replace": 2,
+    "act:manual_draw_region": 7,
+    "act:vlm_ocr_sniper": 4,
+    "act:bg_style_backing": 4,
     "act:retranslate_single_block": 3,
-    "act:pin_resize": 11
+    "act:pin_resize": 13,
+    "act:style_preset": 1,
+    "act:text_color_stroke": 1,
+    "act:nav_prev_next": 67
   },
   "transitions": {
     "pickFolderDialog>>>page-row-select": {
@@ -336,14 +407,14 @@
       "from_label": "📁 Выбрать папку",
       "to_id": "page-row-select",
       "to_label": "Выбор страницы в списке главы слева",
-      "count": 2
+      "count": 3
     },
     "page-row-select>>>btn-contextual-page": {
       "from_id": "page-row-select",
       "from_label": "Выбор страницы в списке главы слева",
       "to_id": "btn-contextual-page",
-      "to_label": "🎯 Перевести только стр. #22 (022.jpg)",
-      "count": 13
+      "to_label": "🔁 Перевести стр. #162 заново (ИИ)",
+      "count": 14
     },
     "btn-contextual-page>>>bbox-pin-del": {
       "from_id": "btn-contextual-page",
@@ -357,7 +428,7 @@
       "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
       "to_id": "canvas:pin_click",
       "to_label": "Клик по рамке #N прямо на странице манги",
-      "count": 10
+      "count": 11
     },
     "canvas:pin_click>>>text_edit:inline_popup": {
       "from_id": "canvas:pin_click",
@@ -378,14 +449,14 @@
       "from_label": "✅ Применить",
       "to_id": "canvas:pin_click",
       "to_label": "Клик по рамке #N прямо на странице манги",
-      "count": 2
+      "count": 3
     },
     "canvas:pin_click>>>closeInlineBubblePopup": {
       "from_id": "canvas:pin_click",
       "from_label": "Клик по рамке #N прямо на странице манги",
       "to_id": "closeInlineBubblePopup",
       "to_label": "✕ (Закрыть попап)",
-      "count": 14
+      "count": 15
     },
     "closeInlineBubblePopup>>>canvas:pin_wheel_font": {
       "from_id": "closeInlineBubblePopup",
@@ -406,7 +477,7 @@
       "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
       "to_id": "page-row-select",
       "to_label": "Выбор страницы в списке главы слева",
-      "count": 10
+      "count": 12
     },
     "page-row-select>>>btn-clean-page-noise": {
       "from_id": "page-row-select",
@@ -462,7 +533,7 @@
       "from_label": "✕ Закрыть (Esc)",
       "to_id": "bbox-pin-del",
       "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "count": 2
+      "count": 3
     },
     "canvas:pin_wheel_font>>>canvas:pin_click": {
       "from_id": "canvas:pin_wheel_font",
@@ -483,14 +554,14 @@
       "from_label": "Клик по рамке #N прямо на странице манги",
       "to_id": "bbox-pin-del",
       "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "count": 1
+      "count": 2
     },
     "canvas:pin_wheel_font>>>bbox-pin-save": {
       "from_id": "canvas:pin_wheel_font",
       "from_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
       "to_id": "bbox-pin-save",
       "to_label": "💾 Сохранить прямо на рамке #N",
-      "count": 2
+      "count": 3
     },
     "bbox-pin-save>>>canvas:pin_click": {
       "from_id": "bbox-pin-save",
@@ -585,17 +656,17 @@
     },
     "openSettingsOnTab>>>runFolderFindReplace": {
       "from_id": "openSettingsOnTab",
-      "from_label": "📖 Глоссарий / Поиск",
+      "from_label": "🔎 Глоссарий / Поиск",
       "to_id": "runFolderFindReplace",
       "to_label": "🔎 Найти совпадения (Предпросмотр)",
-      "count": 1
+      "count": 3
     },
     "runFolderFindReplace>>>btn-exec-find-replace": {
       "from_id": "runFolderFindReplace",
       "from_label": "🔎 Найти совпадения (Предпросмотр)",
       "to_id": "btn-exec-find-replace",
       "to_label": "⚡ Заменить везде и перерисовать затронутые страницы",
-      "count": 1
+      "count": 2
     },
     "btn-exec-find-replace>>>toggleSettingsModal": {
       "from_id": "btn-exec-find-replace",
@@ -623,7 +694,7 @@
       "from_label": "➕ Обвести",
       "to_id": "canvas:manual_draw_vlm",
       "to_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
-      "count": 2
+      "count": 3
     },
     "canvas:manual_draw_vlm>>>saveFromInlinePopup": {
       "from_id": "canvas:manual_draw_vlm",
@@ -679,7 +750,7 @@
       "from_label": "Клик по рамке #N прямо на странице манги",
       "to_id": "bg-style-bubble",
       "to_label": "Подложка под текстом: 🥚 Овал",
-      "count": 1
+      "count": 3
     },
     "bg-style-bubble>>>bg-style-text_box": {
       "from_id": "bg-style-bubble",
@@ -713,8 +784,8 @@
       "from_id": "pickFolderDialog",
       "from_label": "📁 Выбрать папку",
       "to_id": "btn-primary-folder",
-      "to_label": "▶ Перевести всю папку (250 стр.)",
-      "count": 3
+      "to_label": "▶ Перевести всю папку (41 стр.)",
+      "count": 7
     },
     "btn-primary-folder>>>openSettingsOnTab": {
       "from_id": "btn-primary-folder",
@@ -728,7 +799,7 @@
       "from_label": "Выбор страницы в списке главы слева",
       "to_id": "bbox-pin-del",
       "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "count": 5
+      "count": 6
     },
     "canvas:pin_click>>>canvas:pin_wheel_font": {
       "from_id": "canvas:pin_click",
@@ -742,7 +813,7 @@
       "from_label": "✕ (Закрыть попап)",
       "to_id": "page-row-select",
       "to_label": "Выбор страницы в списке главы слева",
-      "count": 1
+      "count": 2
     },
     "canvas:pin_wheel_font>>>canvas:pin_resize": {
       "from_id": "canvas:pin_wheel_font",
@@ -756,7 +827,7 @@
       "from_label": "📐 Растягивание рамки #N за края/уголки мышкой",
       "to_id": "canvas:pin_wheel_font",
       "to_label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "count": 7
+      "count": 8
     },
     "page-row-select>>>canvas:pin_wheel_font": {
       "from_id": "page-row-select",
@@ -868,7 +939,7 @@
       "from_label": "Выбор страницы в списке главы слева",
       "to_id": "canvas:pin_click",
       "to_label": "Клик по рамке #N прямо на странице манги",
-      "count": 1
+      "count": 2
     },
     "pickFolderDialog>>>sel-source-lang": {
       "from_id": "pickFolderDialog",
@@ -911,1281 +982,1575 @@
       "to_id": "btn-pins-toggle",
       "to_label": "📌 Рамки #N",
       "count": 1
+    },
+    "btn-pins-toggle>>>btn:⋯ Еще": {
+      "from_id": "btn-pins-toggle",
+      "from_label": "📌 Рамки #N",
+      "to_id": "btn:⋯ Еще",
+      "to_label": "⋯ Еще",
+      "count": 1
+    },
+    "btn:⋯ Еще>>>page-row-select": {
+      "from_id": "btn:⋯ Еще",
+      "from_label": "⋯ Еще",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 1
+    },
+    "page-row-select>>>btn-primary-folder": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "btn-primary-folder",
+      "to_label": "▶ Перевести всю папку (107 стр.)",
+      "count": 2
+    },
+    "page-row-select>>>btn-pins-toggle": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "btn-pins-toggle",
+      "to_label": "📌 Рамки #N",
+      "count": 2
+    },
+    "btn-pins-toggle>>>canvas:pin_click": {
+      "from_id": "btn-pins-toggle",
+      "from_label": "📌 Рамки #N",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 2
+    },
+    "canvas:pin_click>>>stepInlinePopupBlock": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "stepInlinePopupBlock",
+      "to_label": "▶ (Следующий кружок на странице)",
+      "count": 1
+    },
+    "stepInlinePopupBlock>>>canvas:pin_click": {
+      "from_id": "stepInlinePopupBlock",
+      "from_label": "▶ (Следующий кружок на странице)",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 1
+    },
+    "canvas:pin_click>>>btn-draw-region": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "btn-draw-region",
+      "to_label": "➕ Обвести",
+      "count": 1
+    },
+    "btn-draw-region>>>bbox-pin-del": {
+      "from_id": "btn-draw-region",
+      "from_label": "➕ Обвести",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "bbox-pin-del>>>canvas:manual_draw_region": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "canvas:manual_draw_region",
+      "to_label": "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
+      "count": 1
+    },
+    "canvas:manual_draw_region>>>canvas:pin_resize": {
+      "from_id": "canvas:manual_draw_region",
+      "from_label": "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
+      "to_id": "canvas:pin_resize",
+      "to_label": "📐 Растягивание рамки #N за края/уголки мышкой",
+      "count": 1
+    },
+    "canvas:pin_resize>>>bbox-pin-del": {
+      "from_id": "canvas:pin_resize",
+      "from_label": "📐 Растягивание рамки #N за края/уголки мышкой",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "bbox-pin-del>>>btn-vlm-draw-toggle": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "btn-vlm-draw-toggle",
+      "to_label": "👁 VLM: АВТО",
+      "count": 1
+    },
+    "btn-vlm-draw-toggle>>>btn-draw-region": {
+      "from_id": "btn-vlm-draw-toggle",
+      "from_label": "👁 VLM: АВТО",
+      "to_id": "btn-draw-region",
+      "to_label": "➕ Обвести",
+      "count": 1
+    },
+    "canvas:manual_draw_vlm>>>canvas:pin_resize": {
+      "from_id": "canvas:manual_draw_vlm",
+      "from_label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "to_id": "canvas:pin_resize",
+      "to_label": "📐 Растягивание рамки #N за края/уголки мышкой",
+      "count": 1
+    },
+    "bbox-pin-save>>>btn-pins-toggle": {
+      "from_id": "bbox-pin-save",
+      "from_label": "💾 Сохранить прямо на рамке #N",
+      "to_id": "btn-pins-toggle",
+      "to_label": "📌 Рамки #N",
+      "count": 1
+    },
+    "canvas:pin_click>>>btn:🎨 Доп. стиль, Поворот, Кист": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "btn:🎨 Доп. стиль, Поворот, Кист",
+      "to_label": "🎨 Доп. стиль, Поворот, Кисть и Символы Диалог · 0°",
+      "count": 1
+    },
+    "btn:🎨 Доп. стиль, Поворот, Кист>>>preset-narration": {
+      "from_id": "btn:🎨 Доп. стиль, Поворот, Кист",
+      "from_label": "🎨 Доп. стиль, Поворот, Кисть и Символы Диалог · 0°",
+      "to_id": "preset-narration",
+      "to_label": "Пресет стиля: ▭ Нарратив",
+      "count": 1
+    },
+    "preset-narration>>>popup-stroke-width": {
+      "from_id": "preset-narration",
+      "from_label": "Пресет стиля: ▭ Нарратив",
+      "to_id": "popup-stroke-width",
+      "to_label": "Выбор в списке [popup-stroke-width]: 6 px",
+      "count": 1
+    },
+    "popup-stroke-width>>>saveFromInlinePopup": {
+      "from_id": "popup-stroke-width",
+      "from_label": "Выбор в списке [popup-stroke-width]: 6 px",
+      "to_id": "saveFromInlinePopup",
+      "to_label": "✅ Применить",
+      "count": 1
+    },
+    "saveFromInlinePopup>>>btn-pins-toggle": {
+      "from_id": "saveFromInlinePopup",
+      "from_label": "✅ Применить",
+      "to_id": "btn-pins-toggle",
+      "to_label": "📌 Рамки #N",
+      "count": 1
+    },
+    "btn-pins-toggle>>>page-row-select": {
+      "from_id": "btn-pins-toggle",
+      "from_label": "📌 Рамки #N",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 2
+    },
+    "hotkey:nav_page_next>>>pickFolderDialog": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "pickFolderDialog",
+      "to_label": "📁 Выбрать папку",
+      "count": 1
+    },
+    "page-row-select>>>hotkey:nav_page_next": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 4
+    },
+    "hotkey:nav_page_next>>>canvas:pin_click": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 1
+    },
+    "bg-style-bubble>>>saveFromInlinePopup": {
+      "from_id": "bg-style-bubble",
+      "from_label": "Подложка под текстом: 🥚 Овал",
+      "to_id": "saveFromInlinePopup",
+      "to_label": "✅ Применить",
+      "count": 1
+    },
+    "bg-style-bubble>>>closeInlineBubblePopup": {
+      "from_id": "bg-style-bubble",
+      "from_label": "Подложка под текстом: 🥚 Овал",
+      "to_id": "closeInlineBubblePopup",
+      "to_label": "✕ (Закрыть попап)",
+      "count": 1
+    },
+    "closeInlineBubblePopup>>>hotkey:nav_page_next": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 1
+    },
+    "hotkey:nav_page_next>>>hotkey:nav_page_prev": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "hotkey:nav_page_prev",
+      "to_label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 7
+    },
+    "hotkey:nav_page_prev>>>openSettingsOnTab": {
+      "from_id": "hotkey:nav_page_prev",
+      "from_label": "Клавиша A / ← (Предыдущая страница)",
+      "to_id": "openSettingsOnTab",
+      "to_label": "🔎 Глоссарий / Поиск",
+      "count": 1
+    },
+    "btn-exec-find-replace>>>openSettingsOnTab": {
+      "from_id": "btn-exec-find-replace",
+      "from_label": "⚡ Заменить везде и перерисовать затронутые страницы",
+      "to_id": "openSettingsOnTab",
+      "to_label": "🔎 Глоссарий / Поиск",
+      "count": 1
+    },
+    "runFolderFindReplace>>>toggleSettingsModal": {
+      "from_id": "runFolderFindReplace",
+      "from_label": "🔎 Найти совпадения (Предпросмотр)",
+      "to_id": "toggleSettingsModal",
+      "to_label": "✕ Закрыть (Esc)",
+      "count": 1
+    },
+    "bbox-pin-del>>>hotkey:nav_page_prev": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "hotkey:nav_page_prev",
+      "to_label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 1
+    },
+    "hotkey:nav_page_prev>>>hotkey:nav_page_next": {
+      "from_id": "hotkey:nav_page_prev",
+      "from_label": "Клавиша A / ← (Предыдущая страница)",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 5
+    },
+    "hotkey:nav_page_prev>>>bbox-pin-del": {
+      "from_id": "hotkey:nav_page_prev",
+      "from_label": "Клавиша A / ← (Предыдущая страница)",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "btn-pins-toggle>>>hotkey:nav_page_prev": {
+      "from_id": "btn-pins-toggle",
+      "from_label": "📌 Рамки #N",
+      "to_id": "hotkey:nav_page_prev",
+      "to_label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 1
+    },
+    "btn-primary-folder>>>page-row-select": {
+      "from_id": "btn-primary-folder",
+      "from_label": "▶ Перевести всю папку (41 стр.)",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 1
+    },
+    "hotkey:nav_page_prev>>>page-row-select": {
+      "from_id": "hotkey:nav_page_prev",
+      "from_label": "Клавиша A / ← (Предыдущая страница)",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 2
+    },
+    "page-row-select>>>hotkey:nav_page_prev": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "hotkey:nav_page_prev",
+      "to_label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 1
+    },
+    "btn-primary-folder>>>hotkey:nav_page_next": {
+      "from_id": "btn-primary-folder",
+      "from_label": "▶ Перевести всю папку (41 стр.)",
+      "to_id": "hotkey:nav_page_next",
+      "to_label": "Клавиша D / → (Следующая страница)",
+      "count": 1
+    },
+    "hotkey:nav_page_next>>>sel-source-lang": {
+      "from_id": "hotkey:nav_page_next",
+      "from_label": "Клавиша D / → (Следующая страница)",
+      "to_id": "sel-source-lang",
+      "to_label": "Выбор в списке [sel-source-lang]: 🇨🇳 Китайский (Маньхуа)",
+      "count": 1
+    },
+    "sel-source-lang>>>btn-primary-folder": {
+      "from_id": "sel-source-lang",
+      "from_label": "Выбор в списке [sel-source-lang]: 🇨🇳 Китайский (Маньхуа)",
+      "to_id": "btn-primary-folder",
+      "to_label": "✅ Вся папка переведена (41 стр.)",
+      "count": 1
     }
   },
   "dwell_sec": {
-    "dock_right": 2700.0,
+    "dock_right": 4513.0,
     "dock_bottom": 0.0,
     "dock_floating": 0.0,
-    "view_split": 2700.0,
+    "view_split": 4513.0,
     "view_translated": 0.0,
     "view_original": 0.0,
     "edit_in_popup": 25.0,
     "edit_in_drawer": 0.0
   },
-  "last_action_key": "page-row-select",
-  "last_action_label": "Выбор страницы в списке главы слева",
-  "last_action_ts": 1793188559.7980635,
+  "last_action_key": "hotkey:nav_page_next",
+  "last_action_label": "Клавиша D / → (Следующая страница)",
+  "last_action_ts": 1793362672.0740447,
   "recent_events": [
     {
-      "time": "13:10:52",
+      "time": "15:13:07",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:11:28",
+      "time": "15:13:07",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:12:16",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:12:20",
-      "type": "button_click",
-      "action_id": "retranslateFromInlinePopup",
-      "label": "🔄 ИИ",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:12:24",
-      "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:12:32",
+      "time": "15:13:27",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:17:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:17:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:17:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:17:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:17:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:17:56",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:18:00",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:00",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:04",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:04",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:04",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:08",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:16",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:20",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:28",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:36",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:19:56",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:00",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:08",
+      "time": "15:13:35",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:20:16",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:16",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:16",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:16",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:24",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:24",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:28",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:48",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:20:48",
-      "type": "button_click",
-      "action_id": "retranslateFromInlinePopup",
-      "label": "🔄 ИИ",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:20:52",
-      "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:21:24",
+      "time": "15:13:39",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:21:40",
+      "time": "15:13:59",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:21:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:21:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:21:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:21:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:22:00",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:22:08",
-      "type": "button_click",
-      "action_id": "btn:⋯ Еще",
-      "label": "⋯ Еще",
-      "zone": "viewer_toolbar"
-    },
-    {
-      "time": "13:22:20",
-      "type": "button_click",
-      "action_id": "tb-ovf-shrink",
-      "label": "📐 В рамку (Стандарт)",
-      "zone": "viewer_toolbar"
-    },
-    {
-      "time": "13:22:28",
-      "type": "button_click",
-      "action_id": "tb-ovf-expand_bubble",
-      "label": "💬 Авто-баббл (Вариант В)",
-      "zone": "viewer_toolbar"
-    },
-    {
-      "time": "13:22:36",
-      "type": "button_click",
-      "action_id": "tb-ovf-overflow",
-      "label": "🔓 За рамки (Вариант Б)",
-      "zone": "viewer_toolbar"
-    },
-    {
-      "time": "13:22:40",
-      "type": "button_click",
-      "action_id": "tb-ovf-shrink",
-      "label": "📐 В рамку (Стандарт)",
-      "zone": "viewer_toolbar"
-    },
-    {
-      "time": "13:22:56",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:23:00",
-      "type": "text_edit",
-      "action_id": "text_edit:inline_popup",
-      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:23:04",
-      "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:23:08",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:23:08",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:23:44",
+      "time": "15:14:43",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:24:36",
+      "time": "15:15:07",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:24:40",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:25:36",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:25:52",
-      "type": "text_edit",
-      "action_id": "text_edit:inline_popup",
-      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:25:56",
-      "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:26:00",
+      "time": "15:15:35",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:26:04",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:26:04",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:26:32",
+      "time": "15:15:51",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:26:36",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:26:44",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:26:52",
+      "time": "15:16:11",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "13:27:04",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:08",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:08",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:08",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:12",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:16",
-      "type": "text_edit",
-      "action_id": "text_edit:inline_popup",
-      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:27:20",
-      "type": "text_edit",
-      "action_id": "text_edit:inline_popup",
-      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:27:24",
-      "type": "text_edit",
-      "action_id": "text_edit:inline_popup",
-      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "13:27:28",
+      "time": "15:16:39",
       "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
     },
     {
-      "time": "13:27:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:36",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:36",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:36",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:36",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:44",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:48",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_resize",
-      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:52",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:56",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:56",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:27:56",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:28:04",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:28:04",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "13:28:07",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "14:41:00",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "14:41:04",
-      "type": "text_edit",
-      "action_id": "text_edit:inline_popup",
-      "label": "✍️ Ввод текста перевода во всплывающем попапе у кружка",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "14:41:08",
+      "time": "15:17:15",
       "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
     },
     {
-      "time": "15:37:15",
+      "time": "15:17:35",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "15:17:51",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "15:18:11",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "15:38:00",
       "type": "button_click",
       "action_id": "pickFolderDialog",
       "label": "📁 Выбрать папку",
       "zone": "left_sidebar"
     },
     {
-      "time": "15:37:31",
-      "type": "button_click",
-      "action_id": "openSettingsOnTab",
-      "label": "⚙️ Настройки",
-      "zone": "topbar"
-    },
-    {
-      "time": "15:37:39",
-      "type": "control_change",
-      "action_id": "sel-model",
-      "label": "Выбор в списке [sel-model]: 🦙 [Ollama] sugoi-14b-ultra:Q4_K_M (Установлена ✅)",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "15:37:39",
-      "type": "button_click",
-      "action_id": "saveSettingsAndClose",
-      "label": "✅ Сохранить настройки",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "15:37:43",
-      "type": "button_click",
-      "action_id": "btn-primary-folder",
-      "label": "▶ Перевести всю папку (244 стр.)",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:37:55",
-      "type": "button_click",
-      "action_id": "openSettingsOnTab",
-      "label": "⚙️ Настройки",
-      "zone": "topbar"
-    },
-    {
-      "time": "15:37:59",
-      "type": "button_click",
-      "action_id": "stab-btn-ui",
-      "label": "🎨 Интерфейс и Редактор",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "15:38:03",
-      "type": "button_click",
-      "action_id": "stab-btn-filter",
-      "label": "📊 Фильтр текста и SFX",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "15:38:11",
-      "type": "button_click",
-      "action_id": "toggleSettingsModal",
-      "label": "✕ Закрыть (Esc)",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "15:40:15",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:40:55",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:41:11",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:41:15",
-      "type": "button_click",
-      "action_id": "closeInlineBubblePopup",
-      "label": "✕ (Закрыть попап)",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "14:44:32",
+      "time": "15:39:16",
       "type": "button_click",
       "action_id": "pickFolderDialog",
       "label": "📁 Выбрать папку",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:44:48",
+      "time": "15:39:40",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "15:39:40",
       "type": "button_click",
       "action_id": "btn-primary-folder",
-      "label": "▶ Перевести всю папку (108 стр.)",
+      "label": "▶ Перевести всю папку (107 стр.)",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:44:56",
-      "type": "button_click",
-      "action_id": "openSettingsOnTab",
-      "label": "⚙️ Настройки",
-      "zone": "topbar"
-    },
-    {
-      "time": "14:45:04",
-      "type": "button_click",
-      "action_id": "toggleSettingsModal",
-      "label": "✕ Закрыть (Esc)",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "07:36:17",
-      "type": "button_click",
-      "action_id": "pickFolderDialog",
-      "label": "📁 Выбрать папку",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "07:36:25",
-      "type": "control_change",
-      "action_id": "sel-source-lang",
-      "label": "Выбор в списке [sel-source-lang]: 🇨🇳 Китайский (Маньхуа)",
-      "zone": "topbar"
-    },
-    {
-      "time": "07:36:29",
-      "type": "button_click",
-      "action_id": "openSettingsOnTab",
-      "label": "⚙️ Настройки",
-      "zone": "topbar"
-    },
-    {
-      "time": "07:36:33",
-      "type": "control_change",
-      "action_id": "sel-model",
-      "label": "Выбор в списке [sel-model]: ☁️ [Cloud API] deepseek-v4-flash",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "07:36:37",
-      "type": "button_click",
-      "action_id": "saveSettingsAndClose",
-      "label": "✅ Сохранить настройки",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "07:36:37",
-      "type": "button_click",
-      "action_id": "toggleSettingsModal",
-      "label": "✕ Закрыть (Esc)",
-      "zone": "settings_modal"
-    },
-    {
-      "time": "07:36:53",
-      "type": "button_click",
-      "action_id": "btn-primary-folder",
-      "label": "▶ Перевести всю папку (25 стр.)",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "07:37:41",
+      "time": "15:59:00",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "15:11:29",
-      "type": "button_click",
-      "action_id": "pickFolderDialog",
-      "label": "📁 Выбрать папку",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:11:48",
-      "type": "button_click",
-      "action_id": "btn-primary-folder",
-      "label": "▶ Перевести всю папку (250 стр.)",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:17:08",
+      "time": "15:59:00",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "15:17:12",
+      "time": "15:59:56",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "15:17:12",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:17:32",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:17:44",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:17:56",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:18:00",
-      "type": "button_click",
-      "action_id": "bbox-pin-del",
-      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:18:04",
-      "type": "button_click",
-      "action_id": "btn-draw-region",
-      "label": "➕ Обвести",
-      "zone": "viewer_toolbar"
-    },
-    {
-      "time": "15:18:08",
-      "type": "canvas_action",
-      "action_id": "canvas:manual_draw_region",
-      "label": "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:18:20",
-      "type": "button_click",
-      "action_id": "saveFromInlinePopup",
-      "label": "✅ Применить",
-      "zone": "inline_popup"
-    },
-    {
-      "time": "15:18:20",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:18:20",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:18:28",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_wheel_font",
-      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:18:56",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "15:43:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:43:32",
-      "type": "canvas_action",
-      "action_id": "canvas:pin_click",
-      "label": "Клик по рамке #N прямо на странице манги",
-      "zone": "viewer_stage_pin"
-    },
-    {
-      "time": "15:43:44",
+      "time": "16:00:20",
       "type": "button_click",
       "action_id": "btn-pins-toggle",
       "label": "📌 Рамки #N",
       "zone": "viewer_toolbar"
     },
     {
-      "time": "15:46:28",
+      "time": "16:00:20",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:00:20",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:00:24",
+      "type": "button_click",
+      "action_id": "stepInlinePopupBlock",
+      "label": "▶ (Следующий кружок на странице)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "16:00:28",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:00:48",
+      "type": "button_click",
+      "action_id": "btn-draw-region",
+      "label": "➕ Обвести",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:00:56",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:00",
+      "type": "canvas_action",
+      "action_id": "canvas:manual_draw_region",
+      "label": "➕ Выделение области мышкой (➕ Обвести пропущенный кружок)",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:00",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_resize",
+      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:08",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:12",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:12",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:16",
+      "type": "button_click",
+      "action_id": "btn-vlm-draw-toggle",
+      "label": "👁 VLM: АВТО",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:01:20",
+      "type": "button_click",
+      "action_id": "btn-draw-region",
+      "label": "➕ Обвести",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:01:20",
+      "type": "canvas_action",
+      "action_id": "canvas:manual_draw_vlm",
+      "label": "👁 Выделение области мышкой (➕ Обвести со снайперским VLM-OCR)",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:40",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_resize",
+      "label": "📐 Растягивание рамки #N за края/уголки мышкой",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:48",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:48",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:48",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:48",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_wheel_font",
+      "label": "🖱 Изменение размера шрифта колесиком мыши прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:01:52",
+      "type": "button_click",
+      "action_id": "bbox-pin-save",
+      "label": "💾 Сохранить прямо на рамке #N",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:02:00",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:02:04",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:02:04",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "16:02:08",
+      "type": "button_click",
+      "action_id": "btn:🎨 Доп. стиль, Поворот, Кист",
+      "label": "🎨 Доп. стиль, Поворот, Кисть и Символы Диалог · 0°",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "16:02:20",
+      "type": "button_click",
+      "action_id": "preset-narration",
+      "label": "Пресет стиля: ▭ Нарратив",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "16:02:32",
+      "type": "control_change",
+      "action_id": "popup-stroke-width",
+      "label": "Выбор в списке [popup-stroke-width]: 6 px",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "16:02:36",
+      "type": "button_click",
+      "action_id": "saveFromInlinePopup",
+      "label": "✅ Применить",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "16:02:40",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:02:44",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:02:44",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "16:02:52",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:36:51",
+      "time": "18:07:24",
       "type": "button_click",
       "action_id": "pickFolderDialog",
       "label": "📁 Выбрать папку",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:36:59",
+      "time": "18:09:00",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:09:40",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "18:28:03",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "18:28:55",
+      "type": "button_click",
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (170 стр.)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "18:30:19",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:36:59",
+      "time": "18:35:19",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:36:59",
+      "time": "18:35:27",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:35:43",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:35:51",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "18:36:15",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:37:03",
+      "time": "18:36:27",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:36:43",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:37:03",
+      "time": "18:37:15",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:37:03",
+      "time": "18:37:27",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:37:07",
+      "time": "18:37:31",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:37:35",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:37:55",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:37:59",
+      "type": "button_click",
+      "action_id": "bg-style-bubble",
+      "label": "Подложка под текстом: 🥚 Овал",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "18:37:59",
+      "type": "button_click",
+      "action_id": "saveFromInlinePopup",
+      "label": "✅ Применить",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "18:38:03",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:38:07",
+      "type": "button_click",
+      "action_id": "bg-style-bubble",
+      "label": "Подложка под текстом: 🥚 Овал",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "18:38:11",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "18:38:15",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:19",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:19",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:19",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:19",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:19",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:31",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:35",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:38:59",
+      "type": "button_click",
+      "action_id": "openSettingsOnTab",
+      "label": "🔎 Глоссарий / Поиск",
+      "zone": "topbar"
+    },
+    {
+      "time": "18:39:07",
+      "type": "button_click",
+      "action_id": "runFolderFindReplace",
+      "label": "🔎 Найти совпадения (Предпросмотр)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "18:39:35",
+      "type": "button_click",
+      "action_id": "btn-exec-find-replace",
+      "label": "⚡ Заменить везде и перерисовать затронутые страницы",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "18:39:55",
+      "type": "button_click",
+      "action_id": "openSettingsOnTab",
+      "label": "🔎 Глоссарий / Поиск",
+      "zone": "topbar"
+    },
+    {
+      "time": "18:39:59",
+      "type": "button_click",
+      "action_id": "runFolderFindReplace",
+      "label": "🔎 Найти совпадения (Предпросмотр)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "18:40:19",
+      "type": "button_click",
+      "action_id": "toggleSettingsModal",
+      "label": "✕ Закрыть (Esc)",
+      "zone": "settings_modal"
+    },
+    {
+      "time": "18:40:27",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:40:27",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:40:39",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:40:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:43:27",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:43:31",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:43:39",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "18:43:47",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:37:11",
+      "time": "18:44:07",
       "type": "button_click",
       "action_id": "btn-contextual-page",
-      "label": "🎯 Перевести только стр. #6 (006.jpg)",
+      "label": "🔁 Перевести стр. #162 заново (ИИ)",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:52:39",
+      "time": "18:48:19",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "18:48:27",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:48:31",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "18:48:31",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:39:09",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "04:39:45",
+      "type": "button_click",
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (41 стр.)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "04:40:25",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:39",
+      "time": "04:40:33",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:39",
+      "time": "04:40:41",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:43",
+      "time": "04:41:17",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:41:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:42:09",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:42:13",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:42:21",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:42:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:42:53",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:43",
+      "time": "04:42:57",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "04:42:57",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:47",
+      "time": "04:43:09",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "04:43:21",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:51",
+      "time": "04:43:29",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:55",
+      "time": "07:41:33",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:41:49",
+      "type": "button_click",
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (41 стр.)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:41:57",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:41:57",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:42:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:42:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:42:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:42:05",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:56:25",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:59",
+      "time": "07:56:25",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:53:59",
+      "time": "07:56:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:56:37",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:56:41",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:56:57",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:13",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:21",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:41",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:57:53",
+      "type": "control_change",
+      "action_id": "sel-source-lang",
+      "label": "Выбор в списке [sel-source-lang]: 🇨🇳 Китайский (Маньхуа)",
+      "zone": "topbar"
+    },
+    {
+      "time": "07:58:01",
       "type": "button_click",
-      "action_id": "btn-contextual-page",
-      "label": "🎯 Перевести только стр. #22 (022.jpg)",
+      "action_id": "btn-primary-folder",
+      "label": "✅ Вся папка переведена (41 стр.)",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:07",
+      "time": "08:03:13",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:11",
+      "time": "08:03:13",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:15",
+      "time": "08:03:17",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:23",
+      "time": "08:03:21",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:27",
+      "time": "08:03:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:03:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:03:33",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:03:33",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:03:49",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:03:57",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:01",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:05",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:17",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:21",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:25",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:29",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:33",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "08:04:33",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:45:12",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:45:36",
+      "type": "button_click",
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (64 стр.)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "08:00:28",
       "type": "button_click",
       "action_id": "page-row-select",
       "label": "Выбор страницы в списке главы слева",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:27",
+      "time": "15:14:56",
       "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:27",
+      "time": "15:15:08",
       "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
+      "action_id": "btn-primary-folder",
+      "label": "▶ Перевести всю папку (41 стр.)",
       "zone": "left_sidebar"
     },
     {
-      "time": "14:55:31",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "14:55:31",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "14:55:35",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "14:55:47",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
-    },
-    {
-      "time": "14:55:59",
-      "type": "button_click",
-      "action_id": "page-row-select",
-      "label": "Выбор страницы в списке главы слева",
-      "zone": "left_sidebar"
+      "time": "15:17:52",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_next",
+      "label": "Клавиша D / → (Следующая страница)",
+      "zone": "keyboard_hotkey"
     }
   ]
 }
