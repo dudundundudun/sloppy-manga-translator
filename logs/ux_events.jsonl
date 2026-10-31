@@ -531,3 +531,9 @@
 {"timestamp": 1793238189, "time": "04:43:09", "type": "button_click", "action_id": "btn-pins-toggle", "label": "📌 Рамки #N", "zone": "viewer_toolbar", "feature_key": null, "meta": null}
 {"timestamp": 1793238201, "time": "04:43:21", "type": "button_click", "action_id": "page-row-select", "label": "Выбор страницы в списке главы слева", "zone": "left_sidebar", "feature_key": null, "meta": null}
 {"timestamp": 1793238209, "time": "04:43:29", "type": "button_click", "action_id": "page-row-select", "label": "Выбор страницы в списке главы слева", "zone": "left_sidebar", "feature_key": null, "meta": null}
+{"timestamp": 1793436190, "time": "11:43:10", "type": "button_click", "action_id": "pickFolderDialog", "label": "📁 Выбрать папку с мангой", "zone": "left_sidebar", "feature_key": null, "meta": null}
+{"timestamp": 1793436194, "time": "11:43:14", "type": "button_click", "action_id": "btn-primary-folder", "label": "▶ Доперевести папку (осталось 68 стр.)", "zone": "left_sidebar", "feature_key": null, "meta": null}
+{"timestamp": 1793436226, "time": "11:43:46", "type": "button_click", "action_id": "page-row-select", "label": "Выбор страницы в списке главы слева", "zone": "left_sidebar", "feature_key": null, "meta": null}
+{"timestamp": 1793436226, "time": "11:43:46", "type": "button_click", "action_id": "page-row-select", "label": "Выбор страницы в списке главы слева", "zone": "left_sidebar", "feature_key": null, "meta": null}
+{"timestamp": 1793436254, "time": "11:44:14", "type": "hotkey_use", "action_id": "hotkey:nav_page_next", "label": "Клавиша D / → (Следующая страница)", "zone": "keyboard_hotkey", "feature_key": "act:nav_prev_next", "meta": null}
+{"timestamp": 1793436254, "time": "11:44:14", "type": "hotkey_use", "action_id": "hotkey:nav_page_next", "label": "Клавиша D / → (Следующая страница)", "zone": "keyboard_hotkey", "feature_key": "act:nav_prev_next", "meta": null}

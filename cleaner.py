@@ -2224,7 +2224,7 @@ class BubbleCleaner:
                 text_zone_mask = np.full((rh, rw), 255, dtype=np.uint8)
                 hollow_arc_ring = np.zeros((rh, rw), dtype=np.uint8)
                 if has_valid_tb:
-                    pad_tb = 2
+                    pad_tb = max(6, int(round(min(core_w, core_h) * 0.08)))
                     tz_x1 = max(0, tb_box[0] - ix1 - pad_tb)
                     tz_y1 = max(0, tb_box[1] - iy1 - pad_tb)
                     tz_x2 = min(rw, tb_box[2] - ix1 + pad_tb)
@@ -2232,6 +2232,10 @@ class BubbleCleaner:
                     if (tz_x2 - tz_x1) >= 8 and (tz_y2 - tz_y1) >= 8:
                         text_zone_mask.fill(0)
                         text_zone_mask[tz_y1:tz_y2, tz_x1:tz_x2] = 255
+                        # Если text_bbox охватывает менее 60% высоты/ширины чистой полости баббла,
+                        # разрешаем очистку всей внутренней полости interior_mask, чтобы не оставлять нестертые строки
+                        if (tz_y2 - tz_y1) < int(core_h * 0.62) or (tz_x2 - tz_x1) < int(core_w * 0.62):
+                            text_zone_mask = cv2.bitwise_or(text_zone_mask, interior_mask)
 
                     strict_dark = (roi_gray < 155).astype(np.uint8) * 255
                     nl_s, lbl_s, st_s, _ = cv2.connectedComponentsWithStats(strict_dark, connectivity=8)

@@ -2787,8 +2787,11 @@ def _run_ocr_compat(
             skip_sfx=skip_sfx,
             min_text_length=min_text_length,
         )
-    except TypeError:
-        res = engine.process_image(pil_image, lang=lang, detect_free_text=detect_free_text)
+    except TypeError as type_exc:
+        if "unexpected keyword argument" in str(type_exc):
+            res = engine.process_image(pil_image, lang=lang, detect_free_text=detect_free_text)
+        else:
+            raise
     except (ValueError, RuntimeError) as exc:
         if lang != "ja" and "install_multilang_ocr" not in str(exc):
             logger.warning(
