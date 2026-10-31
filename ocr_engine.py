@@ -145,6 +145,7 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
     Быстрый морфологический, топологический и спектральный Pre-OCR фильтр (~0.04-1.32 мс).
     Отсекает градиенты, регулярные скринтоны (амитен), косую штриховку одежды и края рамок
     до запуска тяжелого ViT-энкодера и авторегрессионного декодера MangaOCR.
+    Устойчив как к плотным кропам глифов (`_compute_tight_ink_bbox`), так и к кропам с белыми полями (`_crop_with_padding`).
     """
     t0 = time.perf_counter()
 
@@ -165,16 +166,18 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
 
     # 1. Каскад контраста и резкости ступенчатых границ (Laplacian Step-Edge Gate, ~0.04 мс)
     _, std_v = cv2.meanStdDev(gray)
-    if float(std_v[0, 0]) < 12.0:
+    p2, p98 = [float(v) for v in np.percentile(gray, [2, 98])]
+    if float(std_v[0, 0]) < 6.0 and (p98 - p2) < 28.0:
         return StrokeGateResult(
             False, "low_std_contrast", 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, (time.perf_counter() - t0) * 1000.0
         )
 
     lap = cv2.Laplacian(gray, cv2.CV_16S, ksize=3)
     abs_lap = cv2.convertScaleAbs(lap)
-    _, sharp_mask = cv2.threshold(abs_lap, 60, 255, cv2.THRESH_BINARY)
-    sharp_edge_ratio = float(cv2.countNonZero(sharp_mask)) / area_crop
-    if sharp_edge_ratio < 0.005:
+    _, sharp_mask = cv2.threshold(abs_lap, 55, 255, cv2.THRESH_BINARY)
+    sharp_edge_px = int(cv2.countNonZero(sharp_mask))
+    sharp_edge_ratio = float(sharp_edge_px) / area_crop
+    if sharp_edge_px < 8 and sharp_edge_ratio < 0.002:
         return StrokeGateResult(
             False,
             f"smooth_gradient(sharp={sharp_edge_ratio:.4f})",
@@ -200,8 +203,10 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
     if (border_sum / border_pixels) > 140.0 and float(np.mean(bw)) > 127.0:
         bw = 255 - bw
 
-    # Срез краевой каймы (отсоединяет линии рамок фреймов, прижатые к краям кропа)
-    my, mx = min(3, H // 12), min(3, W // 12)
+    # Срез краевой каймы: отсоединяет линии рамок фреймов, прижатые к краям кропа,
+    # но не срезает штрихи плотно обрезанных букв на маленьких кропах
+    my = min(2, H // 14) if H >= 28 else 1
+    mx = min(2, W // 14) if W >= 28 else 1
     inner_bw = bw.copy()
     if my > 0:
         inner_bw[:my, :] = 0
@@ -210,8 +215,9 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
         inner_bw[:, :mx] = 0
         inner_bw[:, -mx:] = 0
 
-    ink_ratio = float(cv2.countNonZero(inner_bw)) / area_crop
-    if ink_ratio < 0.008 or ink_ratio > 0.65:
+    ink_px_count = int(cv2.countNonZero(inner_bw))
+    ink_ratio = float(ink_px_count) / area_crop
+    if ink_px_count < 6 or ink_ratio < 0.0015 or ink_ratio > 0.78:
         return StrokeGateResult(
             False,
             f"ink_ratio_out_of_bounds({ink_ratio:.3f})",
@@ -240,7 +246,7 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
     cc_left = cc_stats[:, cv2.CC_STAT_LEFT]
     cc_top = cc_stats[:, cv2.CC_STAT_TOP]
 
-    min_glyph_area = max(8.0, 0.0012 * area_crop)
+    min_glyph_area = max(5.0, min(14.0, 0.0006 * area_crop))
     micro_cc = int(np.sum(cc_areas < min_glyph_area))
     micro_ratio = micro_cc / float(total_cc)
     area_cov = float(np.std(cc_areas) / (np.mean(cc_areas) + 1e-5))
@@ -268,14 +274,14 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
     spans_across = (
         (touches_left & touches_right)
         | (touches_top & touches_bot)
-        | ((touches_left | touches_right) & (touches_top | touches_bot) & ((span_h > 0.35) | (span_w > 0.35)))
+        | ((touches_left | touches_right) & (touches_top | touches_bot) & ((span_h > 0.42) | (span_w > 0.42)))
     )
 
     is_line_cc = (
-        (aspect > 8.0)
-        | ((span_h > 0.78) & (extent < 0.24))
-        | ((span_w > 0.78) & (extent < 0.24))
-        | (spans_across & (extent < 0.25))
+        (aspect > 9.0)
+        | ((span_h > 0.84) & (extent < 0.16))
+        | ((span_w > 0.84) & (extent < 0.16))
+        | (spans_across & (extent < 0.17))
     )
 
     is_valid_cc = (cc_areas >= min_glyph_area) & (~is_line_cc)
@@ -290,22 +296,30 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
     if sw_vals.size > 0:
         sw_mean = float(np.mean(sw_vals))
         sw_cov = float(np.std(sw_vals) / (sw_mean + 1e-5))
-        skel_density = float(sw_vals.size) / area_crop
+        if valid_cc_count > 0:
+            vx1 = float(np.min(cc_left[is_valid_cc]))
+            vy1 = float(np.min(cc_top[is_valid_cc]))
+            vx2 = float(np.max((cc_left + cc_w)[is_valid_cc]))
+            vy2 = float(np.max((cc_top + cc_h)[is_valid_cc]))
+            active_ink_box_area = max(0.18 * area_crop, (vx2 - vx1 + 4.0) * (vy2 - vy1 + 4.0))
+        else:
+            active_ink_box_area = area_crop
+        skel_density = float(sw_vals.size) / active_ink_box_area
     else:
         sw_mean, sw_cov, skel_density = 0.0, 0.0, 0.0
 
     # 7. Итоговое решающее правило Pre-OCR фильтра
     passed = True
     reason = "ok"
-    if total_cc >= 14 and micro_ratio > 0.62 and area_cov < 0.65:
+    if total_cc >= 14 and micro_ratio > 0.65 and area_cov < 0.62:
         passed, reason = False, f"halftone_dots(micro={micro_ratio:.2f},cov={area_cov:.2f})"
-    elif fft_pmr > 18.0 and (micro_ratio > 0.35 or valid_ink_share < 0.55):
+    elif fft_pmr > 19.5 and (micro_ratio > 0.42 or valid_ink_share < 0.45):
         passed, reason = False, f"periodic_screentone(fft_pmr={fft_pmr:.1f})"
-    elif valid_cc_count < 1 or valid_ink_share < 0.35:
+    elif valid_cc_count < 1 or valid_ink_share < 0.25:
         passed, reason = False, f"line_hatching_or_border(valid_cc={valid_cc_count},share={valid_ink_share:.2f})"
-    elif sw_mean < 1.05 or sw_mean > 0.25 * min(H, W):
+    elif sw_mean < 0.85 or sw_mean > max(16.0, 0.48 * min(H, W)):
         passed, reason = False, f"invalid_stroke_width(sw={sw_mean:.2f})"
-    elif skel_density < 0.003 or skel_density > 0.22:
+    elif skel_density < 0.0008 or skel_density > 0.36:
         passed, reason = False, f"invalid_skel_density(rho={skel_density:.4f})"
 
     elapsed_ms = (time.perf_counter() - t0) * 1000.0
@@ -354,10 +368,10 @@ class HallucinationFreeMangaOCR:
         pretrained_model_name_or_path: str = "kha-white/manga-ocr-base",
         device: Optional[str] = None,
         force_cpu: bool = False,
-        min_seq_confidence: float = 0.80,
-        max_spatial_entropy: float = 0.82,
-        min_peak_spatial_attn: float = 0.08,
-        max_char_to_ink_ratio: float = 2.50,
+        min_seq_confidence: float = 0.55,
+        max_spatial_entropy: float = 0.90,
+        min_peak_spatial_attn: float = 0.04,
+        max_char_to_ink_ratio: float = 2.80,
     ):
         if torch is None or VisionEncoderDecoderModel is None:
             raise RuntimeError("PyTorch и transformers необходимы для инициализации HallucinationFreeMangaOCR.")
@@ -472,6 +486,8 @@ class HallucinationFreeMangaOCR:
         seq_confidence = float(np.exp(mean_log_prob))
 
         # Вычисление пространственной энтропии Шеннона кросс-внимания (по 196 патчам ViT, исключая токен CLS=0)
+        # Используем топ-3 наиболее сфокусированных голов внимания (positional glyph-tracking heads),
+        # чтобы контекстные головы с равномерным вниманием не размывали пик на реальных предложениях
         spatial_entropies: List[float] = []
         peak_attentions: List[float] = []
         content_steps = max(1, valid_steps - 1)  # Исключаем финальный шаг EOS
@@ -485,10 +501,13 @@ class HallucinationFreeMangaOCR:
                     continue
                 # Берем последний (2-й) слой BERT-декодера: размерность [batch=1, heads=12, q_len=1, kv_len=197]
                 last_layer_attn = step_cross[-1][0, :, -1, :]  # [12, 197]
-                mean_head_attn = last_layer_attn.mean(dim=0)   # [197]
-                spatial_attn = mean_head_attn[1:]              # 196 пространственных патчей (без CLS)
-                if spatial_attn.numel() == 0:
+                spatial_heads = last_layer_attn[:, 1:]         # [12, 196] без CLS
+                if spatial_heads.numel() == 0:
                     continue
+                head_peaks = spatial_heads.max(dim=-1).values  # [12]
+                k_top = min(3, int(spatial_heads.shape[0]))
+                top_idx = torch.topk(head_peaks, k=k_top).indices
+                spatial_attn = spatial_heads[top_idx].mean(dim=0)  # [196]
                 peak_attentions.append(float(spatial_attn.max().item()))
 
                 # Перенормировка распределения по пространственным патчам для расчета энтропии
@@ -520,7 +539,7 @@ class HallucinationFreeMangaOCR:
                 "", False, f"post_ocr:diffuse_cross_attn(H={mean_spatial_entropy:.3f},peak={mean_peak_attn:.3f})",
                 seq_confidence, mean_spatial_entropy, mean_peak_attn, char_to_ink_ratio, valid_steps, False
             )
-        if cjk_chars >= 5 and char_to_ink_ratio > self.max_char_to_ink_ratio:
+        if cjk_chars >= 6 and char_to_ink_ratio > self.max_char_to_ink_ratio:
             return MangaOCRRecognition(
                 "", False, f"post_ocr:char_to_ink_hallucination(CIR={char_to_ink_ratio:.2f},chars={cjk_chars},cc={gate.valid_cc_count})",
                 seq_confidence, mean_spatial_entropy, mean_peak_attn, char_to_ink_ratio, valid_steps, False
@@ -562,6 +581,7 @@ def segment_manga_panels(
     Быстрая классическая CV-сегментация панелей (фреймов) манги без нейросетей (~7.15 мс).
     Поддерживает прямоугольные, трапециевидные/диагональные панели и автоматически рассекает
     перемычки (бабблы, волосы персонажей) через гаттеры с помощью анализа дефектов выпуклости.
+    Совместима как с OpenCV 4.x (defects shape `(N, 1, 4)`), так и с OpenCV 5.x (defects shape `(N, 4)`).
     """
     H, W = page_bgr.shape[:2]
     page_area = float(H * W)
@@ -580,51 +600,59 @@ def segment_manga_panels(
         if area < min_panel_area_ratio * page_area:
             continue
 
+        cnt_pts = np.asarray(cnt, dtype=np.int32).reshape(-1, 2)
+        cnt_cv = cnt_pts.reshape(-1, 1, 2)
+
         # Проверка на слияние соседних панелей через перемычку (Convexity Defects Diagonal Gutter Split)
-        hull_idx = cv2.convexHull(cnt, returnPoints=False)
         split_done = False
-        if hull_idx is not None and len(hull_idx) > 3 and len(cnt) >= 4:
+        if len(cnt_pts) >= 4:
             try:
-                defects = cv2.convexityDefects(cnt, hull_idx)
-            except cv2.error:
+                hull_idx = cv2.convexHull(cnt_cv, returnPoints=False)
+                if hull_idx is not None and hull_idx.size > 3:
+                    hull_idx_sorted = np.sort(np.asarray(hull_idx, dtype=np.int32).reshape(-1)).reshape(-1, 1)
+                    defects = cv2.convexityDefects(cnt_cv, hull_idx_sorted)
+                else:
+                    defects = None
+            except Exception:
                 defects = None
 
-            if defects is not None:
+            if defects is not None and defects.size >= 4:
                 deep_defects: List[Tuple[float, Tuple[int, int]]] = []
                 min_defect_depth = 0.05 * min(H, W)
-                for i in range(defects.shape[0]):
-                    _, _, far_idx, depth_fixed = defects[i, 0]
-                    depth_px = depth_fixed / 256.0
-                    if depth_px > min_defect_depth:
-                        far_pt = (int(cnt[far_idx, 0, 0]), int(cnt[far_idx, 0, 1]))
+                defects_arr = np.asarray(defects, dtype=np.int32).reshape(-1, 4)
+                for _, _, far_idx, depth_fixed in defects_arr:
+                    depth_px = float(depth_fixed) / 256.0
+                    f_i = int(far_idx)
+                    if depth_px > min_defect_depth and 0 <= f_i < len(cnt_pts):
+                        far_pt = (int(cnt_pts[f_i, 0]), int(cnt_pts[f_i, 1]))
                         deep_defects.append((depth_px, far_pt))
 
                 if len(deep_defects) >= 2:
                     deep_defects.sort(key=lambda item: item[0], reverse=True)
                     p1, p2 = deep_defects[0][1], deep_defects[1][1]
-                    x, y, w, h = cv2.boundingRect(cnt)
+                    x, y, w, h = cv2.boundingRect(cnt_cv)
                     sub_mask = np.zeros((h, w), dtype=np.uint8)
-                    shifted_cnt = cnt - np.array([[[x, y]]])
+                    shifted_cnt = (cnt_pts - np.array([[x, y]], dtype=np.int32)).reshape(-1, 1, 2)
                     cv2.drawContours(sub_mask, [shifted_cnt], -1, 255, -1)
                     # Рассекаем перемычку вдоль линии, соединяющей вершины встречных клиньев гаттера
                     cv2.line(sub_mask, (p1[0] - x, p1[1] - y), (p2[0] - x, p2[1] - y), 0, 10)
                     sub_cnts, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                    valid_subs = [
-                        sc + np.array([[[x, y]]])
-                        for sc in sub_cnts
-                        if cv2.contourArea(sc) >= min_panel_area_ratio * page_area
-                    ]
+                    valid_subs: List[np.ndarray] = []
+                    for sc in sub_cnts:
+                        if cv2.contourArea(sc) >= min_panel_area_ratio * page_area:
+                            sc_shifted = (np.asarray(sc, dtype=np.int32).reshape(-1, 2) + np.array([[x, y]], dtype=np.int32)).reshape(-1, 1, 2)
+                            valid_subs.append(sc_shifted)
                     if len(valid_subs) >= 2:
                         for sc in valid_subs:
                             peri_s = cv2.arcLength(sc, True)
                             approx_s = cv2.approxPolyDP(sc, 0.012 * peri_s, True)
-                            panel_polys.append(approx_s.reshape(-1, 2))
+                            panel_polys.append(np.asarray(approx_s, dtype=np.int32).reshape(-1, 2))
                         split_done = True
 
         if not split_done:
-            peri = cv2.arcLength(cnt, True)
-            approx = cv2.approxPolyDP(cnt, 0.012 * peri, True)
-            panel_polys.append(approx.reshape(-1, 2))
+            peri = cv2.arcLength(cnt_cv, True)
+            approx = cv2.approxPolyDP(cnt_cv, 0.012 * peri, True)
+            panel_polys.append(np.asarray(approx, dtype=np.int32).reshape(-1, 2))
 
     # Если страница безрамочная (borderless) и контуры не найдены — создаем единый фрейм на всю страницу
     if not panel_polys:
@@ -632,12 +660,13 @@ def segment_manga_panels(
 
     panels: List[Dict[str, Any]] = []
     for idx, poly in enumerate(panel_polys):
-        x, y, w, h = cv2.boundingRect(poly)
+        poly_cv = np.asarray(poly, dtype=np.int32).reshape(-1, 1, 2)
+        x, y, w, h = cv2.boundingRect(poly_cv)
         panels.append({
             "id": idx,
-            "poly": poly,
+            "poly": np.asarray(poly, dtype=np.int32).reshape(-1, 2),
             "bbox": (int(x), int(y), int(x + w), int(y + h)),
-            "area": float(cv2.contourArea(poly)),
+            "area": float(cv2.contourArea(poly_cv)),
         })
     return panels
 
@@ -649,7 +678,7 @@ def sort_panels_dag(
 ) -> List[Dict[str, Any]]:
     """
     Строит направленный ациклический граф (DAG) панелей и выполняет топологическую сортировку Кана.
-    reading_mode: 'rtl' (японская манга), 'ltr' (манхва/маньхуа), 'webtoon' (вертикальный скролл).
+    reading_mode: rtl (японская манга), ltr (манхва/маньхуа), webtoon (вертикальный скролл).
     """
     n = len(panels)
     if n <= 1:
@@ -727,16 +756,22 @@ def sort_page_blocks_reading_order_dag(
     1. Сегментирует страницу на фреймы (панели) и упорядочивает их через межпанельный DAG.
     2. Привязывает каждый текстовый блок/баббл к своей панели (с обработкой бабблов на границе двух фреймов).
     3. Упорядочивает бабблы внутри каждой панели через внутрипанельный DAG.
-    Ожидается, что каждый элемент в `blocks` имеет ключ `'bbox': (x1, y1, x2, y2)`.
+    Ожидается, что каждый элемент в `blocks` имеет ключ `bbox: (x1, y1, x2, y2)`.
     """
     if len(blocks) <= 1:
         return blocks
 
     reading_mode = "rtl" if lang == "ja" else ("webtoon" if lang == "ko" else "ltr")
+    ordered_panels: Optional[List[Dict[str, Any]]] = None
     if page_bgr is not None and page_bgr.size > 0:
-        raw_panels = segment_manga_panels(page_bgr)
-        ordered_panels = sort_panels_dag(raw_panels, reading_mode=reading_mode)
-    else:
+        try:
+            raw_panels = segment_manga_panels(page_bgr)
+            ordered_panels = sort_panels_dag(raw_panels, reading_mode=reading_mode)
+        except Exception as seg_exc:
+            logger.debug("Сегментация панелей переключена на полностраничный режим (%s).", seg_exc)
+            ordered_panels = None
+
+    if not ordered_panels:
         max_x = max((int(b["bbox"][2]) for b in blocks if "bbox" in b and len(b["bbox"]) >= 4), default=1000) + 32
         max_y = max((int(b["bbox"][3]) for b in blocks if "bbox" in b and len(b["bbox"]) >= 4), default=1400) + 32
         ordered_panels = [{
@@ -871,6 +906,7 @@ def group_text_boxes_by_bubble_cavity(
     - Все вертикальные колонки (`tategaki`) в одной чаше собираются в единый блок справа налево.
     - Сдвоенные бабблы-«восьмёрки» разрезаются по узкому горлышку методом маркерного водораздела (`cv2.watershed`),
       предотвращая склеивание разных реплик.
+    - Защищена от протечки белой маски в глобальный белый фон страницы/гаттеры при незамкнутом контуре баббла.
     Возвращает список сгруппированных блоков и полную карту полостей `final_cavity_map` (для использования в cleaner.py).
     """
     gray = (
@@ -882,13 +918,16 @@ def group_text_boxes_by_bubble_cavity(
     if not text_boxes:
         return [], np.zeros((H, W), dtype=np.int32)
 
-    # 1. Выделение светлых полостей бабблов и поиск компонент, содержащих текстовые боксы
-    _, white_mask = cv2.threshold(gray, white_thresh, 255, cv2.THRESH_BINARY)
+    page_area = float(max(1, H * W))
+    # 1. Выделение светлых полостей бабблов с замыканием микро-разрывов (1-2px) в темных стенках бабблов
+    dark_walls = (gray < white_thresh).astype(np.uint8) * 255
+    closed_walls = cv2.morphologyEx(dark_walls, cv2.MORPH_CLOSE, np.ones((3, 3), dtype=np.uint8))
+    white_mask = cv2.bitwise_not(closed_walls)
     num_cc, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(white_mask, connectivity=4)
 
     active_cc_ids = set()
     for tb in text_boxes:
-        x1, y1, x2, y2 = tb["bbox"]
+        x1, y1, x2, y2 = [int(round(float(v))) for v in tb["bbox"][:4]]
         roi_lbl = cc_labels[max(0, y1) : min(H, y2), max(0, x1) : min(W, x2)]
         vals, counts = np.unique(roi_lbl[roi_lbl > 0], return_counts=True)
         if len(vals) > 0:
@@ -897,6 +936,7 @@ def group_text_boxes_by_bubble_cavity(
     final_cavity_map = np.zeros((H, W), dtype=np.int32)
     next_cavity_id = 1
     k_peak = np.ones((7, 7), dtype=np.uint8)
+    leaked_bg_cc_ids: Set[int] = set()
 
     # 2. Анализ каждой активной полости: заливка дырок от букв -> Distance Transform -> Watershed по перешейку
     for cid in active_cc_ids:
@@ -904,6 +944,18 @@ def group_text_boxes_by_bubble_cavity(
         y0 = int(cc_stats[cid, cv2.CC_STAT_TOP])
         w0 = int(cc_stats[cid, cv2.CC_STAT_WIDTH])
         h0 = int(cc_stats[cid, cv2.CC_STAT_HEIGHT])
+        cc_area = float(cc_stats[cid, cv2.CC_STAT_AREA])
+
+        # Защита от протечки в глобальный белый фон страницы / межпанельные гаттеры:
+        # если белая компонента охватывает >38% площади полной страницы или касается противоположных краев страницы
+        touches_edges = sum([x0 <= 1, y0 <= 1, (x0 + w0) >= (W - 1), (y0 + h0) >= (H - 1)])
+        is_full_page_context = page_area > 180000.0
+        if is_full_page_context and (
+            (w0 * h0 > 0.38 * page_area and touches_edges >= 2)
+            or (touches_edges >= 3 and (w0 > 0.72 * W or h0 > 0.72 * H))
+        ):
+            leaked_bg_cc_ids.add(cid)
+            continue
 
         pad = 4
         rx1, ry1 = max(0, x0 - pad), max(0, y0 - pad)
@@ -918,7 +970,7 @@ def group_text_boxes_by_bubble_cavity(
         dist = cv2.distanceTransform(sub_filled, cv2.DIST_L2, 3)
         dist_dil = cv2.dilate(dist, k_peak)
         max_r_cav = float(np.max(dist)) if dist.size > 0 else 0.0
-        eff_min_lobe_r = max(min_lobe_radius_px, 0.52 * max_r_cav)
+        eff_min_lobe_r = max(min(min_lobe_radius_px, 0.38 * max_r_cav), 0.52 * max_r_cav)
         peaks_mask = (sub_filled > 0) & (dist >= dist_dil - 1e-3) & (dist >= eff_min_lobe_r)
         pys, pxs = np.where(peaks_mask)
 
@@ -982,13 +1034,13 @@ def group_text_boxes_by_bubble_cavity(
     # 3. Привязка текстовых боксов к сегментированным чашам по мажоритарному голосованию
     cavity_buckets: Dict[int, List[Dict[str, Any]]] = {}
     for tb in text_boxes:
-        x1, y1, x2, y2 = tb["bbox"]
+        x1, y1, x2, y2 = [int(round(float(v))) for v in tb["bbox"][:4]]
         roi_cav = final_cavity_map[max(0, y1) : min(H, y2), max(0, x1) : min(W, x2)]
         vals, counts = np.unique(roi_cav[roi_cav > 0], return_counts=True)
         if len(vals) > 0:
             cid = int(vals[np.argmax(counts)])
         else:
-            # Для текста на темном фоне или вне белых бабблов выделяем индивидуальный виртуальный ID
+            # Для текста на темном фоне, вне белых бабблов или в незамкнутом баббле на белом фоне выделяем индивидуальный ID
             cid = next_cavity_id
             next_cavity_id += 1
         cavity_buckets.setdefault(cid, []).append(tb)
@@ -1012,10 +1064,10 @@ def group_text_boxes_by_bubble_cavity(
                 key=lambda b: (0.5 * (b["bbox"][1] + b["bbox"][3]), 0.5 * (b["bbox"][0] + b["bbox"][2])),
             )
 
-        ux1 = min(b["bbox"][0] for b in boxes_sorted)
-        uy1 = min(b["bbox"][1] for b in boxes_sorted)
-        ux2 = max(b["bbox"][2] for b in boxes_sorted)
-        uy2 = max(b["bbox"][3] for b in boxes_sorted)
+        ux1 = min(int(round(float(b["bbox"][0]))) for b in boxes_sorted)
+        uy1 = min(int(round(float(b["bbox"][1]))) for b in boxes_sorted)
+        ux2 = max(int(round(float(b["bbox"][2]))) for b in boxes_sorted)
+        uy2 = max(int(round(float(b["bbox"][3]))) for b in boxes_sorted)
 
         merged_groups.append({
             "cavity_id": cid,
@@ -2749,6 +2801,49 @@ class MangaOCREngine:
         if (ink_x2 - ink_x1) < 10 or (ink_y2 - ink_y1) < 10:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
 
+        # Защита от фрагментации interior_mask на длинных вертикальных/горизонтальных плашках без RT-DETR подсказки:
+        # если _extract_bubble_interior_mask отрезал больше 42% высоты/ширины баббла, а в отрезанной внутренней
+        # части баббла осталась значимая доля темных штрихов текста — расширяем text_bbox на все штрихи внутри баббла!
+        if valid_hint is None and has_clean_interior and (bh >= 70 or bw >= 70):
+            span_h_ratio = float(ink_y2 - ink_y1) / float(max(1, bh))
+            span_w_ratio = float(ink_x2 - ink_x1) / float(max(1, bw))
+            if span_h_ratio < 0.58 or span_w_ratio < 0.58:
+                in_pad_x = max(3, int(rw * 0.08))
+                in_pad_y = max(3, int(rh * 0.03))
+                if rh > 2 * in_pad_y + 8 and rw > 2 * in_pad_x + 8:
+                    core_sub_gray = roi_gray[in_pad_y : rh - in_pad_y, in_pad_x : rw - in_pad_x]
+                    csh, csw = core_sub_gray.shape[:2]
+                    core_ink_thresh = max(160, int(p75 - 24))
+                    core_dark_mask = (core_sub_gray < core_ink_thresh).astype(np.uint8) * 255
+                    n_c, _, st_c, _ = cv2.connectedComponentsWithStats(core_dark_mask, connectivity=8)
+                    c_min_x, c_min_y = csw, csh
+                    c_max_x, c_max_y = 0, 0
+                    c_kept_px = 0
+                    for lbl_c in range(1, n_c):
+                        ccx = int(st_c[lbl_c, cv2.CC_STAT_LEFT])
+                        ccy = int(st_c[lbl_c, cv2.CC_STAT_TOP])
+                        ccw = int(st_c[lbl_c, cv2.CC_STAT_WIDTH])
+                        cch = int(st_c[lbl_c, cv2.CC_STAT_HEIGHT])
+                        cca = int(st_c[lbl_c, cv2.CC_STAT_AREA])
+                        if cca < 4:
+                            continue
+                        t_l = ccx <= 1
+                        t_t = ccy <= 1
+                        t_r = (ccx + ccw) >= (csw - 1)
+                        t_b = (ccy + cch) >= (csh - 1)
+                        if (t_l and t_r) or (t_t and t_b) or (sum([t_l, t_t, t_r, t_b]) >= 1 and (ccw > csw * 0.78 or cch > csh * 0.78)):
+                            continue
+                        c_min_x = min(c_min_x, ccx)
+                        c_min_y = min(c_min_y, ccy)
+                        c_max_x = max(c_max_x, ccx + ccw)
+                        c_max_y = max(c_max_y, ccy + cch)
+                        c_kept_px += cca
+                    if c_kept_px > int(kept_ink_px * 1.25) and c_kept_px >= 24 and c_max_x > c_min_x and c_max_y > c_min_y:
+                        ink_x1 = max(bx1, min(ink_x1, ix1 + in_pad_x + c_min_x - 4))
+                        ink_y1 = max(by1, min(ink_y1, iy1 + in_pad_y + c_min_y - 4))
+                        ink_x2 = min(bx2, max(ink_x2, ix1 + in_pad_x + c_max_x + 4))
+                        ink_y2 = min(by2, max(ink_y2, iy1 + in_pad_y + c_max_y + 4))
+
         if valid_hint is not None:
             hx1, hy1, hx2, hy2 = valid_hint
             inter_x1 = max(hx1, ink_x1)
@@ -3983,31 +4078,17 @@ class MangaOCREngine:
             iomin_threshold=0.72,
         )
 
-        # Блок 3: Топологическая группировка текстовых колонок по белой полости баббла (Distance Transform + Watershed).
-        # Все вертикальные колонки (`tategaki`) одной чаши объединяются в единый блок справа налево,
-        # а сдвоенные бабблы-«восьмёрки» строго разделяются по узкому перешейку (`d_neck < 0.48 * min(rA, rB)`).
         if dedup_tbs:
-            cavity_groups, cavity_map = group_text_boxes_by_bubble_cavity(img_np, dedup_tbs)
-            self._last_cavity_map = cavity_map
-            grouped_tbs: list[dict[str, Any]] = []
-            for cg in cavity_groups:
-                sub_b = cg.get("sub_boxes") or []
-                max_c = max((float(sb.get("confidence", 0.5)) for sb in sub_b), default=0.5)
-                grouped_tbs.append(
-                    {
-                        "bbox": list(cg["bbox"]),
-                        "confidence": round(max_c, 4),
-                        "is_free_text": False,
-                        "cavity_id": int(cg["cavity_id"]),
-                        "is_vertical": bool(cg["is_vertical"]),
-                        "sub_boxes": sub_b,
-                        "_source": "cavity_grouped_text_bubble",
-                    }
-                )
-            dedup_tbs = grouped_tbs
+            try:
+                _, cavity_map = group_text_boxes_by_bubble_cavity(img_np, dedup_tbs)
+                self._last_cavity_map = cavity_map
+            except Exception:
+                self._last_cavity_map = np.zeros((img_h, img_w), dtype=np.int32)
         else:
             self._last_cavity_map = np.zeros((img_h, img_w), dtype=np.int32)
 
+        # Сначала сопоставляем индивидуальные `dedup_tbs` с найденными `bubbles`, чтобы текстовые боксы
+        # из разных бабблов страницы никогда не сливались друг с другом через глобальный белый фон!
         bubble_to_tbs: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(len(bubbles))}
         orphan_tbs: list[dict[str, Any]] = []
 
@@ -4066,16 +4147,47 @@ class MangaOCREngine:
                 )
                 b_copy = dict(b_det)
                 b_copy["text_bbox"] = tight_tb
-                if "cavity_id" in matched[0]:
-                    b_copy["cavity_id"] = matched[0]["cavity_id"]
-                if "sub_boxes" in matched[0]:
-                    b_copy["sub_boxes"] = matched[0]["sub_boxes"]
-                if "is_vertical" in matched[0]:
-                    b_copy["is_vertical"] = matched[0]["is_vertical"]
                 b_copy["confidence"] = round(max(float(b_det["confidence"]), float(matched[0]["confidence"])), 4)
                 final_detections.append(b_copy)
             else:
-                split_parts = self._try_split_bubble_by_text_boxes(img_np, b_det, matched)
+                # Блок 3: Внутри одного `b_det` найдено >= 2 текстовых бокса.
+                # Запускаем `group_text_boxes_by_bubble_cavity` локально на ROI этого баббла:
+                # - если боксы лежат в ОДНОЙ непрерывной чаше баббла без узкого перешейка (`len(local_groups) == 1`),
+                #   объединяем их вертикальные колонки (`tategaki`) в единый `text_bbox` без ложного разрезания баббла;
+                # - если баббл является сдвоенной «восьмёркой» и водораздел выделил >= 2 долей (`len(local_groups) >= 2`),
+                #   разрезаем баббл по долям через `_try_split_bubble_by_text_boxes`!
+                roi_bub = img_np[max(0, by1) : min(img_h, by2), max(0, bx1) : min(img_w, bx2)]
+                local_tbs_in: list[dict[str, Any]] = []
+                for m in matched:
+                    mx1, my1, mx2, my2 = m["bbox"]
+                    local_tbs_in.append(
+                        {
+                            "bbox": [
+                                max(0, mx1 - bx1),
+                                max(0, my1 - by1),
+                                max(1, mx2 - bx1),
+                                max(1, my2 - by1),
+                            ],
+                            "confidence": float(m.get("confidence", 0.5)),
+                        }
+                    )
+                local_groups, _ = group_text_boxes_by_bubble_cavity(roi_bub, local_tbs_in)
+                if len(local_groups) >= 2:
+                    lobe_matched: list[dict[str, Any]] = []
+                    for lg in local_groups:
+                        lx1, ly1, lx2, ly2 = lg["bbox"]
+                        sub_s = lg.get("sub_boxes") or []
+                        l_conf = max((float(s.get("confidence", 0.5)) for s in sub_s), default=0.5)
+                        lobe_matched.append(
+                            {
+                                "bbox": [bx1 + lx1, by1 + ly1, bx1 + lx2, by1 + ly2],
+                                "confidence": l_conf,
+                            }
+                        )
+                    split_parts = self._try_split_bubble_by_text_boxes(img_np, b_det, lobe_matched)
+                else:
+                    split_parts = None
+
                 if split_parts:
                     split_count += 1
                     final_detections.extend(split_parts)
@@ -4092,6 +4204,8 @@ class MangaOCREngine:
                     )
                     b_copy = dict(b_det)
                     b_copy["text_bbox"] = tight_tb
+                    if local_groups:
+                        b_copy["is_vertical"] = bool(local_groups[0].get("is_vertical", False))
                     b_copy["confidence"] = round(
                         max([float(b_det["confidence"])] + [float(m["confidence"]) for m in matched]),
                         4,
@@ -4286,9 +4400,12 @@ class MangaOCREngine:
 
         raw_detections = yolo_detections + rtdetr_bubbles
 
-        # 3. Резервный контурный поиск OpenCV запускаем ТОЛЬКО если нейросетевые детекторы (YOLOv8m + RT-DETR-v2)
-        # не нашли бабблов на странице (или если RT-DETR-v2 отключен), чтобы не превращать светлые детали одежды/фона в ложные бабблы
-        if len(raw_detections) == 0 or not (self._rtdetr_available and self._rtdetr_model is not None):
+        # 3. Резервный контурный поиск OpenCV запускаем ТОЛЬКО если двухконтурный RT-DETR-v2 недоступен/отключен,
+        # либо если RT-DETR-v2 нашел на странице текстовые боксы (`rtdetr_text_bubbles`), пропущенные детектором контуров.
+        # Если же и YOLOv8m, и активный RT-DETR-v2 единогласно вернули 0 бабблов и 0 текстовых боксов (чистый арт/иллюстрация),
+        # не запускаем слепую контурную эвристику, чтобы не превращать блики на одежде/коже в ложные срабатывания!
+        rtdetr_is_active = bool(self._rtdetr_available and self._rtdetr_model is not None)
+        if not rtdetr_is_active or (len(raw_detections) == 0 and len(rtdetr_text_bubbles) > 0):
             cv_bubbles = self._detect_missed_white_bubbles(img_np, raw_detections, min_box_size=min_box_size)
             if cv_bubbles:
                 raw_detections.extend(cv_bubbles)
@@ -4835,7 +4952,14 @@ class MangaOCREngine:
                     # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
                     # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
                     fallback_indices = [
-                        idx for idx, txt in enumerate(nar_texts) if len(txt) >= 54 or not txt.strip()
+                        idx
+                        for idx, txt in enumerate(nar_texts)
+                        if len(txt) >= 54
+                        or not txt.strip()
+                        or (
+                            len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= 4
+                            and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= 16000
+                        )
                     ]
                     if fallback_indices:
                         sub_crops = [crops_pil[idx] for idx in fallback_indices]
@@ -4845,7 +4969,13 @@ class MangaOCREngine:
                             fb_clean = fb_txt.strip()
                             if not fb_clean or KNOWN_OCR_HALLUCINATIONS_REGEX.search(fb_clean):
                                 continue
-                            if not cur_nar or (len(cur_nar) >= 54 and len(fb_clean) > len(cur_nar)):
+                            cur_core_len = len(STRIP_PUNCT_REGEX.sub("", cur_nar))
+                            fb_core_len = len(STRIP_PUNCT_REGEX.sub("", fb_clean))
+                            if (
+                                not cur_nar
+                                or (len(cur_nar) >= 54 and len(fb_clean) > len(cur_nar))
+                                or (cur_core_len <= 4 and fb_core_len >= cur_core_len + 2)
+                            ):
                                 nar_texts[idx] = fb_clean
                     # Если после NAR + MangaOCR какой-то баббл остался пустым или с галлюцинацией — дочитываем через HayaiOCR v2.5 Nova!
                     if self.use_hayai_ocr and self._hayai_model is not None:
