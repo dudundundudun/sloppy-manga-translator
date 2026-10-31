@@ -1,5 +1,5 @@
 """
-Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (v4.0 SOTA Deep Research Edition).
+Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (v4.1 SOTA Deep Research Edition).
 
 Архитектура v4.0 (на основе отчёта Deep Research + полная обратная совместимость с v3.5–v3.7):
 1. Попиксельная сегментация штрихов, белого ореола (Geodesic Halo Extraction) и топологическая защита:
@@ -38,6 +38,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 import threading
 from typing import Any, Callable, List, Optional, Tuple
@@ -61,9 +62,25 @@ import urllib.request
 from typing import Dict, Set, Union
 
 try:
-    from ocr_engine import group_text_boxes_by_bubble_cavity
+    from ocr_engine import (
+        BubbleGeometryContext,
+        build_bubble_geometry_context,
+        decompose_overlapping_bubbles,
+        estimate_and_deskew_tilted_text_block,
+        group_text_boxes_by_bubble_cavity,
+        segment_dashed_bubble_roi,
+        segment_open_wispy_bubble_roi,
+        verify_bubble_and_text_candidate,
+    )
 except ImportError:
+    BubbleGeometryContext = None  # type: ignore[assignment]
+    build_bubble_geometry_context = None  # type: ignore[assignment]
+    decompose_overlapping_bubbles = None  # type: ignore[assignment]
+    estimate_and_deskew_tilted_text_block = None  # type: ignore[assignment]
     group_text_boxes_by_bubble_cavity = None  # type: ignore[assignment]
+    segment_dashed_bubble_roi = None  # type: ignore[assignment]
+    segment_open_wispy_bubble_roi = None  # type: ignore[assignment]
+    verify_bubble_and_text_candidate = None  # type: ignore[assignment]
 
 
 def _torch_inference_mode():
@@ -461,6 +478,307 @@ class BuiltInSimpleLama(StandaloneLaMaInpainter):
             device=device,
             use_bfloat16=use_bfloat16,
         )
+
+
+
+
+# ==============================================================================
+# Проблемы №4 и №5а (v4.1 SOTA Topological & Spectral Upgrade):
+# 1) Локальный 4-режимный классификатор подложки (A: Flat, B: Smooth Gradient,
+#    C: Periodic Halftone Screentone / Amiten, D: Line Art) + векторный
+#    гармонический решатель Лапласа-Дирихле (Delta I = 0) + бесшовный LaMa-блендинг.
+# 2) Двухзонный клининг выступающего текста (clean_overhanging_text_zero_bleed)
+#    с прямой реконструкцией разорванной стенки (fitEllipseDirect + сплайн Эрмита)
+#    и экранированием контекста (Zero-Bleed Context Shielding).
+# ==============================================================================
+
+
+def hermite_wall_bridge(
+    pA: tuple[float, float],
+    tA: tuple[float, float],
+    pB: tuple[float, float],
+    tB: tuple[float, float],
+    num_pts: int = 24,
+) -> np.ndarray:
+    """
+    Векторизованный кубический сплайн Эрмита H(u) (u in [0, 1]) для гладкого замыкания
+    разорванной стенки неэллиптического/прямоугольного баббла по концевым касательным.
+    """
+    p0 = np.array(pA, dtype=np.float32)
+    p1 = np.array(pB, dtype=np.float32)
+    v0 = np.array(tA, dtype=np.float32)
+    v1 = np.array(tB, dtype=np.float32)
+    chord_len = float(np.linalg.norm(p1 - p0))
+    u = np.linspace(0.0, 1.0, max(4, int(num_pts)), dtype=np.float32)[:, None]
+    h00 = 2.0 * (u ** 3) - 3.0 * (u ** 2) + 1.0
+    h10 = (u ** 3) - 2.0 * (u ** 2) + u
+    h01 = -2.0 * (u ** 3) + 3.0 * (u ** 2)
+    h11 = (u ** 3) - (u ** 2)
+    pts = h00 * p0 + h10 * (chord_len * v0) + h01 * p1 + h11 * (chord_len * v1)
+    return np.round(pts).astype(np.int32)
+
+
+def classify_and_clean_heterogeneous_bubble(
+    roi_img: np.ndarray,
+    raw_stroke_mask: np.ndarray,
+    protected_wall_mask: np.ndarray,
+    lama_runner: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None,
+    scale_f: float = 1.0,
+) -> dict[str, np.ndarray | dict[str, float] | float]:
+    """
+    Проблема №4: Локальный классификатор подложки (Режимы A, B, C, D) + бесшовный гармонический
+    инпейнтинг Лапласа-Дирихле (Delta I = 0) + маршрутизация LaMa для скринтонов/лайнарта.
+    Поддерживает как grayscale (H, W), так и цветные вебтуны (H, W, 3).
+    """
+    t0 = time.perf_counter()
+    is_color = roi_img.ndim == 3
+    H, W = roi_img.shape[:2]
+    s = max(0.5, float(scale_f))
+
+    roi_gray = cv2.cvtColor(roi_img, cv2.COLOR_RGB2GRAY) if is_color else roi_img
+
+    # 1. Формирование узкой поштриховой маски (Stroke-Core + White Halo) без захвата стенок
+    r_core = max(2, int(round(2.5 * s)))
+    k_core = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r_core + 1, 2 * r_core + 1))
+    stroke_core = cv2.dilate(raw_stroke_mask, k_core, iterations=1)
+
+    # Детекция белого ореола (halo) вокруг букв на сером/тонированном фоне
+    k_bg = int(round(25 * s)) | 1
+    bg_median_approx = cv2.medianBlur(roi_gray, min(9, int(round(5 * s)) | 1))
+    local_bg = cv2.boxFilter(bg_median_approx, cv2.CV_8U, (k_bg, k_bg))
+    halo_search_band = cv2.dilate(stroke_core, k_core, iterations=1)
+    bright_halo = (
+        (roi_gray.astype(np.int16) - local_bg.astype(np.int16) > 14) & (halo_search_band > 0)
+    ).astype(np.uint8) * 255
+
+    inpaint_mask = cv2.bitwise_or(stroke_core, cv2.dilate(bright_halo, np.ones((3, 3), np.uint8)))
+    inpaint_mask = cv2.bitwise_and(inpaint_mask, cv2.bitwise_not(protected_wall_mask))
+
+    # 2. Локальный классификатор 4 режимов подложки через нормированную свертку
+    valid = (inpaint_mask == 0).astype(np.float32)
+    gray_f = roi_gray.astype(np.float32)
+    val_img = gray_f * valid
+
+    win_sz = (int(round(15 * s)) | 1, int(round(15 * s)) | 1)
+    w_sum = np.maximum(cv2.boxFilter(valid, cv2.CV_32F, win_sz), 1e-4)
+    mean_local = cv2.boxFilter(val_img, cv2.CV_32F, win_sz) / w_sum
+    sq_mean_local = cv2.boxFilter(val_img * val_img, cv2.CV_32F, win_sz) / w_sum
+    sigma_local = np.sqrt(np.maximum(0.0, sq_mean_local - mean_local * mean_local))
+
+    smooth_bg = cv2.GaussianBlur(gray_f, (5, 5), 1.2)
+    hf_res = np.abs(gray_f - smooth_bg) * valid
+    hf_energy = cv2.boxFilter(hf_res, cv2.CV_32F, win_sz) / w_sum
+
+    k3 = np.ones((3, 3), dtype=np.uint8)
+    local_max = (cv2.dilate(roi_gray, k3) == roi_gray) & (roi_gray > mean_local + 8.0) & (inpaint_mask == 0)
+    local_min = (cv2.erode(roi_gray, k3) == roi_gray) & (roi_gray < mean_local - 8.0) & (inpaint_mask == 0)
+    extrema_density = (
+        cv2.boxFilter((local_max | local_min).astype(np.float32), cv2.CV_32F, win_sz) / w_sum
+    )
+
+    # Карта режимов: 0 = Flat (A), 1 = Smooth Gradient (B), 2 = Screentone Amiten (C), 3 = Line Art (D)
+    regime_map = np.zeros((H, W), dtype=np.uint8)
+    is_grad = (sigma_local > 1.8) & (hf_energy <= 2.8) & (extrema_density < 0.04)
+    is_tone = (hf_energy > 2.5) & (extrema_density >= 0.04)
+    is_line = (sigma_local > 15.0) & (~is_tone) & (~is_grad)
+
+    regime_map[is_grad] = 1
+    regime_map[is_tone] = 2
+    regime_map[is_line] = 3
+
+    # 3. Векторизованный гармонический решатель Лапласа-Дирихле (Delta I = 0) для Режимов A и B
+    m_bool = inpaint_mask > 0
+    m_bool[0, :] = m_bool[-1, :] = m_bool[:, 0] = m_bool[:, -1] = False
+    ys_m, xs_m = np.nonzero(m_bool)
+
+    img_f = roi_img.astype(np.float32)
+    harmonic_out = img_f.copy()
+
+    if len(ys_m) > 0:
+        init_win = (int(round(15 * s)) | 1, int(round(15 * s)) | 1)
+        wide_win = (int(round(45 * s)) | 1, int(round(45 * s)) | 1)
+        w1 = cv2.boxFilter(valid, cv2.CV_32F, init_win)
+        w2 = np.maximum(cv2.boxFilter(valid, cv2.CV_32F, wide_win), 1e-4)
+        if is_color:
+            v1 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, init_win) / np.maximum(w1[:, :, None], 1e-4)
+            v2 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, wide_win) / w2[:, :, None]
+            init_val = np.where(w1[:, :, None] > 0.05, v1, v2)
+        else:
+            v1 = cv2.boxFilter(val_img, cv2.CV_32F, init_win) / np.maximum(w1, 1e-4)
+            v2 = cv2.boxFilter(val_img, cv2.CV_32F, wide_win) / w2
+            init_val = np.where(w1 > 0.05, v1, v2)
+        harmonic_out[ys_m, xs_m] = init_val[ys_m, xs_m]
+
+        # 30 векторизованных итераций релаксации Лапласа по узкой маске штриха
+        for _ in range(30):
+            harmonic_out[ys_m, xs_m] = 0.25 * (
+                harmonic_out[ys_m - 1, xs_m]
+                + harmonic_out[ys_m + 1, xs_m]
+                + harmonic_out[ys_m, xs_m - 1]
+                + harmonic_out[ys_m, xs_m + 1]
+            )
+
+    # 4. Гибридное бесшовное слияние с LaMa для зон Режима C (Скринтон) и Режима D (Лайнарт)
+    need_lama_mask = ((regime_map >= 2) & m_bool).astype(np.uint8) * 255
+    num_cd_pixels = int(np.count_nonzero(need_lama_mask))
+    final_out = np.clip(harmonic_out, 0, 255).astype(np.uint8)
+
+    if num_cd_pixels >= 15 and lama_runner is not None:
+        y_cd, x_cd = np.nonzero(need_lama_mask > 0)
+        pad_l = max(24, int(round(32 * s)))
+        ly1, ly2 = max(0, int(np.min(y_cd)) - pad_l), min(H, int(np.max(y_cd)) + pad_l)
+        lx1, lx2 = max(0, int(np.min(x_cd)) - pad_l), min(W, int(np.max(x_cd)) + pad_l)
+
+        sub_img = roi_img[ly1:ly2, lx1:lx2]
+        sub_mask = inpaint_mask[ly1:ly2, lx1:lx2]
+        if is_color:
+            lama_patch = lama_runner(sub_img, sub_mask)
+        else:
+            sub_rgb = np.stack([sub_img] * 3, axis=-1)
+            lama_rgb = lama_runner(sub_rgb, sub_mask)
+            lama_patch = cv2.cvtColor(lama_rgb, cv2.COLOR_RGB2GRAY) if lama_rgb.ndim == 3 else lama_rgb
+
+        alpha_cd = cv2.GaussianBlur((regime_map[ly1:ly2, lx1:lx2] >= 2).astype(np.float32), (9, 9), 3.0)
+        if is_color:
+            alpha_cd = alpha_cd[:, :, None]
+
+        blended_patch = (
+            (1.0 - alpha_cd) * harmonic_out[ly1:ly2, lx1:lx2]
+            + alpha_cd * lama_patch.astype(np.float32)
+        )
+        sub_m = sub_mask > 0
+        final_out[ly1:ly2, lx1:lx2][sub_m] = np.clip(blended_patch[sub_m], 0, 255).astype(np.uint8)
+
+    masked_regimes = regime_map[m_bool] if len(ys_m) > 0 else np.array([0], dtype=np.uint8)
+    total_m = max(1, len(masked_regimes))
+    regime_stats = {
+        "flat_pct": float(np.sum(masked_regimes == 0)) / total_m,
+        "gradient_pct": float(np.sum(masked_regimes == 1)) / total_m,
+        "screentone_pct": float(np.sum(masked_regimes == 2)) / total_m,
+        "lineart_pct": float(np.sum(masked_regimes == 3)) / total_m,
+    }
+
+    dt_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "cleaned_roi": final_out,
+        "inpaint_mask": inpaint_mask,
+        "regime_map": regime_map,
+        "regime_stats": regime_stats,
+        "elapsed_ms": dt_ms,
+    }
+
+
+def clean_overhanging_text_zero_bleed(
+    roi_img: np.ndarray,
+    lama_runner: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None,
+    scale_f: float = 1.0,
+) -> dict[str, np.ndarray | float]:
+    """
+    Проблема №5а: Двухзонный клининг выступающего за баббл текста (M_inside vs M_outside)
+    с прямой реконструкцией разорванной стенки (fitEllipseDirect) и
+    экранированием контекста (Zero-Bleed Context Shielding).
+    """
+    t0 = time.perf_counter()
+    is_color = roi_img.ndim == 3
+    H, W = roi_img.shape[:2]
+    s = max(0.5, float(scale_f))
+
+    roi_gray = cv2.cvtColor(roi_img, cv2.COLOR_RGB2GRAY) if is_color else roi_img
+
+    # 1. Выделение сохранившихся фрагментов черной стенки баббла
+    dark_ink = (roi_gray < 30).astype(np.uint8) * 255
+    num_l, labels, stats, _ = cv2.connectedComponentsWithStats(
+        dark_ink, connectivity=8, ltype=cv2.CV_16U
+    )
+    w_c, h_c = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
+    wall_cids = np.nonzero((w_c > 0.45 * W) | (h_c > 0.45 * H))[0]
+    wall_cids = wall_cids[wall_cids > 0]
+    intact_wall_mask = np.isin(labels, wall_cids).astype(np.uint8) * 255
+
+    # 2. Реконструкция замкнутой чаши и моста стенки через fitEllipseDirect по intact_wall_mask
+    reconstructed_interior = np.zeros((H, W), dtype=np.uint8)
+    reconstructed_wall = np.zeros((H, W), dtype=np.uint8)
+    wy, wx = np.nonzero(intact_wall_mask > 0)
+    wall_thick = max(2, int(round(3.0 * s)))
+    if len(wx) >= 12:
+        wall_pts = np.column_stack([wx, wy]).astype(np.float32)
+        ellipse_box = cv2.fitEllipseDirect(wall_pts)
+        cv2.ellipse(reconstructed_interior, ellipse_box, 255, -1)
+        cv2.ellipse(reconstructed_wall, ellipse_box, 255, wall_thick)
+
+    full_wall_mask = cv2.bitwise_or(intact_wall_mask, reconstructed_wall)
+
+    # 3. Построение M_inside (внутри чаши) и M_outside (выступающий текст + белый ореол снаружи)
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    inner_cavity = cv2.bitwise_and(reconstructed_interior, cv2.bitwise_not(full_wall_mask))
+    M_inside = cv2.dilate(cv2.bitwise_and(dark_ink, inner_cavity), k3, iterations=1)
+    M_inside = cv2.bitwise_and(M_inside, cv2.bitwise_not(full_wall_mask))
+
+    ext_zone = cv2.bitwise_and(
+        cv2.bitwise_not(reconstructed_interior), cv2.bitwise_not(full_wall_mask)
+    )
+    ext_halo = cv2.bitwise_and((roi_gray > 190).astype(np.uint8) * 255, ext_zone)
+    r_h = max(3, int(round(3.0 * s)))
+    ext_halo_dil = cv2.dilate(
+        ext_halo, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r_h + 1, 2 * r_h + 1))
+    )
+    ext_stroke = cv2.bitwise_and(dark_ink, ext_halo_dil)
+    M_outside = cv2.dilate(cv2.bitwise_or(ext_halo, ext_stroke), k3, iterations=1)
+    M_outside = cv2.bitwise_and(M_outside, cv2.bitwise_not(full_wall_mask))
+
+    # 4. Zero-Bleed Context Shielding: маскируем белую внутренность баббла тоном внешнего фона
+    shielded_crop = roi_img.copy()
+    ext_context_ring = cv2.bitwise_and(
+        cv2.dilate(M_outside, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))),
+        cv2.bitwise_and(ext_zone, cv2.bitwise_not(M_outside)),
+    )
+    shield_zone = (reconstructed_interior > 0) | (full_wall_mask > 0)
+    if np.any(ext_context_ring > 0):
+        ext_med = np.median(roi_img[ext_context_ring > 0], axis=0).astype(np.uint8)
+    else:
+        ext_med = np.uint8(70)
+    shielded_crop[shield_zone] = ext_med
+
+    # 5. Очистка M_inside, инпейнтинг M_outside на экранированном патче и восстановление моста стенки
+    cleaned_img = roi_img.copy()
+    inside_bg_pixels = roi_img[(inner_cavity > 0) & (M_inside == 0)]
+    inside_fill = (
+        np.median(inside_bg_pixels, axis=0).astype(np.uint8)
+        if len(inside_bg_pixels) > 0
+        else np.uint8(252)
+    )
+    cleaned_img[M_inside > 0] = inside_fill
+
+    ys_o, xs_o = np.nonzero(M_outside > 0)
+    if len(ys_o) > 0:
+        pad_o = max(8, int(round(8 * s)))
+        oy1, oy2 = max(0, int(np.min(ys_o)) - pad_o), min(H, int(np.max(ys_o)) + pad_o + 1)
+        ox1, ox2 = max(0, int(np.min(xs_o)) - pad_o), min(W, int(np.max(xs_o)) + pad_o + 1)
+        sub_s = shielded_crop[oy1:oy2, ox1:ox2]
+        sub_m = M_outside[oy1:oy2, ox1:ox2]
+        if lama_runner is not None:
+            sub_inp = lama_runner(sub_s, sub_m)
+        else:
+            sub_inp = cv2.inpaint(sub_s, sub_m, 3.0, cv2.INPAINT_TELEA)
+        cleaned_img[oy1:oy2, ox1:ox2][sub_m > 0] = sub_inp[sub_m > 0]
+
+    intact_wall_vals = roi_img[(intact_wall_mask > 0) & (roi_gray < 60)]
+    wall_color = (
+        np.median(intact_wall_vals, axis=0).astype(np.uint8)
+        if len(intact_wall_vals) > 0
+        else np.uint8(12)
+    )
+    cleaned_img[full_wall_mask > 0] = wall_color
+
+    dt_ms = (time.perf_counter() - t0) * 1000.0
+    return {
+        "cleaned_roi": cleaned_img,
+        "M_inside": M_inside,
+        "M_outside": M_outside,
+        "full_wall_mask": full_wall_mask,
+        "reconstructed_interior": reconstructed_interior,
+        "elapsed_ms": dt_ms,
+    }
 
 
 class SotaMangaCleaner:
@@ -987,6 +1305,28 @@ class SotaMangaCleaner:
             out.astype(np.float32) * (1.0 - alpha) + inpainted.astype(np.float32) * alpha
         ).round().astype(np.uint8)
         out[mask_outside > 0] = blended[mask_outside > 0]
+
+        # Проблема №5а: Прямая реконструкция разорванного моста стенки баббла (fitEllipseDirect)
+        # на узком стыке между cavity_roi и mask_outside
+        try:
+            wy, wx = np.nonzero(wall_roi > 0)
+            if len(wx) >= 20:
+                interface_band = cv2.bitwise_and(
+                    cv2.dilate(cavity_roi, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))),
+                    mask_outside,
+                )
+                if np.any(interface_band > 0):
+                    wall_pts = np.column_stack([wx, wy]).astype(np.float32)
+                    ell_box = cv2.fitEllipseDirect(wall_pts)
+                    rec_wall = np.zeros_like(wall_roi)
+                    cv2.ellipse(rec_wall, ell_box, 255, 2)
+                    bridge_mask = cv2.bitwise_and(rec_wall, interface_band)
+                    if np.any(bridge_mask > 0):
+                        wall_vals = roi_rgb[wall_roi > 0]
+                        w_col = np.median(wall_vals, axis=0).astype(np.uint8) if len(wall_vals) > 0 else np.array([15, 15, 15], dtype=np.uint8)
+                        out[bridge_mask > 0] = w_col
+        except Exception:
+            pass
         return out
 
 
@@ -1836,7 +2176,7 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
-            "clean_ver": "v4.0-sota",
+            "clean_ver": "v4.1-sota-topo",
             "base_clean_blocks": [
                 [list(coords), is_free, mdil]
                 for coords, is_free, mdil in active_tuples
@@ -1877,7 +2217,7 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
-            "clean_ver": "v4.0-sota",
+            "clean_ver": "v4.1-sota-topo",
             "active_clean_blocks": [
                 [list(coords), is_free, mdil, [list(st) for st in strokes]]
                 for coords, is_free, mdil, strokes in active_tuples
@@ -1988,6 +2328,7 @@ class BubbleCleaner:
         cx_mid, cy_mid = rw / 2.0, rh / 2.0
         best_label = -1
         best_score = -1.0
+        best_edge_touches = 0
 
         c_x1, c_x2 = int(rw * 0.22), max(int(rw * 0.22) + 1, int(rw * 0.78))
         c_y1, c_y2 = int(rh * 0.18), max(int(rh * 0.18) + 1, int(rh * 0.82))
@@ -2011,18 +2352,30 @@ class BubbleCleaner:
             if score > best_score:
                 best_score = score
                 best_label = lbl
-            if edge_touches == 0 and center_hits >= max(10.0, center_slice.size * 0.08):
-                selected_labels.append(lbl)
-
+                best_edge_touches = edge_touches
         if best_label == -1:
             return light_pixels
 
+        if best_edge_touches >= 3 and rh >= 24 and rw >= 24 and segment_dashed_bubble_roi is not None:
+            dash_res = segment_dashed_bubble_roi(roi_gray, None)
+            if dash_res.get("is_dashed_bubble"):
+                d_int = dash_res["interior_mask"]
+                if 0.08 * rh * rw <= np.count_nonzero(d_int) <= 0.90 * rh * rw:
+                    return d_int
+            if segment_open_wispy_bubble_roi is not None:
+                open_res = segment_open_wispy_bubble_roi(
+                    roi_gray, (int(0.22 * rw), int(0.20 * rh), int(0.78 * rw), int(0.80 * rh))
+                )
+                if open_res.get("has_opposing_arcs"):
+                    o_int = open_res["virtual_bowl_mask"]
+                    if 0.08 * rh * rw <= np.count_nonzero(o_int) <= 0.90 * rh * rw:
+                        return o_int
+
         interior = np.zeros_like(light_pixels)
         interior[labels == best_label] = 255
-        for lbl in selected_labels:
-            interior[labels == lbl] = 255
 
-        # 1. Заполняем внутренние замкнутые отверстия внутри иероглифов ДО морфологического замыкания
+        # 1. Заполняем только компактные внутренние замкнутые отверстия внутри иероглифов ДО морфологического замыкания,
+        # НИКОГДА не закрашивая стенки баббла (wall_barrier) или соседний арт!
         inv = cv2.bitwise_not(interior)
         n_inv, lbl_inv, st_inv, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
         for idx in range(1, n_inv):
@@ -2030,9 +2383,11 @@ class BubbleCleaner:
             ly = st_inv[idx, cv2.CC_STAT_TOP]
             lw = st_inv[idx, cv2.CC_STAT_WIDTH]
             lh = st_inv[idx, cv2.CC_STAT_HEIGHT]
+            la = st_inv[idx, cv2.CC_STAT_AREA]
             touches_edge = lx <= 0 or ly <= 0 or (lx + lw) >= rw or (ly + lh) >= rh
-            if not touches_edge:
-                interior[lbl_inv == idx] = 255
+            if not touches_edge and lw < rw * 0.52 and lh < rh * 0.52 and la < rw * rh * 0.18:
+                if not np.any((lbl_inv == idx) & (wall_barrier > 0)):
+                    interior[lbl_inv == idx] = 255
 
         # 2. Замыкаем только компактные внутренние вмятины от тёмных иероглифов, касающихся стенок баббла,
         # не присоединяя внешние белые ореолы (light_pixels != best_label) за черной стенкой!
@@ -2065,6 +2420,7 @@ class BubbleCleaner:
             closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
             closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
 
+        closed_int[wall_barrier > 0] = 0
         inv2 = cv2.bitwise_not(closed_int)
         n_inv2, lbl_inv2, st_inv2, _ = cv2.connectedComponentsWithStats(inv2, connectivity=8)
         for idx2 in range(1, n_inv2):
@@ -2072,8 +2428,11 @@ class BubbleCleaner:
             ly2 = st_inv2[idx2, cv2.CC_STAT_TOP]
             lw2 = st_inv2[idx2, cv2.CC_STAT_WIDTH]
             lh2 = st_inv2[idx2, cv2.CC_STAT_HEIGHT]
+            la2 = st_inv2[idx2, cv2.CC_STAT_AREA]
             if lx2 > 0 and ly2 > 0 and (lx2 + lw2) < rw and (ly2 + lh2) < rh:
-                closed_int[lbl_inv2 == idx2] = 255
+                if lw2 < rw * 0.52 and lh2 < rh * 0.52 and la2 < rw * rh * 0.18:
+                    if not np.any((lbl_inv2 == idx2) & (wall_barrier > 0)):
+                        closed_int[lbl_inv2 == idx2] = 255
 
         added = cv2.subtract(closed_int, interior)
         # Исключаем внешние светлые компоненты (ореолы вне баббла), которые не входили в interior initially
@@ -2255,10 +2614,8 @@ class BubbleCleaner:
                     if (tz_x2 - tz_x1) >= 8 and (tz_y2 - tz_y1) >= 8:
                         text_zone_mask.fill(0)
                         text_zone_mask[tz_y1:tz_y2, tz_x1:tz_x2] = 255
-                        # Если text_bbox охватывает менее 60% высоты/ширины чистой полости баббла,
-                        # разрешаем очистку всей внутренней полости interior_mask, чтобы не оставлять нестертые строки
-                        if (tz_y2 - tz_y1) < int(core_h * 0.62) or (tz_x2 - tz_x1) < int(core_w * 0.62):
-                            text_zone_mask = cv2.bitwise_or(text_zone_mask, interior_mask)
+                        # Топологическая защита периферии вокруг text_bbox (Проблемы №1 и №2):
+                        # Никогда не сбрасываем text_zone_mask на весь ROI, если внутри ROI есть чиби-арт или соседняя полость!
 
                     strict_dark = (roi_gray < 155).astype(np.uint8) * 255
                     # Отсоединяем прямые внешние линии рамок панелей вдоль границ кропа, чтобы краевые иероглифы на экранах/плашках не попадали в hollow_arc_mask
@@ -2642,12 +2999,21 @@ class BubbleCleaner:
                         if float(np.min(fill_color)) >= self.cleaner_cfg.off_white_max_threshold:
                             fill_color = np.array([255, 255, 255], dtype=np.uint8)
 
-                        if p50 >= 234.0 and p80 >= 245.0 and sigma_edge > self.cleaner_cfg.mask_max_std_dev:
-                            sigma_edge = 8.0
-
-                        out = self.sota_cleaner._route_inside_inpaint(
-                            out, mask_inside, cavity_mask, sigma_edge, fill_color
-                        )
+                        if sigma_edge <= 1.8 and p50 >= 238.0:
+                            out = self.sota_cleaner._route_inside_inpaint(
+                                out, mask_inside, cavity_mask, sigma_edge, fill_color
+                            )
+                        else:
+                            # Проблема №4: Гетерогенный фон баббла (плавный градиент Режима B, скринтон Режима C или лайнарт Режима D)
+                            # Отказываемся от «слепой белой замазки» и решаем краевую задачу Лапласа-Дирихле (Delta I = 0) + LaMa
+                            het_res = classify_and_clean_heterogeneous_bubble(
+                                roi_img=out,
+                                raw_stroke_mask=mask_inside,
+                                protected_wall_mask=wall_mask,
+                                lama_runner=self._invoke_lama_np if self.lama_model is not None else None,
+                                scale_f=1.0,
+                            )
+                            out[mask_inside > 0] = het_res["cleaned_roi"][mask_inside > 0]
 
                 if np.any(mask_outside > 0):
                     out = self.sota_cleaner._inpaint_outside_zero_bleed(
@@ -2663,7 +3029,7 @@ class BubbleCleaner:
                 p15 = float(np.percentile(ring_gray, 15))
                 p50 = float(np.percentile(ring_gray, 50))
                 ring_std = float(np.std(ring_gray))
-                if p15 >= 232.0 and p50 >= 242.0 and ring_std <= 16.0:
+                if p15 >= 240.0 and p50 >= 248.0 and ring_std <= 2.2:
                     bright_pixels = ring_pixels[ring_gray >= p15]
                     if len(bright_pixels) >= 8:
                         fill_color = np.median(bright_pixels, axis=0).round().astype(np.uint8)
@@ -2672,6 +3038,15 @@ class BubbleCleaner:
                         out = crop_rgb_np.copy()
                         out[crop_mask_np > 0] = fill_color
                         return out
+                elif ring_std <= 8.5 and self.lama_model is None:
+                    het_res = classify_and_clean_heterogeneous_bubble(
+                        roi_img=crop_rgb_np,
+                        raw_stroke_mask=crop_mask_np,
+                        protected_wall_mask=np.zeros_like(crop_mask_np),
+                        lama_runner=None,
+                        scale_f=1.0,
+                    )
+                    return het_res["cleaned_roi"]
 
         if self.lama_model is not None:
             try:
@@ -2883,7 +3258,7 @@ class BubbleCleaner:
                     bool(is_free_text),
                     int(mdil),
                     int(self.dilate_size),
-                    "v4.0-sota",
+                    "v4.1-sota-topo",
                 )
                 with self._cache_lock:
                     cached_crop_pair = self._block_crop_cache.get(block_crop_key)

@@ -1,5 +1,5 @@
 """
-Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Miko-chan Manga Studio v4.0 SOTA Deep Research Edition).
+Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Miko-chan Manga Studio v4.1 SOTA Deep Research Edition).
 
 Архитектура обновления v4.0 (на основе отчёта Deep Research + полная обратная совместимость с v3.5–v3.7):
 1. Двухуровневая матрица профессиональных сканлейт-шрифтов (RU / EN):
@@ -29,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import logging
 import math
+import time
 import re
 from pathlib import Path
 from typing import Any, List, Optional, Tuple
@@ -435,6 +436,75 @@ def _apply_crossbar_i_rule(text: str) -> str:
         return word.replace("I", "i")
 
     return re.sub(r"[A-Za-z'’\.]+", _repl, text.upper())
+
+
+
+
+def render_adaptive_sdf_comic_halo(
+    cleaned_roi: np.ndarray,
+    txt_alpha: np.ndarray,
+    interior_mask: np.ndarray,
+    wall_mask: np.ndarray,
+    text_color: tuple[int, int, int] | int = 15,
+    scale_f: float = 1.0,
+) -> dict[str, np.ndarray | bool | float]:
+    """
+    Проблема №5б: Умная адаптивная обводка при тайпсеттинге (renderer.py):
+    - Автоматически определяет попиксельный контакт глифов со стенкой, скринтоном или внешним фоном.
+    - Выключает обводку (stroke_width = 0) внутри чистого белого баббла.
+    - Генерирует двухслойный SDF-ореол (жесткий контур + мягкое свечение) под локальный цвет светлой подложки.
+    """
+    t0 = time.perf_counter()
+    is_color = cleaned_roi.ndim == 3
+    s = max(0.5, float(scale_f))
+
+    gray_bg = cv2.cvtColor(cleaned_roi, cv2.COLOR_RGB2GRAY) if is_color else cleaned_roi
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    glyph_foot = cv2.dilate((txt_alpha > 16).astype(np.uint8) * 255, k3, iterations=1)
+
+    under_pixels = gray_bg[glyph_foot > 0]
+    p10_bg = float(np.percentile(under_pixels, 10)) if len(under_pixels) > 0 else 255.0
+    sigma_bg = float(np.std(under_pixels)) if len(under_pixels) > 0 else 0.0
+
+    wall_overlap = bool(np.any((glyph_foot > 0) & (wall_mask > 0)))
+    outside_overlap = bool(np.any((glyph_foot > 0) & (interior_mask == 0)))
+    need_halo = (p10_bg < 235.0) or (sigma_bg > 3.0) or wall_overlap or outside_overlap
+
+    comp = cleaned_roi.astype(np.float32)
+    if need_halo:
+        r_stroke = 3.0 * s
+        inside_pixels = cleaned_roi[interior_mask > 0]
+        if len(inside_pixels) > 0:
+            halo_color = np.percentile(inside_pixels, 85, axis=0).astype(np.float32)
+        else:
+            halo_color = np.float32(252.0)
+
+        dist_out = cv2.distanceTransform((txt_alpha < 128).astype(np.uint8), cv2.DIST_L2, 3)
+        stroke_alpha = np.clip(r_stroke + 0.5 - dist_out, 0.0, 1.0)
+        glow_alpha = 0.25 * np.clip(r_stroke + 2.0 * s - dist_out, 0.0, 1.0)
+        total_halo_alpha = np.maximum(stroke_alpha, glow_alpha)
+
+        if is_color:
+            total_halo_alpha = total_halo_alpha[:, :, None]
+        comp = comp * (1.0 - total_halo_alpha) + halo_color * total_halo_alpha
+
+    glyph_a = (txt_alpha.astype(np.float32)) / 255.0
+    if is_color:
+        glyph_a = glyph_a[:, :, None]
+        t_col = np.array(text_color, dtype=np.float32).reshape(1, 1, -1)
+    else:
+        t_col = float(text_color[0] if isinstance(text_color, tuple) else text_color)
+
+    comp = comp * (1.0 - glyph_a) + t_col * glyph_a
+    rendered = np.clip(comp, 0, 255).astype(np.uint8)
+
+    return {
+        "rendered_roi": rendered,
+        "halo_applied": need_halo,
+        "p10_bg": p10_bg,
+        "sigma_bg": sigma_bg,
+        "elapsed_ms": (time.perf_counter() - t0) * 1000.0,
+    }
 
 
 class SotaShapeAwareRenderer:
@@ -2954,9 +3024,36 @@ class MangaRenderer:
             it["is_overflowing_box"] = bool(is_ovf)
             it["block"]["is_overflowing"] = bool(is_ovf)
 
-            if is_ovf and it["eff_stroke_override"] is None:
-                sw_val = max(sw_val, 4 if it["block_overflow_mode"] == "overflow" else 3)
-                it["stroke_w"] = sw_val
+            if it["eff_stroke_override"] is None and not it["is_free_text"] and it["bg_style"] == "none":
+                # Проблема №5б: Попиксельный Contact Detector для выбора stroke_width = 0 внутри чистого белого баббла
+                # либо включения адаптивного двухслойного SDF-ореола при контакте со стенкой/скринтоном/выступом
+                geom_chk = it.get("geom") or {}
+                if bool(geom_chk.get("is_closed_bubble", False)) and not is_ovf:
+                    cx_i, cy_i = int(round(float(it["opt_cx"]))), int(round(float(it["opt_cy"])))
+                    bx1_g = max(0, cx_i - max(8, p_tw // 2))
+                    by1_g = max(0, cy_i - max(8, p_th // 2))
+                    bx2_g = min(img_w, cx_i + max(8, p_tw // 2))
+                    by2_g = min(img_h, cy_i + max(8, p_th // 2))
+                    sub_bg = img_np[by1_g:by2_g, bx1_g:bx2_g]
+                    if sub_bg.size > 0:
+                        sub_g = cv2.cvtColor(sub_bg, cv2.COLOR_RGB2GRAY) if sub_bg.ndim == 3 else sub_bg
+                        p10_v = float(np.percentile(sub_g, 10))
+                        std_v = float(np.std(sub_g))
+                        if p10_v >= 235.0 and std_v <= 3.0 and it["style_preset"] in ("dialogue", "thought", "whisper"):
+                            sw_val = 0
+                            it["stroke_w"] = 0
+                            it["use_sdf_halo"] = False
+                        else:
+                            it["use_sdf_halo"] = True
+                    else:
+                        it["use_sdf_halo"] = False
+                else:
+                    it["use_sdf_halo"] = True
+                    if is_ovf:
+                        sw_val = max(sw_val, 4 if it["block_overflow_mode"] == "overflow" else 3)
+                        it["stroke_w"] = sw_val
+            else:
+                it["use_sdf_halo"] = bool(is_ovf and it["eff_stroke_override"] is None)
 
             needs_rich = self._needs_special_rendering(f_obj, w_txt)
             if needs_rich:
@@ -3454,6 +3551,44 @@ class MangaRenderer:
                     if tx2 > tx1 + 2 and ty2 > ty1 + 2:
                         rad = max(4, min(16, min(tx2 - tx1, ty2 - ty1) // 4))
                         draw.rounded_rectangle([tx1, ty1, tx2, ty2], radius=rad, fill=bg_fill)
+
+                if item.get("use_sdf_halo") and bg_style == "none" and item.get("eff_stroke_override") is None:
+                    pad_sdf = max(10, int(round(chosen_fs * 0.45)))
+                    px1 = max(0, int(round(draw_x + t_bbox[0])) - pad_sdf)
+                    py1 = max(0, int(round(draw_y + t_bbox[1])) - pad_sdf)
+                    px2 = min(img_w, int(round(draw_x + t_bbox[2])) + pad_sdf)
+                    py2 = min(img_h, int(round(draw_y + t_bbox[3])) + pad_sdf)
+                    pw_s, ph_s = px2 - px1, py2 - py1
+                    if pw_s >= 12 and ph_s >= 12:
+                        alpha_im = Image.new("L", (pw_s, ph_s), 0)
+                        alpha_draw = ImageDraw.Draw(alpha_im)
+                        self._draw_multiline_text_clean(
+                            alpha_draw,
+                            (draw_x - px1, draw_y - py1),
+                            wrapped_text,
+                            font=font,
+                            fill=255,
+                            spacing=dyn_spacing,
+                            align=align,
+                            stroke_width=0,
+                            stroke_fill=None,
+                        )
+                        txt_a_np = np.array(alpha_im, dtype=np.uint8)
+                        sub_canvas_np = np.array(canvas.crop((px1, py1, px2, py2)), dtype=np.uint8)
+                        sub_gray = cv2.cvtColor(sub_canvas_np, cv2.COLOR_RGB2GRAY)
+                        int_m = (sub_gray >= 220).astype(np.uint8) * 255
+                        wall_m = (sub_gray < 90).astype(np.uint8) * 255
+                        sdf_res = render_adaptive_sdf_comic_halo(
+                            cleaned_roi=sub_canvas_np,
+                            txt_alpha=txt_a_np,
+                            interior_mask=int_m,
+                            wall_mask=wall_m,
+                            text_color=text_fill,
+                            scale_f=max(0.8, min(2.0, chosen_fs / 18.0)),
+                        )
+                        canvas.paste(Image.fromarray(sdf_res["rendered_roi"], mode="RGB"), (px1, py1))
+                        draw = ImageDraw.Draw(canvas)
+                        continue
 
                 self._draw_multiline_text_clean(
                     draw,
