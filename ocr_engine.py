@@ -2526,6 +2526,346 @@ class MangaOCREngine:
 
         return line_crops if len(line_crops) >= 2 else [(0, h, proc_np)]
 
+    @classmethod
+    def _is_text_on_clean_white_cavity(
+        cls,
+        crop_rgb: np.ndarray,
+        min_glyphs: int = 3,
+    ) -> bool:
+        """
+        Проверяет, лежат ли темные штрихи текста внутри чистой белой/светлой полости
+        (экран телефона, монитор, записка, табличка или облачко без стандартной овальной рамки),
+        даже если внешние углы прямоугольного бокса захватывают темный корпус телефона или рамку фрейма.
+        """
+        if crop_rgb is None or crop_rgb.size == 0:
+            return False
+        rh, rw = crop_rgb.shape[:2]
+        if rh < 14 or rw < 14:
+            return False
+        gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY) if crop_rgb.ndim == 3 else crop_rgb
+        if float(np.percentile(gray, 80)) < 222.0:
+            return False
+
+        _, bw_inv = cv2.threshold(gray, 185, 255, cv2.THRESH_BINARY_INV)
+        n_cc, labels, stats, _ = cv2.connectedComponentsWithStats(bw_inv, connectivity=8)
+        if n_cc <= 1:
+            return False
+
+        wall_mask = np.zeros_like(bw_inv)
+        glyph_mask = np.zeros_like(bw_inv)
+        max_char_dim = max(20, min(48, int(min(rw, rh) * 0.32)))
+        valid_glyphs = 0
+
+        for i in range(1, n_cc):
+            cx, cy, cw, ch, area = stats[i]
+            if cw > rw * 0.34 or ch > rh * 0.34 or area > (rw * rh * 0.045):
+                wall_mask[labels == i] = 255
+                continue
+            if 3 <= area <= (rw * rh * 0.04) and 1 <= cw <= max_char_dim and 1 <= ch <= max_char_dim:
+                aspect = max(cw, ch) / max(1.0, float(min(cw, ch)))
+                if aspect > 7.0 and area > 28:
+                    continue
+                pad = 4
+                sub_g = gray[max(0, cy - pad) : min(rh, cy + ch + pad), max(0, cx - pad) : min(rw, cx + cw + pad)]
+                sub_w = wall_mask[max(0, cy - pad) : min(rh, cy + ch + pad), max(0, cx - pad) : min(rw, cx + cw + pad)]
+                valid_bg = sub_g[sub_w == 0]
+                if valid_bg.size > 0 and float(np.percentile(valid_bg, 80)) >= 225.0:
+                    white_px = valid_bg[valid_bg >= 215]
+                    if white_px.size >= valid_bg.size * 0.30 and float(np.std(white_px)) <= 15.5:
+                        glyph_mask[labels == i] = 255
+                        valid_glyphs += 1
+
+        if valid_glyphs < min_glyphs:
+            return False
+
+        # Проверяем локальный фон непосредственно вокруг найденных глифов (кольцо радиусом 6px без черных стенок)
+        dil_g = cv2.dilate(glyph_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (13, 13)), iterations=1)
+        local_ring = (dil_g > 0) & (bw_inv == 0) & (wall_mask == 0)
+        ring_px = gray[local_ring]
+        if ring_px.size < 16:
+            return False
+        white_ring_ratio = float(np.mean(ring_px >= 218))
+        ring_median = float(np.median(ring_px))
+        ring_white_vals = ring_px[ring_px >= 210]
+        ring_std = float(np.std(ring_white_vals)) if ring_white_vals.size >= 8 else 99.0
+
+        return bool(white_ring_ratio >= 0.56 and ring_median >= 226.0 and ring_std <= 16.5)
+
+    @classmethod
+    def _extract_tilted_or_multiline_horizontal_crops(
+        cls,
+        crop_rgb_np: np.ndarray,
+    ) -> tuple[float, list[Image.Image], Image.Image | None]:
+        """
+        Автоматическое выпрямление (Deskew) и построчная сегментация наклонных текстов на экранах телефонов,
+        мониторах, записках, табличках и многострочных горизонтальных блоков (`yokogaki`):
+        1. Срезает синтетические белые поля `_crop_with_padding` (`>= 254`), выделяет главную белую полость
+           экрана/баббла (`screen_cavity`) и отсоединяет прямые внешние линии рамок панелей, сохраняя
+           краевые иероглифы (`紅`, `事`, `談`, `助`), касающиеся границ экрана.
+        2. Ищет угол наклона строк `best_deg` в диапазоне `[-54°, +54°]` методом максимизации дисперсии
+           горизонтальной проекции глифов и доли межстрочных просветов.
+        3. Никогда не вращает вертикальные японские бабблы (`tategaki`, где `v0_var > h0_var * 1.8`).
+        4. Если блок наклонен (`|best_deg| >= 5.5°`) ИЛИ содержит `>= 3` горизонтальных строк (`>= 10` глифов):
+           очищает черные рамки корпуса телефона вокруг букв, поворачивает текст в строго горизонтальное
+           положение, нарезает на отдельные строки (разрезая слипшиеся двойные полосы по локальному минимуму
+           и присоединяя короткие 1-2 символьные переносы вроде «だ。» / «ない。» к предыдущей строке).
+        Возвращает `(best_deg, line_pils, deskewed_full_pil)`.
+        """
+        if crop_rgb_np is None or crop_rgb_np.size == 0:
+            return 0.0, [], None
+        h_in, w_in = crop_rgb_np.shape[:2]
+        if h_in < 28 or w_in < 28:
+            return 0.0, [], None
+
+        gray_in = cv2.cvtColor(crop_rgb_np, cv2.COLOR_RGB2GRAY) if crop_rgb_np.ndim == 3 else crop_rgb_np
+        # 1. Срезаем искусственную белую кайму от ImageOps.expand (pad=8..12), чтобы она не закорачивала белые области вокруг рамок телефона
+        ty1, ty2, tx1, tx2 = 0, h_in, 0, w_in
+        max_trim_y = min(18, h_in // 4)
+        max_trim_x = min(18, w_in // 4)
+        while ty1 < max_trim_y and bool(np.all(gray_in[ty1, :] >= 254)):
+            ty1 += 1
+        while ty2 > (h_in - max_trim_y) and bool(np.all(gray_in[ty2 - 1, :] >= 254)):
+            ty2 -= 1
+        while tx1 < max_trim_x and bool(np.all(gray_in[:, tx1] >= 254)):
+            tx1 += 1
+        while tx2 > (w_in - max_trim_x) and bool(np.all(gray_in[:, tx2 - 1] >= 254)):
+            tx2 -= 1
+
+        work_rgb = crop_rgb_np[ty1:ty2, tx1:tx2]
+        rh, rw = work_rgb.shape[:2]
+        if rh < 24 or rw < 24:
+            return 0.0, [], None
+
+        roi_gray = cv2.cvtColor(work_rgb, cv2.COLOR_RGB2GRAY) if work_rgb.ndim == 3 else work_rgb
+        if float(np.percentile(roi_gray, 75)) < 205.0:
+            return 0.0, [], None
+
+        _, bw_inv = cv2.threshold(roi_gray, 185, 255, cv2.THRESH_BINARY_INV)
+
+        # 2. Выделяем главную белую полость экрана/контейнера с закрытием краевых вмятин от букв
+        white_bin = (roi_gray >= 210).astype(np.uint8) * 255
+        nw, w_lbl, w_stats, _ = cv2.connectedComponentsWithStats(white_bin, connectivity=4)
+        if nw <= 1:
+            return 0.0, [], None
+        best_wid = max(range(1, nw), key=lambda wid: int(w_stats[wid, cv2.CC_STAT_AREA]))
+        if int(w_stats[best_wid, cv2.CC_STAT_AREA]) < int(rw * rh * 0.18):
+            return 0.0, [], None
+
+        main_white = ((w_lbl == best_wid) * 255).astype(np.uint8)
+        k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (19, 19))
+        pad_d = 20
+        padded_w = cv2.copyMakeBorder(main_white, pad_d, pad_d, pad_d, pad_d, cv2.BORDER_CONSTANT, value=0)
+        closed_w = cv2.morphologyEx(padded_w, cv2.MORPH_CLOSE, k_close)[pad_d : pad_d + rh, pad_d : pad_d + rw]
+        cnts, _ = cv2.findContours(closed_w, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        screen_cavity = np.zeros_like(main_white)
+        cv2.drawContours(screen_cavity, cnts, -1, 255, -1)
+
+        # 3. Отсоединяем прямые внешние рамки фреймов в 10-пиксельной краевой полосе
+        k_hline = cv2.getStructuringElement(cv2.MORPH_RECT, (max(28, rw // 3), 1))
+        k_vline = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(28, rh // 3)))
+        h_lines = cv2.morphologyEx(bw_inv, cv2.MORPH_OPEN, k_hline)
+        v_lines = cv2.morphologyEx(bw_inv, cv2.MORPH_OPEN, k_vline)
+        border_band = np.zeros_like(bw_inv)
+        b_margin = 10
+        border_band[:b_margin, :] = 255
+        border_band[max(0, rh - b_margin) :, :] = 255
+        border_band[:, :b_margin] = 255
+        border_band[:, max(0, rw - b_margin) :] = 255
+        edge_frame = cv2.bitwise_and(cv2.bitwise_or(h_lines, v_lines), border_band)
+        sever_mask = cv2.dilate(edge_frame, np.ones((3, 3), np.uint8), iterations=1)
+
+        severed_bw = cv2.bitwise_and(bw_inv, cv2.bitwise_and(screen_cavity, cv2.bitwise_not(sever_mask)))
+        n_cc, labels, stats, _ = cv2.connectedComponentsWithStats(severed_bw, connectivity=8)
+
+        wall_mask = sever_mask.copy()
+        char_candidates = np.zeros_like(bw_inv)
+        max_char_dim = max(20, min(46, int(min(rw, rh) * 0.26)))
+        for i in range(1, n_cc):
+            cx, cy, cw, ch, area = stats[i]
+            if cw > rw * 0.28 or ch > rh * 0.28 or area > (rw * rh * 0.035):
+                wall_mask[labels == i] = 255
+                continue
+            if 3 <= area <= (rw * rh * 0.03) and 1 <= cw <= max_char_dim and 1 <= ch <= max_char_dim:
+                aspect = max(cw, ch) / max(1.0, float(min(cw, ch)))
+                if aspect > 6.5 and area > 25:
+                    continue
+                pad = 4
+                sub_g = roi_gray[max(0, cy - pad) : min(rh, cy + ch + pad), max(0, cx - pad) : min(rw, cx + cw + pad)]
+                sub_w = wall_mask[max(0, cy - pad) : min(rh, cy + ch + pad), max(0, cx - pad) : min(rw, cx + cw + pad)]
+                valid_bg = sub_g[sub_w == 0]
+                if valid_bg.size > 0 and float(np.percentile(valid_bg, 80)) >= 225.0:
+                    char_candidates[labels == i] = 255
+
+        k_cluster = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (23, 23))
+        clustered = cv2.dilate(char_candidates, k_cluster, iterations=1)
+        nc, c_lbl, _, _ = cv2.connectedComponentsWithStats(clustered, connectivity=8)
+        glyph_mask = np.zeros_like(bw_inv)
+        best_ink = 0
+        c_infos: list[tuple[int, int, int]] = []
+        for cid in range(1, nc):
+            sub_c = (c_lbl == cid) & (char_candidates > 0)
+            ink_px = int(np.count_nonzero(sub_c))
+            comp_cnt = len([c for c in np.unique(labels[sub_c]) if c > 0])
+            c_infos.append((cid, ink_px, comp_cnt))
+            if ink_px > best_ink:
+                best_ink = ink_px
+
+        total_kept_comps = 0
+        for cid, ink_px, comp_cnt in c_infos:
+            if comp_cnt >= 4 or (ink_px >= best_ink * 0.35 and comp_cnt >= 3):
+                glyph_mask[(c_lbl == cid) & (char_candidates > 0)] = 255
+                total_kept_comps += comp_cnt
+
+        ys, xs = np.where(glyph_mask > 0)
+        if xs.size < 35 or total_kept_comps < 6:
+            return 0.0, [], None
+
+        # Подвыборка точек для сверхбыстрого поиска угла (< 0.8 мс)
+        if xs.size > 1400:
+            step = max(2, xs.size // 1200)
+            pts_x = xs[::step].astype(np.float32) - rw / 2.0
+            pts_y = ys[::step].astype(np.float32) - rh / 2.0
+        else:
+            pts_x = xs.astype(np.float32) - rw / 2.0
+            pts_y = ys.astype(np.float32) - rh / 2.0
+
+        def _score_angle(deg: float) -> tuple[float, float, float, int]:
+            rad = np.deg2rad(deg)
+            y_rot = -pts_x * np.sin(rad) + pts_y * np.cos(rad)
+            span = max(10.0, float(np.max(y_rot) - np.min(y_rot)))
+            bins = max(10, int(round(span)))
+            hist, _ = np.histogram(y_rot, bins=bins)
+            norm_h = hist.astype(np.float32) / max(1.0, float(len(y_rot)))
+            var_val = float(np.var(norm_h)) * 10000.0
+            zero_frac = float(np.mean(hist <= 1))
+            in_b, nb, s = False, 0, 0
+            for idx_b, v in enumerate(hist >= 2):
+                if v and not in_b:
+                    in_b, s = True, idx_b
+                elif not v and in_b:
+                    in_b = False
+                    if idx_b - s >= 5:
+                        nb += 1
+            if in_b and bins - s >= 5:
+                nb += 1
+            return var_val + zero_frac * 0.35 + nb * 0.025, var_val, zero_frac, nb
+
+        x_span = max(10.0, float(np.max(pts_x) - np.min(pts_x)))
+        x_bins = max(10, int(round(x_span)))
+        x_hist, _ = np.histogram(pts_x, bins=x_bins)
+        v0_var = float(np.var(x_hist.astype(np.float32) / max(1.0, float(len(pts_x))))) * 10000.0
+        h0_sc, h0_var, _, h0_nb = _score_angle(0.0)
+
+        # Защита вертикальных японских бабблов (tategaki): если вертикальные колонки выражены сильнее строк, не вращаем!
+        if v0_var > h0_var * 1.65 and v0_var >= 1.25:
+            return 0.0, [], None
+
+        best_deg = 0.0
+        best_sc = h0_sc
+        best_var = h0_var
+        best_nb = h0_nb
+        for deg in np.linspace(-54.0, 54.0, 55):
+            sc, vv, _, nb = _score_angle(float(deg))
+            if sc > best_sc:
+                best_sc, best_var, best_deg, best_nb = sc, vv, float(deg), nb
+
+        for deg in np.linspace(best_deg - 2.0, best_deg + 2.0, 9):
+            sc, vv, _, nb = _score_angle(float(deg))
+            if sc > best_sc:
+                best_sc, best_var, best_deg, best_nb = sc, vv, float(deg), nb
+
+        is_tilted = abs(best_deg) >= 5.5 and best_var >= max(h0_var * 1.55, v0_var * 1.35) and best_nb >= 2
+        if not is_tilted:
+            best_deg = 0.0
+            best_nb = h0_nb
+            # Для ненаклоненных блоков активируем построчную нарезку только если это крупный многострочный горизонтальный блок (>= 4 строк и h0_var > v0_var * 1.25)
+            if best_nb < 4 or total_kept_comps < 18 or h0_var <= v0_var * 1.25:
+                return 0.0, [], None
+
+        dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        keep_mask = cv2.bitwise_and(
+            cv2.dilate(glyph_mask, dil_k, iterations=1),
+            cv2.bitwise_and(screen_cavity, cv2.bitwise_not(wall_mask)),
+        )
+        clean_rgb = np.full_like(work_rgb, 255)
+        clean_rgb[keep_mask > 0] = work_rgb[keep_mask > 0]
+
+        if abs(best_deg) >= 5.5:
+            rot_rgb = np.array(
+                Image.fromarray(clean_rgb).rotate(best_deg, resample=Image.BICUBIC, expand=True, fillcolor=(255, 255, 255))
+            )
+            rot_mask = np.array(
+                Image.fromarray(glyph_mask).rotate(best_deg, resample=Image.NEAREST, expand=True, fillcolor=0)
+            )
+        else:
+            rot_rgb = clean_rgb
+            rot_mask = glyph_mask
+
+        row_px = np.sum(rot_mask > 0, axis=1)
+        in_b, raw_bands, s = False, [], 0
+        for idx_r, v in enumerate(row_px >= 2):
+            if v and not in_b:
+                in_b, s = True, idx_r
+            elif not v and in_b:
+                in_b = False
+                if idx_r - s >= 6:
+                    raw_bands.append((s, idx_r))
+        if in_b and len(row_px) - s >= 6:
+            raw_bands.append((s, len(row_px)))
+
+        if not raw_bands:
+            return best_deg, [], Image.fromarray(rot_rgb)
+
+        heights = [b[1] - b[0] for b in raw_bands]
+        med_h = float(np.median(heights)) if heights else 16.0
+        bands: list[tuple[int, int]] = []
+        for by1, by2 in raw_bands:
+            bh = by2 - by1
+            if bh >= max(24, int(round(med_h * 1.65))):
+                m_pad = max(5, int(bh * 0.22))
+                if by2 - m_pad > by1 + m_pad + 2:
+                    sub_p = row_px[by1 + m_pad : by2 - m_pad]
+                    vy = by1 + m_pad + int(np.argmin(sub_p))
+                    if row_px[vy] <= max(4, int(np.max(row_px[by1:by2]) * 0.25)):
+                        bands.append((by1, vy))
+                        bands.append((vy, by2))
+                        continue
+            bands.append((by1, by2))
+
+        line_boxes: list[list[int]] = []
+        for by1, by2 in bands:
+            cols = np.where(np.any(rot_mask[by1:by2, :] > 0, axis=0))[0]
+            if cols.size < 4:
+                continue
+            bx1, bx2 = int(cols[0]), int(cols[-1]) + 1
+            if (bx2 - bx1) < 10:
+                continue
+            line_boxes.append([bx1, by1, bx2, by2])
+
+        if not line_boxes:
+            return best_deg, [], Image.fromarray(rot_rgb)
+
+        # Присоединяем сверхкороткие строки-переносы (ширина < 55px, например «だ。», «ない。») к предыдущей строке
+        merged_boxes: list[list[int]] = []
+        for lb in line_boxes:
+            lw_i = lb[2] - lb[0]
+            if merged_boxes and lw_i < 55 and (lb[1] - merged_boxes[-1][3]) <= 12:
+                prev = merged_boxes[-1]
+                merged_boxes[-1] = [min(prev[0], lb[0]), prev[1], max(prev[2], lb[2]), lb[3]]
+            else:
+                merged_boxes.append(lb)
+
+        rh_r, rw_r = rot_rgb.shape[:2]
+        out_pils: list[Image.Image] = []
+        for bx1, by1, bx2, by2 in merged_boxes:
+            cy1, cy2 = max(0, by1 - 3), min(rh_r, by2 + 3)
+            cx1, cx2 = max(0, bx1 - 6), min(rw_r, bx2 + 6)
+            sub_l = rot_rgb[cy1:cy2, cx1:cx2]
+            padded_l = cv2.copyMakeBorder(sub_l, 8, 8, 10, 10, cv2.BORDER_CONSTANT, value=(255, 255, 255))
+            out_pils.append(Image.fromarray(padded_l))
+
+        return best_deg, out_pils, Image.fromarray(rot_rgb)
+
     @staticmethod
     def _sort_ocr_line_items_top_to_bottom(
         items: list[tuple[float, float, float, str, float]],
@@ -2651,9 +2991,32 @@ class MangaOCREngine:
 
         close_d = max(15, min(27, int(round(min(rw, rh) * 0.26)) | 1))
         k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_d, close_d))
-        padded = cv2.copyMakeBorder(interior, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
-        closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
-        closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
+        ys_i, xs_i = np.where(interior > 0)
+        if xs_i.size >= 16:
+            iy1_b, iy2_b = int(np.min(ys_i)), int(np.max(ys_i)) + 1
+            ix1_b, ix2_b = int(np.min(xs_i)), int(np.max(xs_i)) + 1
+            sub_int = interior[iy1_b:iy2_b, ix1_b:ix2_b]
+            sh_i, sw_i = sub_int.shape[:2]
+            top_flat = float(np.mean(sub_int[0, :] > 0)) >= 0.22
+            bot_flat = float(np.mean(sub_int[sh_i - 1, :] > 0)) >= 0.22
+            left_flat = float(np.mean(sub_int[:, 0] > 0)) >= 0.22
+            right_flat = float(np.mean(sub_int[:, sw_i - 1] > 0)) >= 0.22
+            padded = cv2.copyMakeBorder(sub_int, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
+            if top_flat:
+                padded[:close_d, close_d : close_d + sw_i] = sub_int[0:1, :]
+            if bot_flat:
+                padded[close_d + sh_i :, close_d : close_d + sw_i] = sub_int[sh_i - 1 : sh_i, :]
+            if left_flat:
+                padded[close_d : close_d + sh_i, :close_d] = sub_int[:, 0:1]
+            if right_flat:
+                padded[close_d : close_d + sh_i, close_d + sw_i :] = sub_int[:, sw_i - 1 : sw_i]
+            closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
+            closed_int = np.zeros_like(interior)
+            closed_int[iy1_b:iy2_b, ix1_b:ix2_b] = closed_pad[close_d : close_d + sh_i, close_d : close_d + sw_i]
+        else:
+            padded = cv2.copyMakeBorder(interior, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
+            closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
+            closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
 
         inv2 = cv2.bitwise_not(closed_int)
         n_inv2, lbl_inv2, st_inv2, _ = cv2.connectedComponentsWithStats(inv2, connectivity=8)
@@ -3374,6 +3737,26 @@ class MangaOCREngine:
         target_regex = HANGUL_REGEX if lang == "ko" else HANZI_REGEX
         padded_np = np.array(padded_crop_pil)
         min_conf = 0.28 if is_free_text else 0.14
+
+        # Если блок на экране телефона или табличке наклонен под углом (|deg| >= 5.5°), выпрямляем и читаем построчно!
+        try:
+            deg_kz, line_pils_kz, deskew_kz = self._extract_tilted_or_multiline_horizontal_crops(raw_crop_np)
+            if abs(deg_kz) >= 5.5 and line_pils_kz:
+                if self.use_hayai_ocr and self._hayai_available is not False:
+                    kz_outs = self._recognize_crops_batch_hayai(line_pils_kz, max_num_patches=256, lang=lang)
+                    valid_kz = [t.strip() for t in kz_outs if t and t.strip()]
+                    if valid_kz:
+                        sep_kz = " " if lang == "ko" else ""
+                        joined_kz = self._normalize_hayai_ocr_text(sep_kz.join(valid_kz), lang=lang)
+                        if len(target_regex.findall(joined_kz)) >= 1:
+                            return joined_kz
+                if deskew_kz is not None:
+                    padded_crop_pil = deskew_kz
+                    padded_np = np.array(deskew_kz)
+                    raw_crop_np = padded_np
+                    precomputed_hayai_text = None
+        except Exception:
+            pass
 
         hayai_text = precomputed_hayai_text
         if hayai_text is None and self.use_hayai_ocr and self._hayai_available is not False:
@@ -4212,13 +4595,36 @@ class MangaOCREngine:
                     )
                     final_detections.append(b_copy)
 
-        # Обрабатываем «сиротские» `text_bubble` (облачка без рамок, мысленные облачка или плашки, пропущенные YOLOv8m)
+        # Предварительно объединяем «сиротские» `text_bubble`, лежащие в одной белой полости (например, несколько строк/абзацев на экране телефона)
+        if len(orphan_tbs) >= 2:
+            try:
+                cav_groups, _ = group_text_boxes_by_bubble_cavity(img_np, orphan_tbs)
+                if cav_groups and len(cav_groups) < len(orphan_tbs):
+                    grouped_orphans: list[dict[str, Any]] = []
+                    for cg in cav_groups:
+                        subs = cg.get("sub_boxes") or []
+                        if len(subs) == 1:
+                            grouped_orphans.append(subs[0])
+                        elif len(subs) >= 2:
+                            gx1, gy1, gx2, gy2 = cg["bbox"]
+                            # Проверяем, что объединенный бокс действительно лежит на светлом фоне экрана/облачка
+                            if self._is_text_on_clean_white_cavity(img_np[gy1:gy2, gx1:gx2], min_glyphs=4):
+                                grouped_orphans.append(
+                                    {
+                                        "bbox": [int(gx1), int(gy1), int(gx2), int(gy2)],
+                                        "confidence": max(float(s.get("confidence", 0.45)) for s in subs),
+                                        "is_free_text": False,
+                                    }
+                                )
+                            else:
+                                grouped_orphans.extend(subs)
+                    orphan_tbs = grouped_orphans
+            except Exception:
+                pass
+
+        # Обрабатываем «сиротские» `text_bubble` (облачка без рамок, экраны телефонов, таблички, мысленные облачка, пропущенные YOLOv8m)
         for otb in orphan_tbs:
             otb_conf = float(otb.get("confidence", 0.0))
-            # Если ни YOLOv8m, ни RT-DETR class 0 не увидели вокруг баббла, требуем высокую уверенность текстового бокса
-            if otb_conf < 0.42:
-                continue
-
             tx1, ty1, tx2, ty2 = otb["bbox"]
             tw = tx2 - tx1
             th = ty2 - ty1
@@ -4226,8 +4632,13 @@ class MangaOCREngine:
                 continue
 
             crop_rgb = img_np[ty1:ty2, tx1:tx2]
+            is_white_cavity_screen = self._is_text_on_clean_white_cavity(crop_rgb, min_glyphs=4)
+            # Если ни YOLOv8m, ни RT-DETR class 0 не увидели вокруг баббла, требуем уверенность >= 0.42 (или >= 0.28 для четкого текста на белом экране/плашке)
+            if otb_conf < (0.28 if is_white_cavity_screen else 0.42):
+                continue
+
             has_ink, _ = self._has_meaningful_ink(crop_rgb, is_free_text=False)
-            if not has_ink or not self._has_real_text_glyph_structure(crop_rgb, is_free_text=True):
+            if not has_ink or not self._has_real_text_glyph_structure(crop_rgb, is_free_text=not is_white_cavity_screen):
                 continue
 
             # Расширяем `text_bubble` на 8% (4..14 px), чтобы получить комфортный `bbox` для верстки перевода
@@ -4255,7 +4666,7 @@ class MangaOCREngine:
             if overlaps_existing:
                 continue
 
-            # Строгая проверка: действительно ли сиротский text_bubble находится внутри однородного светлого облачка,
+            # Строгая проверка: действительно ли сиротский text_bubble находится внутри однородного светлого облачка / экрана телефона,
             # а не на фоне рисунка/штриховки/одежды, где просто есть 25% белых пикселей!
             exp_crop = img_np[ey1:ey2, ex1:ex2]
             exp_gray = cv2.cvtColor(exp_crop, cv2.COLOR_RGB2GRAY) if exp_crop.ndim == 3 else exp_crop
@@ -4270,11 +4681,11 @@ class MangaOCREngine:
             perimeter_median = float(np.median(perimeter_px)) if perimeter_px.size > 0 else 0.0
             perimeter_white_ratio = float(np.mean(perimeter_px >= 224)) if perimeter_px.size > 0 else 0.0
 
-            is_clean_bubble_bg = (
+            is_clean_bubble_bg = is_white_cavity_screen or (
                 white_pixel_ratio >= 0.58
-                and bg_std <= 11.5
-                and perimeter_median >= 230.0
-                and perimeter_white_ratio >= 0.62
+                and bg_std <= 14.5
+                and perimeter_median >= 228.0
+                and perimeter_white_ratio >= 0.54
             )
             is_free_orphan = not is_clean_bubble_bg
 
@@ -4386,6 +4797,24 @@ class MangaOCREngine:
                     if rt_free:
                         rtdetr_free_texts.extend(rt_free)
 
+        # Если RT-DETR-v2 пометил текст внутри белого экрана телефона / таблички / записки как `2: text_free`,
+        # но штрихи букв лежат внутри чистой белой полости (`_is_text_on_clean_white_cavity`),
+        # переводим такой бокс в `rtdetr_text_bubbles`, чтобы он переводился даже в профиле `bubbles_only`!
+        if rtdetr_free_texts:
+            for rf in rtdetr_free_texts:
+                rx1, ry1, rx2, ry2 = rf["bbox"]
+                if (rx2 - rx1) >= min_box_size and (ry2 - ry1) >= min_box_size:
+                    rf_crop = img_np[ry1:ry2, rx1:rx2]
+                    if self._is_text_on_clean_white_cavity(rf_crop, min_glyphs=4):
+                        rtdetr_text_bubbles.append(
+                            {
+                                "bbox": [rx1, ry1, rx2, ry2],
+                                "confidence": max(0.45, float(rf.get("confidence", 0.45))),
+                                "is_free_text": False,
+                                "_source": "rtdetr_free_on_white_cavity",
+                            }
+                        )
+
         self._last_rtdetr_free_boxes = rtdetr_free_texts
         self.last_detection_stats.update(
             {
@@ -4402,8 +4831,6 @@ class MangaOCREngine:
 
         # 3. Резервный контурный поиск OpenCV запускаем ТОЛЬКО если двухконтурный RT-DETR-v2 недоступен/отключен,
         # либо если RT-DETR-v2 нашел на странице текстовые боксы (`rtdetr_text_bubbles`), пропущенные детектором контуров.
-        # Если же и YOLOv8m, и активный RT-DETR-v2 единогласно вернули 0 бабблов и 0 текстовых боксов (чистый арт/иллюстрация),
-        # не запускаем слепую контурную эвристику, чтобы не превращать блики на одежде/коже в ложные срабатывания!
         rtdetr_is_active = bool(self._rtdetr_available and self._rtdetr_model is not None)
         if not rtdetr_is_active or (len(raw_detections) == 0 and len(rtdetr_text_bubbles) > 0):
             cv_bubbles = self._detect_missed_white_bubbles(img_np, raw_detections, min_box_size=min_box_size)
@@ -4426,7 +4853,197 @@ class MangaOCREngine:
             min_box_size=min_box_size,
         )
 
+        # 5. Детекция пропущенных или частично обрезанных экранов телефонов, мониторов, писем и наклонных табличек
+        # с множеством глифов на чистой белой полости (включая наклонные экраны, касающиеся краев фрейма)
+        screen_added = self._detect_missed_screen_and_tilted_text_containers(
+            img_np,
+            raw_detections,
+            min_box_size=max(24, min_box_size),
+        )
+        if screen_added:
+            raw_detections.extend(screen_added)
+
         return raw_detections
+
+    def _detect_missed_screen_and_tilted_text_containers(
+        self,
+        img_np: np.ndarray,
+        existing_detections: list[dict[str, Any]],
+        min_box_size: int = 24,
+    ) -> list[dict[str, Any]]:
+        """
+        Находит пропущенные детекторами YOLOv8m / RT-DETR-v2 (или захваченные лишь частично)
+        текстовые блоки на белых экранах смартфонов, мониторах, письмах и наклонных плашках:
+        - Выделяет связные компоненты чернил буквенного размера (`glyph_mask`), окруженные чистым белым фоном (`p80 >= 232`, `std <= 12.5`),
+          разделенные темными стенками бабблов, рамками панелей и корпусами телефонов (`wall_mask`).
+        - Если кластер на белом экране содержит `>= 8` глифов (и проходит `pre_ocr_stroke_gate` + проверку наклонных/многострочных строк):
+          * при отсутствии пересечения с `existing_detections` (`< 25%`) — добавляет новый блок экрана;
+          * при частичном перекрытии (`25%..80%`, когда детектор обвел только часть строк экрана) — расширяет существующий блок на все строки экрана!
+        """
+        img_h, img_w = img_np.shape[:2]
+        page_area = max(1, img_h * img_w)
+        gray = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if img_np.ndim == 3 else img_np
+
+        _, bw_inv = cv2.threshold(gray, 180, 255, cv2.THRESH_BINARY_INV)
+        # Отсоединяем прямые линии рамок фреймов (панелей), чтобы краевые иероглифы на экранах телефонов (紅, 談, 事, 助) не поглощались рамкой
+        k_hl = cv2.getStructuringElement(cv2.MORPH_RECT, (max(45, img_w // 6), 1))
+        k_vl = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(45, img_h // 6)))
+        panel_lines = cv2.bitwise_or(
+            cv2.morphologyEx(bw_inv, cv2.MORPH_OPEN, k_hl),
+            cv2.morphologyEx(bw_inv, cv2.MORPH_OPEN, k_vl),
+        )
+        sever_panel = cv2.dilate(panel_lines, np.ones((3, 3), np.uint8), iterations=1)
+        bw_severed = cv2.bitwise_and(bw_inv, cv2.bitwise_not(sever_panel))
+
+        n_cc, labels, stats, _ = cv2.connectedComponentsWithStats(bw_severed, connectivity=8)
+        if n_cc <= 4:
+            return []
+
+        glyph_mask = np.zeros_like(bw_inv)
+        wall_mask = sever_panel.copy()
+        max_gw = max(24, min(64, int(img_w * 0.14)))
+        max_gh = max(24, min(64, int(img_h * 0.14)))
+
+        for i in range(1, n_cc):
+            x, y, cw, ch, area = [int(v) for v in stats[i]]
+            if cw > img_w * 0.18 or ch > img_h * 0.18 or area > int(page_area * 0.015):
+                wall_mask[labels == i] = 255
+                continue
+            if area < 4 or area > int(page_area * 0.012):
+                continue
+            if cw < 2 or ch < 2 or cw > max_gw or ch > max_gh:
+                continue
+            aspect = max(cw, ch) / max(1.0, float(min(cw, ch)))
+            if aspect > 7.0:
+                continue
+            pad = 4
+            sub = gray[max(0, y - pad) : min(img_h, y + ch + pad), max(0, x - pad) : min(img_w, x + cw + pad)]
+            sub_w = wall_mask[max(0, y - pad) : min(img_h, y + ch + pad), max(0, x - pad) : min(img_w, x + cw + pad)]
+            valid_bg = sub[sub_w == 0]
+            white_px = valid_bg[valid_bg >= 220]
+            if (
+                white_px.size >= max(4, int(valid_bg.size * 0.32))
+                and float(np.percentile(valid_bg, 80)) >= 230.0
+                and float(np.std(white_px)) <= 12.8
+            ):
+                glyph_mask[labels == i] = 255
+
+        k_group = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
+        grouped = cv2.dilate(glyph_mask, k_group, iterations=1)
+        grouped[cv2.dilate(wall_mask, np.ones((3, 3), np.uint8)) > 0] = 0
+
+        ng, g_labels, g_stats, _ = cv2.connectedComponentsWithStats(grouped, connectivity=8)
+        added_screens: list[dict[str, Any]] = []
+
+        for gid in range(1, ng):
+            gx, gy, gw, gh, _ = [int(v) for v in g_stats[gid]]
+            if gw < min_box_size or gh < min_box_size:
+                continue
+            sub_g = (g_labels[gy : gy + gh, gx : gx + gw] == gid) & (glyph_mask[gy : gy + gh, gx : gx + gw] > 0)
+            ys, xs = np.where(sub_g)
+            if xs.size < 35:
+                continue
+            tx1 = int(gx + int(np.min(xs)))
+            ty1 = int(gy + int(np.min(ys)))
+            tx2 = int(gx + int(np.max(xs)) + 1)
+            ty2 = int(gy + int(np.max(ys)) + 1)
+            tw = tx2 - tx1
+            th = ty2 - ty1
+            if tw < min_box_size or th < min_box_size or (tw * th) < 1100:
+                continue
+
+            comp_ids = np.unique(
+                labels[ty1:ty2, tx1:tx2][
+                    sub_g[int(np.min(ys)) : int(np.max(ys)) + 1, int(np.min(xs)) : int(np.max(xs)) + 1]
+                ]
+            )
+            comp_cnt = len([c for c in comp_ids if c > 0])
+            if comp_cnt < 8:
+                continue
+
+            c_area = float(tw * th)
+            best_overlap_idx = -1
+            best_overlap_ratio = 0.0
+            for idx_e, ex_det in enumerate(existing_detections):
+                ex1, ey1, ex2, ey2 = ex_det["bbox"]
+                ix1, iy1 = max(tx1, ex1), max(ty1, ey1)
+                ix2, iy2 = min(tx2, ex2), min(ty2, ey2)
+                if ix2 > ix1 and iy2 > iy1:
+                    inter = float((ix2 - ix1) * (iy2 - iy1))
+                    ov_r = inter / max(1.0, min(c_area, float((ex2 - ex1) * (ey2 - ey1))))
+                    if ov_r > best_overlap_ratio:
+                        best_overlap_ratio = ov_r
+                        best_overlap_idx = idx_e
+
+            if best_overlap_ratio >= 0.80:
+                continue
+
+            pad_x = max(5, min(14, int(round(tw * 0.05))))
+            pad_y = max(5, min(14, int(round(th * 0.05))))
+            bx1 = max(0, tx1 - pad_x)
+            by1 = max(0, ty1 - pad_y)
+            bx2 = min(img_w, tx2 + pad_x)
+            by2 = min(img_h, ty2 + pad_y)
+            # Не перешагиваем через прямые линии рамок панелей (panel_lines) при расширении бокса экрана
+            for py_chk in range(ty1, by1 - 1, -1):
+                if float(np.mean(panel_lines[py_chk, tx1:tx2] > 0)) >= 0.35:
+                    by1 = py_chk + 1
+                    break
+            for py_chk in range(ty2 - 1, by2):
+                if float(np.mean(panel_lines[py_chk, tx1:tx2] > 0)) >= 0.35:
+                    by2 = py_chk
+                    break
+            for px_chk in range(tx1, bx1 - 1, -1):
+                if float(np.mean(panel_lines[ty1:ty2, px_chk] > 0)) >= 0.35:
+                    bx1 = px_chk + 1
+                    break
+            for px_chk in range(tx2 - 1, bx2):
+                if float(np.mean(panel_lines[ty1:ty2, px_chk] > 0)) >= 0.35:
+                    bx2 = px_chk
+                    break
+
+            crop_cand = img_np[by1:by2, bx1:bx2]
+            if not pre_ocr_stroke_gate(crop_cand).passed:
+                continue
+            if not self._is_text_on_clean_white_cavity(crop_cand, min_glyphs=6):
+                continue
+
+            # Если существующий бокс покрывает лишь часть большого экрана (25%..80%), расширяем его до полных границ кластера
+            if best_overlap_idx >= 0 and 0.25 <= best_overlap_ratio < 0.80 and comp_cnt >= 15:
+                target_det = existing_detections[best_overlap_idx]
+                ox1, oy1, ox2, oy2 = target_det["bbox"]
+                target_det["bbox"] = [min(ox1, bx1), min(oy1, by1), max(ox2, bx2), max(oy2, by2)]
+                otb = target_det.get("text_bbox") or [ox1, oy1, ox2, oy2]
+                target_det["text_bbox"] = [
+                    min(otb[0], tx1),
+                    min(otb[1], ty1),
+                    max(otb[2], tx2),
+                    max(otb[3], ty2),
+                ]
+                target_det["is_free_text"] = False
+                continue
+
+            if best_overlap_ratio < 0.25:
+                # Дополнительно проверяем, что это либо наклонный/многострочный контейнер, либо крупный блок текста на белой полости
+                deg_c, lines_c, _ = self._extract_tilted_or_multiline_horizontal_crops(crop_cand)
+                if abs(deg_c) >= 5.5 or len(lines_c) >= 2 or comp_cnt >= 10:
+                    tb_pad = 3
+                    added_screens.append(
+                        {
+                            "bbox": [int(bx1), int(by1), int(bx2), int(by2)],
+                            "text_bbox": [
+                                int(max(bx1, tx1 - tb_pad)),
+                                int(max(by1, ty1 - tb_pad)),
+                                int(min(bx2, tx2 + tb_pad)),
+                                int(min(by2, ty2 + tb_pad)),
+                            ],
+                            "confidence": 0.65,
+                            "is_free_text": False,
+                            "_source": "cv_screen_container",
+                        }
+                    )
+
+        return added_screens
 
     def _detect_missed_white_bubbles(
         self,
@@ -4918,17 +5535,76 @@ class MangaOCREngine:
         self,
         crops_pil: list[Image.Image],
         batch_size: int = 16,
+        _allow_line_split: bool = True,
     ) -> list[str]:
         """
-        Гибридное пакетное GPU-распознавание японских бабблов (Шаг 2):
+        Гибридное пакетное GPU-распознавание японских бабблов (Шаг 2 + Deskew/Multi-line Screen Upgrade):
+        0. Автоматически проверяет каждый кроп на наклонный/многострочный горизонтальный текст (экраны телефонов,
+           мониторы, записки, таблички под углом) через `_extract_tilted_or_multiline_horizontal_crops`.
+           Такие кропы выпрямляются, очищаются от черных рамок корпуса и читаются построчно сверху вниз!
         1. Основной проход выполняется через `muscgab/manga-ocr-nar-small` (CER 1.73%, EM 91.09%, сохранение пропорций
            кропа 324 патча 14x14, чтение всей пачки за ~35 мс).
-        2. Если какой-то баббл содержит длинный монолог (`len(text) >= 56`, близко к потолку 64 символов у NAR-декодера)
-           или вернул пустую строку, только этот баббл автоматически дочитывается через авторегрессионный `MangaOcr`
-           (`max_new_tokens=300`) с защитой пропорций `_pad_to_balanced_aspect_for_vit`!
+        2. Если какой-то баббл содержит длинный монолог (`len(text) >= 54`, близко к потолку 64 символов у NAR-декодера)
+           или вернул пустую/усеченную строку, только этот баббл автоматически дочитывается через авторегрессионный `MangaOcr`
+           (`max_new_tokens=300`) с защитой пропорций `_pad_to_balanced_aspect_for_vit` и `HayaiOCR v2.5 Nova`!
         """
         if not crops_pil:
             return []
+
+        if _allow_line_split:
+            multiline_map: dict[int, list[Image.Image]] = {}
+            normal_indices: list[int] = []
+            normal_crops: list[Image.Image] = []
+            all_sub_lines: list[Image.Image] = []
+            sub_line_slices: dict[int, tuple[int, int]] = {}
+
+            for idx, c_pil in enumerate(crops_pil):
+                try:
+                    c_np = np.array(c_pil.convert("RGB"))
+                    deg_val, line_pils, deskewed_pil = self._extract_tilted_or_multiline_horizontal_crops(c_np)
+                except Exception:
+                    deg_val, line_pils, deskewed_pil = 0.0, [], None
+
+                if len(line_pils) >= 2:
+                    s_idx = len(all_sub_lines)
+                    all_sub_lines.extend(line_pils)
+                    sub_line_slices[idx] = (s_idx, len(all_sub_lines))
+                    multiline_map[idx] = line_pils
+                elif abs(deg_val) >= 5.5 and (line_pils or deskewed_pil is not None):
+                    target_single = line_pils[0] if line_pils else deskewed_pil
+                    assert target_single is not None
+                    s_idx = len(all_sub_lines)
+                    all_sub_lines.append(target_single)
+                    sub_line_slices[idx] = (s_idx, len(all_sub_lines))
+                    multiline_map[idx] = [target_single]
+                else:
+                    normal_indices.append(idx)
+                    normal_crops.append(c_pil)
+
+            if multiline_map:
+                out_combined: list[str] = [""] * len(crops_pil)
+                if normal_crops:
+                    norm_res = self._recognize_crops_batch_ja(
+                        normal_crops,
+                        batch_size=batch_size,
+                        _allow_line_split=False,
+                    )
+                    for n_i, n_txt in zip(normal_indices, norm_res):
+                        out_combined[n_i] = n_txt
+                if all_sub_lines:
+                    sub_res = self._recognize_crops_batch_ja(
+                        all_sub_lines,
+                        batch_size=batch_size,
+                        _allow_line_split=False,
+                    )
+                    for m_idx, (s_start, s_end) in sub_line_slices.items():
+                        lines_txt = [
+                            t.strip()
+                            for t in sub_res[s_start:s_end]
+                            if t and t.strip() and not PUNCT_ONLY_REGEX.match(t.strip())
+                        ]
+                        out_combined[m_idx] = "".join(lines_txt)
+                return out_combined
 
         nar_model = self._get_ja_nar_recognizer()
         if nar_model is not None:
@@ -5281,6 +5957,16 @@ class MangaOCREngine:
                 )
                 continue
 
+            detected_angle = 0.0
+            try:
+                deg_blk, lines_blk, _ = self._extract_tilted_or_multiline_horizontal_crops(raw_crop_np)
+                if abs(deg_blk) >= 6.0 and len(lines_blk) >= 2:
+                    # В PIL угол поворота против часовой стрелки: если для выпрямления строк мы повернули на `deg_blk`,
+                    # то для наклона переведенного текста параллельно экрану телефона нужен угол `-deg_blk`!
+                    detected_angle = max(-52.0, min(52.0, round(-float(deg_blk), 1)))
+            except Exception:
+                detected_angle = 0.0
+
             output_blocks.append(
                 {
                     "id": block_id,
@@ -5291,6 +5977,7 @@ class MangaOCREngine:
                     "original_text": recognized_text,
                     "is_free_text": is_free,
                     "is_deleted": False,
+                    "angle": detected_angle,
                 }
             )
             block_id += 1

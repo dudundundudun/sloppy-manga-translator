@@ -2780,6 +2780,36 @@ class MangaRenderer:
             opt_cx, opt_cy = geom["optical_center"]
             chord_profile = geom.get("chord_profile")
 
+            # Для наклонных экранов телефонов, мониторов и повернутых табличек (|angle| >= 6°):
+            # вычисляем доступную ширину и высоту верстки непосредственно в повернутой системе координат
+            # внутренней белой полости (safe_mask_roi, повернутая на -angle), чтобы блок текста при повороте
+            # на +angle идеально вписывался между черными рамками экрана и не вылезал за края страницы!
+            if abs(angle) >= 6.0:
+                force_rect = True
+                chord_profile = None
+                sm_roi = geom.get("safe_mask_roi")
+                if sm_roi is not None and sm_roi.size >= 64 and int(np.count_nonzero(sm_roi)) >= 32:
+                    try:
+                        rot_sm = np.array(
+                            Image.fromarray(sm_roi).rotate(-angle, resample=Image.NEAREST, expand=True, fillcolor=0)
+                        )
+                        ry_s, rx_s = np.where(rot_sm > 0)
+                        if rx_s.size >= 24:
+                            r_y1, r_y2 = int(np.min(ry_s)), int(np.max(ry_s)) + 1
+                            r_h_span = max(12, r_y2 - r_y1)
+                            # Берем центральные 76% высоты повернутой полости и оцениваем рабочую хорду
+                            y_trim = max(1, int(round(r_h_span * 0.12)))
+                            mid_slice = rot_sm[r_y1 + y_trim : max(r_y1 + y_trim + 4, r_y2 - y_trim), :]
+                            row_widths = np.sum(mid_slice > 0, axis=1)
+                            valid_rw = row_widths[row_widths >= 10]
+                            if valid_rw.size > 0:
+                                est_rot_w = int(round(float(np.percentile(valid_rw, 35)) * 0.90))
+                                est_rot_h = int(round(float(r_h_span) * 0.82))
+                                safe_w = max(24, min(int(max(box_w, box_h) * 1.15), est_rot_w))
+                                safe_h = max(24, min(int(max(box_w, box_h) * 1.15), est_rot_h))
+                    except Exception:
+                        pass
+
             block["safe_bbox"] = [int(sx1), int(sy1), int(sx2), int(sy2)]
             block["bubble_bbox"] = [int(c) for c in geom["bubble_bbox"]]
             block["optical_center"] = [int(opt_cx), int(opt_cy)]
@@ -3368,6 +3398,9 @@ class MangaRenderer:
 
                 if abs(angle) >= 0.5:
                     rot_layer = txt_layer.rotate(angle, resample=Image.BICUBIC, expand=True)
+                    alpha_bbox = rot_layer.getbbox()
+                    if alpha_bbox is not None:
+                        rot_layer = rot_layer.crop(alpha_bbox)
                 else:
                     rot_layer = txt_layer
                 rw_rot, rh_rot = rot_layer.size
@@ -3378,8 +3411,26 @@ class MangaRenderer:
                 else:
                     paste_x = int(round(center_x - rw_rot / 2.0))
                 paste_y = int(round(center_y - rh_rot / 2.0))
-                paste_x = max(-rw_rot // 2, min(paste_x, img_w - rw_rot // 2))
-                paste_y = max(-rh_rot // 2, min(paste_y, img_h - rh_rot // 2))
+                if abs(angle) >= 0.5:
+                    bound_x1 = max(x1 + 3, sx1 - 3) if not is_free_text else 2
+                    bound_x2 = min(x2 - 3, sx2 + 3) if not is_free_text else (img_w - 2)
+                    bound_y1 = max(y1 + 4, sy1 - 2) if not is_free_text else 2
+                    bound_y2 = min(y2 - 4, sy2 + 2) if not is_free_text else (img_h - 2)
+                    min_px = max(2, bound_x1) if (not is_free_text and rw_rot <= (bound_x2 - bound_x1)) else max(2, x1 + 2)
+                    max_px = min(img_w - rw_rot - 2, bound_x2 - rw_rot) if (not is_free_text and rw_rot <= (bound_x2 - bound_x1)) else max(2, img_w - rw_rot - 2)
+                    min_py = max(2, bound_y1) if (not is_free_text and rh_rot <= (bound_y2 - bound_y1)) else max(2, y1 + 4)
+                    max_py = min(img_h - rh_rot - 2, bound_y2 - rh_rot) if (not is_free_text and rh_rot <= (bound_y2 - bound_y1)) else max(2, img_h - rh_rot - 2)
+                    if max_px >= min_px:
+                        paste_x = max(min_px, min(paste_x, max_px))
+                    else:
+                        paste_x = max(2, min(paste_x, max(2, img_w - rw_rot - 2)))
+                    if max_py >= min_py:
+                        paste_y = max(min_py, min(paste_y, max_py))
+                    else:
+                        paste_y = max(2, min(paste_y, max(2, img_h - rh_rot - 2)))
+                else:
+                    paste_x = max(-rw_rot // 2, min(paste_x, img_w - rw_rot // 2))
+                    paste_y = max(-rh_rot // 2, min(paste_y, img_h - rh_rot // 2))
                 canvas.paste(rot_layer, (paste_x, paste_y), rot_layer)
                 draw = ImageDraw.Draw(canvas)
             else:

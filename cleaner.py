@@ -2038,9 +2038,32 @@ class BubbleCleaner:
         # не присоединяя внешние белые ореолы (light_pixels != best_label) за черной стенкой!
         close_d = max(15, min(27, int(round(min(rw, rh) * 0.26)) | 1))
         k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_d, close_d))
-        padded = cv2.copyMakeBorder(interior, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
-        closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
-        closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
+        ys_i, xs_i = np.where(interior > 0)
+        if xs_i.size >= 16:
+            iy1_b, iy2_b = int(np.min(ys_i)), int(np.max(ys_i)) + 1
+            ix1_b, ix2_b = int(np.min(xs_i)), int(np.max(xs_i)) + 1
+            sub_int = interior[iy1_b:iy2_b, ix1_b:ix2_b]
+            sh_i, sw_i = sub_int.shape[:2]
+            top_flat = float(np.mean(sub_int[0, :] > 0)) >= 0.22
+            bot_flat = float(np.mean(sub_int[sh_i - 1, :] > 0)) >= 0.22
+            left_flat = float(np.mean(sub_int[:, 0] > 0)) >= 0.22
+            right_flat = float(np.mean(sub_int[:, sw_i - 1] > 0)) >= 0.22
+            padded = cv2.copyMakeBorder(sub_int, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
+            if top_flat:
+                padded[:close_d, close_d : close_d + sw_i] = sub_int[0:1, :]
+            if bot_flat:
+                padded[close_d + sh_i :, close_d : close_d + sw_i] = sub_int[sh_i - 1 : sh_i, :]
+            if left_flat:
+                padded[close_d : close_d + sh_i, :close_d] = sub_int[:, 0:1]
+            if right_flat:
+                padded[close_d : close_d + sh_i, close_d + sw_i :] = sub_int[:, sw_i - 1 : sw_i]
+            closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
+            closed_int = np.zeros_like(interior)
+            closed_int[iy1_b:iy2_b, ix1_b:ix2_b] = closed_pad[close_d : close_d + sh_i, close_d : close_d + sw_i]
+        else:
+            padded = cv2.copyMakeBorder(interior, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
+            closed_pad = cv2.morphologyEx(padded, cv2.MORPH_CLOSE, k_close, iterations=1)
+            closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
 
         inv2 = cv2.bitwise_not(closed_int)
         n_inv2, lbl_inv2, st_inv2, _ = cv2.connectedComponentsWithStats(inv2, connectivity=8)
@@ -2238,7 +2261,16 @@ class BubbleCleaner:
                             text_zone_mask = cv2.bitwise_or(text_zone_mask, interior_mask)
 
                     strict_dark = (roi_gray < 155).astype(np.uint8) * 255
-                    nl_s, lbl_s, st_s, _ = cv2.connectedComponentsWithStats(strict_dark, connectivity=8)
+                    # Отсоединяем прямые внешние линии рамок панелей вдоль границ кропа, чтобы краевые иероглифы на экранах/плашках не попадали в hollow_arc_mask
+                    k_hl = cv2.getStructuringElement(cv2.MORPH_RECT, (max(24, rw // 3), 1))
+                    k_vl = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(24, rh // 3)))
+                    frame_lines = cv2.bitwise_or(
+                        cv2.morphologyEx(strict_dark, cv2.MORPH_OPEN, k_hl),
+                        cv2.morphologyEx(strict_dark, cv2.MORPH_OPEN, k_vl),
+                    )
+                    frame_dil = cv2.dilate(frame_lines, np.ones((3, 3), np.uint8), iterations=1)
+                    strict_dark_no_frame = cv2.bitwise_and(strict_dark, cv2.bitwise_not(frame_dil))
+                    nl_s, lbl_s, st_s, _ = cv2.connectedComponentsWithStats(strict_dark_no_frame, connectivity=8)
                     hollow_arc_mask = np.zeros_like(strict_dark)
                     for l_s in range(1, nl_s):
                         sx_s, sy_s, sw_s, sh_s, sa_s = st_s[l_s]

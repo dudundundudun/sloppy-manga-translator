@@ -2951,7 +2951,7 @@
       <div class="style-grid-row" style="margin-bottom:0;">
         <span style="font-size:10.5px;">🔄 Поворот: <b id="popup-angle-lbl">0°</b></span>
         <div style="display:flex; align-items:center; gap:4px; flex:1; justify-content:flex-end;">
-          <input type="range" id="popup-angle-range" min="-45" max="45" step="1" value="0" style="width:110px; accent-color:var(--sakura);" oninput="onBlockAngleInput(popupBlockId, this.value)" />
+          <input type="range" id="popup-angle-range" min="-60" max="60" step="1" value="0" style="width:110px; accent-color:var(--sakura);" oninput="onBlockAngleInput(popupBlockId, this.value)" />
           <button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(popupBlockId, 0, true)" title="Сбросить угол поворота на 0°">0°</button>
         </div>
       </div>
@@ -6677,7 +6677,7 @@ Step 1:`;
       if (angleHistorySnapshot === null) {
         angleHistorySnapshot = cloneBlocksSnapshot(currentBlocks);
       }
-      const deg = Math.max(-45, Math.min(45, Math.round(Number(angleVal) || 0)));
+      const deg = Math.max(-60, Math.min(60, Math.round(Number(angleVal) || 0)));
       blk.angle = deg;
       blk._dirtyPreview = true;
       clientEditRevision++;
@@ -8318,7 +8318,7 @@ Step 1:`;
               `</div>` +
               `<div style="display:flex; align-items:center; gap:4px;">` +
                 `<span style="font-size:10.5px;">🔄 <b id="edit-angle-lbl-${b.id}">${curAngle}°</b></span>` +
-                `<input type="range" id="edit-angle-rng-${b.id}" min="-45" max="45" step="1" value="${curAngle}" style="width:68px; accent-color:var(--sakura);" oninput="onBlockAngleInput(${b.id}, this.value)" />` +
+                `<input type="range" id="edit-angle-rng-${b.id}" min="-60" max="60" step="1" value="${curAngle}" style="width:68px; accent-color:var(--sakura);" oninput="onBlockAngleInput(${b.id}, this.value)" />` +
                 `<button type="button" class="romaji-copy-btn" onclick="onBlockAngleInput(${b.id}, 0, true)">0°</button>` +
               `</div>` +
             `</div>` +
@@ -9606,7 +9606,7 @@ Step 1:`;
             `</div>` +
             `<div class="bubble-safe-zone-guide" style="${computeSafeGuideInlineCss(b)}"></div>` +
             `<div class="bubble-optical-center-mark" style="${computeOpticalCenterInlineCss(b)}" title="Оптический центр бабла (Pole of Inaccessibility + оптическое смещение -2.2%)"></div>` +
-            `<div class="bbox-live-text" style="font-size:${cssFs}px; ${liveBgCss} ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
+            `<div class="bbox-live-text" style="font-size:${cssFs}px; ${liveBgCss} ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${-Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
             handlesHtml;
 
           const saveBtn = pin.querySelector(".bbox-pin-save");
