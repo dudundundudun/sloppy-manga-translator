@@ -41,23 +41,991 @@ import sys
 import time
 import unicodedata
 import warnings
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Dict, List, Optional, Set, Tuple, Union
 
 warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="triton.*")
 logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
 import cv2
-import httpx
 import numpy as np
-import torch
-from huggingface_hub import hf_hub_download, snapshot_download
-from manga_ocr import MangaOcr
 from PIL import Image, ImageOps
-from ultralytics import YOLO
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
+
+try:
+    import jaconv
+except ImportError:
+    jaconv = None  # type: ignore[assignment]
+
+try:
+    import torch
+    import torch.nn.functional as F
+except ImportError:
+    torch = None  # type: ignore[assignment]
+    F = None  # type: ignore[assignment]
+
+try:
+    from huggingface_hub import hf_hub_download, snapshot_download
+except ImportError:
+    hf_hub_download = None  # type: ignore[assignment]
+    snapshot_download = None  # type: ignore[assignment]
+
+try:
+    from manga_ocr import MangaOcr
+except ImportError:
+    MangaOcr = None  # type: ignore[assignment]
+
+try:
+    from transformers import AutoTokenizer, ViTImageProcessor, VisionEncoderDecoderModel
+except ImportError:
+    AutoTokenizer = None  # type: ignore[assignment]
+    ViTImageProcessor = None  # type: ignore[assignment]
+    VisionEncoderDecoderModel = None  # type: ignore[assignment]
+
+try:
+    from ultralytics import YOLO
+except ImportError:
+    YOLO = None  # type: ignore[assignment]
 
 logger = logging.getLogger(__name__)
+
+
+def _torch_inference_mode():
+    if torch is not None and hasattr(torch, "inference_mode"):
+        return torch.inference_mode()
+
+    def _decorator(fn):
+        return fn
+
+    return _decorator
+
+
+# ==============================================================================
+# Блок 1: Многоуровневый фильтр галлюцинаций MangaOCR
+# (Pre-OCR Stroke Gate + Post-OCR Decoder Confidence / Attention Entropy Gate)
+# ==============================================================================
+
+# Кэш радиальных масок высоких частот для 2D RFFT (исключает пересчет сеток частот)
+_FFT_HF_MASK_CACHE: Dict[Tuple[int, int], np.ndarray] = {}
+
+
+def _get_hf_fft_mask(h: int, w: int) -> np.ndarray:
+    key = (h, w)
+    if key not in _FFT_HF_MASK_CACHE:
+        fy = np.fft.fftfreq(h)[:, None] * h
+        fx = np.fft.rfftfreq(w)[None, :] * w
+        radius = np.hypot(fy, fx)
+        # Полоса пространственных частот регулярного скринтона (период от 2 до 14 пикселей)
+        _FFT_HF_MASK_CACHE[key] = radius >= max(4.0, min(h, w) / 14.0)
+    return _FFT_HF_MASK_CACHE[key]
+
+
+@dataclass
+class StrokeGateResult:
+    passed: bool
+    reason: str
+    valid_cc_count: int
+    total_cc_count: int
+    valid_ink_share: float
+    fft_pmr: float
+    sw_mean: float
+    sw_cov: float
+    skel_density: float
+    elapsed_ms: float
+
+
+def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateResult:
+    """
+    Быстрый морфологический, топологический и спектральный Pre-OCR фильтр (~0.04-1.32 мс).
+    Отсекает градиенты, регулярные скринтоны (амитен), косую штриховку одежды и края рамок
+    до запуска тяжелого ViT-энкодера и авторегрессионного декодера MangaOCR.
+    """
+    t0 = time.perf_counter()
+
+    if isinstance(crop_img, Image.Image):
+        gray = np.array(crop_img.convert("L"), dtype=np.uint8)
+    elif crop_img.ndim == 3:
+        gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+    else:
+        gray = crop_img
+
+    H, W = gray.shape[:2]
+    if H < 10 or W < 10:
+        return StrokeGateResult(
+            False, "crop_too_small", 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, (time.perf_counter() - t0) * 1000.0
+        )
+
+    area_crop = float(H * W)
+
+    # 1. Каскад контраста и резкости ступенчатых границ (Laplacian Step-Edge Gate, ~0.04 мс)
+    _, std_v = cv2.meanStdDev(gray)
+    if float(std_v[0, 0]) < 12.0:
+        return StrokeGateResult(
+            False, "low_std_contrast", 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, (time.perf_counter() - t0) * 1000.0
+        )
+
+    lap = cv2.Laplacian(gray, cv2.CV_16S, ksize=3)
+    abs_lap = cv2.convertScaleAbs(lap)
+    _, sharp_mask = cv2.threshold(abs_lap, 60, 255, cv2.THRESH_BINARY)
+    sharp_edge_ratio = float(cv2.countNonZero(sharp_mask)) / area_crop
+    if sharp_edge_ratio < 0.005:
+        return StrokeGateResult(
+            False,
+            f"smooth_gradient(sharp={sharp_edge_ratio:.4f})",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            (time.perf_counter() - t0) * 1000.0,
+        )
+
+    # 2. Бинаризация Оцу и автоматическая нормализация полярности (белый текст на черном фоне)
+    _, bw = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    border_sum = (
+        int(np.sum(bw[:2, :]))
+        + int(np.sum(bw[-2:, :]))
+        + int(np.sum(bw[2:-2, :2]))
+        + int(np.sum(bw[2:-2, -2:]))
+    )
+    border_pixels = max(1, 4 * W + 4 * (H - 4))
+    if (border_sum / border_pixels) > 140.0 and float(np.mean(bw)) > 127.0:
+        bw = 255 - bw
+
+    # Срез краевой каймы (отсоединяет линии рамок фреймов, прижатые к краям кропа)
+    my, mx = min(3, H // 12), min(3, W // 12)
+    inner_bw = bw.copy()
+    if my > 0:
+        inner_bw[:my, :] = 0
+        inner_bw[-my:, :] = 0
+    if mx > 0:
+        inner_bw[:, :mx] = 0
+        inner_bw[:, -mx:] = 0
+
+    ink_ratio = float(cv2.countNonZero(inner_bw)) / area_crop
+    if ink_ratio < 0.008 or ink_ratio > 0.65:
+        return StrokeGateResult(
+            False,
+            f"ink_ratio_out_of_bounds({ink_ratio:.3f})",
+            0,
+            0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            0.0,
+            (time.perf_counter() - t0) * 1000.0,
+        )
+
+    # 3. Разметка 8-связных компонент и фильтрация растровых микро-точек скринтона
+    num_labels, _, stats, _ = cv2.connectedComponentsWithStats(inner_bw, connectivity=8)
+    total_cc = num_labels - 1
+    if total_cc <= 0:
+        return StrokeGateResult(
+            False, "no_connected_components", 0, 0, 0.0, 0.0, 0.0, 0.0, 0.0, (time.perf_counter() - t0) * 1000.0
+        )
+
+    cc_stats = stats[1:]
+    cc_areas = cc_stats[:, cv2.CC_STAT_AREA].astype(np.float32)
+    cc_w = cc_stats[:, cv2.CC_STAT_WIDTH].astype(np.float32)
+    cc_h = cc_stats[:, cv2.CC_STAT_HEIGHT].astype(np.float32)
+    cc_left = cc_stats[:, cv2.CC_STAT_LEFT]
+    cc_top = cc_stats[:, cv2.CC_STAT_TOP]
+
+    min_glyph_area = max(8.0, 0.0012 * area_crop)
+    micro_cc = int(np.sum(cc_areas < min_glyph_area))
+    micro_ratio = micro_cc / float(total_cc)
+    area_cov = float(np.std(cc_areas) / (np.mean(cc_areas) + 1e-5))
+
+    # 4. Спектральный детектор периодического скринтона (2D RFFT Bragg Peak Ratio)
+    ph, pw = min(64, H), min(64, W)
+    y0, x0 = (H - ph) // 2, (W - pw) // 2
+    patch = gray[y0 : y0 + ph, x0 : x0 + pw].astype(np.float32)
+    patch -= float(np.mean(patch))
+    fft_mag = np.abs(np.fft.rfft2(patch))
+    hf_mask = _get_hf_fft_mask(ph, pw)
+    hf_vals = fft_mag[hf_mask]
+    fft_pmr = float(np.max(hf_vals) / (np.mean(hf_vals) + 1e-5)) if hf_vals.size > 0 else 0.0
+
+    # 5. Топологическая отбраковка прямых линий рамок и длинной штриховки одежды
+    span_h = cc_h / float(H)
+    span_w = cc_w / float(W)
+    aspect = np.maximum(cc_w, cc_h) / np.maximum(1.0, np.minimum(cc_w, cc_h))
+    extent = cc_areas / np.maximum(1.0, cc_w * cc_h)
+
+    touches_left = cc_left <= mx + 1
+    touches_right = (cc_left + cc_w) >= (W - mx - 1)
+    touches_top = cc_top <= my + 1
+    touches_bot = (cc_top + cc_h) >= (H - my - 1)
+    spans_across = (
+        (touches_left & touches_right)
+        | (touches_top & touches_bot)
+        | ((touches_left | touches_right) & (touches_top | touches_bot) & ((span_h > 0.35) | (span_w > 0.35)))
+    )
+
+    is_line_cc = (
+        (aspect > 8.0)
+        | ((span_h > 0.78) & (extent < 0.24))
+        | ((span_w > 0.78) & (extent < 0.24))
+        | (spans_across & (extent < 0.25))
+    )
+
+    is_valid_cc = (cc_areas >= min_glyph_area) & (~is_line_cc)
+    valid_cc_count = int(np.sum(is_valid_cc))
+    valid_ink_share = float(np.sum(cc_areas[is_valid_cc]) / (np.sum(cc_areas) + 1e-5))
+
+    # 6. Быстрая оценка ширины штриха (DT-SWT) и плотности медиального скелета
+    dist = cv2.distanceTransform(inner_bw, cv2.DIST_L2, 3)
+    dist_max = cv2.dilate(dist, np.ones((3, 3), dtype=np.uint8))
+    ridge_mask = (inner_bw > 0) & (dist >= dist_max - 1e-4) & (dist > 0.4)
+    sw_vals = 2.0 * dist[ridge_mask]
+    if sw_vals.size > 0:
+        sw_mean = float(np.mean(sw_vals))
+        sw_cov = float(np.std(sw_vals) / (sw_mean + 1e-5))
+        skel_density = float(sw_vals.size) / area_crop
+    else:
+        sw_mean, sw_cov, skel_density = 0.0, 0.0, 0.0
+
+    # 7. Итоговое решающее правило Pre-OCR фильтра
+    passed = True
+    reason = "ok"
+    if total_cc >= 14 and micro_ratio > 0.62 and area_cov < 0.65:
+        passed, reason = False, f"halftone_dots(micro={micro_ratio:.2f},cov={area_cov:.2f})"
+    elif fft_pmr > 18.0 and (micro_ratio > 0.35 or valid_ink_share < 0.55):
+        passed, reason = False, f"periodic_screentone(fft_pmr={fft_pmr:.1f})"
+    elif valid_cc_count < 1 or valid_ink_share < 0.35:
+        passed, reason = False, f"line_hatching_or_border(valid_cc={valid_cc_count},share={valid_ink_share:.2f})"
+    elif sw_mean < 1.05 or sw_mean > 0.25 * min(H, W):
+        passed, reason = False, f"invalid_stroke_width(sw={sw_mean:.2f})"
+    elif skel_density < 0.003 or skel_density > 0.22:
+        passed, reason = False, f"invalid_skel_density(rho={skel_density:.4f})"
+
+    elapsed_ms = (time.perf_counter() - t0) * 1000.0
+    return StrokeGateResult(
+        passed=passed,
+        reason=reason,
+        valid_cc_count=valid_cc_count,
+        total_cc_count=total_cc,
+        valid_ink_share=valid_ink_share,
+        fft_pmr=fft_pmr,
+        sw_mean=sw_mean,
+        sw_cov=sw_cov,
+        skel_density=skel_density,
+        elapsed_ms=elapsed_ms,
+    )
+
+
+@dataclass
+class MangaOCRRecognition:
+    text: str
+    is_valid: bool
+    reject_reason: str
+    seq_confidence: float
+    spatial_attn_entropy: float
+    peak_spatial_attn: float
+    char_to_ink_ratio: float
+    num_tokens: int
+    truncated: bool
+
+
+class HallucinationFreeMangaOCR:
+    """
+    Защищенный раннер MangaOCR с Pre-OCR фильтрацией штрихов и Post-OCR скорингом
+    лог-вероятностей декодера, энтропии кросс-внимания и отношения Character-to-Ink.
+    Поддерживает прямую совместимость с интерфейсом `MangaOcr.__call__`.
+    """
+
+    _CJK_CONTENT_RE = re.compile(r"[\u3040-\u309F\u30A0-\u30FF\u4E00-\u9FFF\u3400-\u4DBF0-9A-Za-z]")
+    _HALF_TO_FULL_TRANS = str.maketrans(
+        "".join(chr(i) for i in range(0x21, 0x7F)),
+        "".join(chr(i + 0xFEE0) for i in range(0x21, 0x7F)),
+    )
+
+    def __init__(
+        self,
+        pretrained_model_name_or_path: str = "kha-white/manga-ocr-base",
+        device: Optional[str] = None,
+        force_cpu: bool = False,
+        min_seq_confidence: float = 0.80,
+        max_spatial_entropy: float = 0.82,
+        min_peak_spatial_attn: float = 0.08,
+        max_char_to_ink_ratio: float = 2.50,
+    ):
+        if torch is None or VisionEncoderDecoderModel is None:
+            raise RuntimeError("PyTorch и transformers необходимы для инициализации HallucinationFreeMangaOCR.")
+
+        self.min_seq_confidence = min_seq_confidence
+        self.max_spatial_entropy = max_spatial_entropy
+        self.min_peak_spatial_attn = min_peak_spatial_attn
+        self.max_char_to_ink_ratio = max_char_to_ink_ratio
+
+        if force_cpu:
+            self.device = "cpu"
+        elif device is None:
+            self.device = (
+                "cuda"
+                if torch.cuda.is_available()
+                else ("mps" if hasattr(torch.backends, "mps") and torch.backends.mps.is_available() else "cpu")
+            )
+        else:
+            self.device = device
+
+        self.processor = ViTImageProcessor.from_pretrained(pretrained_model_name_or_path)
+        self.feature_extractor = self.processor
+        self.tokenizer = AutoTokenizer.from_pretrained(pretrained_model_name_or_path)
+        self.model = VisionEncoderDecoderModel.from_pretrained(pretrained_model_name_or_path)
+
+        # Включаем eager attention, чтобы гарантировать возврат весов cross_attentions в новых версиях Transformers
+        if hasattr(self.model.config, "_attn_implementation"):
+            self.model.config._attn_implementation = "eager"
+        if hasattr(self.model, "decoder") and hasattr(self.model.decoder.config, "_attn_implementation"):
+            self.model.decoder.config._attn_implementation = "eager"
+
+        self.model.to(self.device).eval()
+        self.eos_token_id = int(getattr(self.model.config, "eos_token_id", None) or 3)
+        self.pad_token_id = int(getattr(self.model.config, "pad_token_id", None) or 0)
+        self._post_process = self._post_process_text
+        self.post_process = self._post_process_text
+
+    @classmethod
+    def _post_process_text(cls, text: str) -> str:
+        text = "".join(text.split())
+        text = text.replace("…", "...")
+        text = re.sub("[・.]{2,}", lambda x: (x.end() - x.start()) * ".", text)
+        if jaconv is not None:
+            return jaconv.h2z(text, ascii=True, digit=True)
+        return text.translate(cls._HALF_TO_FULL_TRANS)
+
+    @_torch_inference_mode()
+    def recognize(
+        self,
+        img_or_crop: Union[np.ndarray, Image.Image],
+        max_length: int = 300,
+        gate_crop: Optional[Union[np.ndarray, Image.Image]] = None,
+    ) -> MangaOCRRecognition:
+        # Этап 1: Pre-OCR Stroke Gate
+        gate = pre_ocr_stroke_gate(gate_crop if gate_crop is not None else img_or_crop)
+        if not gate.passed:
+            return MangaOCRRecognition(
+                text="",
+                is_valid=False,
+                reject_reason=f"pre_ocr:{gate.reason}",
+                seq_confidence=0.0,
+                spatial_attn_entropy=1.0,
+                peak_spatial_attn=0.0,
+                char_to_ink_ratio=0.0,
+                num_tokens=0,
+                truncated=False,
+            )
+
+        if isinstance(img_or_crop, np.ndarray):
+            if img_or_crop.ndim == 3:
+                pil_img = Image.fromarray(cv2.cvtColor(img_or_crop, cv2.COLOR_BGR2RGB))
+            else:
+                pil_img = Image.fromarray(img_or_crop)
+        else:
+            pil_img = img_or_crop
+
+        pil_img = pil_img.convert("L").convert("RGB")
+        pixel_values = self.processor(pil_img, return_tensors="pt").pixel_values.to(self.device)
+
+        # Этап 2: Генерация с извлечением логитов и кросс-внимания декодера
+        gen_out = self.model.generate(
+            pixel_values,
+            max_length=max_length,
+            output_scores=True,
+            output_attentions=True,
+            return_dict_in_generate=True,
+        )
+
+        seq_ids = gen_out.sequences[0]  # [1 + T], начинается с decoder_start_token_id (2)
+        gen_tokens = seq_ids[1:]        # Сгенерированные токены шагов 1..T
+        num_steps = len(gen_out.scores)
+        if num_steps == 0:
+            return MangaOCRRecognition("", False, "empty_generation", 0.0, 1.0, 0.0, 0.0, 0, False)
+
+        # Проверка на усечение (достигнут лимит шагов без генерации EOS=3)
+        truncated = (num_steps >= max_length - 1) and (int(gen_tokens[-1].item()) != self.eos_token_id)
+
+        # Вычисление геометрического среднего вероятностей выбранных токенов (Sequence Confidence)
+        log_probs_list: List[float] = []
+        valid_steps = 0
+        for step_idx, step_logits in enumerate(gen_out.scores):
+            token_id = int(gen_tokens[step_idx].item())
+            if token_id == self.pad_token_id:
+                break
+            step_log_probs = F.log_softmax(step_logits[0], dim=-1)
+            log_probs_list.append(float(step_log_probs[token_id].item()))
+            valid_steps += 1
+            if token_id == self.eos_token_id:
+                break
+
+        mean_log_prob = float(np.mean(log_probs_list)) if log_probs_list else -100.0
+        seq_confidence = float(np.exp(mean_log_prob))
+
+        # Вычисление пространственной энтропии Шеннона кросс-внимания (по 196 патчам ViT, исключая токен CLS=0)
+        spatial_entropies: List[float] = []
+        peak_attentions: List[float] = []
+        content_steps = max(1, valid_steps - 1)  # Исключаем финальный шаг EOS
+
+        if getattr(gen_out, "cross_attentions", None) is not None:
+            num_patches = 196
+            log_num_patches = float(np.log(num_patches))
+            for step_idx in range(min(content_steps, len(gen_out.cross_attentions))):
+                step_cross = gen_out.cross_attentions[step_idx]
+                if not step_cross or step_cross[-1] is None:
+                    continue
+                # Берем последний (2-й) слой BERT-декодера: размерность [batch=1, heads=12, q_len=1, kv_len=197]
+                last_layer_attn = step_cross[-1][0, :, -1, :]  # [12, 197]
+                mean_head_attn = last_layer_attn.mean(dim=0)   # [197]
+                spatial_attn = mean_head_attn[1:]              # 196 пространственных патчей (без CLS)
+                if spatial_attn.numel() == 0:
+                    continue
+                peak_attentions.append(float(spatial_attn.max().item()))
+
+                # Перенормировка распределения по пространственным патчам для расчета энтропии
+                spatial_prob = spatial_attn / (spatial_attn.sum() + 1e-8)
+                entropy = -torch.sum(spatial_prob * torch.log(spatial_prob + 1e-10)).item() / log_num_patches
+                spatial_entropies.append(float(entropy))
+
+        mean_spatial_entropy = float(np.mean(spatial_entropies)) if spatial_entropies else 0.5
+        mean_peak_attn = float(np.mean(peak_attentions)) if peak_attentions else 0.2
+
+        raw_text = self.tokenizer.decode(seq_ids, skip_special_tokens=True)
+        clean_text = self._post_process_text(raw_text)
+        cjk_chars = len(self._CJK_CONTENT_RE.findall(clean_text))
+        char_to_ink_ratio = float(cjk_chars) / float(max(1, gate.valid_cc_count))
+
+        # Этап 3: Пороговая проверка Post-OCR Gate
+        if truncated:
+            return MangaOCRRecognition(
+                "", False, "post_ocr:truncated_loop_300",
+                seq_confidence, mean_spatial_entropy, mean_peak_attn, char_to_ink_ratio, valid_steps, True
+            )
+        if seq_confidence < self.min_seq_confidence:
+            return MangaOCRRecognition(
+                "", False, f"post_ocr:low_confidence({seq_confidence:.3f}<{self.min_seq_confidence})",
+                seq_confidence, mean_spatial_entropy, mean_peak_attn, char_to_ink_ratio, valid_steps, False
+            )
+        if mean_spatial_entropy > self.max_spatial_entropy or mean_peak_attn < self.min_peak_spatial_attn:
+            return MangaOCRRecognition(
+                "", False, f"post_ocr:diffuse_cross_attn(H={mean_spatial_entropy:.3f},peak={mean_peak_attn:.3f})",
+                seq_confidence, mean_spatial_entropy, mean_peak_attn, char_to_ink_ratio, valid_steps, False
+            )
+        if cjk_chars >= 5 and char_to_ink_ratio > self.max_char_to_ink_ratio:
+            return MangaOCRRecognition(
+                "", False, f"post_ocr:char_to_ink_hallucination(CIR={char_to_ink_ratio:.2f},chars={cjk_chars},cc={gate.valid_cc_count})",
+                seq_confidence, mean_spatial_entropy, mean_peak_attn, char_to_ink_ratio, valid_steps, False
+            )
+
+        return MangaOCRRecognition(
+            text=clean_text,
+            is_valid=True,
+            reject_reason="ok",
+            seq_confidence=seq_confidence,
+            spatial_attn_entropy=mean_spatial_entropy,
+            peak_spatial_attn=mean_peak_attn,
+            char_to_ink_ratio=char_to_ink_ratio,
+            num_tokens=valid_steps,
+            truncated=False,
+        )
+
+    def __call__(
+        self,
+        img_or_crop: Union[np.ndarray, Image.Image],
+        gate_crop: Optional[Union[np.ndarray, Image.Image]] = None,
+    ) -> str:
+        rec = self.recognize(img_or_crop, gate_crop=gate_crop)
+        return rec.text if rec.is_valid else ""
+
+
+# ==============================================================================
+# Блок 2: Сегментация панелей (фреймов) манги и топологический граф порядка чтения
+# (Manga Panel XY-Cut + Convexity-Defect Gutter Split + Reading Order DAG)
+# ==============================================================================
+
+
+def segment_manga_panels(
+    page_bgr: np.ndarray,
+    min_panel_area_ratio: float = 0.015,
+    white_thresh: int = 210,
+) -> List[Dict[str, Any]]:
+    """
+    Быстрая классическая CV-сегментация панелей (фреймов) манги без нейросетей (~7.15 мс).
+    Поддерживает прямоугольные, трапециевидные/диагональные панели и автоматически рассекает
+    перемычки (бабблы, волосы персонажей) через гаттеры с помощью анализа дефектов выпуклости.
+    """
+    H, W = page_bgr.shape[:2]
+    page_area = float(H * W)
+    gray = cv2.cvtColor(page_bgr, cv2.COLOR_BGR2GRAY) if page_bgr.ndim == 3 else page_bgr
+
+    # Бинаризация темных рамок и содержимого панелей относительно белой бумаги гаттеров
+    _, bw = cv2.threshold(gray, white_thresh, 255, cv2.THRESH_BINARY_INV)
+    kernel_close = cv2.getStructuringElement(cv2.MORPH_RECT, (5, 5))
+    closed = cv2.morphologyEx(bw, cv2.MORPH_CLOSE, kernel_close)
+
+    contours, _ = cv2.findContours(closed, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    panel_polys: List[np.ndarray] = []
+
+    for cnt in contours:
+        area = cv2.contourArea(cnt)
+        if area < min_panel_area_ratio * page_area:
+            continue
+
+        # Проверка на слияние соседних панелей через перемычку (Convexity Defects Diagonal Gutter Split)
+        hull_idx = cv2.convexHull(cnt, returnPoints=False)
+        split_done = False
+        if hull_idx is not None and len(hull_idx) > 3 and len(cnt) >= 4:
+            try:
+                defects = cv2.convexityDefects(cnt, hull_idx)
+            except cv2.error:
+                defects = None
+
+            if defects is not None:
+                deep_defects: List[Tuple[float, Tuple[int, int]]] = []
+                min_defect_depth = 0.05 * min(H, W)
+                for i in range(defects.shape[0]):
+                    _, _, far_idx, depth_fixed = defects[i, 0]
+                    depth_px = depth_fixed / 256.0
+                    if depth_px > min_defect_depth:
+                        far_pt = (int(cnt[far_idx, 0, 0]), int(cnt[far_idx, 0, 1]))
+                        deep_defects.append((depth_px, far_pt))
+
+                if len(deep_defects) >= 2:
+                    deep_defects.sort(key=lambda item: item[0], reverse=True)
+                    p1, p2 = deep_defects[0][1], deep_defects[1][1]
+                    x, y, w, h = cv2.boundingRect(cnt)
+                    sub_mask = np.zeros((h, w), dtype=np.uint8)
+                    shifted_cnt = cnt - np.array([[[x, y]]])
+                    cv2.drawContours(sub_mask, [shifted_cnt], -1, 255, -1)
+                    # Рассекаем перемычку вдоль линии, соединяющей вершины встречных клиньев гаттера
+                    cv2.line(sub_mask, (p1[0] - x, p1[1] - y), (p2[0] - x, p2[1] - y), 0, 10)
+                    sub_cnts, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                    valid_subs = [
+                        sc + np.array([[[x, y]]])
+                        for sc in sub_cnts
+                        if cv2.contourArea(sc) >= min_panel_area_ratio * page_area
+                    ]
+                    if len(valid_subs) >= 2:
+                        for sc in valid_subs:
+                            peri_s = cv2.arcLength(sc, True)
+                            approx_s = cv2.approxPolyDP(sc, 0.012 * peri_s, True)
+                            panel_polys.append(approx_s.reshape(-1, 2))
+                        split_done = True
+
+        if not split_done:
+            peri = cv2.arcLength(cnt, True)
+            approx = cv2.approxPolyDP(cnt, 0.012 * peri, True)
+            panel_polys.append(approx.reshape(-1, 2))
+
+    # Если страница безрамочная (borderless) и контуры не найдены — создаем единый фрейм на всю страницу
+    if not panel_polys:
+        panel_polys = [np.array([[0, 0], [W, 0], [W, H], [0, H]], dtype=np.int32)]
+
+    panels: List[Dict[str, Any]] = []
+    for idx, poly in enumerate(panel_polys):
+        x, y, w, h = cv2.boundingRect(poly)
+        panels.append({
+            "id": idx,
+            "poly": poly,
+            "bbox": (int(x), int(y), int(x + w), int(y + h)),
+            "area": float(cv2.contourArea(poly)),
+        })
+    return panels
+
+
+def sort_panels_dag(
+    panels: List[Dict[str, Any]],
+    reading_mode: str = "rtl",
+    tau_cut: float = 0.15,
+) -> List[Dict[str, Any]]:
+    """
+    Строит направленный ациклический граф (DAG) панелей и выполняет топологическую сортировку Кана.
+    reading_mode: 'rtl' (японская манга), 'ltr' (манхва/маньхуа), 'webtoon' (вертикальный скролл).
+    """
+    n = len(panels)
+    if n <= 1:
+        return panels
+
+    adj: Dict[int, Set[int]] = {i: set() for i in range(n)}
+    for i in range(n):
+        x1_i, y1_i, x2_i, y2_i = panels[i]["bbox"]
+        w_i, h_i = max(1, x2_i - x1_i), max(1, y2_i - y1_i)
+        cx_i, cy_i = 0.5 * (x1_i + x2_i), 0.5 * (y1_i + y2_i)
+
+        for j in range(i + 1, n):
+            x1_j, y1_j, x2_j, y2_j = panels[j]["bbox"]
+            w_j, h_j = max(1, x2_j - x1_j), max(1, y2_j - y1_j)
+            cx_j, cy_j = 0.5 * (x1_j + x2_j), 0.5 * (y1_j + y2_j)
+
+            ov_y = max(0, min(y2_i, y2_j) - max(y1_i, y1_j)) / float(min(h_i, h_j))
+            ov_x = max(0, min(x2_i, x2_j) - max(x1_i, x1_j)) / float(min(w_i, w_j))
+
+            if ov_y < tau_cut and ov_x >= tau_cut:
+                if cy_i < cy_j:
+                    adj[i].add(j)
+                else:
+                    adj[j].add(i)
+            elif ov_x < tau_cut and ov_y >= tau_cut:
+                if reading_mode == "rtl":
+                    if cx_i > cx_j:
+                        adj[i].add(j)
+                    else:
+                        adj[j].add(i)
+                else:
+                    if cx_i < cx_j:
+                        adj[i].add(j)
+                    else:
+                        adj[j].add(i)
+            elif ov_y < tau_cut and ov_x < tau_cut:
+                if cy_i < cy_j and (y2_i <= y1_j + tau_cut * min(h_i, h_j)):
+                    adj[i].add(j)
+                elif cy_j < cy_i and (y2_j <= y1_i + tau_cut * min(h_i, h_j)):
+                    adj[j].add(i)
+
+    in_deg = {u: 0 for u in range(n)}
+    for u in adj:
+        for v in adj[u]:
+            in_deg[v] += 1
+
+    def _tie_key(idx: int) -> Tuple[int, int]:
+        x1, y1, x2, _ = panels[idx]["bbox"]
+        return (y1, -x2) if reading_mode == "rtl" else (y1, x1)
+
+    ordered: List[Dict[str, Any]] = []
+    remaining = set(range(n))
+    while remaining:
+        zero_nodes = [u for u in remaining if in_deg[u] == 0]
+        if not zero_nodes:
+            zero_nodes = [min(remaining, key=lambda u: (in_deg[u], _tie_key(u)))]
+        zero_nodes.sort(key=_tie_key)
+        curr = zero_nodes[0]
+        ordered.append(panels[curr])
+        remaining.remove(curr)
+        for nxt in adj[curr]:
+            if nxt in remaining:
+                in_deg[nxt] -= 1
+
+    return ordered
+
+
+def sort_page_blocks_reading_order_dag(
+    blocks: List[Dict[str, Any]],
+    page_bgr: Optional[np.ndarray] = None,
+    lang: str = "ja",
+) -> List[Dict[str, Any]]:
+    """
+    Прямая замена для `_sort_page_blocks_reading_order`:
+    1. Сегментирует страницу на фреймы (панели) и упорядочивает их через межпанельный DAG.
+    2. Привязывает каждый текстовый блок/баббл к своей панели (с обработкой бабблов на границе двух фреймов).
+    3. Упорядочивает бабблы внутри каждой панели через внутрипанельный DAG.
+    Ожидается, что каждый элемент в `blocks` имеет ключ `'bbox': (x1, y1, x2, y2)`.
+    """
+    if len(blocks) <= 1:
+        return blocks
+
+    reading_mode = "rtl" if lang == "ja" else ("webtoon" if lang == "ko" else "ltr")
+    if page_bgr is not None and page_bgr.size > 0:
+        raw_panels = segment_manga_panels(page_bgr)
+        ordered_panels = sort_panels_dag(raw_panels, reading_mode=reading_mode)
+    else:
+        max_x = max((int(b["bbox"][2]) for b in blocks if "bbox" in b and len(b["bbox"]) >= 4), default=1000) + 32
+        max_y = max((int(b["bbox"][3]) for b in blocks if "bbox" in b and len(b["bbox"]) >= 4), default=1400) + 32
+        ordered_panels = [{
+            "id": 0,
+            "poly": np.array([[0, 0], [max_x, 0], [max_x, max_y], [0, max_y]], dtype=np.int32),
+            "bbox": (0, 0, max_x, max_y),
+            "area": float(max_x * max_y),
+        }]
+
+    panel_buckets: Dict[int, List[Dict[str, Any]]] = {p["id"]: [] for p in ordered_panels}
+    panel_rank = {p["id"]: r for r, p in enumerate(ordered_panels)}
+
+    for blk in blocks:
+        bx1, by1, bx2, by2 = blk["bbox"]
+        b_area = float(max(1, (bx2 - bx1) * (by2 - by1)))
+        bcx, bcy = 0.5 * (bx1 + bx2), 0.5 * (by1 + by2)
+
+        overlaps: List[Tuple[float, Dict[str, Any]]] = []
+        for p in ordered_panels:
+            px1, py1, px2, py2 = p["bbox"]
+            ix = max(0, min(bx2, px2) - max(bx1, px1))
+            iy = max(0, min(by2, py2) - max(by1, py1))
+            inter = float(ix * iy)
+            if inter > 0:
+                overlaps.append((inter / b_area, p))
+
+        if overlaps:
+            overlaps.sort(key=lambda item: item[0], reverse=True)
+            best_p = overlaps[0][1]
+            # Трансграничный баббл, перекрывающий сразу два фрейма
+            if len(overlaps) >= 2 and overlaps[1][0] >= 0.20 and abs(overlaps[0][0] - overlaps[1][0]) < 0.25:
+                p_a, p_b = overlaps[0][1], overlaps[1][1]
+                best_p = p_a if panel_rank[p_a["id"]] < panel_rank[p_b["id"]] else p_b
+            panel_buckets[best_p["id"]].append(blk)
+        else:
+            # Если баббл вынесен на белое поле за пределы рамок — привязываем к ближайшей панели
+            best_p = min(
+                ordered_panels,
+                key=lambda p: max(0.0, p["bbox"][0] - bcx, bcx - p["bbox"][2]) ** 2
+                + max(0.0, p["bbox"][1] - bcy, bcy - p["bbox"][3]) ** 2,
+            )
+            panel_buckets[best_p["id"]].append(blk)
+
+    sorted_blocks: List[Dict[str, Any]] = []
+    for p in ordered_panels:
+        b_list = panel_buckets[p["id"]]
+        if len(b_list) <= 1:
+            sorted_blocks.extend(b_list)
+            continue
+
+        m = len(b_list)
+        b_adj: Dict[int, Set[int]] = {i: set() for i in range(m)}
+        for i in range(m):
+            x1_i, y1_i, x2_i, y2_i = b_list[i]["bbox"]
+            w_i, h_i = max(1, x2_i - x1_i), max(1, y2_i - y1_i)
+            cx_i, cy_i = 0.5 * (x1_i + x2_i), 0.5 * (y1_i + y2_i)
+            for j in range(i + 1, m):
+                x1_j, y1_j, x2_j, y2_j = b_list[j]["bbox"]
+                w_j, h_j = max(1, x2_j - x1_j), max(1, y2_j - y1_j)
+                cx_j, cy_j = 0.5 * (x1_j + x2_j), 0.5 * (y1_j + y2_j)
+
+                ov_x = max(0, min(x2_i, x2_j) - max(x1_i, x1_j)) / float(min(w_i, w_j))
+                ov_y = max(0, min(y2_i, y2_j) - max(y1_i, y1_j)) / float(min(h_i, h_j))
+
+                if reading_mode == "rtl":
+                    if ov_y >= 0.25 and ov_x < 0.50:
+                        if cx_i > cx_j:
+                            b_adj[i].add(j)
+                        else:
+                            b_adj[j].add(i)
+                    elif ov_x >= 0.25 and ov_y < 0.50:
+                        if cy_i < cy_j:
+                            b_adj[i].add(j)
+                        else:
+                            b_adj[j].add(i)
+                    else:
+                        score_ij = 0.65 * (cy_j - cy_i) + 0.35 * (cx_i - cx_j)
+                        if score_ij > 0:
+                            b_adj[i].add(j)
+                        else:
+                            b_adj[j].add(i)
+                else:
+                    if ov_y >= 0.35 and ov_x < 0.40:
+                        if cx_i < cx_j:
+                            b_adj[i].add(j)
+                        else:
+                            b_adj[j].add(i)
+                    else:
+                        if cy_i < cy_j:
+                            b_adj[i].add(j)
+                        else:
+                            b_adj[j].add(i)
+
+        in_d = {u: 0 for u in range(m)}
+        for u in b_adj:
+            for v in b_adj[u]:
+                in_d[v] += 1
+
+        rem = set(range(m))
+        px1, py1, px2, _ = p["bbox"]
+        while rem:
+            z = [u for u in rem if in_d[u] == 0] or list(rem)
+            if reading_mode == "rtl":
+                z.sort(key=lambda u: float(np.hypot(px2 - b_list[u]["bbox"][2], b_list[u]["bbox"][1] - py1)))
+            else:
+                z.sort(key=lambda u: float(np.hypot(b_list[u]["bbox"][0] - px1, b_list[u]["bbox"][1] - py1)))
+            curr = z[0]
+            sorted_blocks.append(b_list[curr])
+            rem.remove(curr)
+            for nxt in b_adj[curr]:
+                if nxt in rem:
+                    in_d[nxt] -= 1
+
+    return sorted_blocks
+
+
+# ==============================================================================
+# Блок 3: Топологическая группировка текста внутри полости баббла
+# (Cavity-Aware Text Grouping + Watershed Neck Splitting)
+# ==============================================================================
+
+
+def group_text_boxes_by_bubble_cavity(
+    page_bgr_or_gray: np.ndarray,
+    text_boxes: List[Dict[str, Any]],
+    neck_ratio_thresh: float = 0.48,
+    min_lobe_radius_px: float = 18.0,
+    white_thresh: int = 215,
+) -> Tuple[List[Dict[str, Any]], np.ndarray]:
+    """
+    Топологическая группировка текстовых боксов/колонок через сегментацию внутренней белой полости баббла (~14.77 мс).
+    - Все вертикальные колонки (`tategaki`) в одной чаше собираются в единый блок справа налево.
+    - Сдвоенные бабблы-«восьмёрки» разрезаются по узкому горлышку методом маркерного водораздела (`cv2.watershed`),
+      предотвращая склеивание разных реплик.
+    Возвращает список сгруппированных блоков и полную карту полостей `final_cavity_map` (для использования в cleaner.py).
+    """
+    gray = (
+        cv2.cvtColor(page_bgr_or_gray, cv2.COLOR_BGR2GRAY)
+        if page_bgr_or_gray.ndim == 3
+        else page_bgr_or_gray
+    )
+    H, W = gray.shape[:2]
+    if not text_boxes:
+        return [], np.zeros((H, W), dtype=np.int32)
+
+    # 1. Выделение светлых полостей бабблов и поиск компонент, содержащих текстовые боксы
+    _, white_mask = cv2.threshold(gray, white_thresh, 255, cv2.THRESH_BINARY)
+    num_cc, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(white_mask, connectivity=4)
+
+    active_cc_ids = set()
+    for tb in text_boxes:
+        x1, y1, x2, y2 = tb["bbox"]
+        roi_lbl = cc_labels[max(0, y1) : min(H, y2), max(0, x1) : min(W, x2)]
+        vals, counts = np.unique(roi_lbl[roi_lbl > 0], return_counts=True)
+        if len(vals) > 0:
+            active_cc_ids.add(int(vals[np.argmax(counts)]))
+
+    final_cavity_map = np.zeros((H, W), dtype=np.int32)
+    next_cavity_id = 1
+    k_peak = np.ones((7, 7), dtype=np.uint8)
+
+    # 2. Анализ каждой активной полости: заливка дырок от букв -> Distance Transform -> Watershed по перешейку
+    for cid in active_cc_ids:
+        x0 = int(cc_stats[cid, cv2.CC_STAT_LEFT])
+        y0 = int(cc_stats[cid, cv2.CC_STAT_TOP])
+        w0 = int(cc_stats[cid, cv2.CC_STAT_WIDTH])
+        h0 = int(cc_stats[cid, cv2.CC_STAT_HEIGHT])
+
+        pad = 4
+        rx1, ry1 = max(0, x0 - pad), max(0, y0 - pad)
+        rx2, ry2 = min(W, x0 + w0 + pad), min(H, y0 + h0 + pad)
+
+        sub_mask = ((cc_labels[ry1:ry2, rx1:rx2] == cid) * 255).astype(np.uint8)
+        # Заливка дырок от черных глифов внутри чаши баббла через заливку внешнего контура
+        cnts, _ = cv2.findContours(sub_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        sub_filled = np.zeros_like(sub_mask)
+        cv2.drawContours(sub_filled, cnts, -1, 255, -1)
+
+        dist = cv2.distanceTransform(sub_filled, cv2.DIST_L2, 3)
+        dist_dil = cv2.dilate(dist, k_peak)
+        max_r_cav = float(np.max(dist)) if dist.size > 0 else 0.0
+        eff_min_lobe_r = max(min_lobe_radius_px, 0.52 * max_r_cav)
+        peaks_mask = (sub_filled > 0) & (dist >= dist_dil - 1e-3) & (dist >= eff_min_lobe_r)
+        pys, pxs = np.where(peaks_mask)
+
+        # Сортировка пиков по убыванию радиуса и жадный NMS (подавление плато внутри перешейка)
+        order_p = np.argsort(-dist[pys, pxs])
+        peaks: List[Tuple[int, int, float]] = []
+        for idx_p in order_p:
+            py, px = int(pys[idx_p]), int(pxs[idx_p])
+            r_val = float(dist[py, px])
+            if all((py - ey) ** 2 + (px - ex) ** 2 >= (0.85 * max(r_val, er)) ** 2 for ey, ex, er in peaks):
+                peaks.append((py, px, r_val))
+
+        if len(peaks) >= 2:
+            parent = list(range(len(peaks)))
+
+            def _find(i: int) -> int:
+                while parent[i] != i:
+                    parent[i] = parent[parent[i]]
+                    i = parent[i]
+                return i
+
+            # Проверяем каждую пару пиков на наличие седловой точки (узкого горлышка)
+            for i in range(len(peaks)):
+                for j in range(i + 1, len(peaks)):
+                    yA, xA, rA = peaks[i]
+                    yB, xB, rB = peaks[j]
+                    n_pts = int(max(12, np.hypot(yB - yA, xB - xA) / 2.0))
+                    ys_l = np.clip(np.linspace(yA, yB, n_pts).astype(int), 0, dist.shape[0] - 1)
+                    xs_l = np.clip(np.linspace(xA, xB, n_pts).astype(int), 0, dist.shape[1] - 1)
+                    d_neck = float(np.min(dist[ys_l, xs_l]))
+                    if d_neck >= neck_ratio_thresh * min(rA, rB):
+                        pi, pj = _find(i), _find(j)
+                        if pi != pj:
+                            parent[pi] = pj
+
+            distinct_groups: Dict[int, List[Tuple[int, int, float]]] = {}
+            for i in range(len(peaks)):
+                distinct_groups.setdefault(_find(i), []).append(peaks[i])
+
+            if len(distinct_groups) >= 2:
+                markers = np.zeros(sub_filled.shape, dtype=np.int32)
+                markers[sub_filled == 0] = 1
+                for g_idx, g_peaks in enumerate(distinct_groups.values(), start=2):
+                    for py, px, r_val in g_peaks:
+                        cv2.circle(markers, (px, py), max(3, int(0.25 * r_val)), g_idx, -1)
+
+                dist_u8 = np.clip(255.0 * (1.0 - dist / (float(np.max(dist)) + 1e-5)), 0, 255).astype(np.uint8)
+                relief_bgr = cv2.cvtColor(dist_u8, cv2.COLOR_GRAY2BGR)
+                cv2.watershed(relief_bgr, markers)
+
+                for g_idx in range(2, 2 + len(distinct_groups)):
+                    lobe_mask = (markers == g_idx) & (sub_filled > 0)
+                    if np.any(lobe_mask):
+                        final_cavity_map[ry1:ry2, rx1:rx2][lobe_mask] = next_cavity_id
+                        next_cavity_id += 1
+                continue
+
+        final_cavity_map[ry1:ry2, rx1:rx2][sub_filled > 0] = next_cavity_id
+        next_cavity_id += 1
+
+    # 3. Привязка текстовых боксов к сегментированным чашам по мажоритарному голосованию
+    cavity_buckets: Dict[int, List[Dict[str, Any]]] = {}
+    for tb in text_boxes:
+        x1, y1, x2, y2 = tb["bbox"]
+        roi_cav = final_cavity_map[max(0, y1) : min(H, y2), max(0, x1) : min(W, x2)]
+        vals, counts = np.unique(roi_cav[roi_cav > 0], return_counts=True)
+        if len(vals) > 0:
+            cid = int(vals[np.argmax(counts)])
+        else:
+            # Для текста на темном фоне или вне белых бабблов выделяем индивидуальный виртуальный ID
+            cid = next_cavity_id
+            next_cavity_id += 1
+        cavity_buckets.setdefault(cid, []).append(tb)
+
+    # 4. Сортировка колонок внутри каждой чаши (справа налево для вертикального tategaki)
+    merged_groups: List[Dict[str, Any]] = []
+    for cid, boxes in sorted(cavity_buckets.items()):
+        aspects = [
+            (b["bbox"][3] - b["bbox"][1]) / float(max(1, b["bbox"][2] - b["bbox"][0]))
+            for b in boxes
+        ]
+        is_vertical = bool(np.median(aspects) >= 1.35)
+        if is_vertical:
+            boxes_sorted = sorted(
+                boxes,
+                key=lambda b: (-0.5 * (b["bbox"][0] + b["bbox"][2]), 0.5 * (b["bbox"][1] + b["bbox"][3])),
+            )
+        else:
+            boxes_sorted = sorted(
+                boxes,
+                key=lambda b: (0.5 * (b["bbox"][1] + b["bbox"][3]), 0.5 * (b["bbox"][0] + b["bbox"][2])),
+            )
+
+        ux1 = min(b["bbox"][0] for b in boxes_sorted)
+        uy1 = min(b["bbox"][1] for b in boxes_sorted)
+        ux2 = max(b["bbox"][2] for b in boxes_sorted)
+        uy2 = max(b["bbox"][3] for b in boxes_sorted)
+
+        merged_groups.append({
+            "cavity_id": cid,
+            "is_vertical": is_vertical,
+            "bbox": (int(ux1), int(uy1), int(ux2), int(uy2)),
+            "sub_boxes": boxes_sorted,
+            "merged_text": "".join(b.get("text", "") for b in boxes_sorted),
+        })
+
+    return merged_groups, final_cavity_map
 
 HF_YOLO_REPO = "ogkalu/comic-speech-bubble-detector-yolov8m"
 HF_YOLO_FILENAME = "comic-speech-bubble-detector.pt"
@@ -1067,25 +2035,37 @@ class MangaOCREngine:
             self._rtdetr_processor = None
             return None
 
-    def _load_manga_ocr(self) -> MangaOcr:
+    def _load_manga_ocr(self) -> Any:
         force_cpu = not self.device.startswith("cuda")
         local_mocr_dir = self.models_dir / "manga-ocr-base"
+        model_source = "kha-white/manga-ocr-base"
         try:
             has_weights = (
                 (local_mocr_dir / "pytorch_model.bin").exists()
                 or (local_mocr_dir / "model.safetensors").exists()
             )
-            if not (local_mocr_dir / "config.json").exists() or not has_weights:
+            if (not (local_mocr_dir / "config.json").exists() or not has_weights) and snapshot_download is not None:
                 snapshot_download(
                     repo_id="kha-white/manga-ocr-base",
                     local_dir=str(local_mocr_dir),
                     allow_patterns=["*.json", "*.bin", "*.safetensors", "*.txt"],
                 )
             if (local_mocr_dir / "config.json").exists():
-                return MangaOcr(pretrained_model_name_or_path=str(local_mocr_dir), force_cpu=force_cpu)
+                model_source = str(local_mocr_dir)
         except Exception as exc:
             logger.debug("Локальный кэш manga-ocr-base пропущен (%s), используем стандартную загрузку.", exc)
-        return MangaOcr(force_cpu=force_cpu)
+
+        try:
+            return HallucinationFreeMangaOCR(
+                pretrained_model_name_or_path=model_source,
+                device="cpu" if force_cpu else self.device,
+                force_cpu=force_cpu,
+            )
+        except Exception as hf_exc:
+            logger.debug("HallucinationFreeMangaOCR недоступен (%s), используем классический MangaOcr.", hf_exc)
+            if MangaOcr is not None:
+                return MangaOcr(pretrained_model_name_or_path=model_source, force_cpu=force_cpu)
+            return None
 
     def _check_rapidocr(self) -> bool:
         if self._rapidocr_available is None:
@@ -1869,6 +2849,11 @@ class MangaOCREngine:
             return False
         h, w = crop_rgb.shape[:2]
         if h < 12 or w < 12:
+            return False
+
+        # Быстрый 6-каскадный фильтр Pre-OCR Stroke Gate (градиенты, регулярные скринтоны, штриховка, рамки)
+        stroke_gate = pre_ocr_stroke_gate(crop_rgb)
+        if not stroke_gate.passed:
             return False
 
         gray = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2GRAY) if crop_rgb.ndim == 3 else crop_rgb
@@ -2998,6 +3983,31 @@ class MangaOCREngine:
             iomin_threshold=0.72,
         )
 
+        # Блок 3: Топологическая группировка текстовых колонок по белой полости баббла (Distance Transform + Watershed).
+        # Все вертикальные колонки (`tategaki`) одной чаши объединяются в единый блок справа налево,
+        # а сдвоенные бабблы-«восьмёрки» строго разделяются по узкому перешейку (`d_neck < 0.48 * min(rA, rB)`).
+        if dedup_tbs:
+            cavity_groups, cavity_map = group_text_boxes_by_bubble_cavity(img_np, dedup_tbs)
+            self._last_cavity_map = cavity_map
+            grouped_tbs: list[dict[str, Any]] = []
+            for cg in cavity_groups:
+                sub_b = cg.get("sub_boxes") or []
+                max_c = max((float(sb.get("confidence", 0.5)) for sb in sub_b), default=0.5)
+                grouped_tbs.append(
+                    {
+                        "bbox": list(cg["bbox"]),
+                        "confidence": round(max_c, 4),
+                        "is_free_text": False,
+                        "cavity_id": int(cg["cavity_id"]),
+                        "is_vertical": bool(cg["is_vertical"]),
+                        "sub_boxes": sub_b,
+                        "_source": "cavity_grouped_text_bubble",
+                    }
+                )
+            dedup_tbs = grouped_tbs
+        else:
+            self._last_cavity_map = np.zeros((img_h, img_w), dtype=np.int32)
+
         bubble_to_tbs: dict[int, list[dict[str, Any]]] = {idx: [] for idx in range(len(bubbles))}
         orphan_tbs: list[dict[str, Any]] = []
 
@@ -3056,6 +4066,12 @@ class MangaOCREngine:
                 )
                 b_copy = dict(b_det)
                 b_copy["text_bbox"] = tight_tb
+                if "cavity_id" in matched[0]:
+                    b_copy["cavity_id"] = matched[0]["cavity_id"]
+                if "sub_boxes" in matched[0]:
+                    b_copy["sub_boxes"] = matched[0]["sub_boxes"]
+                if "is_vertical" in matched[0]:
+                    b_copy["is_vertical"] = matched[0]["is_vertical"]
                 b_copy["confidence"] = round(max(float(b_det["confidence"]), float(matched[0]["confidence"])), 4)
                 final_detections.append(b_copy)
             else:
@@ -3666,43 +4682,17 @@ class MangaOCREngine:
         detections: list[dict[str, Any]],
         rtl: bool = True,
         row_overlap_ratio: float = 0.35,
+        page_bgr: Optional[np.ndarray] = None,
+        lang: Optional[str] = None,
     ) -> list[dict[str, Any]]:
+        """
+        Упорядочивает блоки страницы через двухконтурный топологический граф чтения
+        (`segment_manga_panels` + `sort_panels_dag` + внутрипанельный DAG `sort_page_blocks_reading_order_dag`).
+        """
         if not detections:
             return []
-
-        sorted_by_y = sorted(detections, key=lambda d: (d["bbox"][1] + d["bbox"][3]) / 2.0)
-        rows: list[list[dict[str, Any]]] = []
-
-        for det in sorted_by_y:
-            x1, y1, x2, y2 = det["bbox"]
-            box_h = max(1, y2 - y1)
-            box_cy = (y1 + y2) / 2.0
-
-            placed = False
-            for row in rows:
-                row_y1 = min(item["bbox"][1] for item in row)
-                row_y2 = max(item["bbox"][3] for item in row)
-                row_h = max(1, row_y2 - row_y1)
-                row_cy = sum((item["bbox"][1] + item["bbox"][3]) / 2.0 for item in row) / len(row)
-
-                overlap = min(y2, row_y2) - max(y1, row_y1)
-                if overlap > min(box_h, row_h) * row_overlap_ratio and abs(box_cy - row_cy) < max(box_h, row_h) * 0.75:
-                    row.append(det)
-                    placed = True
-                    break
-
-            if not placed:
-                rows.append([det])
-
-        ordered: list[dict[str, Any]] = []
-        for row in rows:
-            row.sort(
-                key=lambda d: (d["bbox"][0] + d["bbox"][2]) / 2.0,
-                reverse=rtl,
-            )
-            ordered.extend(row)
-
-        return ordered
+        eff_lang = lang if lang is not None else ("ja" if rtl else "zh")
+        return sort_page_blocks_reading_order_dag(detections, page_bgr=page_bgr, lang=eff_lang)
 
     def _recognize_crop(
         self,
@@ -3745,6 +4735,17 @@ class MangaOCREngine:
         if not crops_pil:
             return []
         balanced_crops = [self._pad_to_balanced_aspect_for_vit(c, max_aspect_ratio=2.0) for c in crops_pil]
+        if isinstance(self.ja_recognizer, HallucinationFreeMangaOCR):
+            results_hf: list[str] = []
+            for raw_c, bal_c in zip(crops_pil, balanced_crops):
+                rec = self.ja_recognizer.recognize(bal_c, gate_crop=raw_c)
+                if not rec.is_valid:
+                    logger.debug("HallucinationFreeMangaOCR отклонил кроп: %s", rec.reject_reason)
+                    results_hf.append("")
+                else:
+                    results_hf.append(rec.text.strip())
+            return results_hf
+
         if len(balanced_crops) == 1:
             with torch.inference_mode():
                 return [self.ja_recognizer(balanced_crops[0]).strip()]
@@ -3985,9 +4986,10 @@ class MangaOCREngine:
         if req_lang in ("ja", "ko", "zh"):
             self._last_detected_lang = req_lang
 
-        sorted_detections = self._sort_boxes_reading_order(
+        sorted_detections = sort_page_blocks_reading_order_dag(
             raw_detections,
-            rtl=(resolved_lang == "ja"),
+            page_bgr=img_np,
+            lang=resolved_lang,
         )
 
         output_blocks: list[dict[str, Any]] = []
@@ -4175,7 +5177,7 @@ class MangaOCREngine:
                     it for it in filtered_items_diag if tuple(it["bbox"]) not in restored_bboxes
                 ]
                 combined_all = output_blocks + filtered_bubble_SamePage_fallback
-                combined_all = self._sort_boxes_reading_order(combined_all, rtl=(resolved_lang == "ja"))
+                combined_all = sort_page_blocks_reading_order_dag(combined_all, page_bgr=img_np, lang=resolved_lang)
                 output_blocks = []
                 for idx_new, b_item in enumerate(combined_all, start=1):
                     b_item["id"] = idx_new

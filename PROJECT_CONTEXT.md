@@ -97,3 +97,19 @@
    - **Блок 3**: Самообучающийся трекер имен и грамматического рода `AutoGlossaryTracker` (`_glossary` + `First-Seen Canonical Lock`).
    - **Блок 4**: `EndpointCircuitBreaker`, `AIMDConcurrencyLimiter`, `Decorrelated Jitter` и класс `HybridMangaTranslator`.
    - **Блок 5**: Приоритетный арбитр видеопамяти `PriorityGPULock` (`Priority 1: LaMa Render > Priority 2: Local Ollama > Priority 3: OCR`), атомарный чекпоинтер `AtomicStateCheckpoint` (`os.fsync` + `os.replace`) и `MangaPipelineOrchestrator`.
+
+---
+
+## 5. Геометрически-топологическая архитектура CV-пайплайна (v1.1.0 · Deep Research CV Upgrade)
+
+1. **Блок 1 — Двухкаскадный фильтр галлюцинаций MangaOCR (`ocr_engine.py`)**:
+   - `pre_ocr_stroke_gate` (`StrokeGateResult`): 6-этапный морфологический, топологический и спектральный фильтр кропов (~0.04–1.32 мс на CPU) с ранним выходом по оператору Лапласа (`Step-Edge Sharpness Gate`), автоинверсией полярности периметра, срезом краевых рамок, отсевом растровых микро-точек скринтона (`halftone_dots`), детектором пиков Брэгга 2D RFFT (`fft_pmr > 18.0`), фильтрацией линий штриховки и оценкой ширины штриха/плотности медиального скелета (`DT-SWT`).
+   - `HallucinationFreeMangaOCR` (`MangaOCRRecognition`): обёртка над `VisionEncoderDecoderModel` (`_attn_implementation = "eager"`) с расчётом геометрического среднего вероятностей токенов (`seq_confidence >= 0.80`), детекцией циклических повторов (`!truncated` на 300-м шаге), нормированной пространственной энтропии Шеннона кросс-внимания по 196 патчам ViT (`spatial_attn_entropy <= 0.82`, `peak_spatial_attn >= 0.08`) и отношения числа символов к числу валидных чернильных компонент (`CIR <= 2.50` при `cjk_chars >= 5`).
+2. **Блок 2 — Сегментация панелей и двухуровневый граф порядка чтения (`ocr_engine.py`, `server.py`)**:
+   - `segment_manga_panels`: классическая CV-сегментация фреймов страницы с автоматическим рассечением диагональных и межпанельных перемычек через анализ дефектов выпуклости (`cv2.convexityDefects`) и безопасным фоллбэком для безрамочных страниц (`borderless`).
+   - `sort_panels_dag` и `sort_page_blocks_reading_order_dag`: топологическая сортировка Кана ориентированного ациклического графа фреймов (`G_panel`) и внутрипанельного графа речевых бабблов (`G_bubble`) с поддержкой трансграничных бабблов на гаттерах и режимов `rtl` (`ja`), `ltr` (`zh`) и `webtoon` (`ko`).
+3. **Блок 3 — Топологическая группировка колонок по белой полости баббла (`ocr_engine.py`, `cleaner.py`)**:
+   - `group_text_boxes_by_bubble_cavity`: выделение внутренней чаши баббла с заливкой дырок от глифов через внешний контур, Евклидово преобразование расстояний (`cv2.distanceTransform`), поиск центров чаш с подавлением плато перешейка и маркерный водораздел (`cv2.watershed`) по седловой точке узкого горлышка (`d_neck < 0.48 * min(rA, rB)`). Собирает вертикальные колонки (`tategaki`) одной чаши справа налево и строго разделяет сдвоенные бабблы-«восьмёрки».
+4. **Блок 4 — Автономный загрузчик и батч-инференс LaMa для Python 3.14 (`cleaner.py`)**:
+   - `StandaloneLaMaInpainter` и `ensure_lama_weights` (`LAMA_MODEL_REGISTRY`): прямая загрузка TorchScript JIT весов `anime-manga-big-lama.pt` (дообученных на ~300 тыс. страниц манги/аниме) и `big-lama.pt` через `torch.jit.load` с проверкой контрольных сумм MD5 и SHA256 без устаревшего пакета `simple-lama-inpainting`.
+   - `inpaint_rois_batch`: пакетный GPU-инпейнтинг всех текстурных/цветных ROI страницы за один forward-проход с симметричным паддингом до кратности `pad_mod = 8`, опциональным `bfloat16` и попиксельным альфа-композитингом.

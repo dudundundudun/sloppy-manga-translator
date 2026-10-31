@@ -70,7 +70,7 @@ from PIL import Image
 from pydantic import BaseModel, Field
 
 from cleaner import BubbleCleaner
-from ocr_engine import MangaOCREngine
+from ocr_engine import MangaOCREngine, sort_page_blocks_reading_order_dag
 from renderer import MangaRenderer
 from dataclasses import dataclass, field
 import heapq
@@ -1482,25 +1482,30 @@ CHAPTER_SCRIPT_JSON_FILENAME = "_chapter_script_bilingual.json"
 CHAPTER_SCRIPT_TXT_FILENAME = "_chapter_script_bilingual.txt"
 
 
-def _sort_page_blocks_reading_order(blocks: list[dict[str, Any]], lang: str = "ja") -> list[dict[str, Any]]:
+def _sort_page_blocks_reading_order(
+    blocks: list[dict[str, Any]],
+    lang: str = "ja",
+    page_bgr: np.ndarray | None = None,
+) -> list[dict[str, Any]]:
     """
-    БЛОК 2.1: Упорядочивает текстовые блоки страницы в естественном порядке чтения комикса:
-    - Для японской манги (ja): справа налево, сверху вниз (rtl=True).
-    - Для китайской маньхуа (zh) и корейской манхвы (ko): слева направо, сверху вниз (rtl=False).
+    БЛОК 2.1: Упорядочивает текстовые блоки страницы через двухуровневый топологический граф чтения
+    (`segment_manga_panels` + межпанельный DAG `sort_panels_dag` + внутрипанельный DAG `sort_page_blocks_reading_order_dag`):
+    - Для японской манги (ja): справа налево по фреймам и колонкам внутри каждого фрейма (rtl).
+    - Для китайской маньхуа (zh) и корейской манхвы (ko): слева направо, сверху вниз (ltr / webtoon).
     """
     if not blocks:
         return []
-    rtl = (lang or "ja").lower().strip() == "ja"
+    eff_lang = (lang or "ja").lower().strip()
     valid_boxes: list[dict[str, Any]] = []
     for b in blocks:
         bbox = b.get("bbox")
-        if isinstance(bbox, list) and len(bbox) >= 4:
+        if isinstance(bbox, (list, tuple)) and len(bbox) >= 4:
             valid_boxes.append(b)
         else:
             b_copy = dict(b)
             b_copy["bbox"] = [0, 0, 100, 100]
             valid_boxes.append(b_copy)
-    ordered = MangaOCREngine._sort_boxes_reading_order(valid_boxes, rtl=rtl)
+    ordered = sort_page_blocks_reading_order_dag(valid_boxes, page_bgr=page_bgr, lang=eff_lang)
     for idx_b, blk in enumerate(ordered, start=1):
         blk["id"] = idx_b
     return ordered
@@ -3197,7 +3202,7 @@ async def _run_folder_translation_job(
                     folder_job_state["detected_lang"] = batch_detected_lang
 
                     # БЛОК 2.1: Упорядочиваем блоки каждой страницы в естественном порядке чтения комикса (ja -> RTL, zh/ko -> LTR)
-                    p_blocks = _sort_page_blocks_reading_order(p_blocks, lang=det_lang)
+                    p_blocks = _sort_page_blocks_reading_order(p_blocks, lang=det_lang, page_bgr=np.array(pil_img.convert('RGB')))
 
                     page_global_ids: list[str | int] = []
                     for b_ord_idx, b in enumerate(p_blocks, start=1):

@@ -57,10 +57,152 @@ except ImportError:
 
 logger = logging.getLogger(__name__)
 
+import urllib.request
+from typing import Dict, Set, Union
+
+try:
+    from ocr_engine import group_text_boxes_by_bubble_cavity
+except ImportError:
+    group_text_boxes_by_bubble_cavity = None  # type: ignore[assignment]
+
+
+def _torch_inference_mode():
+    if torch is not None and hasattr(torch, "inference_mode"):
+        return torch.inference_mode()
+
+    def _decorator(fn):
+        return fn
+
+    return _decorator
+
+
 LAMA_WEIGHTS_URLS: tuple[str, ...] = (
+    "https://github.com/Sanster/models/releases/download/AnimeMangaInpainting/anime-manga-big-lama.pt",
+    "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt",
     "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt",
-    "https://huggingface.co/smartywu/big-lama/resolve/main/big-lama.pt",
 )
+
+# Реестр проверенных весов TorchScript JIT с резервными зеркалами и криптографическими хэшами
+LAMA_MODEL_REGISTRY: Dict[str, Dict[str, Union[str, List[str]]]] = {
+    "anime-manga-big-lama": {
+        "filename": "anime-manga-big-lama.pt",
+        "urls": [
+            "https://github.com/Sanster/models/releases/download/AnimeMangaInpainting/anime-manga-big-lama.pt",
+        ],
+        "md5": "29f284f36a0a510bcacf39ecf4c4d54f",
+        "sha256": "479d3afdcb7ed2fd944ed4ebcc39ca45b33491f0f2e43eb1000bd623cfb41823",
+    },
+    "big-lama": {
+        "filename": "big-lama.pt",
+        "urls": [
+            "https://github.com/Sanster/models/releases/download/add_big_lama/big-lama.pt",
+            "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt",
+        ],
+        "md5": "e3aa4aaa15225a33ec84f9f4bc47e500",
+        "sha256": "344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9",
+    },
+}
+
+
+def _compute_hashes(file_path: Path) -> Tuple[str, str]:
+    md5_hasher = hashlib.md5()
+    sha256_hasher = hashlib.sha256()
+    with open(file_path, "rb") as f:
+        for chunk in iter(lambda: f.read(1024 * 1024), b""):
+            md5_hasher.update(chunk)
+            sha256_hasher.update(chunk)
+    return md5_hasher.hexdigest(), sha256_hasher.hexdigest()
+
+
+def ensure_lama_weights(
+    model_variant: str = "anime-manga-big-lama",
+    models_dir: Union[str, Path] = "models",
+) -> Path:
+    """
+    Автономно проверяет наличие и целостность весов LaMa в папке `models/` проекта.
+    При отсутствии файла скачивает его напрямую через `torch.hub.download_url_to_file` / `urllib`
+    и сверяет контрольные суммы MD5 и SHA256.
+    """
+    if model_variant not in LAMA_MODEL_REGISTRY:
+        raise ValueError(f"Unknown model_variant '{model_variant}'. Available: {list(LAMA_MODEL_REGISTRY.keys())}")
+
+    spec = LAMA_MODEL_REGISTRY[model_variant]
+    target_dir = Path(models_dir)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    filename = str(spec["filename"])
+    model_path = target_dir / filename
+    expected_md5 = str(spec["md5"])
+    expected_sha256 = str(spec["sha256"])
+
+    torch_home = Path(os.environ.get("TORCH_HOME", str(Path.home() / ".cache" / "torch")))
+    candidate_paths = [
+        model_path,
+        target_dir / "lama" / filename,
+        torch_home / "hub" / "checkpoints" / filename,
+        Path.home() / ".cache" / "simple_lama_inpainting" / filename,
+    ]
+
+    for cand in candidate_paths:
+        if cand.is_file():
+            actual_md5, actual_sha256 = _compute_hashes(cand)
+            if actual_md5 == expected_md5 and actual_sha256 == expected_sha256:
+                return cand
+            if cand == model_path:
+                logger.warning(
+                    "Поврежденный файл весов %s (MD5=%s, ожидался %s). Перезагрузка...",
+                    cand,
+                    actual_md5,
+                    expected_md5,
+                )
+                cand.unlink(missing_ok=True)
+
+    urls: List[str] = list(spec["urls"])
+    last_err: Optional[Exception] = None
+    tmp_path = model_path.with_suffix(".pt.part")
+
+    for url in urls:
+        try:
+            logger.info("Загрузка весов LaMa (%s) из %s в %s...", model_variant, url, model_path)
+            tmp_path.unlink(missing_ok=True)
+            if torch is not None and hasattr(torch, "hub"):
+                try:
+                    torch.hub.download_url_to_file(url, str(tmp_path), progress=True)
+                except Exception:
+                    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/Python3.14"})
+                    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out_f:
+                        while True:
+                            buf = resp.read(1024 * 1024)
+                            if not buf:
+                                break
+                            out_f.write(buf)
+            else:
+                req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/Python3.14"})
+                with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out_f:
+                    while True:
+                        buf = resp.read(1024 * 1024)
+                        if not buf:
+                            break
+                        out_f.write(buf)
+
+            actual_md5, actual_sha256 = _compute_hashes(tmp_path)
+            if actual_md5 != expected_md5 or actual_sha256 != expected_sha256:
+                raise RuntimeError(
+                    f"Несовпадение контрольной суммы для {url}: MD5={actual_md5} (ожидался {expected_md5})"
+                )
+
+            tmp_path.replace(model_path)
+            logger.info("Веса LaMa успешно загружены и верифицированы: %s", model_path)
+            return model_path
+        except Exception as e:
+            last_err = e
+            logger.warning("Ошибка загрузки с зеркала %s: %s", url, e)
+            tmp_path.unlink(missing_ok=True)
+
+    raise RuntimeError(f"Не удалось загрузить веса LaMa ({model_variant}) ни с одного зеркала: {last_err}")
+
+
+def _ceil_modulo(x: int, mod: int = 8) -> int:
+    return x if x % mod == 0 else (x // mod + 1) * mod
 
 
 @dataclass
@@ -87,135 +229,238 @@ class CleanerConfig:
     inpainting_isolation_radius: int = 5
 
 
-class BuiltInSimpleLama:
+class StandaloneLaMaInpainter:
     """
-    Встроенный нейросетевой движок очистки LaMa (big-lama.pt, TorchScript JIT),
-    работающий напрямую через PyTorch (CUDA/CPU) без необходимости установки пакета `simple-lama-inpainting`.
-    Автоматически находит или скачивает `big-lama.pt` (~196 МБ) в `models/lama/big-lama.pt` при первом запуске.
+    Автономный раннер LaMa (TorchScript JIT) для Python 3.14 без пакета `simple-lama-inpainting`.
+    Поддерживает как одиночный вызов `__call__(image, mask)`, совместимый с `SimpleLama`,
+    так и батч-инференс всех ROI страницы за один forward-проход на GPU (`inpaint_rois_batch`).
     """
+
+    pad_mod: int = 8
+
+    def __init__(
+        self,
+        model_variant: str = "anime-manga-big-lama",
+        models_dir: Union[str, Path, None] = None,
+        device: Optional[Union[str, "torch.device"]] = None,
+        use_bfloat16: bool = False,
+    ):
+        if torch is None:
+            raise RuntimeError("PyTorch (torch) не установлен в окружении.")
+
+        resolved_models_dir = (
+            Path(models_dir).resolve()
+            if models_dir is not None
+            else (Path(__file__).resolve().parent / "models")
+        )
+
+        if device is None:
+            if torch.cuda.is_available():
+                self.device = torch.device("cuda")
+            elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+                self.device = torch.device("mps")
+            else:
+                self.device = torch.device("cpu")
+        else:
+            dev_str = str(device)
+            if dev_str.startswith("cuda") and not torch.cuda.is_available():
+                self.device = torch.device("cpu")
+            else:
+                self.device = torch.device(dev_str)
+
+        # Плавный фоллбэк на базовый big-lama, если anime-manga-big-lama недоступен
+        try:
+            self.model_path = ensure_lama_weights(model_variant=model_variant, models_dir=resolved_models_dir)
+        except Exception as e:
+            if model_variant != "big-lama":
+                logger.warning("Переключение на базовый 'big-lama' из-за ошибки: %s", e)
+                self.model_path = ensure_lama_weights(model_variant="big-lama", models_dir=resolved_models_dir)
+            else:
+                raise
+
+        self.weights_path = self.model_path
+        logger.info("Инициализация TorchScript LaMa из %s на устройстве %s", self.model_path, self.device)
+        self.model = torch.jit.load(str(self.model_path), map_location="cpu").to(self.device)
+        self.model.eval()
+
+        # Опциональный BF16 для ускорения на архитектурах NVIDIA Ampere+ / Blackwell
+        self.use_bf16 = (
+            use_bfloat16
+            and self.device.type == "cuda"
+            and hasattr(torch.cuda, "is_bf16_supported")
+            and torch.cuda.is_bf16_supported()
+        )
+
+    @_torch_inference_mode()
+    def inpaint_rgb_crop(self, img_rgb: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
+        """
+        Одиночный инпейнтинг кропа.
+        img_rgb: uint8 [H, W, 3] в формате RGB.
+        mask_gray: uint8 [H, W] (значения > 0 будут закрашены).
+        Возвращает: uint8 [H, W, 3] в формате RGB.
+        """
+        orig_h, orig_w = img_rgb.shape[:2]
+        pad_h = _ceil_modulo(orig_h, self.pad_mod)
+        pad_w = _ceil_modulo(orig_w, self.pad_mod)
+
+        pad_img = np.pad(
+            img_rgb,
+            ((0, pad_h - orig_h), (0, pad_w - orig_w), (0, 0)),
+            mode="symmetric",
+        )
+        pad_mask = np.pad(
+            mask_gray,
+            ((0, pad_h - orig_h), (0, pad_w - orig_w)),
+            mode="symmetric",
+        )
+
+        img_tensor = torch.from_numpy(pad_img.transpose(2, 0, 1)).float().div_(255.0).unsqueeze(0).to(self.device)
+        mask_tensor = torch.from_numpy((pad_mask > 0).astype(np.float32)).unsqueeze(0).unsqueeze(0).to(self.device)
+
+        if self.use_bf16:
+            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                pred = self.model(img_tensor, mask_tensor)
+        else:
+            pred = self.model(img_tensor, mask_tensor)
+
+        res_rgb = (
+            pred[0, :, :orig_h, :orig_w]
+            .permute(1, 2, 0)
+            .clamp_(0.0, 1.0)
+            .mul_(255.0)
+            .cpu()
+            .numpy()
+            .astype(np.uint8)
+        )
+        alpha = (mask_gray[:orig_h, :orig_w, None] > 0).astype(np.uint8)
+        return res_rgb * alpha + img_rgb * (1 - alpha)
+
+    @_torch_inference_mode()
+    def inpaint_rois_batch(
+        self,
+        page_bgr: np.ndarray,
+        page_mask: np.ndarray,
+        roi_bboxes: List[Tuple[int, int, int, int]],
+        context_pad: int = 24,
+        max_batch_size: int = 16,
+    ) -> np.ndarray:
+        """
+        Высокоскоростной батч-инпейнтинг всех цветных/текстурных ROI страницы за один проход GPU.
+        page_bgr: исходная страница [H, W, 3] BGR.
+        page_mask: бинарная маска текста на странице [H, W] (255 = текст под удаление).
+        roi_bboxes: список прямоугольников (x1, y1, x2, y2) текстовых областей, требующих нейросетевого клининга.
+        Возвращает: очищенную страницу page_bgr [H, W, 3] BGR.
+        """
+        if not roi_bboxes:
+            return page_bgr
+
+        H_page, W_page = page_bgr.shape[:2]
+        out_bgr = page_bgr.copy()
+
+        # 1. Вырезаем ROI с контекстным отступом и фильтруем пустые маски
+        valid_rois = []
+        for (x1, y1, x2, y2) in roi_bboxes:
+            cx1, cy1 = max(0, x1 - context_pad), max(0, y1 - context_pad)
+            cx2, cy2 = min(W_page, x2 + context_pad), min(H_page, y2 + context_pad)
+            if cx2 <= cx1 or cy2 <= cy1:
+                continue
+            sub_mask = page_mask[cy1:cy2, cx1:cx2]
+            if cv2.countNonZero(sub_mask) == 0:
+                continue
+            sub_rgb = cv2.cvtColor(out_bgr[cy1:cy2, cx1:cx2], cv2.COLOR_BGR2RGB)
+            valid_rois.append((cx1, cy1, cx2, cy2, sub_rgb, sub_mask))
+
+        if not valid_rois:
+            return out_bgr
+
+        # 2. Сортируем ROI по площади, чтобы близкие по размеру кропы попадали в один батч (минимизация паддинга)
+        valid_rois.sort(key=lambda item: (item[3] - item[1]) * (item[2] - item[0]))
+
+        for b_start in range(0, len(valid_rois), max_batch_size):
+            batch_items = valid_rois[b_start : b_start + max_batch_size]
+            max_h = _ceil_modulo(max(item[4].shape[0] for item in batch_items), self.pad_mod)
+            max_w = _ceil_modulo(max(item[4].shape[1] for item in batch_items), self.pad_mod)
+
+            img_batch = np.zeros((len(batch_items), 3, max_h, max_w), dtype=np.float32)
+            mask_batch = np.zeros((len(batch_items), 1, max_h, max_w), dtype=np.float32)
+
+            for idx, (_, _, _, _, s_rgb, s_mask) in enumerate(batch_items):
+                h_i, w_i = s_rgb.shape[:2]
+                pad_rgb = np.pad(s_rgb, ((0, max_h - h_i), (0, max_w - w_i), (0, 0)), mode="symmetric")
+                pad_msk = np.pad(s_mask, ((0, max_h - h_i), (0, max_w - w_i)), mode="symmetric")
+                img_batch[idx] = pad_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
+                mask_batch[idx, 0] = (pad_msk > 0).astype(np.float32)
+
+            img_t = torch.from_numpy(img_batch).to(self.device)
+            mask_t = torch.from_numpy(mask_batch).to(self.device)
+
+            if self.use_bf16:
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    pred_t = self.model(img_t, mask_t)
+            else:
+                pred_t = self.model(img_t, mask_t)
+
+            pred_np = pred_t.clamp_(0.0, 1.0).mul_(255.0).cpu().numpy().astype(np.uint8)
+
+            # 3. Вставка очищенных ROI обратно в страницу строго по пикселям маски
+            for idx, (cx1, cy1, cx2, cy2, s_rgb, s_mask) in enumerate(batch_items):
+                h_i, w_i = s_rgb.shape[:2]
+                inpainted_rgb = pred_np[idx, :, :h_i, :w_i].transpose(1, 2, 0)
+                inpainted_bgr = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2BGR)
+                alpha_mask = (s_mask > 0)[:, :, None]
+                out_bgr[cy1:cy2, cx1:cx2] = np.where(alpha_mask, inpainted_bgr, out_bgr[cy1:cy2, cx1:cx2])
+
+        return out_bgr
+
+    def __call__(
+        self,
+        image: Union[np.ndarray, Image.Image],
+        mask: Union[np.ndarray, Image.Image],
+    ) -> Union[np.ndarray, Image.Image]:
+        """
+        Прямая совместимость с сигнатурой `SimpleLama(image, mask)` из пакета `simple-lama-inpainting`.
+        """
+        return_pil = isinstance(image, Image.Image)
+        if return_pil:
+            img_rgb = np.array(image.convert("RGB"), dtype=np.uint8)
+        else:
+            img_arr = np.asarray(image)
+            if img_arr.ndim == 2:
+                img_rgb = np.stack([img_arr] * 3, axis=-1).astype(np.uint8)
+            elif img_arr.shape[2] == 4:
+                img_rgb = img_arr[:, :, :3].astype(np.uint8)
+            else:
+                img_rgb = img_arr.astype(np.uint8)
+
+        if isinstance(mask, Image.Image):
+            mask_gray = np.array(mask.convert("L"), dtype=np.uint8)
+        else:
+            mask_arr = np.asarray(mask)
+            if mask_arr.ndim == 3:
+                mask_gray = cv2.cvtColor(mask_arr.astype(np.uint8), cv2.COLOR_BGR2GRAY)
+            else:
+                mask_gray = mask_arr.astype(np.uint8)
+
+        out_rgb = self.inpaint_rgb_crop(img_rgb, mask_gray)
+        return Image.fromarray(out_rgb, mode="RGB") if return_pil else out_rgb
+
+
+class BuiltInSimpleLama(StandaloneLaMaInpainter):
+    """Обратно-совместимый алиас `StandaloneLaMaInpainter` для вызовов `BuiltInSimpleLama(device=..., models_dir=...)`."""
 
     def __init__(
         self,
         device: str | Any | None = None,
         models_dir: str | Path | None = None,
+        model_variant: str = "anime-manga-big-lama",
+        use_bfloat16: bool = False,
     ) -> None:
-        if torch is None:
-            raise RuntimeError("PyTorch (torch) не установлен в окружении.")
-
-        if device is None:
-            resolved_dev = "cuda" if torch.cuda.is_available() else "cpu"
-        else:
-            dev_str = str(device)
-            resolved_dev = dev_str if (dev_str == "cpu" or torch.cuda.is_available()) else "cpu"
-        self.device = torch.device(resolved_dev)
-
-        base_models_dir = (
-            Path(models_dir).resolve()
-            if models_dir is not None
-            else (Path(__file__).resolve().parent / "models")
+        super().__init__(
+            model_variant=model_variant,
+            models_dir=models_dir,
+            device=device,
+            use_bfloat16=use_bfloat16,
         )
-        lama_dir = base_models_dir / "lama"
-        lama_dir.mkdir(parents=True, exist_ok=True)
-        target_weights = lama_dir / "big-lama.pt"
-
-        torch_home = Path(os.environ.get("TORCH_HOME", str(Path.home() / ".cache" / "torch")))
-        candidate_paths = [
-            target_weights,
-            lama_dir / "lama_large_512px.ckpt",
-            base_models_dir / "big-lama.pt",
-            base_models_dir / "lama_large_512px.ckpt",
-            torch_home / "hub" / "checkpoints" / "big-lama.pt",
-            Path.home() / ".cache" / "simple_lama_inpainting" / "big-lama.pt",
-        ]
-
-        weights_path: Path | None = None
-        for cand in candidate_paths:
-            try:
-                if cand.exists() and cand.is_file() and cand.stat().st_size >= 100_000_000:
-                    weights_path = cand
-                    break
-            except OSError:
-                continue
-
-        if weights_path is None:
-            weights_path = self._download_weights(target_weights)
-
-        self.weights_path = weights_path
-        self.model = torch.jit.load(str(self.weights_path), map_location=self.device)
-        self.model.eval()
-        self.model.to(self.device)
-
-    @staticmethod
-    def _download_weights(dest_path: Path) -> Path:
-        if torch is None:
-            raise RuntimeError("PyTorch (torch) не установлен.")
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_path = dest_path.with_suffix(".pt.tmp")
-        last_err: Exception | None = None
-        for url in LAMA_WEIGHTS_URLS:
-            try:
-                logger.info(
-                    "Скачивание нейросетевой модели очистки LaMa (big-lama.pt, ~196 МБ) в %s...",
-                    dest_path,
-                )
-                torch.hub.download_url_to_file(url, str(tmp_path), progress=True)
-                if tmp_path.exists() and tmp_path.stat().st_size >= 100_000_000:
-                    os.replace(tmp_path, dest_path)
-                    return dest_path
-            except Exception as exc:
-                last_err = exc
-                logger.warning("Не удалось скачать big-lama.pt с %s: %s", url, exc)
-                try:
-                    if tmp_path.exists():
-                        tmp_path.unlink()
-                except OSError:
-                    pass
-        raise RuntimeError(f"Не удалось автоматически скачать big-lama.pt: {last_err}")
-
-    def __call__(
-        self,
-        image: Image.Image | np.ndarray,
-        mask: Image.Image | np.ndarray,
-    ) -> Image.Image:
-        if torch is None:
-            raise RuntimeError("PyTorch (torch) не установлен.")
-        if isinstance(image, Image.Image):
-            img_rgb = np.array(image.convert("RGB"), dtype=np.float32) / 255.0
-        else:
-            img_rgb = image.astype(np.float32) / 255.0
-            if img_rgb.ndim == 2:
-                img_rgb = np.stack([img_rgb] * 3, axis=-1)
-            elif img_rgb.shape[2] == 4:
-                img_rgb = img_rgb[:, :, :3]
-
-        if isinstance(mask, Image.Image):
-            mask_gray = np.array(mask.convert("L"), dtype=np.float32) / 255.0
-        else:
-            mask_gray = mask.astype(np.float32)
-            if mask_gray.ndim == 3:
-                mask_gray = mask_gray[:, :, 0]
-            if mask_gray.max() > 1.0:
-                mask_gray = mask_gray / 255.0
-
-        orig_h, orig_w = img_rgb.shape[:2]
-        img_chw = np.transpose(img_rgb, (2, 0, 1))
-        mask_chw = mask_gray[np.newaxis, :, :]
-
-        pad_h = (8 - (orig_h % 8)) % 8
-        pad_w = (8 - (orig_w % 8)) % 8
-        if pad_h > 0 or pad_w > 0:
-            img_chw = np.pad(img_chw, ((0, 0), (0, pad_h), (0, pad_w)), mode="symmetric")
-            mask_chw = np.pad(mask_chw, ((0, 0), (0, pad_h), (0, pad_w)), mode="symmetric")
-
-        img_t = torch.from_numpy(np.ascontiguousarray(img_chw)).unsqueeze(0).to(self.device)
-        mask_t = (torch.from_numpy(np.ascontiguousarray(mask_chw)).unsqueeze(0).to(self.device) > 0.05).float()
-
-        with torch.inference_mode():
-            inpainted_t = self.model(img_t, mask_t)
-            out_hwc = inpainted_t[0].permute(1, 2, 0).detach().cpu().numpy()
-
-        out_cropped = np.clip(out_hwc[:orig_h, :orig_w, :] * 255.0, 0.0, 255.0).round().astype(np.uint8)
-        return Image.fromarray(out_cropped, mode="RGB")
 
 
 class SotaMangaCleaner:
@@ -1407,23 +1652,28 @@ class BubbleCleaner:
 
         if use_lama:
             try:
-                from simple_lama_inpainting import SimpleLama
-
-                logger.info("Инициализация модели нейросетевого инпейнтинга SimpleLama...")
-                self.lama_model = SimpleLama()
-                logger.info("SimpleLama успешно загружена.")
-            except Exception:
+                self.lama_model = StandaloneLaMaInpainter(
+                    model_variant="anime-manga-big-lama",
+                    models_dir=self.models_dir,
+                    device=self.device,
+                )
+                logger.info(
+                    "Автономная нейросетевая модель очистки StandaloneLaMaInpainter (%s) подключена на %s!",
+                    self.lama_model.model_path.name,
+                    self.device,
+                )
+            except Exception as standalone_exc:
                 try:
-                    self.lama_model = BuiltInSimpleLama(device=self.device, models_dir=self.models_dir)
-                    logger.info(
-                        "Встроенная нейросетевая модель очистки LaMa (big-lama.pt) успешно подключена на %s!",
-                        self.device,
-                    )
-                except Exception as builtin_exc:
+                    from simple_lama_inpainting import SimpleLama
+
+                    logger.info("Инициализация резервной обертки SimpleLama...")
+                    self.lama_model = SimpleLama()
+                    logger.info("SimpleLama успешно загружена.")
+                except Exception:
                     logger.warning(
                         "Нейросетевая модель LaMa недоступна (%s). "
                         "Используется резервный алгоритм очистки (Smart Inpaint Router + OpenCV INPAINT_NS).",
-                        builtin_exc,
+                        standalone_exc,
                     )
                     self.lama_model = None
 
@@ -1437,6 +1687,8 @@ class BubbleCleaner:
         ch, cw = img_rgb.shape[:2]
         if self.lama_model is not None:
             try:
+                if hasattr(self.lama_model, "inpaint_rgb_crop"):
+                    return self.lama_model.inpaint_rgb_crop(img_rgb, mask_u8)
                 crop_pil = Image.fromarray(img_rgb, mode="RGB")
                 mask_pil = Image.fromarray(mask_u8, mode="L")
                 inpainted_pil = self.lama_model(crop_pil, mask_pil).convert("RGB")
@@ -1448,6 +1700,50 @@ class BubbleCleaner:
         bgr_in = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         bgr_out = cv2.inpaint(bgr_in, mask_u8, inpaintRadius=5, flags=cv2.INPAINT_NS)
         return cv2.cvtColor(bgr_out, cv2.COLOR_BGR2RGB)
+
+    def inpaint_rois_batch(
+        self,
+        page_bgr: np.ndarray,
+        page_mask: np.ndarray,
+        roi_bboxes: List[Tuple[int, int, int, int]],
+        context_pad: int = 24,
+        max_batch_size: int = 16,
+    ) -> np.ndarray:
+        """
+        Пакетный инпейнтинг списка текстурных/цветных ROI страницы за один GPU-проход через `StandaloneLaMaInpainter`
+        (с автоматическим фоллбэком на `cv2.INPAINT_NS`, если нейросеть отключена или недоступна).
+        """
+        if not roi_bboxes:
+            return page_bgr
+        if self.lama_model is not None and hasattr(self.lama_model, "inpaint_rois_batch"):
+            try:
+                return self.lama_model.inpaint_rois_batch(
+                    page_bgr=page_bgr,
+                    page_mask=page_mask,
+                    roi_bboxes=roi_bboxes,
+                    context_pad=context_pad,
+                    max_batch_size=max_batch_size,
+                )
+            except Exception as batch_exc:
+                logger.debug("Ошибка батч-инпейнтинга LaMa (%s), используем поблочный фоллбэк.", batch_exc)
+
+        H_page, W_page = page_bgr.shape[:2]
+        out_bgr = page_bgr.copy()
+        for (x1, y1, x2, y2) in roi_bboxes:
+            cx1, cy1 = max(0, x1 - context_pad), max(0, y1 - context_pad)
+            cx2, cy2 = min(W_page, x2 + context_pad), min(H_page, y2 + context_pad)
+            if cx2 <= cx1 or cy2 <= cy1:
+                continue
+            sub_mask = page_mask[cy1:cy2, cx1:cx2]
+            if cv2.countNonZero(sub_mask) == 0:
+                continue
+            out_bgr[cy1:cy2, cx1:cx2] = cv2.inpaint(
+                out_bgr[cy1:cy2, cx1:cx2],
+                sub_mask,
+                inpaintRadius=7,
+                flags=cv2.INPAINT_NS,
+            )
+        return out_bgr
 
     @staticmethod
     def analyze_bubble_geometry(
@@ -2583,6 +2879,71 @@ class BubbleCleaner:
 
                 base_composited_np = img_np.copy()
 
+                # Гибридный батч-инференс LaMa (Блок 3 + Блок 4):
+                # Вычисляем карту белых полостей `final_cavity_map`, и если на странице есть несколько текстурных/свободных
+                # блоков (`textured_rois`), требующих нейросетевого инпейнтинга LaMa вне однородной белой чаши,
+                # прогоняем их за один батчевый вызов GPU `StandaloneLaMaInpainter.inpaint_rois_batch`.
+                pre_batched_lama_rgb: np.ndarray | None = None
+                if (
+                    len(uncached_blocks) >= 2
+                    and self.lama_model is not None
+                    and hasattr(self.lama_model, "inpaint_rois_batch")
+                ):
+                    cavity_map_page = None
+                    if group_text_boxes_by_bubble_cavity is not None:
+                        try:
+                            tb_inputs = [
+                                {"bbox": self._get_effective_clean_bounds(ub, orig_w, orig_h)}
+                                for ub in uncached_blocks
+                            ]
+                            _, cavity_map_page = group_text_boxes_by_bubble_cavity(img_np, tb_inputs)
+                        except Exception:
+                            cavity_map_page = None
+
+                    textured_rois: List[Tuple[int, int, int, int]] = []
+                    for (
+                        _blk,
+                        x1_s,
+                        y1_s,
+                        x2_s,
+                        y2_s,
+                        cx1_s,
+                        cy1_s,
+                        cx2_s,
+                        cy2_s,
+                        is_free_s,
+                        _bkey,
+                        cached_pair_s,
+                    ) in active_block_specs:
+                        if cached_pair_s is not None:
+                            continue
+                        sub_m = base_mask_np[cy1_s:cy2_s, cx1_s:cx2_s]
+                        if np.count_nonzero(sub_m) == 0:
+                            continue
+                        if is_free_s:
+                            textured_rois.append((int(x1_s), int(y1_s), int(x2_s), int(y2_s)))
+                        elif cavity_map_page is not None:
+                            sub_cav = cavity_map_page[cy1_s:cy2_s, cx1_s:cx2_s]
+                            outside_ink = np.count_nonzero((sub_m > 0) & (sub_cav == 0))
+                            if outside_ink > 0.15 * np.count_nonzero(sub_m):
+                                textured_rois.append((int(x1_s), int(y1_s), int(x2_s), int(y2_s)))
+
+                    if len(textured_rois) >= 2:
+                        try:
+                            lama_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                            dil_page_mask = cv2.dilate(base_mask_np, lama_k, iterations=1)
+                            page_bgr_in = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                            batch_bgr_out = self.inpaint_rois_batch(
+                                page_bgr=page_bgr_in,
+                                page_mask=dil_page_mask,
+                                roi_bboxes=textured_rois,
+                                context_pad=24,
+                            )
+                            pre_batched_lama_rgb = cv2.cvtColor(batch_bgr_out, cv2.COLOR_BGR2RGB)
+                        except Exception as b_exc:
+                            logger.debug("Пропуск пред-батчирования ROI LaMa (%s).", b_exc)
+                            pre_batched_lama_rgb = None
+
                 for (
                     block,
                     x1,
@@ -2617,12 +2978,15 @@ class BubbleCleaner:
                         if np.count_nonzero(crop_mask) == 0:
                             continue
 
-                        inpainted_crop = self._inpaint_crop(
-                            crop_rgb,
-                            crop_mask,
-                            is_free_text=is_free_text,
-                            inner_box_rel=(x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1),
-                        )
+                        if is_free_text and pre_batched_lama_rgb is not None:
+                            inpainted_crop = pre_batched_lama_rgb[cy1:cy2, cx1:cx2].copy()
+                        else:
+                            inpainted_crop = self._inpaint_crop(
+                                crop_rgb,
+                                crop_mask,
+                                is_free_text=is_free_text,
+                                inner_box_rel=(x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1),
+                            )
                         with self._cache_lock:
                             self._block_crop_cache[block_crop_key] = (
                                 inpainted_crop.copy(),
