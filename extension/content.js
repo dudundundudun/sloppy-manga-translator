@@ -839,6 +839,12 @@
             Заглавные буквы (КОМИКС-СТИЛЬ)
           </label>
         </div>
+        <div class="mt-row">
+          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#f472b6; font-weight:600;" title="Добавляет в начало системного промпта DeepSeek анти-цензурный блок ('Certainly! Here is...')">
+            <input id="mt-anti-censorship-chk" type="checkbox" />
+            🛡 Анти-цензурный промпт DeepSeek
+          </label>
+        </div>
         <div class="mt-row" style="margin-top:2px;">
           <button id="mt-save-settings-btn" class="mt-btn secondary" style="flex:1; padding:6px;">💾 Сохранить настройки</button>
           <button id="mt-stop-server-btn" class="mt-btn secondary" style="color:#fca5a5; padding:6px 9px;" title="Выключить локальный сервер">⏹ Сервер</button>
@@ -1072,6 +1078,8 @@
     skipSfxChk.checked = settings.skipSfx !== false;
     freeTextChk.checked = Boolean(settings.detectFreeText);
     uppercaseChk.checked = settings.uppercase;
+    const antiCensorChk = document.getElementById("mt-anti-censorship-chk");
+    if (antiCensorChk) antiCensorChk.checked = Boolean(settings.antiCensorshipPrompt);
     panel.classList.toggle("mt-minimized", Boolean(settings.minimized));
     minimizeBtn.textContent = settings.minimized ? "▢" : "—";
     applySavedPanelPosition();
@@ -1416,6 +1424,7 @@
       maxFontSize: settings.maxFontSize,
       uppercase: settings.uppercase,
       overflowMode: settings.overflowMode,
+      antiCensorshipPrompt: Boolean(document.getElementById("mt-anti-censorship-chk")?.checked),
     };
     if (enteredKey) {
       savePayload.unslothApiKey = enteredKey;
@@ -1620,6 +1629,9 @@
       }
       if (hd.overflow_mode) {
         settings.overflowMode = hd.overflow_mode;
+      }
+      if (typeof hd.anti_censorship_prompt === "boolean") {
+        settings.antiCensorshipPrompt = hd.anti_censorship_prompt;
       }
       saveLocalSettings();
 

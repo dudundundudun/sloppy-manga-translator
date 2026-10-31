@@ -168,6 +168,7 @@ class MikoMangaStudioGUI:
         self.var_auto_save_sec = tk.DoubleVar(value=2.5)
         self.var_auto_save_web = tk.BooleanVar(value=True)
         self.var_web_save_dir = tk.StringVar(value=str(BASE_DIR / "Saved_Manga"))
+        self.var_anti_censorship_prompt = tk.BooleanVar(value=False)
         self.view_mode: str = "split"
 
         self._load_gui_settings()
@@ -221,6 +222,8 @@ class MikoMangaStudioGUI:
                     self.var_unsloth_url.set(str(data["unsloth_url"]))
                 if data.get("unsloth_api_key"):
                     self.var_api_key.set(str(data["unsloth_api_key"]))
+                if "anti_censorship_prompt" in data:
+                    self.var_anti_censorship_prompt.set(bool(data.get("anti_censorship_prompt", False)))
                 if data.get("last_folder") and Path(data["last_folder"]).is_dir():
                     self.current_folder = Path(data["last_folder"])
             except Exception:
@@ -244,6 +247,7 @@ class MikoMangaStudioGUI:
             "auto_save_sec": float(self.var_auto_save_sec.get() or 2.5),
             "unsloth_url": self.var_unsloth_url.get().strip(),
             "unsloth_api_key": self.var_api_key.get().strip(),
+            "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
             "last_folder": str(self.current_folder) if self.current_folder else None,
         }
         try:
@@ -1146,8 +1150,19 @@ class MikoMangaStudioGUI:
 
         tk.Label(pad, text="API Ключ (sk-...):", bg=BG_BENTO, fg=FG_SECONDARY).pack(anchor="w")
         tk.Entry(pad, textvariable=self.var_api_key, show="*", bg=BG_INNER, fg="#ffffff", insertbackground="#ffffff", bd=0).pack(
-            fill=tk.X, ipady=4, pady=(2, 8)
+            fill=tk.X, ipady=4, pady=(2, 4)
         )
+        tk.Checkbutton(
+            pad,
+            text="🛡 Анти-цензурный промпт для DeepSeek (если манга сталкивается с цензурой)",
+            variable=self.var_anti_censorship_prompt,
+            bg=BG_BENTO,
+            fg="#f472b6",
+            selectcolor=BG_INNER,
+            activebackground=BG_BENTO,
+            activeforeground="#f472b6",
+            font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w", pady=(0, 6))
 
         # 4. Объем перевода текста на странице (фильтр вздохов и спецэффектов)
         tk.Label(
@@ -1891,6 +1906,8 @@ class MikoMangaStudioGUI:
             self.var_unsloth_url.set(str(data["unsloth_url"]))
         if data.get("unsloth_api_key"):
             self.var_api_key.set(str(data["unsloth_api_key"]))
+        if "anti_censorship_prompt" in data:
+            self.var_anti_censorship_prompt.set(bool(data.get("anti_censorship_prompt", False)))
         self._update_summary_chip()
         if self.current_folder and not self.folder_pages:
             self._refresh_folder_inspection_async()
@@ -1925,6 +1942,7 @@ class MikoMangaStudioGUI:
                             "selected_model": mod_id,
                             "unsloth_url": u_url,
                             "unsloth_api_key": api_key,
+                            "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
                             "auto_save_web_pages": bool(self.var_auto_save_web.get()),
                             "web_save_dir": self.var_web_save_dir.get().strip(),
                             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),

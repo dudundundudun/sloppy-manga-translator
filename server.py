@@ -72,10 +72,19 @@ from pydantic import BaseModel, Field
 from cleaner import BubbleCleaner
 from ocr_engine import MangaOCREngine
 from renderer import MangaRenderer
+from dataclasses import dataclass, field
+import heapq
+import tempfile
+from typing import Awaitable, Callable
+
 from translator import (
     CLOUD_API_PRESETS,
+    DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
+    FICTION_NOVEL_CONTEXT_NOTE,
     RECOMMENDED_LOCAL_MODELS,
     TRANSLATION_PROFILES,
+    EndpointCircuitBreaker,
+    HybridMangaTranslator,
     OllamaTranslator,
     export_glossary_to_sakura_text,
     export_glossary_to_tsv,
@@ -191,7 +200,255 @@ translator_engine: OllamaTranslator | None = None
 cleaner_engine: BubbleCleaner | None = None
 renderer_engine: MangaRenderer | None = None
 
-gpu_lock = asyncio.Lock()
+class PriorityGPULock:
+    """
+    БЛОК 5.2A: Приоритетный асинхронный мьютекс для синхронизации доступа к VRAM между:
+      - Priority 1 (Высший): Стадия 3 (LaMa Inpainting + Render) — завершает страницы и освобождает RAM
+      - Priority 2 (Средний): Стадия 2 (Local Ollama Fallback) — разблокирует критический путь LLM
+      - Priority 3 (Низший): Стадия 1 (GPU OCR) — упреждающее сканирование следующей пачки N+1
+    Поддерживает как вызов `async with gpu_lock(priority=1):`, так и прямой `async with gpu_lock:` (priority=2).
+    """
+    def __init__(self) -> None:
+        self._locked: bool = False
+        self._waiters: list[tuple[int, int, asyncio.Future[bool]]] = []
+        self._counter: int = 0
+
+    async def acquire(self, priority: int = 2) -> None:
+        if not self._locked and not self._waiters:
+            self._locked = True
+            return
+        loop = asyncio.get_running_loop()
+        fut: asyncio.Future[bool] = loop.create_future()
+        self._counter += 1
+        heapq.heappush(self._waiters, (priority, self._counter, fut))
+        await fut
+
+    def release(self) -> None:
+        while self._waiters:
+            _, _, fut = heapq.heappop(self._waiters)
+            if not fut.done():
+                fut.set_result(True)
+                return
+        self._locked = False
+
+    async def __aenter__(self) -> PriorityGPULock:
+        await self.acquire(2)
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, tb: Any) -> None:
+        self.release()
+
+    @asynccontextmanager
+    async def __call__(self, priority: int = 2):
+        await self.acquire(priority)
+        try:
+            yield
+        finally:
+            self.release()
+
+
+class AtomicStateCheckpoint:
+    """
+    БЛОК 5.2B: Атомарно сохраняет состояние перевода после каждой отрендеренной страницы.
+    Использует запись во временный файл + os.fsync() + os.replace(), исключая повреждение JSON.
+    """
+    def __init__(self, folder_path: Path) -> None:
+        self.folder_path = folder_path
+        self.state_file = folder_path / ".translation_state.json"
+        self._lock = asyncio.Lock()
+        self.state: dict[str, Any] = {
+            "version": "2.0",
+            "updated_at": 0.0,
+            "completed_pages": {},
+            "glossary": {},
+        }
+        self._load_existing()
+
+    def _load_existing(self) -> None:
+        if self.state_file.exists():
+            try:
+                raw = self.state_file.read_text(encoding="utf-8")
+                loaded = json.loads(raw)
+                if isinstance(loaded, dict):
+                    self.state.update(loaded)
+            except Exception:
+                pass
+
+    def is_page_completed(self, page_name: str) -> bool:
+        return page_name in self.state.get("completed_pages", {})
+
+    async def mark_page_completed(
+        self,
+        page_name: str,
+        page_translations: dict[str, str],
+        glossary_snapshot: dict[str, Any],
+    ) -> None:
+        async with self._lock:
+            self.state["updated_at"] = time.time()
+            self.state["completed_pages"][page_name] = {
+                "status": "done",
+                "blocks_count": len(page_translations),
+                "translations": page_translations,
+            }
+            self.state["glossary"] = glossary_snapshot
+            payload_bytes = json.dumps(
+                self.state, ensure_ascii=False, indent=2
+            ).encode("utf-8")
+            await asyncio.to_thread(self._atomic_write_sync, payload_bytes)
+
+    def _atomic_write_sync(self, data: bytes) -> None:
+        self.folder_path.mkdir(parents=True, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(
+            dir=str(self.folder_path),
+            prefix=".translation_state_",
+            suffix=".tmp",
+        )
+        try:
+            with os.fdopen(fd, "wb") as f:
+                f.write(data)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, str(self.state_file))
+        except Exception:
+            if os.path.exists(tmp_path):
+                try:
+                    os.remove(tmp_path)
+                except OSError:
+                    pass
+            raise
+
+
+@dataclass(slots=True)
+class PageContext:
+    page_name: str
+    image_path: Path
+    block_ids: list[str] = field(default_factory=list)
+    ocr_boxes: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(slots=True)
+class BatchJob:
+    batch_idx: int
+    pages: list[PageContext]
+    source_blocks: dict[str, str] = field(default_factory=dict)
+    translated_blocks: dict[str, str] = field(default_factory=dict)
+
+
+class MangaPipelineOrchestrator:
+    """
+    БЛОК 5.1: Трехстадийный конвейер перевода главы:
+      - Stage 1 (OCR Worker): сканирует Пачку N+1 на GPU с приоритетом 3
+      - Stage 2 (LLM Worker): переводит Пачку N по сети (и локально в Ollama с приоритетом 2)
+      - Stage 3 (Render Worker): выполняет LaMa Inpainting и верстку Пачки N-1 с приоритетом 1
+    """
+    def __init__(
+        self,
+        translator: HybridMangaTranslator,
+        ocr_page_fn: Callable[[Path], Awaitable[tuple[dict[str, str], dict[str, Any]]]],
+        render_page_fn: Callable[[Path, dict[str, Any], dict[str, str]], Awaitable[None]],
+        queue_maxsize: int = 2,
+    ) -> None:
+        self.gpu_lock = PriorityGPULock()
+        self.translator = translator
+        self.translator.gpu_lock_acquire = self.gpu_lock
+        self.ocr_page_fn = ocr_page_fn
+        self.render_page_fn = render_page_fn
+        self.queue_maxsize = queue_maxsize
+
+    async def process_chapter_folder(
+        self,
+        folder_path: Path,
+        page_paths: list[Path],
+        source_lang: str = "JA",
+        target_lang: str = "RU",
+        batch_page_size: int = 15,
+    ) -> dict[str, Any]:
+        checkpoint = AtomicStateCheckpoint(folder_path)
+        pending_pages = [
+            p for p in page_paths if not checkpoint.is_page_completed(p.name)
+        ]
+        if not pending_pages:
+            return checkpoint.state
+
+        batches: list[BatchJob] = []
+        for idx, i in enumerate(range(0, len(pending_pages), batch_page_size)):
+            slice_paths = pending_pages[i : i + batch_page_size]
+            pages_ctx = [
+                PageContext(page_name=p.name, image_path=p) for p in slice_paths
+            ]
+            batches.append(BatchJob(batch_idx=idx, pages=pages_ctx))
+
+        q_ocr_to_llm: asyncio.Queue[BatchJob | None] = asyncio.Queue(
+            maxsize=self.queue_maxsize
+        )
+        q_llm_to_render: asyncio.Queue[BatchJob | None] = asyncio.Queue(
+            maxsize=self.queue_maxsize
+        )
+
+        async def stage1_ocr_worker() -> None:
+            global_block_counter = 1
+            for job in batches:
+                for page in job.pages:
+                    async with self.gpu_lock(priority=3):
+                        page_texts, page_boxes = await self.ocr_page_fn(page.image_path)
+                    for local_id, text in page_texts.items():
+                        gid = str(global_block_counter)
+                        global_block_counter += 1
+                        page.block_ids.append(gid)
+                        page.ocr_boxes[gid] = page_boxes.get(local_id)
+                        job.source_blocks[gid] = text
+                await q_ocr_to_llm.put(job)
+            await q_ocr_to_llm.put(None)
+
+        async def stage2_llm_worker() -> None:
+            while True:
+                job = await q_ocr_to_llm.get()
+                if job is None:
+                    await q_llm_to_render.put(None)
+                    q_ocr_to_llm.task_done()
+                    break
+                if job.source_blocks:
+                    job.translated_blocks = await self.translator.translate_batch(
+                        blocks=job.source_blocks,
+                        source_lang=source_lang,
+                        target_lang=target_lang,
+                        batch_idx=job.batch_idx,
+                    )
+                await q_llm_to_render.put(job)
+                q_ocr_to_llm.task_done()
+
+        async def stage3_render_worker() -> None:
+            while True:
+                job = await q_llm_to_render.get()
+                if job is None:
+                    q_llm_to_render.task_done()
+                    break
+                for page in job.pages:
+                    page_trans = {
+                        bid: job.translated_blocks.get(bid, job.source_blocks.get(bid, ""))
+                        for bid in page.block_ids
+                    }
+                    async with self.gpu_lock(priority=1):
+                        await self.render_page_fn(
+                            page.image_path, page.ocr_boxes, page_trans
+                        )
+                    page.ocr_boxes.clear()
+                    await checkpoint.mark_page_completed(
+                        page_name=page.page_name,
+                        page_translations=page_trans,
+                        glossary_snapshot=self.translator.glossary.export_state(),
+                    )
+                q_llm_to_render.task_done()
+
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(stage1_ocr_worker(), name="stage1_ocr")
+            tg.create_task(stage2_llm_worker(), name="stage2_llm")
+            tg.create_task(stage3_render_worker(), name="stage3_render")
+
+        return checkpoint.state
+
+
+gpu_lock = PriorityGPULock()
 
 folder_job_state: dict[str, Any] = {
     "status": "idle",
@@ -514,7 +771,7 @@ async def _get_or_clean_page_image(
                     )
                     return fast_cleaned, None, True, clean_state_hash
 
-    async with gpu_lock:
+    async with gpu_lock(priority=1):
         cleaned_image, mask_image = await asyncio.to_thread(
             cleaner_engine.clean_image, pil_image, active_blocks, src_file
         )
@@ -571,6 +828,7 @@ async def lifespan(app: FastAPI):
 
     print("  [3/4] Инициализация шрифтового движка и клиента Ollama/Cloud API...", flush=True)
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
+    translator_engine.gpu_lock_acquire = gpu_lock
     renderer_engine = MangaRenderer(
         fonts_dir=BASE_DIR / "fonts",
         uppercase_comic_style=bool(getattr(translator_engine, "uppercase", False)),
@@ -855,6 +1113,10 @@ class FolderTranslateRequest(BaseModel):
         default=None,
         description="Профиль перевода: 'eco_book', 'balanced', 'turbo', 'local_only'",
     )
+    anti_censorship_prompt: bool | None = Field(
+        default=None,
+        description="Если True, добавляет в самое начало системного промпта для DeepSeek усиленный анти-цензурный блок",
+    )
     selected_files: list[str] | None = Field(default=None)
     open_when_done: bool = Field(default=True)
 
@@ -895,6 +1157,8 @@ class ServerSettingsRequest(BaseModel):
     selected_model: str | None = Field(default=None)
     translation_profile: str | None = Field(default=None)
     local_fallback_model_multilang: str | None = Field(default=None)
+    anti_censorship_prompt: bool | None = Field(default=None)
+    anti_censorship_custom_prompt: str | None = Field(default=None)
     auto_save_web_pages: bool | None = Field(default=None)
     web_save_dir: str | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
@@ -1190,12 +1454,25 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
         with _manifest_write_lock:
             output_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = output_dir / MANIFEST_FILENAME
-            tmp_path = output_dir / f"{MANIFEST_FILENAME}.tmp"
-            tmp_path.write_text(
-                json.dumps(manifest, ensure_ascii=False, indent=2),
-                encoding="utf-8",
+            payload_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            fd, tmp_path = tempfile.mkstemp(
+                dir=str(output_dir),
+                prefix=".translation_state_",
+                suffix=".tmp",
             )
-            os.replace(tmp_path, manifest_path)
+            try:
+                with os.fdopen(fd, "wb") as f:
+                    f.write(payload_bytes)
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp_path, str(manifest_path))
+            except Exception:
+                if os.path.exists(tmp_path):
+                    try:
+                        os.remove(tmp_path)
+                    except OSError:
+                        pass
+                raise
     except Exception as exc:
         logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
 
@@ -2878,7 +3155,7 @@ async def _run_folder_translation_job(
                         raise pre_pil
                     pil_img: Image.Image = pre_pil
                     scan_lang = chapter_detected_lang if chapter_detected_lang else lang
-                    async with gpu_lock:
+                    async with gpu_lock(priority=3):
                         p_blocks, det_lang = await asyncio.to_thread(
                             _run_ocr_compat,
                             ocr_engine,
@@ -3174,7 +3451,7 @@ async def _run_folder_translation_job(
                 folder_job_state["current_file"] = f"🎨 [3/3 Очистка и верстка] {rel_norm}"
                 try:
                     if uses_gpu_lama and p_blocks:
-                        async with gpu_lock:
+                        async with gpu_lock(priority=1):
                             await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
                     else:
                         async with render_sem:
@@ -3481,6 +3758,9 @@ async def health_check() -> dict[str, Any]:
         "translation_profile": getattr(translator_engine, "translation_profile", "balanced") if translator_engine else "balanced",
         "translation_profiles": list(TRANSLATION_PROFILES.values()),
         "local_fallback_model_multilang": getattr(translator_engine, "local_fallback_model_multilang", "auto") if translator_engine else "auto",
+        "anti_censorship_prompt": bool(getattr(translator_engine, "anti_censorship_prompt", False)) if translator_engine else False,
+        "anti_censorship_custom_prompt": getattr(translator_engine, "anti_censorship_custom_prompt", "") if translator_engine else "",
+        "default_anti_censorship_prompt_template": DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
         "glossary": translator_engine.glossary if translator_engine else [],
         "glossary_count": len(translator_engine.glossary) if translator_engine else 0,
@@ -3587,6 +3867,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         overflow_mode=payload.overflow_mode,
         batch_pages=payload.batch_pages,
         ui_settings=payload.ui_settings,
+        anti_censorship_prompt=payload.anti_censorship_prompt,
+        anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
     )
     if renderer_engine is not None:
         if payload.overflow_mode:
@@ -3602,6 +3884,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "selected_model": saved["selected_model"],
         "translation_profile": saved.get("translation_profile", "balanced"),
         "local_fallback_model_multilang": saved.get("local_fallback_model_multilang", "auto"),
+        "anti_censorship_prompt": bool(saved.get("anti_censorship_prompt", False)),
+        "anti_censorship_custom_prompt": saved.get("anti_censorship_custom_prompt", ""),
         "unsloth_url": saved["unsloth_url"],
         "unsloth_api_key": saved["unsloth_api_key"],
         "unsloth_status": translator_engine.last_unsloth_status,
@@ -5200,6 +5484,9 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
             target_lang=target_lang,
         )
     )
+
+    if payload.anti_censorship_prompt is not None and translator_engine is not None:
+        translator_engine.save_config(anti_censorship_prompt=payload.anti_censorship_prompt)
 
     _folder_task = asyncio.create_task(
         _run_folder_translation_job(

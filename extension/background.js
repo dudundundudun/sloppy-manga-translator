@@ -251,6 +251,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (typeof msg.overflowMode === "string" && msg.overflowMode) {
             payload.overflow_mode = msg.overflowMode;
           }
+          if (msg.antiCensorshipPrompt !== undefined) {
+            payload.anti_censorship_prompt = Boolean(msg.antiCensorshipPrompt);
+          }
 
           const data = await callLocalServer(
             "/settings",
