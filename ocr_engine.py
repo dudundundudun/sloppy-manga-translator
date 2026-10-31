@@ -1715,14 +1715,17 @@ def verify_bubble_and_text_candidate(
 ) -> dict[str, bool | float | int]:
     """
     Проблема №6а: Каскадный фильтр-верификатор для ocr_engine.py:
-    Отличает реальные диалоговые бабблы (включая облачные, колючие и разомкнутые со скобками)
+    Отличает реальные диалоговые бабблы (включая облачные, колючие, угловые, 1-символьные и разомкнутые со скобками)
     от черт лица (глаза/брови/рот/прическа), градиентной штриховки (KAGON), кафельной плитки и фоновых SFX.
     """
     t0 = time.perf_counter()
     if roi_gray.ndim == 3:
         roi_gray = cv2.cvtColor(roi_gray, cv2.COLOR_RGB2GRAY)
     Hr, Wr = roi_gray.shape[:2]
-    s = max(0.5, float(scale_f))
+    if scale_f == 1.0:
+        s = max(0.75, min(2.5, float(min(Hr, Wr)) / 110.0))
+    else:
+        s = max(0.5, float(scale_f))
     if Hr < 14 or Wr < 14:
         return {
             "is_valid": False,
@@ -1749,8 +1752,6 @@ def verify_bubble_and_text_candidate(
         top1_energy = float(np.max(hist_prob))
     else:
         h_ori, top1_energy = 0.0, 1.0
-
-    is_kagon = (top1_energy > 0.42) or (h_ori < 1.55)
 
     # 2. Топологический анализ замкнутых полостей (отсечение кафельной плитки и проверка чаши баббла)
     k_box = int(round(21 * s)) | 1
@@ -1791,7 +1792,7 @@ def verify_bubble_and_text_candidate(
 
     is_tile_grid = internal_holes >= 4
 
-    # 3. Проверка центральной белой чаши (включая бабблы, обрезанные сверху/снизу рамкой фрейма)
+    # 3. Проверка центральной белой чаши (включая угловые, краевые и плотно обрезанные бабблы)
     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     wall_closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k3, iterations=1)
     white_space = cv2.bitwise_not(wall_closed)
@@ -1827,10 +1828,9 @@ def verify_bubble_and_text_candidate(
             b_leak = float(np.mean(cav_mask[-1, :] > 0))
             l_leak = float(np.mean(cav_mask[:, 0] > 0))
             r_leak = float(np.mean(cav_mask[:, -1] > 0))
-            leak_sides = sum([t_leak > 0.32, b_leak > 0.32, l_leak > 0.32, r_leak > 0.32])
-            leaking_lr = sum([l_leak > 0.25, r_leak > 0.25])
+            leak_sides = sum([t_leak > 0.40, b_leak > 0.40, l_leak > 0.40, r_leak > 0.40])
 
-            mid_y1, mid_y2 = int(0.22 * Hr), int(0.78 * Hr)
+            mid_y1, mid_y2 = int(0.20 * Hr), int(0.80 * Hr)
             left_has_wall = False
             right_has_wall = False
             for y_r in range(mid_y1, mid_y2, max(1, (mid_y2 - mid_y1) // 10)):
@@ -1847,33 +1847,37 @@ def verify_bubble_and_text_candidate(
             iso_ink_px = 0
             for lid in range(1, num_l):
                 lx, ly, lw, lh, la = [int(stats[lid, k]) for k in range(5)]
-                if la < 6:
+                if la < 4:
                     continue
                 comp_m = (labels == lid)
                 in_px = int(np.count_nonzero(comp_m & (cav_inner > 0)))
                 if in_px == 0:
                     continue
-                out_px = int(np.count_nonzero(comp_m & (cav_inner == 0)))
-                if out_px > 0:
+                out_px = int(np.count_nonzero(comp_m & (cav_filled == 0)))
+                if out_px > 0 or wall_cands[lid]:
                     wall_protrude_px += in_px
                 else:
                     iso_ink_px += in_px
                     touches_edge = (lx <= 1) or (ly <= 1) or (lx + lw >= Wr - 1) or (ly + lh >= Hr - 1)
                     min_g = float(np.min(roi_gray[comp_m]))
-                    if (not touches_edge) and min_g <= 125.0 and lw < 0.65 * Wr and lh < 0.65 * Hr:
+                    if (not touches_edge) and min_g <= 145.0 and lw < 0.78 * Wr and lh < 0.78 * Hr:
                         isolated_glyphs += 1
                         isolated_glyph_area += la
 
             prot_ratio = float(wall_protrude_px) / float(max(1, wall_protrude_px + iso_ink_px))
-            if solidity < 0.855 or prot_ratio >= 0.16:
+            if (
+                solidity < 0.840
+                or prot_ratio >= 0.20
+                or (l_leak > 0.45 and r_leak > 0.45)
+                or (b_leak > 0.55 and (l_leak > 0.35 or r_leak > 0.35) and iso_ink_px > 120)
+            ):
                 is_face_head = True
 
             if (
                 left_has_wall
                 and right_has_wall
-                and leaking_lr == 0
                 and leak_sides <= 2
-                and cav_fill_ratio >= 0.36
+                and cav_fill_ratio >= 0.28
                 and core_white_ratio >= 0.48
                 and (not is_face_head)
             ):
@@ -1892,29 +1896,10 @@ def verify_bubble_and_text_candidate(
         has_open_arcs = False
 
     has_enclosing_frame = has_central_bowl or has_open_arcs
+    is_kagon = ((top1_energy > 0.48) or (h_ori < 1.50)) and (not has_enclosing_frame)
 
-    # 4. Инвариант ширины штриха (отсечение зрачков глаз и черт лица)
-    char_cands = (~wall_cands) & (areas >= 8 * (s ** 2)) & (areas <= 800 * (s ** 2))
-    char_cands[0] = False
-    char_ids = np.nonzero(char_cands)[0]
-
-    dist_ink = cv2.distanceTransform(ink, cv2.DIST_L2, 3)
-    ys_i, xs_i = np.nonzero(labels > 0)
-    max_r_all = np.zeros(num_l, dtype=np.float32)
-    if len(ys_i) > 0:
-        np.maximum.at(max_r_all, labels[ys_i, xs_i], dist_ink[ys_i, xs_i])
-
-    has_thick_eye_blob = bool(np.any(max_r_all[char_ids] > 4.2 * s)) if len(char_ids) > 0 else False
-    is_face_or_unframed = is_face_head or (
-        (not has_enclosing_frame) and (bubbles_only or has_thick_eye_blob or len(char_ids) >= 3)
-    )
-
-    min_req_glyphs = 1 if (has_open_arcs or has_strict_hole_bowl) else 2
-    min_req_area = int(20 * (s ** 2)) if (has_open_arcs or has_strict_hole_bowl) else max(40, int(0.010 * Hr * Wr))
-    has_valid_glyph_core = (
-        (isolated_glyphs >= min_req_glyphs and isolated_glyph_area >= min_req_area)
-        or ((has_open_arcs or has_strict_hole_bowl) and len(char_ids) >= 1 and not has_thick_eye_blob)
-    )
+    is_face_or_unframed = is_face_head or ((not has_enclosing_frame) and bubbles_only)
+    has_valid_glyph_core = isolated_glyphs >= 1 and isolated_glyph_area >= 12
 
     is_valid = (
         (not is_kagon)
@@ -5181,17 +5166,12 @@ class MangaOCREngine:
                     iomin = inter_area / max(1.0, min(c_area, e_area))
 
                     if iou >= iou_threshold or iomin >= iomin_threshold:
-                        if iou >= iou_threshold or max(c_area, e_area) <= 1.45 * min(c_area, e_area):
-                            existing["bbox"] = [
-                                min(cx1, ex1),
-                                min(cy1, ey1),
-                                max(cx2, ex2),
-                                max(cy2, ey2),
-                            ]
-                        elif c_area < e_area and c_conf >= float(existing["confidence"]) * 0.85:
-                            # Если более компактный и точный бокс баббла (например от RT-DETR-v2) лежит внутри
-                            # раздутого бокса (захватившего соседнего чиби-персонажа или SFX), сохраняем компактный бокс!
-                            existing["bbox"] = [cx1, cy1, cx2, cy2]
+                        existing["bbox"] = [
+                            min(cx1, ex1),
+                            min(cy1, ey1),
+                            max(cx2, ex2),
+                            max(cy2, ey2),
+                        ]
                         existing["confidence"] = round(max(float(existing["confidence"]), c_conf), 4)
                         existing["is_free_text"] = bool(existing.get("is_free_text", False) and c_free)
                         absorbed = True
@@ -5642,29 +5622,6 @@ class MangaOCREngine:
                 # - если баббл является сдвоенной «восьмёркой» и водораздел выделил >= 2 долей (`len(local_groups) >= 2`),
                 #   разрезаем баббл по долям через `_try_split_bubble_by_text_boxes`!
                 roi_bub = img_np[max(0, by1) : min(img_h, by2), max(0, bx1) : min(img_w, bx2)]
-                # Используем Проблему №3 (decompose_overlapping_bubbles) для проверки: не разделены ли matched текстовые боксы
-                # черной стенкой баббла (например, текст внутри облачка и внешний SFX «ポカポカ» рядом с чиби-персонажем на Screenshot_7)!
-                if len(matched) >= 2 and roi_bub.size > 0:
-                    tb_tuples = [tuple(int(v) for v in m["bbox"][:4]) for m in matched]
-                    decomp = decompose_overlapping_bubbles(img_np, tb_tuples)
-                    ux_d, uy_d, _, _ = decomp["union_bbox"]
-                    cavs_d = decomp["cavities"]
-                    # Проверяем, какие из matched действительно лежат в замкнутой полости баббла
-                    valid_matched: list[dict[str, Any]] = []
-                    for idx_m, m_item in enumerate(matched):
-                        cav_m = cavs_d[idx_m] if idx_m < len(cavs_d) else None
-                        if cav_m is not None and np.count_nonzero(cav_m) > 0:
-                            # Проверяем, не вытекает ли полость этого под-бокса наружу через края
-                            t_lk = float(np.mean(cav_m[0, :] > 0))
-                            b_lk = float(np.mean(cav_m[-1, :] > 0))
-                            l_lk = float(np.mean(cav_m[:, 0] > 0))
-                            r_lk = float(np.mean(cav_m[:, -1] > 0))
-                            if sum([t_lk > 0.35, b_lk > 0.35, l_lk > 0.35, r_lk > 0.35]) >= 3:
-                                orphan_tbs.append(m_item)
-                                continue
-                        valid_matched.append(m_item)
-                    if len(valid_matched) >= 1:
-                        matched = valid_matched
 
                 local_tbs_in: list[dict[str, Any]] = []
                 for m in matched:
@@ -5694,6 +5651,26 @@ class MangaOCREngine:
                             }
                         )
                     split_parts = self._try_split_bubble_by_text_boxes(img_np, b_det, lobe_matched)
+                    if not split_parts and len(lobe_matched) >= 2:
+                        split_parts = []
+                        for m_tb in lobe_matched:
+                            tx1_m, ty1_m, tx2_m, ty2_m = m_tb["bbox"]
+                            tw_m, th_m = max(12, tx2_m - tx1_m), max(12, ty2_m - ty1_m)
+                            px_m, py_m = max(10, int(round(tw_m * 0.24))), max(10, int(round(th_m * 0.24)))
+                            sub_b = [
+                                max(bx1, tx1_m - px_m),
+                                max(by1, ty1_m - py_m),
+                                min(bx2, tx2_m + px_m),
+                                min(by2, ty2_m + py_m),
+                            ]
+                            split_parts.append(
+                                {
+                                    "bbox": sub_b,
+                                    "text_bbox": self._compute_tight_ink_bbox(img_np, sub_b, [tx1_m, ty1_m, tx2_m, ty2_m], is_free_text=is_free),
+                                    "confidence": round(max(float(b_det["confidence"]), float(m_tb["confidence"])), 4),
+                                    "is_free_text": is_free,
+                                }
+                            )
                 else:
                     split_parts = None
 
@@ -5779,14 +5756,24 @@ class MangaOCREngine:
             perimeter_white_ratio = float(np.mean(perimeter_px >= 224)) if perimeter_px.size > 0 else 0.0
 
             is_strict_screen, _, _, _ = self._is_strict_multiline_screen_crop(exp_crop)
-            ver_orphan = verify_bubble_and_text_candidate(exp_gray, bubbles_only=True)
-            if (ver_orphan["is_kagon"] or ver_orphan["is_tile_grid"] or ver_orphan["is_face"]) and not is_strict_screen:
+            if not is_strict_screen and not pre_ocr_stroke_gate(crop_rgb).passed:
+                continue
+            # Проверяем широкий контекст вокруг сиротского text_bubble (чтобы видеть стенки чаши баббла или лицо/плитку)
+            pad_ctx_x = max(24, int(round(tw * 0.45)))
+            pad_ctx_y = max(24, int(round(th * 0.45)))
+            ctx_gray = cv2.cvtColor(
+                img_np[max(0, ty1 - pad_ctx_y) : min(img_h, ty2 + pad_ctx_y), max(0, tx1 - pad_ctx_x) : min(img_w, tx2 + pad_ctx_x)],
+                cv2.COLOR_RGB2GRAY,
+            ) if img_np.ndim == 3 else img_np[max(0, ty1 - pad_ctx_y) : min(img_h, ty2 + pad_ctx_y), max(0, tx1 - pad_ctx_x) : min(img_w, tx2 + pad_ctx_x)]
+            ver_ctx = verify_bubble_and_text_candidate(ctx_gray, bubbles_only=True)
+            if (ver_ctx["is_kagon"] or ver_ctx["is_tile_grid"]) and not is_strict_screen:
                 continue
             is_clean_bubble_bg = is_strict_screen or (
-                ver_orphan["is_valid"]
-                and ver_orphan["has_enclosing_frame"]
-                and white_pixel_ratio >= 0.58
+                white_pixel_ratio >= 0.58
                 and bg_std <= 11.5
+                and perimeter_median >= 230.0
+                and perimeter_white_ratio >= 0.62
+                and not ver_ctx["is_tile_grid"]
             )
             is_free_orphan = not is_clean_bubble_bg
 
@@ -5955,48 +5942,25 @@ class MangaOCREngine:
             min_box_size=min_box_size,
         )
 
-        # 4.5. Каскадная топологическая и спектральная верификация кандидатов (Проблема №6а)
-        # + автоматическая подрезка раздутых боксов по замкнутой чаше баббла (защита чиби-персонажей на Screenshot_7)
-        verified_detections: list[dict[str, Any]] = []
+        # 4.5. Автоматическая подрезка раздутых боксов по замкнутой чаше баббла (защита чиби-персонажей на Screenshot_7)
+        # БЕЗ удаления валидных нейросетевых детекций YOLOv8m / RT-DETR-v2!
         page_gray_full = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if img_np.ndim == 3 else img_np
         for cand_det in raw_detections:
             bx1, by1, bx2, by2 = [int(v) for v in cand_det["bbox"][:4]]
-            is_free_c = bool(cand_det.get("is_free_text", False))
-            roi_g = page_gray_full[max(0, by1) : min(img_h, by2), max(0, bx1) : min(img_w, bx2)]
-            if roi_g.size < 196:
-                continue
-            ver_c = verify_bubble_and_text_candidate(roi_g, bubbles_only=not is_free_c)
-            if not is_free_c and not ver_c["is_valid"]:
-                # Проверяем: возможно, бокс раздут и включает как настоящий баббл, так и соседнего чиби-персонажа (Screenshot_7)!
-                tb_c = cand_det.get("text_bbox")
-                if isinstance(tb_c, (list, tuple)) and len(tb_c) >= 4:
-                    tx1_c, ty1_c, tx2_c, ty2_c = [int(v) for v in tb_c[:4]]
-                    pad_tx = max(12, int((tx2_c - tx1_c) * 0.22))
-                    pad_ty = max(12, int((ty2_c - ty1_c) * 0.22))
-                    sx1_c, sy1_c = max(bx1, tx1_c - pad_tx), max(by1, ty1_c - pad_ty)
-                    sx2_c, sy2_c = min(bx2, tx2_c + pad_tx), min(by2, ty2_c + pad_ty)
-                    if (sx2_c - sx1_c) >= min_box_size and (sy2_c - sy1_c) >= min_box_size:
-                        sub_ver = verify_bubble_and_text_candidate(
-                            page_gray_full[sy1_c:sy2_c, sx1_c:sx2_c], bubbles_only=True
-                        )
-                        if sub_ver["is_valid"]:
-                            cand_det["bbox"] = [sx1_c, sy1_c, sx2_c, sy2_c]
-                            cand_det["has_enclosing_frame"] = bool(sub_ver["has_enclosing_frame"])
-                            verified_detections.append(cand_det)
-                            continue
-                # Иначе проверяем, не является ли это подтвержденным многострочным экраном смартфона
-                ok_scr_c, _, _, _ = self._is_strict_multiline_screen_crop(
-                    img_np[max(0, by1) : min(img_h, by2), max(0, bx1) : min(img_w, bx2)]
-                )
-                if not ok_scr_c:
-                    logger.debug(
-                        "Отклонен ложный кандидат баббла [%d,%d,%d,%d] (face=%s, kagon=%s, tile=%s)",
-                        bx1, by1, bx2, by2, ver_c["is_face"], ver_c["is_kagon"], ver_c["is_tile_grid"],
-                    )
-                    continue
-            cand_det["has_enclosing_frame"] = bool(ver_c["has_enclosing_frame"])
-            verified_detections.append(cand_det)
-        raw_detections = verified_detections
+            bw_c, bh_c = bx2 - bx1, by2 - by1
+            tb_c = cand_det.get("text_bbox")
+            if not bool(cand_det.get("is_free_text", False)) and isinstance(tb_c, (list, tuple)) and len(tb_c) >= 4:
+                tx1_c, ty1_c, tx2_c, ty2_c = [int(v) for v in tb_c[:4]]
+                tw_c, th_c = max(1, tx2_c - tx1_c), max(1, ty2_c - ty1_c)
+                if bw_c > tw_c * 1.80 and bw_c >= 140:
+                    roi_g = page_gray_full[max(0, by1) : min(img_h, by2), max(0, bx1) : min(img_w, bx2)]
+                    if roi_g.size >= 400:
+                        cav_m = self._extract_bubble_interior_mask(roi_g, float(np.percentile(roi_g, 75)))
+                        ys_c, xs_c = np.nonzero(cav_m > 0)
+                        if len(xs_c) >= 64:
+                            cx1_m, cx2_m = bx1 + int(np.min(xs_c)), bx1 + int(np.max(xs_c))
+                            if (cx2_m - cx1_m) < bw_c * 0.68 and cx1_m <= tx1_c + 8 and cx2_m >= tx2_c - 8:
+                                cand_det["bbox"] = [max(bx1, cx1_m - 10), by1, min(bx2, cx2_m + 10), by2]
 
         # 5. Детекция пропущенных или частично обрезанных экранов телефонов, мониторов, писем и наклонных табличек
         # с множеством глифов на чистой белой полости (включая наклонные экраны, касающиеся краев фрейма)
@@ -6752,17 +6716,14 @@ class MangaOCREngine:
                         idx
                         for idx, txt in enumerate(nar_texts)
                         if len(txt) >= 54
-                        or (
-                            not txt.strip()
-                            and pre_ocr_stroke_gate(crops_pil[idx]).valid_cc_count >= 4
-                            and verify_bubble_and_text_candidate(np.array(crops_pil[idx].convert("L")), bubbles_only=True)["has_enclosing_frame"]
-                        )
+                        or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).passed)
                         or (
                             len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= 4
                             and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= 16000
-                            and verify_bubble_and_text_candidate(np.array(crops_pil[idx].convert("L")), bubbles_only=True)["has_enclosing_frame"]
+                            and pre_ocr_stroke_gate(crops_pil[idx]).passed
                         )
                     ]
+                    rejected_by_hf_ocr: set[int] = set()
                     if fallback_indices:
                         sub_crops = [crops_pil[idx] for idx in fallback_indices]
                         fallback_texts = self._run_classic_manga_ocr_batch(sub_crops, batch_size=batch_size)
@@ -6770,6 +6731,8 @@ class MangaOCREngine:
                             cur_nar = nar_texts[idx].strip()
                             fb_clean = fb_txt.strip()
                             if not fb_clean or KNOWN_OCR_HALLUCINATIONS_REGEX.search(fb_clean):
+                                if not cur_nar:
+                                    rejected_by_hf_ocr.add(idx)
                                 continue
                             cur_core_len = len(STRIP_PUNCT_REGEX.sub("", cur_nar))
                             fb_core_len = len(STRIP_PUNCT_REGEX.sub("", fb_clean))
@@ -6779,15 +6742,15 @@ class MangaOCREngine:
                                 or (cur_core_len <= 4 and fb_core_len >= cur_core_len + 2)
                             ):
                                 nar_texts[idx] = fb_clean
-                    # Если после NAR + MangaOCR какой-то баббл остался пустым или с галлюцинацией — дочитываем через HayaiOCR v2.5 Nova!
+                    # Если после NAR + MangaOCR какой-то баббл остался с галлюцинацией (и не был отклонен HallucinationFreeMangaOCR) — дочитываем через HayaiOCR v2.5 Nova!
                     if self.use_hayai_ocr and self._hayai_model is not None:
                         hayai_rescue_indices = [
                             idx
                             for idx, txt in enumerate(nar_texts)
-                            if (
-                                (not txt.strip() or KNOWN_OCR_HALLUCINATIONS_REGEX.search(txt))
-                                and pre_ocr_stroke_gate(crops_pil[idx]).valid_cc_count >= 4
-                                and verify_bubble_and_text_candidate(np.array(crops_pil[idx].convert("L")), bubbles_only=True)["has_enclosing_frame"]
+                            if idx not in rejected_by_hf_ocr
+                            and (
+                                KNOWN_OCR_HALLUCINATIONS_REGEX.search(txt)
+                                or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).valid_cc_count >= 6)
                             )
                         ]
                         if hayai_rescue_indices:
