@@ -4119,7 +4119,8 @@ class OllamaTranslator:
     def _is_hallucinated_translation(cls, val_text: str, orig_text: str = "") -> bool:
         """
         Отсекает известные галлюцинации OCR/LLM («taxi driver take me to the best restaurant», ложный «Twitch» и т.п.),
-        а также аномально длинные предложения, сгенерированные моделью из 1–3 шумовых символов.
+        утечки мета-комментариев переводчика, зацикливания слов, а также аномальный дисбаланс длины
+        (когда из 1–3 символов генерируется длинное предложение или из длинного монолога остается 1 буква).
         """
         if not val_text:
             return False
@@ -4128,22 +4129,187 @@ class OllamaTranslator:
             return False
         if HALLUCINATION_TRANSLATION_REGEX.search(s):
             return True
+        low_s = s.lower()
+        if any(
+            meta_kw in low_s
+            for meta_kw in (
+                "примечание:",
+                "перевод:",
+                "буквально:",
+                "в оригинале:",
+                "контекст:",
+                "translation:",
+                "translator note",
+                "t/n:",
+                "tl note",
+                "in this bubble",
+                "literally:",
+            )
+        ):
+            return True
+        if re.search(r"\b([a-zA-Zа-яА-ЯёЁ]{4,}(?:\s+[a-zA-Zа-яА-ЯёЁ]{2,})?)\s+\1\s+\1\b", low_s):
+            return True
         norm_val_alpha = re.sub(r"[^a-zA-Zа-яА-ЯёЁ]+", "", s).lower()
         if orig_text:
             if HALLUCINATION_TRANSLATION_REGEX.search(orig_text):
                 return True
-            clean_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+", "", orig_text)
-            # Защита от залипания ответа «Twitch» (когда модель копирует «Twitch» из контекста или шумового SFX на обычную реплику)
-            if norm_val_alpha in ("twitch", "twitches", "twitching", "flinch"):
-                if clean_orig and not any(sfx_k in clean_orig for sfx_k in ("ビク", "ピク", "ぴく", "びく", "ヒク", "ひく", "痙攣", "つる")):
+            clean_orig = re.sub(
+                r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\x27\`]+",
+                "",
+                orig_text,
+            )
+            if norm_val_alpha in ("twitch", "twitches", "twitching", "flinch", "дёрнулась", "дернулась", "вздрогнула"):
+                if clean_orig and not any(
+                    sfx_k in clean_orig for sfx_k in ("ビク", "ピク", "ぴく", "びく", "ヒク", "ひく", "痙攣", "つる")
+                ):
                     return True
             words = [w for w in re.split(r"\s+", s) if w]
-            # Если исходный OCR-текст — это всего 1–2 символа (часто шум штриховки), а модель выдала длинное предложение из 8+ слов (>48 симв.)
-            if 0 < len(clean_orig) <= 2 and (len(s) > 48 or len(words) >= 8):
+            if 0 < len(clean_orig) <= 2 and (len(s) > 34 or len(words) >= 6):
                 return True
-            if 0 < len(clean_orig) <= 4 and (len(s) > 85 or len(words) >= 14):
+            if 3 <= len(clean_orig) <= 4 and (len(s) > 58 or len(words) >= 10):
+                return True
+            if 5 <= len(clean_orig) <= 7 and (len(s) > 105 or len(words) >= 18):
+                return True
+            if len(clean_orig) >= 18 and 0 < len(norm_val_alpha) <= 3 and len(words) <= 1:
                 return True
         return False
+
+    def _detect_batch_misalignment_and_hallucinations(
+        self,
+        source_map: dict[str, str],
+        translated_map: dict[str, str],
+        target_lang: str = "en",
+        glossary_entries: list[dict[str, str]] | None = None,
+    ) -> dict[str, str]:
+        """
+        Перекрестный детектор галлюцинаций и сдвига ключей («не то / не туда») внутри пачки бабблов:
+        1. Ловит залипание перевода (одинаковый перевод у соседних бабблов при разном оригинале).
+        2. Ловит сдвиг на 1 баббл (Off-by-One Key Shift) по вопросительной интонации (`?` уехал в соседний не-вопросительный баббл).
+        3. Ловит сдвиг на 1 баббл по именам персонажей из глоссария (имя есть в оригинале баббла #K, но оказалось в переводе #K-1 или #K+1).
+        4. Ловит инверсию длины между соседними бабблами (короткий оригинал получил длинный перевод соседа, а длинный оригинал — короткий).
+        """
+        flagged: dict[str, str] = {}
+        keys_order = list(source_map.keys())
+        if not keys_order:
+            return flagged
+
+        def _strip_punct(txt: str) -> str:
+            return re.sub(
+                r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\x27\`«»„“”]+",
+                "",
+                txt or "",
+            )
+
+        def _has_cjk_question_marker(orig_s: str) -> bool:
+            if not orig_s:
+                return False
+            if "?" in orig_s or "？" in orig_s:
+                return True
+            return bool(
+                re.search(
+                    r"(?:ですか|ますか|かな|かしら|っけ|なに|なん|だれ|どこ|いつ|どう|なぜ|なんで|誰|何|どこ|嗎|吗|呢|까|니|냐|[かの][\s」』）\)]*$)",
+                    orig_s,
+                )
+            )
+
+        clean_origs: dict[str, str] = {}
+        clean_trans: dict[str, str] = {}
+        norm_trans_low: dict[str, str] = {}
+        orig_has_explicit_q: dict[str, bool] = {}
+        orig_can_be_q: dict[str, bool] = {}
+        trans_has_q: dict[str, bool] = {}
+
+        for k in keys_order:
+            o_raw = str(source_map.get(k) or "").strip()
+            t_raw = self._clean_translated_text(str(translated_map.get(k) or ""), target_lang=target_lang, orig_text=o_raw)
+            clean_origs[k] = _strip_punct(o_raw)
+            clean_trans[k] = t_raw
+            norm_trans_low[k] = _strip_punct(t_raw).lower()
+            orig_has_explicit_q[k] = ("?" in o_raw) or ("？" in o_raw)
+            orig_can_be_q[k] = _has_cjk_question_marker(o_raw)
+            trans_has_q[k] = "?" in t_raw
+
+        for idx, k in enumerate(keys_order):
+            o_raw = str(source_map.get(k) or "").strip()
+            t_val = clean_trans[k]
+            if not t_val or not o_raw:
+                continue
+
+            if self._is_hallucinated_translation(t_val, o_raw):
+                flagged[k] = f"галлюцинация/дисбаланс длины («{t_val[:28]}» для «{o_raw[:18]}»)"
+                continue
+
+            c_orig = clean_origs[k]
+            n_trans = norm_trans_low[k]
+
+            if idx > 0:
+                prev_k = keys_order[idx - 1]
+                if (
+                    n_trans
+                    and len(n_trans) >= 5
+                    and n_trans == norm_trans_low.get(prev_k, "")
+                    and c_orig != clean_origs.get(prev_k, "")
+                    and (len(c_orig) >= 4 or len(clean_origs.get(prev_k, "")) >= 4)
+                ):
+                    flagged[k] = f"залипание/повтор перевода соседнего блока #{prev_k} («{t_val[:24]}»)"
+                    flagged.setdefault(prev_k, f"проверка пары при повторе перевода с блоком #{k}")
+
+            if orig_has_explicit_q[k] and len(c_orig) >= 3 and not trans_has_q[k]:
+                shifted_nb = None
+                for nb_idx in (idx - 1, idx + 1):
+                    if 0 <= nb_idx < len(keys_order):
+                        nb_k = keys_order[nb_idx]
+                        if trans_has_q.get(nb_k) and not orig_can_be_q.get(nb_k):
+                            shifted_nb = nb_k
+                            break
+                if shifted_nb is not None:
+                    flagged[k] = f"сдвиг реплики с соседним блоком #{shifted_nb} (вопрос '?' уехал в соседний баббл)"
+                    flagged[shifted_nb] = f"сдвиг реплики с соседним блоком #{k} (получил чужой вопрос '?')"
+                elif len(c_orig) >= 5 and "..." not in t_val:
+                    flagged[k] = f"потеря вопросительной модальности '?' в переводе («{t_val[:24]}»)"
+
+            if trans_has_q[k] and not orig_can_be_q[k] and 1 <= len(c_orig) <= 7:
+                words_k = [w for w in t_val.split() if w]
+                if len(words_k) >= 3:
+                    flagged[k] = f"фантомный вопрос в утвердительной реплике («{t_val[:24]}» для «{o_raw[:16]}»)"
+
+            if idx > 0:
+                prev_k = keys_order[idx - 1]
+                len_o_cur, len_o_prev = len(c_orig), len(clean_origs.get(prev_k, ""))
+                len_t_cur, len_t_prev = len(n_trans), len(norm_trans_low.get(prev_k, ""))
+                if (
+                    0 < len_o_cur <= 4
+                    and len_t_cur >= 22
+                    and len_o_prev >= 12
+                    and 0 < len_t_prev <= 8
+                ) or (
+                    len_o_cur >= 12
+                    and 0 < len_t_cur <= 8
+                    and 0 < len_o_prev <= 4
+                    and len_t_prev >= 22
+                ):
+                    flagged[k] = f"перепутаны местами длинная и короткая реплики с блоком #{prev_k}"
+                    flagged[prev_k] = f"перепутаны местами длинная и короткая реплики с блоком #{k}"
+
+            if glossary_entries:
+                for g_item in glossary_entries:
+                    if not isinstance(g_item, dict):
+                        continue
+                    g_src = str(g_item.get("src") or "").strip()
+                    g_dst = str(g_item.get("dst") or "").strip()
+                    if len(g_src) >= 2 and len(g_dst) >= 3 and g_src in o_raw:
+                        dst_stem = g_dst[: max(3, len(g_dst) - 1)].lower()
+                        if dst_stem not in t_val.lower():
+                            for nb_idx in (idx - 1, idx + 1):
+                                if 0 <= nb_idx < len(keys_order):
+                                    nb_k = keys_order[nb_idx]
+                                    nb_orig = str(source_map.get(nb_k) or "")
+                                    nb_trans = clean_trans.get(nb_k, "").lower()
+                                    if g_src not in nb_orig and dst_stem in nb_trans:
+                                        flagged[k] = f"сдвиг имени «{g_dst}» в соседний блок #{nb_k}"
+                                        flagged[nb_k] = f"чужое имя «{g_dst}» из соседнего блока #{k}"
+
+        return flagged
 
     @classmethod
     def _is_bubble_refusal_value(cls, val_text: str) -> bool:
@@ -5760,10 +5926,36 @@ class OllamaTranslator:
                         "note": "Локальная транслитерация каны в Ромадзи",
                     }
 
+        # СЦЕНАРИЙ 1.9: Перекрестная проверка пачки на галлюцинации и сдвиг ключей («не то / не туда»)!
+        # Если обнаружен сдвиг реплики в соседний баббл, залипание повтора или галлюцинация длины —
+        # сбрасываем подозрительные ключи и отправляем их на изолированный штучный переперевод!
+        bad_reason_by_k: dict[str, str] = {}
+        misaligned_keys_set: set[str] = set()
+        if not self.stop_requested and t_lang in ("ru", "en"):
+            audit_flags = self._detect_batch_misalignment_and_hallucinations(
+                source_map=source_map,
+                translated_map=translated_map,
+                target_lang=t_lang,
+                glossary_entries=eff_glossary,
+            )
+            if audit_flags:
+                logger.warning(
+                    "🔍 [АНТИ-ГАЛЛЮЦИНАЦИЯ / ПРОВЕРКА СДВИГА] Обнаружено %d подозрительных/сдвинутых реплик в пачке (%s) — запускаю точечную перепроверку!",
+                    len(audit_flags),
+                    "; ".join(f"#{ak}: {ar}" for ak, ar in list(audit_flags.items())[:4]),
+                )
+                self.diagnostics_stats["hallucinations_caught_count"] = (
+                    int(self.diagnostics_stats.get("hallucinations_caught_count") or 0) + len(audit_flags)
+                )
+                for ak, ar in audit_flags.items():
+                    translated_map.pop(ak, None)
+                    chunk_prov.pop(ak, None)
+                    bad_reason_by_k[ak] = ar
+                    misaligned_keys_set.add(ak)
+
         # СЦЕНАРИЙ 2: Гарантированный доперевод ВСЕХ пропущенных или ошибочно транслитерированных (Ромадзи) блоков!
         # Если доперевод через API натыкается на цензуру (или если это остатки после цензурного куска),
         # сразу переводим эти фразы через локальную модель Ollama и возвращаемся к API!
-        bad_reason_by_k: dict[str, str] = {}
         if not self.stop_requested:
             bad_keys: list[str] = []
             for k in source_map:
@@ -5793,7 +5985,7 @@ class OllamaTranslator:
 
             # Если отказа цензуры НЕ было (not was_refusal) и остался всего 1–2 мелких блока (например, вздох/шум/имя),
             # не тратим время и запросы на повторный вызов ИИ: пробуем спасти существующий ответ или локальный словарь!
-            if bad_keys and not was_refusal and len(bad_keys) <= 2:
+            if bad_keys and not was_refusal and len(bad_keys) <= 2 and not (set(bad_keys) & misaligned_keys_set):
                 still_bad: list[str] = []
                 for bk_minor in bad_keys:
                     cand_minor = self._clean_translated_text(translated_map.get(bk_minor, ""), target_lang=t_lang, orig_text=source_map.get(bk_minor, ""))
@@ -5838,9 +6030,13 @@ class OllamaTranslator:
                     affected_count=len(bad_keys),
                 )
                 retry_chunk_size = (
-                    8
-                    if not active_model.startswith("unsloth::")
-                    else (14 if was_refusal else 80)
+                    2
+                    if (set(bad_keys) & misaligned_keys_set)
+                    else (
+                        8
+                        if not active_model.startswith("unsloth::")
+                        else (14 if was_refusal else 80)
+                    )
                 )
                 bad_sublists = [
                     bad_keys[i : i + retry_chunk_size]
@@ -5867,7 +6063,7 @@ class OllamaTranslator:
                     # Сразу передаем 1–2 непереведенных блока в локальный фоллбэк (с учетом языка source_lang) или словарь междометий,
                     # не делая новый HTTP-запрос к облачному API и исключая 90-секундные ReadTimeout!
                     skip_cloud_micro_retry = active_model.startswith("unsloth::") and (
-                        was_refusal or len(b_sub) <= 2
+                        was_refusal or (len(b_sub) <= 2 and not (set(b_sub) & misaligned_keys_set))
                     )
                     if skip_cloud_micro_retry:
                         loc_model = await self._resolve_local_fallback_model(
@@ -6770,15 +6966,40 @@ class OllamaTranslator:
         res_map.pop("__partial_refusal__", None)
 
         cleaned_out: dict[str, str] = {}
+        source_only_map: dict[str, str] = {}
         for k, v in res_map.items():
             norm_k = self._normalize_key(k)
             val_s = str(v or "").strip()
             if "=>" in val_s:
                 val_s = val_s.split("=>")[-1].strip()
-            orig_for_k = (book_map.get(norm_k) or {}).get("orig", "") if isinstance(book_map.get(norm_k), dict) else ""
+            item_d = book_map.get(norm_k) if isinstance(book_map.get(norm_k), dict) else {}
+            orig_for_k = str((item_d or {}).get("orig") or "")
+            prev_trans_k = str((item_d or {}).get("trans") or "").strip()
             val_s = self._clean_translated_text(val_s, target_lang=t_lang, orig_text=orig_for_k)
-            if val_s and not self._is_bubble_refusal_value(val_s):
-                cleaned_out[norm_k] = val_s
+            if not val_s or self._is_bubble_refusal_value(val_s) or self._is_hallucinated_translation(val_s, orig_for_k):
+                if prev_trans_k:
+                    cleaned_out[norm_k] = prev_trans_k
+                continue
+            if prev_trans_k and len(prev_trans_k) >= 6:
+                if ("?" in orig_for_k or "？" in orig_for_k) and "?" in prev_trans_k and "?" not in val_s:
+                    val_s = prev_trans_k
+                elif len(val_s) > len(prev_trans_k) * 2.6 + 12 or (len(prev_trans_k) >= 16 and len(val_s) < len(prev_trans_k) * 0.32):
+                    val_s = prev_trans_k
+            cleaned_out[norm_k] = val_s
+            if orig_for_k:
+                source_only_map[norm_k] = orig_for_k
+
+        if source_only_map and t_lang in ("ru", "en"):
+            proof_flags = self._detect_batch_misalignment_and_hallucinations(
+                source_map=source_only_map,
+                translated_map=cleaned_out,
+                target_lang=t_lang,
+                glossary_entries=eff_glossary,
+            )
+            for fk in proof_flags:
+                prev_t = str((book_map.get(fk) or {}).get("trans") or "").strip()
+                if prev_t:
+                    cleaned_out[fk] = prev_t
         return cleaned_out
 
     async def translate_blocks_batch(

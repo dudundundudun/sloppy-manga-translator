@@ -2067,6 +2067,22 @@ def analyze_bubble_geometry(
     edges = cv2.Canny(roi_gray, 50, 140)
     k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k_close, iterations=1)
+    if median_lum >= 210.0 and segment_dashed_bubble_roi is not None and center_crop.shape[0] >= 24 and center_crop.shape[1] >= 24:
+        pad_dg = min(28, max(12, int(min(box_w, box_h) * 0.14)))
+        dg_x1 = max(0, tb_x1 - pad_dg)
+        dg_y1 = max(0, tb_y1 - pad_dg)
+        dg_x2 = min(rw, tb_x2 + pad_dg)
+        dg_y2 = min(rh, tb_y2 + pad_dg)
+        dg_res = segment_dashed_bubble_roi(roi_gray[dg_y1:dg_y2, dg_x1:dg_x2], None)
+        if dg_res.get("is_dashed_bubble"):
+            vw_bar = cv2.dilate(
+                dg_res["virtual_wall_barrier"],
+                cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                iterations=1,
+            )
+            closed_edges[dg_y1:dg_y2, dg_x1:dg_x2] = cv2.bitwise_or(
+                closed_edges[dg_y1:dg_y2, dg_x1:dg_x2], vw_bar
+            )
     cavity_candidates = cv2.bitwise_and(lum_mask, cv2.bitwise_not(closed_edges))
 
     core_pad_x = max(1, int((tb_x2 - tb_x1) * 0.18))
@@ -2987,11 +3003,11 @@ class BubbleCleaner:
         if best_label == -1:
             return light_pixels
 
-        if best_edge_touches >= 3 and rh >= 24 and rw >= 24 and segment_dashed_bubble_roi is not None:
+        if best_edge_touches >= 2 and rh >= 24 and rw >= 24 and segment_dashed_bubble_roi is not None:
             dash_res = segment_dashed_bubble_roi(roi_gray, None)
             if dash_res.get("is_dashed_bubble"):
                 d_int = dash_res["interior_mask"]
-                if 0.08 * rh * rw <= np.count_nonzero(d_int) <= 0.90 * rh * rw:
+                if 0.08 * rh * rw <= np.count_nonzero(d_int) <= 0.95 * rh * rw:
                     return d_int
             if segment_open_wispy_bubble_roi is not None:
                 open_res = segment_open_wispy_bubble_roi(
@@ -3194,18 +3210,19 @@ class BubbleCleaner:
                 iy1 = max(0, y1 - 6)
                 ix2 = min(img_w, x2 + 6)
                 iy2 = min(img_h, y2 + 6)
-            elif has_valid_tb:
-                ix1 = max(0, min(x1, tb_box[0] - 3))
-                iy1 = max(0, min(y1, tb_box[1] - 3))
-                ix2 = min(img_w, max(x2, tb_box[2] + 3))
-                iy2 = min(img_h, max(y2, tb_box[3] + 3))
             else:
                 scale_f = max(1.0, min(2.8, float(min(bw, bh)) / 64.0))
                 pad_out = min(max(24, int(round(22 * scale_f))), max(10, int(min(bw, bh) * 0.22)))
-                ix1 = max(0, x1 - pad_out)
-                iy1 = max(0, y1 - pad_out)
-                ix2 = min(img_w, x2 + pad_out)
-                iy2 = min(img_h, y2 + pad_out)
+                if has_valid_tb:
+                    ix1 = max(0, min(x1 - pad_out, tb_box[0] - 6))
+                    iy1 = max(0, min(y1 - pad_out, tb_box[1] - 6))
+                    ix2 = min(img_w, max(x2 + pad_out, tb_box[2] + 6))
+                    iy2 = min(img_h, max(y2 + pad_out, tb_box[3] + 6))
+                else:
+                    ix1 = max(0, x1 - pad_out)
+                    iy1 = max(0, y1 - pad_out)
+                    ix2 = min(img_w, x2 + pad_out)
+                    iy2 = min(img_h, y2 + pad_out)
 
             roi_rgb = image_rgb[iy1:iy2, ix1:ix2]
             roi_gray = gray_full[iy1:iy2, ix1:ix2]
@@ -3225,14 +3242,41 @@ class BubbleCleaner:
             median_val = float(np.median(core_gray))
 
             if not is_free_text and p75 >= 210.0:
-                core_int_safe = self._extract_bubble_interior_mask(core_gray, p75)
-                interior_mask = np.zeros((rh, rw), dtype=np.uint8)
-                interior_mask[cy1_r:cy2_r, cx1_r:cx2_r] = core_int_safe
-
                 core_w = max(8, cx2_r - cx1_r)
                 core_h = max(8, cy2_r - cy1_r)
                 scale_f = max(1.0, min(2.8, float(min(core_w, core_h)) / 64.0))
                 scale_area = scale_f * scale_f
+
+                core_int_safe = self._extract_bubble_interior_mask(core_gray, p75)
+                interior_mask = np.zeros((rh, rw), dtype=np.uint8)
+                interior_mask[cy1_r:cy2_r, cx1_r:cx2_r] = core_int_safe
+
+                is_dashed_bubble_block = False
+                dash_wall_full = np.zeros((rh, rw), dtype=np.uint8)
+                dash_clean_ink_full = np.zeros((rh, rw), dtype=np.uint8)
+                if segment_dashed_bubble_roi is not None and rh >= 24 and rw >= 24:
+                    dash_res_c = segment_dashed_bubble_roi(core_gray, None, scale_f=1.0)
+                    dash_res_r = (
+                        segment_dashed_bubble_roi(roi_gray, None, scale_f=1.0)
+                        if roi_gray.shape != core_gray.shape
+                        else dash_res_c
+                    )
+                    if dash_res_r.get("is_dashed_bubble") and int(dash_res_r.get("num_dashes_detected", 0)) >= int(dash_res_c.get("num_dashes_detected", 0)):
+                        is_dashed_bubble_block = True
+                        d_int_r = dash_res_r["interior_mask"]
+                        if 0.08 * roi_gray.size <= np.count_nonzero(d_int_r) <= 0.95 * roi_gray.size:
+                            interior_mask.fill(0)
+                            interior_mask[cy1_r:cy2_r, cx1_r:cx2_r] = d_int_r[cy1_r:cy2_r, cx1_r:cx2_r]
+                        dash_wall_full = dash_res_r["protected_wall_mask"].copy()
+                        dash_clean_ink_full = dash_res_r["clean_roi_mask"].copy()
+                    elif dash_res_c.get("is_dashed_bubble"):
+                        is_dashed_bubble_block = True
+                        d_int_c = dash_res_c["interior_mask"]
+                        if 0.08 * core_gray.size <= np.count_nonzero(d_int_c) <= 0.95 * core_gray.size:
+                            interior_mask.fill(0)
+                            interior_mask[cy1_r:cy2_r, cx1_r:cx2_r] = d_int_c
+                        dash_wall_full[cy1_r:cy2_r, cx1_r:cx2_r] = dash_res_c["protected_wall_mask"]
+                        dash_clean_ink_full[cy1_r:cy2_r, cx1_r:cx2_r] = dash_res_c["clean_roi_mask"]
 
                 text_zone_mask = np.full((rh, rw), 255, dtype=np.uint8)
                 hollow_arc_ring = np.zeros((rh, rw), dtype=np.uint8)
@@ -3280,6 +3324,22 @@ class BubbleCleaner:
                             )
                             interior_mask[arc_dil > 0] = 0
                             text_zone_mask[arc_dil > 0] = 0
+
+                if is_dashed_bubble_block and np.any(dash_wall_full > 0):
+                    dash_guard_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                    dash_wall_guard = cv2.dilate(dash_wall_full, dash_guard_k, iterations=1)
+                    interior_mask[dash_wall_guard > 0] = 0
+                    text_zone_mask[dash_wall_guard > 0] = 0
+                    text_zone_mask[interior_mask == 0] = 0
+                    if np.count_nonzero(dash_clean_ink_full) >= 20:
+                        ink_zone_d = max(13, int(round(13 * scale_f)) | 1)
+                        ink_zone_dil = cv2.dilate(
+                            dash_clean_ink_full,
+                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (ink_zone_d, ink_zone_d)),
+                            iterations=1,
+                        )
+                        text_zone_mask = cv2.bitwise_and(text_zone_mask, ink_zone_dil)
+                    hollow_arc_ring = cv2.bitwise_or(hollow_arc_ring, dash_wall_full)
 
                 ink_thresh = max(165, int(p75 - 14))
                 dark_all = (roi_gray < ink_thresh).astype(np.uint8) * 255
@@ -3657,12 +3717,33 @@ class BubbleCleaner:
             p75_core = float(np.percentile(core_sub, 75)) if core_sub.size > 0 else 0.0
             if p75_core >= 210.0:
                 cavity_sub = self._extract_bubble_interior_mask(core_sub, p75_core)
-                cavity_sub = cv2.dilate(
-                    cavity_sub, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1
-                )
+                dash_wall_inpaint = np.zeros((ch, cw), dtype=np.uint8)
+                is_dashed_inpaint = False
+                if segment_dashed_bubble_roi is not None and core_sub.shape[0] >= 24 and core_sub.shape[1] >= 24:
+                    d_res_inp = segment_dashed_bubble_roi(core_sub, None)
+                    if d_res_inp.get("is_dashed_bubble"):
+                        is_dashed_inpaint = True
+                        cavity_sub = d_res_inp["interior_mask"]
+                        dash_wall_inpaint[by1_r:by2_r, bx1_r:bx2_r] = d_res_inp["protected_wall_mask"]
+                    elif crop_gray.shape != core_sub.shape:
+                        d_res_full = segment_dashed_bubble_roi(crop_gray, None)
+                        if d_res_full.get("is_dashed_bubble"):
+                            is_dashed_inpaint = True
+                            cavity_sub = d_res_full["interior_mask"][by1_r:by2_r, bx1_r:bx2_r]
+                            dash_wall_inpaint = d_res_full["protected_wall_mask"].copy()
+                if not is_dashed_inpaint:
+                    cavity_sub = cv2.dilate(
+                        cavity_sub, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3)), iterations=1
+                    )
                 cavity_mask = np.zeros((ch, cw), dtype=np.uint8)
                 cavity_mask[by1_r:by2_r, bx1_r:bx2_r] = cavity_sub
+                if is_dashed_inpaint and np.any(dash_wall_inpaint > 0):
+                    dw_guard = cv2.dilate(dash_wall_inpaint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+                    cavity_mask[dw_guard > 0] = 0
+                    crop_mask_np = cv2.bitwise_and(crop_mask_np, cavity_mask)
                 wall_mask = ((crop_gray < max(150, int(p75_core - 55))) & (cavity_mask == 0)).astype(np.uint8) * 255
+                if is_dashed_inpaint and np.any(dash_wall_inpaint > 0):
+                    wall_mask = cv2.bitwise_or(wall_mask, dash_wall_inpaint)
 
                 mask_inside = cv2.bitwise_and(crop_mask_np, cavity_mask)
                 mask_outside = cv2.bitwise_and(crop_mask_np, cv2.bitwise_not(cavity_mask))

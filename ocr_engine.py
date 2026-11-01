@@ -1359,8 +1359,8 @@ def segment_dashed_bubble_roi(
     scale_f: float = 1.0,
 ) -> dict[str, np.ndarray | bool | int | float]:
     """
-    Проблема №1: Детекция пунктирных/точечных стенок баббла, построение виртуального барьера
-    и герметичной маски внутренней полости (interior_mask) без утечки на скринтон.
+    Проблема №1: Детекция пунктирных/точечных стенок баббла (включая полу-бабблы у краев рамок и V-хвостики),
+    построение виртуального барьера и герметичной маски внутренней полости (interior_mask) без утечки на скринтон.
     Работает строго на cv2 + numpy без попиксельных циклов Python.
     """
     t_start = time.perf_counter()
@@ -1392,49 +1392,28 @@ def segment_dashed_bubble_roi(
             "elapsed_ms": (time.perf_counter() - t_start) * 1000.0,
         }
 
-    # 2. Предварительная фильтрация макро-стенок и периферийного кольца вокруг text_bbox
+    # 2. Предварительная фильтрация макро-стенок и вычисление моментов инерции кандидатов
     areas = stats[:, cv2.CC_STAT_AREA].astype(np.float32)
     cw = stats[:, cv2.CC_STAT_WIDTH]
     ch = stats[:, cv2.CC_STAT_HEIGHT]
+    cx_all = centroids[:, 0].astype(np.float32)
+    cy_all = centroids[:, 1].astype(np.float32)
     is_solid_wall = (cw > 0.50 * W) | (ch > 0.50 * H)
     is_solid_wall[0] = False
 
-    if text_bbox_rel is not None:
-        if isinstance(text_bbox_rel, (list, tuple)) and len(text_bbox_rel) > 0 and isinstance(text_bbox_rel[0], (list, tuple)):
-            tx1 = min(int(b[0]) for b in text_bbox_rel)
-            ty1 = min(int(b[1]) for b in text_bbox_rel)
-            tx2 = max(int(b[2]) for b in text_bbox_rel)
-            ty2 = max(int(b[3]) for b in text_bbox_rel)
-        else:
-            tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox_rel]
-    else:
-        tx1, ty1, tx2, ty2 = int(0.22 * W), int(0.20 * H), int(0.78 * W), int(0.80 * H)
-    tcx, tcy = 0.5 * (tx1 + tx2), 0.5 * (ty1 + ty2)
-    trx, try_ = max(8.0, 0.5 * (tx2 - tx1)), max(8.0, 0.5 * (ty2 - ty1))
+    cand_pool = (~is_solid_wall) & (areas >= 4.0 * (s ** 2)) & (areas <= 1200.0 * (s ** 2))
+    cand_pool[0] = False
+    pool_ids = np.nonzero(cand_pool)[0]
 
-    cx_all = centroids[:, 0].astype(np.float32)
-    cy_all = centroids[:, 1].astype(np.float32)
-    norm_r = np.sqrt(((cx_all - tcx) / trx) ** 2 + ((cy_all - tcy) / try_) ** 2)
+    comp_semi_a = np.zeros(num_labels, dtype=np.float32)
+    comp_semi_b = np.zeros(num_labels, dtype=np.float32)
+    comp_ecc = np.zeros(num_labels, dtype=np.float32)
+    comp_theta = np.zeros(num_labels, dtype=np.float32)
+    comp_rfill = np.zeros(num_labels, dtype=np.float32)
+    comp_bg_white = np.zeros(num_labels, dtype=np.float32)
 
-    pre_cand = (
-        (~is_solid_wall)
-        & (areas >= 4.0 * (s ** 2))
-        & (areas <= 400.0 * (s ** 2))
-        & (norm_r >= 0.85)
-        & (norm_r <= 3.50)
-    )
-    pre_cand[0] = False
-    pre_ids = np.nonzero(pre_cand)[0]
-
-    # 3. Вычисление центральных моментов инерции на микро-срезах кандидатов
-    K_pre = len(pre_ids)
-    semi_a = np.zeros(K_pre, dtype=np.float32)
-    semi_b = np.zeros(K_pre, dtype=np.float32)
-    ecc = np.zeros(K_pre, dtype=np.float32)
-    theta = np.zeros(K_pre, dtype=np.float32)
-    ribbon_fill = np.zeros(K_pre, dtype=np.float32)
-
-    for idx, cid in enumerate(pre_ids):
+    pure_white_bg = (roi_gray >= 235).astype(np.uint8)
+    for cid in pool_ids:
         x0 = int(stats[cid, cv2.CC_STAT_LEFT])
         y0 = int(stats[cid, cv2.CC_STAT_TOP])
         w0 = int(stats[cid, cv2.CC_STAT_WIDTH])
@@ -1452,22 +1431,95 @@ def segment_dashed_bubble_roi(
         l2 = max(0.5 * (m20 + m02 - dsc), 1e-4)
         sa = 2.0 * float(np.sqrt(l1)) + 0.5
         sb = 2.0 * float(np.sqrt(l2)) + 0.5
-        semi_a[idx] = sa
-        semi_b[idx] = sb
-        ecc[idx] = float(np.sqrt(max(0.0, 1.0 - l2 / l1)))
-        theta[idx] = 0.5 * float(np.arctan2(2.0 * m11, df))
-        ribbon_fill[idx] = float(areas[cid]) / (np.pi * sa * sb + 1e-4)
+        comp_semi_a[cid] = sa
+        comp_semi_b[cid] = sb
+        comp_ecc[cid] = float(np.sqrt(max(0.0, 1.0 - l2 / l1)))
+        comp_theta[cid] = 0.5 * float(np.arctan2(2.0 * m11, df))
+        comp_rfill[cid] = float(areas[cid]) / (np.pi * sa * sb + 1e-4)
+        px1, py1 = max(0, x0 - 4), max(0, y0 - 4)
+        px2, py2 = min(W, x0 + w0 + 4), min(H, y0 + h0 + 4)
+        sub_pw = pure_white_bg[py1:py2, px1:px2]
+        comp_bg_white[cid] = float(np.mean(sub_pw)) if sub_pw.size > 0 else 0.0
+
+    # Авто-локализация текстового ядра (важно для краевых полу-бабблов, где текст смещен к рамке панели)
+    use_auto_text_core = True
+    if text_bbox_rel is not None:
+        if isinstance(text_bbox_rel, (list, tuple)) and len(text_bbox_rel) > 0 and isinstance(text_bbox_rel[0], (list, tuple)):
+            tx1 = min(int(b[0]) for b in text_bbox_rel)
+            ty1 = min(int(b[1]) for b in text_bbox_rel)
+            tx2 = max(int(b[2]) for b in text_bbox_rel)
+            ty2 = max(int(b[3]) for b in text_bbox_rel)
+        else:
+            tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox_rel]
+        if (tx2 - tx1) <= 0.72 * W and tx1 >= 4 and tx2 <= W - 4:
+            use_auto_text_core = False
+
+    if use_auto_text_core:
+        char_like = (
+            cand_pool
+            & (comp_bg_white >= 0.42)
+            & (areas >= 14.0 * (s ** 2))
+            & ((comp_semi_b >= 4.3 * s) | (comp_rfill < 0.48) | ((cw >= 11 * s) & (ch >= 11 * s) & (comp_ecc < 0.88)))
+        )
+        char_ids = np.nonzero(char_like)[0]
+        if len(char_ids) >= 3:
+            med_cx = float(np.median(cx_all[char_ids]))
+            mad_cx = max(12.0, float(np.median(np.abs(cx_all[char_ids] - med_cx))))
+            core_char_ids = char_ids[np.abs(cx_all[char_ids] - med_cx) <= max(2.2 * mad_cx, 0.22 * W)]
+            if len(core_char_ids) >= 2:
+                char_ids = core_char_ids
+            tx1 = int(np.min(stats[char_ids, cv2.CC_STAT_LEFT]))
+            ty1 = int(np.min(stats[char_ids, cv2.CC_STAT_TOP]))
+            tx2 = int(np.max(stats[char_ids, cv2.CC_STAT_LEFT] + stats[char_ids, cv2.CC_STAT_WIDTH]))
+            ty2 = int(np.max(stats[char_ids, cv2.CC_STAT_TOP] + stats[char_ids, cv2.CC_STAT_HEIGHT]))
+        else:
+            tx1, ty1, tx2, ty2 = int(0.22 * W), int(0.20 * H), int(0.78 * W), int(0.80 * H)
+
+    tcx, tcy = 0.5 * (tx1 + tx2), 0.5 * (ty1 + ty2)
+    trx, try_ = max(10.0, 0.5 * (tx2 - tx1)), max(10.0, 0.5 * (ty2 - ty1))
+
+    norm_r = np.sqrt(((cx_all - tcx) / trx) ** 2 + ((cy_all - tcy) / try_) ** 2)
+    outside_text_box = (
+        (cx_all < tx1 - 4.0 * s)
+        | (cx_all > tx2 + 4.0 * s)
+        | (cy_all < ty1 - 4.0 * s)
+        | (cy_all > ty2 + 4.0 * s)
+    )
+
+    pre_cand = (
+        (~is_solid_wall)
+        & (areas >= 4.0 * (s ** 2))
+        & (areas <= 600.0 * (s ** 2))
+        & (outside_text_box if use_auto_text_core else (norm_r >= 0.85))
+        & (norm_r <= 4.50)
+    )
+    pre_cand[0] = False
+    pre_ids = np.nonzero(pre_cand)[0]
 
     c_x = cx_all[pre_ids]
     c_y = cy_all[pre_ids]
+    semi_a = comp_semi_a[pre_ids]
+    semi_b = comp_semi_b[pre_ids]
+    ecc = comp_ecc[pre_ids]
+    theta = comp_theta[pre_ids]
+    ribbon_fill = comp_rfill[pre_ids]
+
     rad_dx = c_x - tcx
     rad_dy = c_y - tcy
     rad_len = np.hypot(rad_dx, rad_dy) + 1e-6
+    ell_nx = rad_dx / max(12.0, trx * 1.25)
+    ell_ny = rad_dy / max(12.0, try_ * 1.15)
+    ell_nlen = np.hypot(ell_nx, ell_ny) + 1e-6
     tan_x = np.cos(theta)
     tan_y = np.sin(theta)
     radial_dot = np.abs(tan_x * (rad_dx / rad_len) + tan_y * (rad_dy / rad_len))
+    ellipse_radial_dot = np.abs(tan_x * (ell_nx / ell_nlen) + tan_y * (ell_ny / ell_nlen))
 
-    keep = (semi_b <= 3.8 * s) & (ribbon_fill >= 0.42) & ((ecc < 0.65) | (radial_dot < 0.58))
+    keep = (
+        (semi_b <= 5.2 * s)
+        & (ribbon_fill >= 0.30)
+        & ((ecc < 0.65) | (ellipse_radial_dot < 0.75) | (radial_dot < 0.65))
+    )
     cand_ids = pre_ids[keep]
     c_x, c_y = c_x[keep], c_y[keep]
     t_x, t_y = tan_x[keep], tan_y[keep]
@@ -1497,14 +1549,14 @@ def segment_dashed_bubble_roi(
         cos_tj_u = np.abs(t_x[None, :] * u_x + t_y[None, :] * u_y)
         cos_ti_tj = np.abs(t_x[:, None] * t_x[None, :] + t_y[:, None] * t_y[None, :])
 
-        ok_i = (e_c[:, None] < 0.65) | (cos_ti_u >= 0.84)
-        ok_j = (e_c[None, :] < 0.65) | (cos_tj_u >= 0.84)
-        ok_ij = (e_c[:, None] < 0.65) | (e_c[None, :] < 0.65) | (cos_ti_tj >= 0.70)
+        ok_i = (e_c[:, None] < 0.65) | (cos_ti_u >= 0.82)
+        ok_j = (e_c[None, :] < 0.65) | (cos_tj_u >= 0.82)
+        ok_ij = (e_c[:, None] < 0.65) | (e_c[None, :] < 0.65) | (cos_ti_tj >= 0.68)
 
-        max_gap = 24.0 * s
+        max_gap = 36.0 * s
         adj = (
             (d_gap <= max_gap)
-            & (chord_len <= max_gap + 2.0 * (s_a[:, None] + s_a[None, :]))
+            & (chord_len <= max_gap + 2.2 * (s_a[:, None] + s_a[None, :]))
             & ok_i
             & ok_j
             & ok_ij
@@ -1524,25 +1576,77 @@ def segment_dashed_bubble_roi(
                 for nb in np.nonzero(adj[curr] & (~visited))[0]:
                     visited[nb] = True
                     comp.append(int(nb))
-            if len(comp) >= 3:
+            if len(comp) >= 2:
                 valid_chain_nodes[comp] = True
+
+        if int(np.count_nonzero(valid_chain_nodes)) < 3:
+            valid_chain_nodes[:] = False
 
         dashed_wall_ids = cand_ids[valid_chain_nodes]
         if len(dashed_wall_ids) >= 3:
             v_idx = np.nonzero(valid_chain_nodes)[0]
             ang = np.arctan2(c_y[v_idx] - tcy, c_x[v_idx] - tcx)
-            v_ordered = v_idx[np.argsort(ang)]
+            order = np.argsort(ang)
+            v_ordered = v_idx[order]
+            sorted_angs = ang[order]
             M = len(v_ordered)
+            extra_tail_ids: list[int] = []
+
             for idx_m in range(M):
                 i_node = v_ordered[idx_m]
                 j_node = v_ordered[(idx_m + 1) % M]
-                if np.hypot(c_x[i_node] - c_x[j_node], c_y[i_node] - c_y[j_node]) <= 36.0 * s:
-                    bridge_segments.append(
-                        (
-                            (float(c_x[i_node]), float(c_y[i_node])),
-                            (float(c_x[j_node]), float(c_y[j_node])),
-                        )
-                    )
+                ang_diff = float((sorted_angs[(idx_m + 1) % M] - sorted_angs[idx_m]) % (2.0 * np.pi))
+                dist_ij = float(np.hypot(c_x[i_node] - c_x[j_node], c_y[i_node] - c_y[j_node]))
+                if dist_ij <= 98.0 * s and ang_diff <= 1.45:
+                    p1_pt = (float(c_x[i_node]), float(c_y[i_node]))
+                    p2_pt = (float(c_x[j_node]), float(c_y[j_node]))
+                    bridge_segments.append((p1_pt, p2_pt))
+                    # Если между двумя подцепочками пунктира есть V-образный хвостик баббла (> / <), включаем его в защиту стенки!
+                    if dist_ij >= 26.0 * s:
+                        seg_vx, seg_vy = p2_pt[0] - p1_pt[0], p2_pt[1] - p1_pt[1]
+                        seg_l2 = seg_vx * seg_vx + seg_vy * seg_vy + 1e-6
+                        for cid_t in pool_ids:
+                            if cid_t in dashed_wall_ids or not outside_text_box[cid_t]:
+                                continue
+                            px_t, py_t = float(cx_all[cid_t]), float(cy_all[cid_t])
+                            t_proj = ((px_t - p1_pt[0]) * seg_vx + (py_t - p1_pt[1]) * seg_vy) / seg_l2
+                            if 0.05 <= t_proj <= 0.95:
+                                proj_x = p1_pt[0] + t_proj * seg_vx
+                                proj_y = p1_pt[1] + t_proj * seg_vy
+                                if np.hypot(px_t - proj_x, py_t - proj_y) <= 28.0 * s:
+                                    extra_tail_ids.append(int(cid_t))
+
+            # Для полу-бабблов у границ панели замыкаем крайние узлы пунктирной дуги на верхнюю/нижнюю или боковые рамки
+            chain_span_y = float(np.max(c_y[v_idx]) - np.min(c_y[v_idx]))
+            chain_span_x = float(np.max(c_x[v_idx]) - np.min(c_x[v_idx]))
+            ang_gaps = np.diff(np.concatenate([sorted_angs, [sorted_angs[0] + 2.0 * np.pi]]))
+            max_ang_gap_idx = int(np.argmax(ang_gaps))
+            if float(ang_gaps[max_ang_gap_idx]) > 1.15:
+                if chain_span_y >= chain_span_x:
+                    top_node = v_idx[int(np.argmin(c_y[v_idx]))]
+                    bot_node = v_idx[int(np.argmax(c_y[v_idx]))]
+                    if float(c_y[top_node]) <= max(75.0 * s, 0.25 * H):
+                        bridge_segments.append(((float(c_x[top_node]), float(c_y[top_node])), (float(c_x[top_node]), 0.0)))
+                        for cid_e in pool_ids:
+                            if cid_e not in dashed_wall_ids and cy_all[cid_e] <= c_y[top_node] + 6.0 * s and abs(cx_all[cid_e] - c_x[top_node]) <= 24.0 * s:
+                                extra_tail_ids.append(int(cid_e))
+                    if (float(H - 1) - float(c_y[bot_node])) <= max(75.0 * s, 0.25 * H):
+                        bridge_segments.append(((float(c_x[bot_node]), float(c_y[bot_node])), (float(c_x[bot_node]), float(H - 1))))
+                        for cid_e in pool_ids:
+                            if cid_e not in dashed_wall_ids and cy_all[cid_e] >= c_y[bot_node] - 6.0 * s and abs(cx_all[cid_e] - c_x[bot_node]) <= 24.0 * s:
+                                extra_tail_ids.append(int(cid_e))
+                else:
+                    left_node = v_idx[int(np.argmin(c_x[v_idx]))]
+                    right_node = v_idx[int(np.argmax(c_x[v_idx]))]
+                    if float(c_x[left_node]) <= max(75.0 * s, 0.25 * W):
+                        bridge_segments.append(((float(c_x[left_node]), float(c_y[left_node])), (0.0, float(c_y[left_node]))))
+                    if (float(W - 1) - float(c_x[right_node])) <= max(75.0 * s, 0.25 * W):
+                        bridge_segments.append(((float(c_x[right_node]), float(c_y[right_node])), (float(W - 1), float(c_y[right_node]))))
+
+            if extra_tail_ids:
+                dashed_wall_ids = np.unique(
+                    np.concatenate([dashed_wall_ids, np.array(extra_tail_ids, dtype=np.int32)])
+                )
 
     # 5. Построение protected_wall_mask и замыкание virtual_wall_barrier дугами Безье
     wall_lut = is_solid_wall.astype(np.uint8) * 255
@@ -1559,11 +1663,11 @@ def segment_dashed_bubble_roi(
         chord_d = float(np.hypot(p2[0] - p1[0], p2[1] - p1[1]))
         r_dx, r_dy = mx - tcx, my - tcy
         r_l = float(np.hypot(r_dx, r_dy)) + 1e-6
-        sagitta = 0.08 * chord_d
+        sagitta = 0.04 * chord_d
         ctrl_x = mx + sagitta * (r_dx / r_l)
         ctrl_y = my + sagitta * (r_dy / r_l)
 
-        ts = np.linspace(0.0, 1.0, 6)
+        ts = np.linspace(0.0, 1.0, 8)
         pts = np.stack(
             [
                 (1.0 - ts) ** 2 * p1[0] + 2.0 * (1.0 - ts) * ts * ctrl_x + ts ** 2 * p2[0],
@@ -1588,8 +1692,10 @@ def segment_dashed_bubble_roi(
     dummy = np.full((H, W), 255, dtype=np.uint8)
     cv2.floodFill(dummy, seed_mask, (sx, sy), 128, flags=4 | (255 << 8) | cv2.FLOODFILL_MASK_ONLY)
     interior_mask = cv2.subtract(seed_mask[1:-1, 1:-1], virtual_wall_barrier)
+    wall_guard_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    wall_guard_mask = cv2.dilate(protected_wall_mask, wall_guard_k, iterations=1)
     clean_roi_mask = cv2.bitwise_and(
-        ink_mask, cv2.bitwise_and(interior_mask, cv2.bitwise_not(protected_wall_mask))
+        ink_mask, cv2.bitwise_and(interior_mask, cv2.bitwise_not(wall_guard_mask))
     )
 
     elapsed_ms = (time.perf_counter() - t_start) * 1000.0
@@ -4625,11 +4731,11 @@ class MangaOCREngine:
 
         # Если основная светлая область касается >= 3 границ кропа (пробой через пунктирную или разомкнутую стенку),
         # пробуем герметизировать чашу через SOTA-модули Проблемы №1 и Проблемы №2:
-        if best_edge_touches >= 3 and rh >= 24 and rw >= 24:
+        if best_edge_touches >= 2 and rh >= 24 and rw >= 24:
             dash_res = segment_dashed_bubble_roi(roi_gray, None)
             if dash_res.get("is_dashed_bubble"):
                 d_int = dash_res["interior_mask"]
-                if 0.08 * rh * rw <= np.count_nonzero(d_int) <= 0.90 * rh * rw:
+                if 0.08 * rh * rw <= np.count_nonzero(d_int) <= 0.95 * rh * rw:
                     return d_int
             open_res = segment_open_wispy_bubble_roi(
                 roi_gray, (int(0.22 * rw), int(0.20 * rh), int(0.78 * rw), int(0.80 * rh))
@@ -4771,10 +4877,44 @@ class MangaOCREngine:
         median_val = float(np.median(roi_gray))
 
         has_clean_interior = False
+        is_dashed_wall_roi = False
         if p75 >= 210.0:
             interior_mask = cls._extract_bubble_interior_mask(roi_gray, p75)
             ink_thresh = max(165, int(p75 - 18))
             binary = ((roi_gray < ink_thresh) & (interior_mask > 0)).astype(np.uint8) * 255
+            if rh >= 28 and rw >= 28:
+                dash_chk = segment_dashed_bubble_roi(roi_gray, None)
+                pad_d = min(28, max(12, int(min(bw, bh) * 0.14)))
+                dx1_p = max(0, ix1 - pad_d)
+                dy1_p = max(0, iy1 - pad_d)
+                dx2_p = min(img_w, ix2 + pad_d)
+                dy2_p = min(img_h, iy2 + pad_d)
+                if dx1_p < ix1 or dy1_p < iy1 or dx2_p > ix2 or dy2_p > iy2:
+                    pad_gray = cv2.cvtColor(img_np[dy1_p:dy2_p, dx1_p:dx2_p], cv2.COLOR_RGB2GRAY)
+                    dash_pad = segment_dashed_bubble_roi(pad_gray, None)
+                    if dash_pad.get("is_dashed_bubble") and int(dash_pad.get("num_dashes_detected", 0)) > int(dash_chk.get("num_dashes_detected", 0)):
+                        oy1_d, oy2_d = iy1 - dy1_p, iy2 - dy1_p
+                        ox1_d, ox2_d = ix1 - dx1_p, ix2 - dx1_p
+                        dash_chk = {
+                            "is_dashed_bubble": True,
+                            "num_dashes_detected": dash_pad["num_dashes_detected"],
+                            "protected_wall_mask": dash_pad["protected_wall_mask"][oy1_d:oy2_d, ox1_d:ox2_d],
+                            "interior_mask": dash_pad["interior_mask"][oy1_d:oy2_d, ox1_d:ox2_d],
+                            "clean_roi_mask": dash_pad["clean_roi_mask"][oy1_d:oy2_d, ox1_d:ox2_d],
+                        }
+                if dash_chk.get("is_dashed_bubble"):
+                    is_dashed_wall_roi = True
+                    d_clean = dash_chk.get("clean_roi_mask")
+                    if isinstance(d_clean, np.ndarray) and d_clean.shape == binary.shape and np.count_nonzero(d_clean) >= 24:
+                        binary = d_clean.copy()
+                    else:
+                        d_wall = dash_chk["protected_wall_mask"]
+                        d_int = dash_chk["interior_mask"]
+                        if d_wall.shape == binary.shape:
+                            d_wall_dil = cv2.dilate(d_wall, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)), iterations=1)
+                            binary[d_wall_dil > 0] = 0
+                        if d_int.shape == binary.shape and np.count_nonzero(d_int) >= 0.08 * rh * rw:
+                            binary[d_int == 0] = 0
             has_clean_interior = True
         elif median_val >= 127.0:
             _, binary = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
@@ -4876,6 +5016,10 @@ class MangaOCREngine:
                         ink_y1 = max(by1, min(ink_y1, iy1 + in_pad_y + c_min_y - 4))
                         ink_x2 = min(bx2, max(ink_x2, ix1 + in_pad_x + c_max_x + 4))
                         ink_y2 = min(by2, max(ink_y2, iy1 + in_pad_y + c_max_y + 4))
+
+        if is_dashed_wall_roi:
+            # Для пунктирных бабблов никогда не расширяем text_bbox обратно на внешнюю пунктирную стенку!
+            return [ink_x1, ink_y1, ink_x2, ink_y2]
 
         if valid_hint is not None:
             hx1, hy1, hx2, hy2 = valid_hint
@@ -7356,15 +7500,28 @@ class MangaOCREngine:
                     # Если manga-ocr-nar-small вернул пустую строку ("") на кропе — значит внутри нет японских букв,
                     # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
                     # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
-                    def _has_nar_kana_stutter(s_txt: str) -> bool:
-                        if not s_txt or len(s_txt) < 10:
+                    def _has_nar_kana_stutter(s_txt: str, crop_img: Image.Image | None = None) -> bool:
+                        if not s_txt:
                             return False
-                        # Детектор артефактов CTC/NAR-декодера на многоколоночных бабблах (например «使っててさい心ははがが良い»):
-                        # удвоение служебных частиц/окончаний или 3+ одинаковых символа каны подряд
-                        if re.search(r"([ぁ-んァ-ン])\1\1", s_txt):
+                        # 1. Детектор повторов слогов/биграмм и заикания CTC/NAR-декодера («使っててさい心ははがが良い»)
+                        if len(s_txt) >= 6:
+                            if re.search(r"([ぁ-んァ-ン])\1\1", s_txt):
+                                return True
+                            if re.search(r"([ぁ-んァ-ン一-龯]{2,4})\1\1", s_txt):
+                                return True
+                            if re.search(r"(?:ははが|がが|をを|にに|へへ|でで|とと[^っッ]|てて(?:さ|く|ね|よ|も|い)|ますす|ですす|しいい|ないい)", s_txt):
+                                return True
+                        if KNOWN_OCR_HALLUCINATIONS_REGEX.search(s_txt):
                             return True
-                        if re.search(r"(?:ははが|がが|をを|にに|へへ|でで|とと[^っッ]|てて(?:さ|く|ね|よ|も|い)|ますす|ですす)", s_txt):
-                            return True
+                        # 2. Проверка плотности чернил относительно числа распознанных символов (защита от галлюцинаций на скринтоне/шуме)
+                        if crop_img is not None:
+                            core_s = STRIP_PUNCT_REGEX.sub("", s_txt.strip())
+                            if len(core_s) >= 8:
+                                gate_res = pre_ocr_stroke_gate(crop_img)
+                                cc_cnt = max(1, int(gate_res.valid_cc_count))
+                                # Если NAR-декодер нафантазировал длинную фразу (>10 симв.) из 1-3 мелких штрихов
+                                if not gate_res.passed or (len(core_s) >= 10 and len(core_s) > cc_cnt * 2.2):
+                                    return True
                         return False
 
                     is_acc_or_ultra = is_ultra_ocr or (getattr(self, "pipeline_mode", "balanced") == "accuracy")
@@ -7373,7 +7530,7 @@ class MangaOCREngine:
                         idx
                         for idx, txt in enumerate(nar_texts)
                         if len(txt) >= len_thresh
-                        or _has_nar_kana_stutter(txt)
+                        or _has_nar_kana_stutter(txt, crops_pil[idx])
                         or _looks_like_merged_english_ocr(txt)
                         or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).passed)
                         or (
@@ -7395,7 +7552,7 @@ class MangaOCREngine:
                                 continue
                             cur_core_len = len(STRIP_PUNCT_REGEX.sub("", cur_nar))
                             fb_core_len = len(STRIP_PUNCT_REGEX.sub("", fb_clean))
-                            nar_stuttered = _has_nar_kana_stutter(cur_nar)
+                            nar_stuttered = _has_nar_kana_stutter(cur_nar, crops_pil[idx])
                             fb_stuttered = _has_nar_kana_stutter(fb_clean)
                             if (
                                 not cur_nar
