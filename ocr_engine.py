@@ -5984,7 +5984,22 @@ class MangaOCREngine:
             right_white = float(np.max(white_col_ratio[min(bw - 1, min_white_col + 8) :]))
             pinch_white = float(white_col_ratio[min_white_col])
 
-            if pinch_white <= min(left_white, right_white) * 0.62 and (min_white_col >= 55) and (bw - min_white_col >= 55):
+            # Защита от разрезания прямоугольных рамок и горизонтального текста по буквам:
+            # требуем реальную перетяжку контура баббла сверху и снизу (восьмерка) либо сплошную вертикальную перегородку,
+            # при этом в центральной полосе текста не должно быть горизонтальных строк, пересекающих линию разреза.
+            band_h = max(4, int(bh * 0.18))
+            top_dark = float(np.mean(full_crop_gray[:band_h, max(0, min_white_col - 2) : min(bw, min_white_col + 3)] < 200))
+            bot_dark = float(np.mean(full_crop_gray[max(0, bh - band_h) :, max(0, min_white_col - 2) : min(bw, min_white_col + 3)] < 200))
+            mid_slice_col = full_crop_gray[band_h : max(band_h + 1, bh - band_h), min_white_col]
+            is_continuous_wall = float(np.mean(mid_slice_col < 180)) >= 0.78
+            has_contour_pinch = (top_dark >= 0.35 and bot_dark >= 0.35) and is_continuous_wall
+
+            if (
+                has_contour_pinch
+                and pinch_white <= min(left_white, right_white) * 0.52
+                and (min_white_col >= 65)
+                and (bw - min_white_col >= 65)
+            ):
                 split_x = x1 + min_white_col
                 refined.append({"bbox": [x1, y1, split_x, y2], "confidence": det["confidence"], "is_free_text": is_free})
                 refined.append({"bbox": [split_x, y1, x2, y2], "confidence": det["confidence"], "is_free_text": is_free})
@@ -6245,15 +6260,19 @@ class MangaOCREngine:
 
             gap_s = max(by1 + 10, min(top_tb[3], int(round((cy1 + cy2) / 2.0)) - 6)) - by1
             gap_e = min(by2 - 10, max(bot_tb[1], int(round((cy1 + cy2) / 2.0)) + 6)) - by1
+            min_white_row_ratio = 1.0
             if gap_e > gap_s + 2:
                 white_rows = np.mean(crop_gray >= 225, axis=1)
                 min_rel = int(np.argmin(white_rows[gap_s:gap_e])) + gap_s
+                min_white_row_ratio = float(white_rows[min_rel])
                 split_y = by1 + min_rel
             else:
                 split_y = int(round((top_tb[3] + bot_tb[1]) / 2.0))
 
+            # Не разрезаем единую вертикальную колонку (tategaki) по горизонтали, если между боксами нет реального зазора y_gap >= 12
+            has_real_vert_sep = (y_gap >= 12) or (min_white_row_ratio < 0.75 and dx_centers >= bw * 0.25)
             split_y = max(by1 + 36, min(by2 - 36, split_y))
-            if (split_y - by1) >= 36 and (by2 - split_y) >= 36:
+            if has_real_vert_sep and (split_y - by1) >= 36 and (by2 - split_y) >= 36:
                 tw_pad = max(18, int(round((top_tb[2] - top_tb[0]) * 0.42)))
                 bw_pad = max(18, int(round((bot_tb[2] - bot_tb[0]) * 0.42)))
                 tx1_b = max(bx1, top_tb[0] - tw_pad) if dx_centers >= bw * 0.22 else bx1
@@ -7525,7 +7544,7 @@ class MangaOCREngine:
                                 return True
                             if re.search(r"([ぁ-んァ-ン一-龯]{2,4})\1\1", s_txt):
                                 return True
-                            if re.search(r"(?:ははが|がが|をを|にに|へへ|でで|とと[^っッ]|てて(?:さ|く|ね|よ|も|い)|ますす|ですす|しいい|ないい)", s_txt):
+                            if re.search(r"(?:ははが|がが|をを|にに|へへ|でで|とと[^っッ]|てて(?:さ|く|ね|よ|も|い)|ますす|ですす|しいい|ないい|が明|明明|草んの|香うんで)", s_txt):
                                 return True
                         if KNOWN_OCR_HALLUCINATIONS_REGEX.search(s_txt):
                             return True
@@ -7541,7 +7560,7 @@ class MangaOCREngine:
                         return False
 
                     is_acc_or_ultra = is_ultra_ocr or (getattr(self, "pipeline_mode", "balanced") == "accuracy")
-                    len_thresh = 28 if is_ultra_ocr else (32 if is_acc_or_ultra else 38)
+                    len_thresh = 12 if is_ultra_ocr else (28 if is_acc_or_ultra else 38)
                     fallback_indices = [
                         idx
                         for idx, txt in enumerate(nar_texts)
@@ -7573,7 +7592,7 @@ class MangaOCREngine:
                             if (
                                 not cur_nar
                                 or (nar_stuttered and not fb_stuttered and fb_core_len >= max(4, int(cur_core_len * 0.75)))
-                                or (is_ultra_ocr and len(cur_nar) >= 18 and not fb_stuttered and fb_core_len >= max(6, int(cur_core_len * 0.82)))
+                                or (is_ultra_ocr and len(cur_nar) >= 10 and not fb_stuttered and fb_core_len >= max(5, int(cur_core_len * 0.82)))
                                 or (len(cur_nar) >= 34 and not fb_stuttered and fb_core_len >= cur_core_len - 2)
                                 or (len(cur_nar) >= 54 and len(fb_clean) > len(cur_nar))
                                 or (cur_core_len <= 4 and fb_core_len >= cur_core_len + 2)

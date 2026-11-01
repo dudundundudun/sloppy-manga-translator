@@ -246,8 +246,6 @@ class MikoMangaStudioGUI:
             "max_font_size": int(self.var_max_font.get()),
             "uppercase": bool(self.var_uppercase.get()),
             "overflow_mode": self.var_overflow_mode.get(),
-            "pipeline_mode": self.pipeline_mode,
-            "use_image_context": self.use_image_context,
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),

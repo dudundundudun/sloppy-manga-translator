@@ -1521,7 +1521,7 @@ def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
                     b["needs_retranslate"] = True
                     b["skip_reason"] = f"Отказ цензуры облачного API («{tr_t[:42]}») — требуется доперевод локальной моделью"
                     page_needs_retranslate = True
-                elif (tsrc in ("skipped_sigh_orig", "skipped_sigh_trans", "untranslated_error") or b.get("api_censored")) and orig_t and not tr_t:
+                elif (tsrc == "untranslated_error" or b.get("api_censored")) and orig_t and not tr_t:
                     if OllamaTranslator._contains_cjk(orig_t):
                         b["is_deleted"] = False
                         b["translation_source"] = "untranslated_error"
@@ -2641,7 +2641,7 @@ def is_page_already_translated(
                 tsrc_chk = str(b_chk.get("translation_source") or "").strip()
                 if tr_chk and OllamaTranslator._is_bubble_refusal_value(tr_chk):
                     return False
-                if not tr_chk and orig_chk and OllamaTranslator._contains_cjk(orig_chk) and tsrc_chk in ("untranslated_error", "skipped_sigh_orig", "skipped_sigh_trans"):
+                if not tr_chk and orig_chk and OllamaTranslator._contains_cjk(orig_chk) and tsrc_chk == "untranslated_error":
                     return False
         if bool(page_meta.get("manually_edited")):
             return True
@@ -3373,20 +3373,46 @@ async def _run_folder_translation_job(
                         raise pre_pil
                     pil_img: Image.Image = pre_pil
                     scan_lang = chapter_detected_lang if chapter_detected_lang else lang
-                    async with gpu_lock(priority=3):
-                        p_blocks, det_lang = await asyncio.to_thread(
-                            _run_ocr_compat,
-                            ocr_engine,
-                            pil_img,
-                            scan_lang,
-                            eff_free,
-                            eff_mode,
-                            eff_skip_sighs,
-                            eff_skip_sfx,
-                            eff_min_len,
-                            eff_pmode,
+                    existing_p_meta = (manifest.get("pages") or {}).get(rel_norm) if isinstance(manifest.get("pages"), dict) else None
+                    saved_ocr_blocks = existing_p_meta.get("blocks") if isinstance(existing_p_meta, dict) else None
+                    saved_ocr_diag = existing_p_meta.get("ocr_diag") if isinstance(existing_p_meta, dict) else None
+                    can_reuse_saved_ocr = (
+                        not force_retranslate
+                        and isinstance(existing_p_meta, dict)
+                        and not existing_p_meta.get("ocr_error")
+                        and isinstance(saved_ocr_blocks, list)
+                        and (
+                            len(saved_ocr_blocks) > 0
+                            or (isinstance(saved_ocr_diag, dict) and saved_ocr_diag.get("zero_reason_code") in ("no_bubbles_detected", "no_ink_in_bubbles", "empty_ocr_or_noise"))
                         )
-                        p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
+                    )
+                    if can_reuse_saved_ocr:
+                        p_blocks = []
+                        for sb_item in saved_ocr_blocks:
+                            if not isinstance(sb_item, dict):
+                                continue
+                            sb_c = dict(sb_item)
+                            if str(sb_c.get("translation_source") or "") == "untranslated_error" or not str(sb_c.get("translated_text") or "").strip():
+                                sb_c["is_deleted"] = False
+                                sb_c["needs_retranslate"] = False
+                            p_blocks.append(sb_c)
+                        det_lang = str(existing_p_meta.get("detected_lang") or scan_lang or "ja")
+                        p_ocr_diag = dict(saved_ocr_diag or {})
+                    else:
+                        async with gpu_lock(priority=3):
+                            p_blocks, det_lang = await asyncio.to_thread(
+                                _run_ocr_compat,
+                                ocr_engine,
+                                pil_img,
+                                scan_lang,
+                                eff_free,
+                                eff_mode,
+                                eff_skip_sighs,
+                                eff_skip_sfx,
+                                eff_min_len,
+                                eff_pmode,
+                            )
+                            p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
                     # Фиксируем язык главы как 'ja' или 'ko' только при наличии каны/хангыля,
                     # чтобы обложка без каны (только с кандзи) никогда не переключала всю японскую мангу на китайский ('zh')!
                     has_kana_on_page = any(
@@ -3532,7 +3558,7 @@ async def _run_folder_translation_job(
                                 async with gpu_lock(priority=2):
                                     if _preclean_stop_flag or _folder_stop_requested:
                                         break
-                                    c_im, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_pre, pre_clean_list)
+                                    c_im, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_pre, pre_clean_list, src_p_pre)
                                     _store_cached_cleaned_image(src_p_pre, c_hash, c_im, save_to_disk=True)
                             except Exception as pre_exc:
                                 logger.debug("Фоновая пред-очистка страницы пропущена: %s", pre_exc)
@@ -3555,7 +3581,8 @@ async def _run_folder_translation_job(
                         if extracted_gloss:
                             folder_glossary_entries = merge_glossaries(folder_glossary_entries, extracted_gloss)
                             manifest["glossary"] = folder_glossary_entries
-                    first_valid_pil = next((sp.get("pil_img") or sp.get("pil") for sp in scanned_pages if sp.get("ok") and (sp.get("pil_img") is not None or sp.get("pil") is not None)), None)
+                    valid_sp_list = [sp for sp in scanned_pages if sp.get("ok") and (sp.get("pil_img") is not None or sp.get("pil") is not None)]
+                    first_valid_pil = (valid_sp_list[0].get("pil_img") or valid_sp_list[0].get("pil")) if len(valid_sp_list) == 1 else None
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -3673,9 +3700,11 @@ async def _run_folder_translation_job(
                 for b, gid in zip(p_blocks, gids):
                     gid_s = str(gid)
                     t_txt = str(translated_by_gid.get(gid_s, "") or "").strip()
+                    t_src_s = source_by_gid.get(gid_s) or ("llm" if t_txt else "untranslated_error")
                     b["translated_text"] = t_txt
-                    b["is_deleted"] = not bool(t_txt)
-                    b["translation_source"] = source_by_gid.get(gid_s) or ("llm" if t_txt else "untranslated_error")
+                    b["translation_source"] = t_src_s
+                    b["is_deleted"] = False if (t_txt or t_src_s == "untranslated_error") else True
+                    b["needs_retranslate"] = (not bool(t_txt)) and (t_src_s == "untranslated_error")
                     b["skip_reason"] = "" if t_txt else skip_reason_by_gid.get(gid_s, "")
                     b["api_censored"] = bool(api_censored_by_gid.get(gid_s, False)) if not t_txt else False
                     b["api_failed"] = bool(api_failed_by_gid.get(gid_s, False)) if not t_txt else False
@@ -3718,7 +3747,7 @@ async def _run_folder_translation_job(
                 if cached_im is not None:
                     cleaned_im = cached_im
                 else:
-                    cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in)
+                    cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in, src_p)
                     _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
                 eff_overflow = overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
                 try:
@@ -3786,7 +3815,7 @@ async def _run_folder_translation_job(
                             await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
 
                     manifest["pages"][rel_norm] = {
-                        "needs_retranslate": False,
+                        "needs_retranslate": any(b.get("translation_source") == "untranslated_error" for b in p_blocks),
                         "render_error": "",
                         "blocks_count": len(p_blocks),
                         "free_text_count": sum(1 for b in p_blocks if b.get("is_free_text")),

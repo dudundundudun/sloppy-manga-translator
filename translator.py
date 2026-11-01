@@ -2017,6 +2017,21 @@ def kana_to_romaji(text: str) -> str:
 # Встроенный словарь частых японских слов и кандзи манги (для мгновенного локального чтения в Ромадзи даже без ИИ)
 _MANGA_KANJI_TO_KANA_PAIRS: list[tuple[str, str]] = sorted(
     [
+        # Частые имена и лексика глав (расширение словаря кандзи v5.3.1)
+        ("藤咲穂乃花", "ふじさき ほのか "), ("佐久間圭介", "さくま けいすけ "), ("桜木弘明", "さくらぎ ひろあき "),
+        ("佐久間弘明", "さくま ひろあき "), ("穂乃花", "ほのか "), ("藤咲", "ふじさき "), ("佐久間", "さくま "),
+        ("桜木", "さくらぎ "), ("圭介", "けいすけ "), ("弘明", "ひろあき "), ("予備役製作所", "よびえき せいさくしょ "),
+        ("製作所", "せいさくしょ "), ("予備役", "よびえき "), ("幼馴染", "おさななじみ "), ("結婚指輪", "けっこんゆびわ "),
+        ("婚約指輪", "こんやくゆびわ "), ("結婚式", "けっこんしき "), ("披露宴", "ひろうえん "), ("結婚", "けっこん "),
+        ("婚約", "こんやく "), ("指輪", "ゆびわ "), ("留学", "りゅうがく "), ("疎遠", "そえん "), ("経営", "けいえい "),
+        ("料理教室", "りょうりきょうしつ "), ("料理", "りょうり "), ("教室", "きょうしつ "), ("担当者", "たんとうしゃ "),
+        ("致命的", "ちめいてき "), ("違約金", "いやくきん "), ("借入金", "かりいれきん "), ("採用", "さいよう "),
+        ("案件", "あんけん "), ("納品", "のうひん "), ("倒産", "とうさん "), ("缶詰", "かんづめ "), ("社長", "しゃちょう "),
+        ("主賓", "しゅひん "), ("両親", "りょうしん "), ("上司", "じょうし "), ("実感", "じっかん "), ("絶頂", "ぜっちょう "),
+        ("因縁", "いんねん "), ("送別会", "そうべつかい "), ("帰宅部", "きたくぶ "), ("卒業", "そつぎょう "),
+        ("告白", "こくはく "), ("下着", "したぎ "), ("反省", "はんせい "), ("説得", "せっとく "), ("解決", "かいけつ "),
+        ("聡明", "そうめい "), ("不公平", "ふこうへい "), ("弾力", "だんりょく "), ("乳首", "ちくび "), ("感度", "かんど "),
+        ("喉奥", "のどおく "), ("手コキ", "てこき "), ("旦那様", "だんなさま "), ("旦那", "だんな "),
         # Местоимения и обращения
         # Имена собственные, составные слова и грамматические конструкции (фикс v5.3.0)
         ("心花ちゃん", "こはなちゃん "), ("心花", "こはな "), ("猫又くん", "ねこまたくん "), ("猫又君", "ねこまたくん "), ("猫又", "ねこまた "),
@@ -2207,7 +2222,7 @@ def _get_pykakasi_converter() -> Any | None:
     return _PYKAKASI_CONV
 
 
-def japanese_to_romaji_local(text: str) -> str:
+def japanese_to_romaji_local(text: str, keep_unknown_kanji: bool = False) -> str:
     """
     Быстрая локальная транслитерация японской строки (кандзи + хирагана + катакана) в Хэпбёрн-ромадзи:
     1. Проверяет словарь частых междометий.
@@ -2386,7 +2401,9 @@ def japanese_to_romaji_local(text: str) -> str:
                 fb_k = _SINGLE_KANJI_FALLBACK_KANA.get(ch_k, "")
                 if fb_k:
                     out_chars.append(f" {fb_k} ")
-                # Если редкий кандзи не найден, опускаем сырой иероглиф в латинской транслитерации
+                elif keep_unknown_kanji:
+                    out_chars.append(ch_k)
+                # Если редкий кандзи не найден и keep_unknown_kanji=False, опускаем сырой иероглиф
             else:
                 out_chars.append(ch_k)
         working = "".join(out_chars)
@@ -4753,8 +4770,19 @@ class OllamaTranslator:
 
         if t_lang in ("en", "ru"):
             fb_map = ROMAJI_PHRASE_FALLBACK_RU if t_lang == "ru" else ROMAJI_PHRASE_FALLBACK_EN
-            for probe in (candidate_text, japanese_to_romaji_local(orig_text), kana_to_romaji(orig_text)):
-                if not probe:
+            has_kanji_orig = bool(re.search(r"[\u4e00-\u9fff]", orig_text or ""))
+            probes: list[str] = []
+            if candidate_text and not cls._contains_cjk(candidate_text):
+                probes.append(candidate_text)
+            if not has_kanji_orig:
+                probes.extend([japanese_to_romaji_local(orig_text), kana_to_romaji(orig_text)])
+            elif orig_text:
+                # Разрешаем локальный ромадзи-пробник для кандзи-фраз только если ВСЕ кандзи известны словарю (без потери имен/слов)
+                rom_full = japanese_to_romaji_local(orig_text, keep_unknown_kanji=True)
+                if rom_full and not cls._contains_cjk(rom_full):
+                    probes.append(rom_full)
+            for probe in probes:
+                if not probe or cls._contains_cjk(probe):
                     continue
                 norm_p = re.sub(r"[^a-zA-Z\s]", " ", probe.lower()).strip()
                 norm_p = re.sub(r"\s+", " ", norm_p)
@@ -5871,7 +5899,7 @@ class OllamaTranslator:
             auto_glossary_header=auto_gloss_hdr,
         )
 
-        if use_image_context:
+        if use_image_context and page_image_b64:
             img_ctx_note = (
                 "\n[IMAGE-AWARE VLM CONTEXT (arXiv:2610.17908)]: Use the visual scene, speaker tags, bubble coordinates, "
                 "and attached page image (with numbered bubbles #1..#N when supported by the model) to determine "
@@ -6071,11 +6099,14 @@ class OllamaTranslator:
             cur_v = translated_map.get(k, "")
             if not cur_v or not _is_valid_target_translation(cur_v, orig_val):
                 has_q_inner = ("?" in orig_val) or ("？" in orig_val)
-                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_val)
+                has_star_inner = ("☆" in orig_val) or ("★" in orig_val)
+                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\★\☆\(\）\（\)]+", "", orig_val)
                 if norm_orig in interj_dict and len(norm_orig) <= 5:
                     d_val = interj_dict[norm_orig]
                     if has_q_inner and not d_val.endswith("?"):
                         d_val = re.sub(r"[!\.…]+$", "", d_val) + "?"
+                    if has_star_inner and "☆" not in d_val and t_lang in ("en", "ru", "romaji"):
+                        d_val = d_val.rstrip("!.") + "☆"
                     translated_map[k] = d_val
                     self.diagnostics_stats["dict_interjections_used_count"] = (
                         int(self.diagnostics_stats.get("dict_interjections_used_count") or 0) + 1
@@ -6586,7 +6617,8 @@ class OllamaTranslator:
             # ВАЖНО: Если в реплике есть вопросительный знак ('?' / '？'), это осмысленный вопрос («ん?» -> «Hm?», «はぁ?» -> «Huh?»),
             # его НИКОГДА нельзя пропускать как беззвучный вздох или превращать в утверждение с '!'
             has_question_mark = ("?" in orig_raw) or ("？" in orig_raw)
-            norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_raw)
+            has_star_mark = ("☆" in orig_raw) or ("★" in orig_raw)
+            norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\★\☆\(\）\（\)]+", "", orig_raw)
             if eff_skip_sighs and not has_question_mark and norm_orig in PURE_SIGH_KEYS_JA:
                 translated_map[k] = ""
                 cached_hits += 1
