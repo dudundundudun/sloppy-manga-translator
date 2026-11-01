@@ -955,38 +955,52 @@ def classify_and_clean_heterogeneous_bubble(
     inpaint_mask = cv2.bitwise_and(inpaint_mask, cv2.bitwise_not(protected_wall_mask))
 
     # 2. Локальный классификатор 4 режимов подложки через нормированную свертку
-    valid = (inpaint_mask == 0).astype(np.float32)
+    # Исключаем защищенные черные стенки/препятствия из эталона фона, чтобы черная краска не затекала внутрь маски!
+    valid_raw = (inpaint_mask == 0) & (protected_wall_mask == 0)
+    if not np.any(valid_raw):
+        valid_raw = (inpaint_mask == 0)
+    bg_p75 = float(np.percentile(roi_gray[valid_raw], 75)) if np.any(valid_raw) else 255.0
+    if bg_p75 >= 195.0:
+        # В светлом баббле исключаем случайные черные штрихи/волосы/стенки (< 120) из интерполяции фона
+        clean_bg_bool = valid_raw & (roi_gray >= 120)
+        if np.count_nonzero(clean_bg_bool) >= 16:
+            valid_raw = clean_bg_bool
+
+    valid = valid_raw.astype(np.float32)
     gray_f = roi_gray.astype(np.float32)
     val_img = gray_f * valid
+    fallback_gray = float(np.median(roi_gray[valid_raw])) if np.any(valid_raw) else 255.0
 
     win_sz = (int(round(15 * s)) | 1, int(round(15 * s)) | 1)
     wide_cls_win = (int(round(45 * s)) | 1, int(round(45 * s)) | 1)
+    ultra_win = (int(round(95 * s)) | 1, int(round(95 * s)) | 1)
     w_raw = cv2.boxFilter(valid, cv2.CV_32F, win_sz)
+    w_wide_raw = cv2.boxFilter(valid, cv2.CV_32F, wide_cls_win)
     w_sum = np.maximum(w_raw, 1e-4)
-    w_wide = np.maximum(cv2.boxFilter(valid, cv2.CV_32F, wide_cls_win), 1e-4)
+    w_wide = np.maximum(w_wide_raw, 1e-4)
 
     mean_15 = cv2.boxFilter(val_img, cv2.CV_32F, win_sz) / w_sum
     mean_45 = cv2.boxFilter(val_img, cv2.CV_32F, wide_cls_win) / w_wide
-    mean_local = np.where(w_raw > 0.05, mean_15, mean_45)
+    mean_local = np.where(w_raw > 0.05, mean_15, np.where(w_wide_raw > 0.02, mean_45, fallback_gray))
 
     sq_15 = cv2.boxFilter(val_img * val_img, cv2.CV_32F, win_sz) / w_sum
     sq_45 = cv2.boxFilter(val_img * val_img, cv2.CV_32F, wide_cls_win) / w_wide
-    sq_mean_local = np.where(w_raw > 0.05, sq_15, sq_45)
+    sq_mean_local = np.where(w_raw > 0.05, sq_15, np.where(w_wide_raw > 0.02, sq_45, fallback_gray * fallback_gray))
     sigma_local = np.sqrt(np.maximum(0.0, sq_mean_local - mean_local * mean_local))
 
     smooth_bg = cv2.GaussianBlur(gray_f, (5, 5), 1.2)
     hf_res = np.abs(gray_f - smooth_bg) * valid
     hf_15 = cv2.boxFilter(hf_res, cv2.CV_32F, win_sz) / w_sum
     hf_45 = cv2.boxFilter(hf_res, cv2.CV_32F, wide_cls_win) / w_wide
-    hf_energy = np.where(w_raw > 0.05, hf_15, hf_45)
+    hf_energy = np.where(w_raw > 0.05, hf_15, np.where(w_wide_raw > 0.02, hf_45, 0.0))
 
     k3 = np.ones((3, 3), dtype=np.uint8)
-    local_max = (cv2.dilate(roi_gray, k3) == roi_gray) & (roi_gray > mean_local + 8.0) & (inpaint_mask == 0)
-    local_min = (cv2.erode(roi_gray, k3) == roi_gray) & (roi_gray < mean_local - 8.0) & (inpaint_mask == 0)
+    local_max = (cv2.dilate(roi_gray, k3) == roi_gray) & (roi_gray > mean_local + 8.0) & valid_raw
+    local_min = (cv2.erode(roi_gray, k3) == roi_gray) & (roi_gray < mean_local - 8.0) & valid_raw
     ext_f = (local_max | local_min).astype(np.float32)
     ext_15 = cv2.boxFilter(ext_f, cv2.CV_32F, win_sz) / w_sum
     ext_45 = cv2.boxFilter(ext_f, cv2.CV_32F, wide_cls_win) / w_wide
-    extrema_density = np.where(w_raw > 0.05, ext_15, ext_45)
+    extrema_density = np.where(w_raw > 0.05, ext_15, np.where(w_wide_raw > 0.02, ext_45, 0.0))
 
     # Карта режимов: 0 = Flat (A), 1 = Smooth Gradient (B), 2 = Screentone Amiten (C), 3 = Line Art (D)
     regime_map = np.zeros((H, W), dtype=np.uint8)
@@ -1005,24 +1019,42 @@ def classify_and_clean_heterogeneous_bubble(
 
     img_f = roi_img.astype(np.float32)
     harmonic_out = img_f.copy()
+    # Подменяем темные препятствия вне маски в harmonic_out медианой фона, чтобы граничные условия Дирихле не тянули черноту внутрь маски!
+    non_mask_obstacles = (~m_bool) & (~valid_raw)
+    if is_color:
+        fallback_rgb = np.median(roi_img[valid_raw], axis=0).astype(np.float32) if np.any(valid_raw) else np.array([255.0, 255.0, 255.0], dtype=np.float32)
+        harmonic_out[non_mask_obstacles] = fallback_rgb
+    else:
+        harmonic_out[non_mask_obstacles] = fallback_gray
 
     if len(ys_m) > 0:
-        init_win = (int(round(15 * s)) | 1, int(round(15 * s)) | 1)
-        wide_win = (int(round(45 * s)) | 1, int(round(45 * s)) | 1)
-        w1 = cv2.boxFilter(valid, cv2.CV_32F, init_win)
-        w2 = np.maximum(cv2.boxFilter(valid, cv2.CV_32F, wide_win), 1e-4)
+        w1 = w_raw
+        w2_raw = w_wide_raw
+        w3_raw = cv2.boxFilter(valid, cv2.CV_32F, ultra_win)
+        w2 = np.maximum(w2_raw, 1e-4)
+        w3 = np.maximum(w3_raw, 1e-4)
         if is_color:
-            v1 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, init_win) / np.maximum(w1[:, :, None], 1e-4)
-            v2 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, wide_win) / w2[:, :, None]
-            init_val = np.where(w1[:, :, None] > 0.05, v1, v2)
+            v1 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, win_sz) / np.maximum(w1[:, :, None], 1e-4)
+            v2 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, wide_cls_win) / w2[:, :, None]
+            v3 = cv2.boxFilter(img_f * valid[:, :, None], cv2.CV_32F, ultra_win) / w3[:, :, None]
+            init_val = np.where(
+                w1[:, :, None] > 0.05,
+                v1,
+                np.where(w2_raw[:, :, None] > 0.02, v2, np.where(w3_raw[:, :, None] > 0.01, v3, fallback_rgb)),
+            )
         else:
-            v1 = cv2.boxFilter(val_img, cv2.CV_32F, init_win) / np.maximum(w1, 1e-4)
-            v2 = cv2.boxFilter(val_img, cv2.CV_32F, wide_win) / w2
-            init_val = np.where(w1 > 0.05, v1, v2)
+            v1 = cv2.boxFilter(val_img, cv2.CV_32F, win_sz) / np.maximum(w1, 1e-4)
+            v2 = cv2.boxFilter(val_img, cv2.CV_32F, wide_cls_win) / w2
+            v3 = cv2.boxFilter(val_img, cv2.CV_32F, ultra_win) / w3
+            init_val = np.where(
+                w1 > 0.05,
+                v1,
+                np.where(w2_raw > 0.02, v2, np.where(w3_raw > 0.01, v3, fallback_gray)),
+            )
         harmonic_out[ys_m, xs_m] = init_val[ys_m, xs_m]
 
-        # 30 векторизованных итераций релаксации Лапласа по узкой маске штриха
-        for _ in range(30):
+        # 60 векторизованных итераций релаксации Лапласа по маске
+        for _ in range(60):
             harmonic_out[ys_m, xs_m] = 0.25 * (
                 harmonic_out[ys_m - 1, xs_m]
                 + harmonic_out[ys_m + 1, xs_m]
@@ -1055,7 +1087,7 @@ def classify_and_clean_heterogeneous_bubble(
         ly1, ly2 = max(0, int(np.min(y_cd)) - pad_l), min(H, int(np.max(y_cd)) + pad_l)
         lx1, lx2 = max(0, int(np.min(x_cd)) - pad_l), min(W, int(np.max(x_cd)) + pad_l)
 
-        sub_img = roi_img[ly1:ly2, lx1:lx2]
+        sub_img = harmonic_out[ly1:ly2, lx1:lx2].clip(0, 255).astype(np.uint8)
         sub_mask = inpaint_mask[ly1:ly2, lx1:lx2]
         if is_color:
             lama_patch = lama_runner(sub_img, sub_mask)
@@ -1063,6 +1095,10 @@ def classify_and_clean_heterogeneous_bubble(
             sub_rgb = np.stack([sub_img] * 3, axis=-1)
             lama_rgb = lama_runner(sub_rgb, sub_mask)
             lama_patch = cv2.cvtColor(lama_rgb, cv2.COLOR_RGB2GRAY) if lama_rgb.ndim == 3 else lama_rgb
+        # Anti-Stain Guard: если подложка светлая (bg_p75 >= 195), запрещаем LaMa генерировать черные пятна внутри маски!
+        if bg_p75 >= 195.0:
+            harm_sub = harmonic_out[ly1:ly2, lx1:lx2]
+            lama_patch = np.maximum(lama_patch.astype(np.float32), harm_sub - 28.0).clip(0, 255).astype(np.uint8)
 
         raw_cd_weight = (regime_map[ly1:ly2, lx1:lx2] >= 2).astype(np.float32)
         if fft_pmr_val > 18.0:
@@ -2620,7 +2656,7 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
-            "clean_ver": "v4.1-sota-topo",
+            "clean_ver": "v5.0-zero-stain",
             "base_clean_blocks": [
                 [list(coords), is_free, mdil]
                 for coords, is_free, mdil in active_tuples
@@ -2661,7 +2697,7 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
-            "clean_ver": "v4.1-sota-topo",
+            "clean_ver": "v5.0-zero-stain",
             "active_clean_blocks": [
                 [list(coords), is_free, mdil, [list(st) for st in strokes]]
                 for coords, is_free, mdil, strokes in active_tuples
@@ -3139,11 +3175,19 @@ class BubbleCleaner:
                     comp_dt = dt_dark[labels == label_idx]
                     max_dt_val = float(np.max(comp_dt)) if comp_dt.size > 0 else 1.5
 
-                    if comp_area >= int(380 * scale_area):
+                    touches_any_border = (
+                        comp_x <= cx1_r + 2
+                        or comp_y <= cy1_r + 2
+                        or (comp_x + comp_w) >= cx2_r - 2
+                        or (comp_y + comp_h) >= cy2_r - 2
+                    )
+                    if comp_area >= int(150 * scale_area):
                         if (
                             comp_dt.size > 0
-                            and max_dt_val >= max(9.5, 5.2 * scale_f)
-                            and float(np.percentile(comp_dt, 90)) >= max(5.2, 2.8 * scale_f)
+                            and (
+                                (max_dt_val >= max(9.5, 5.2 * scale_f) and float(np.percentile(comp_dt, 90)) >= max(5.2, 2.8 * scale_f))
+                                or (touches_any_border and max_dt_val >= max(6.0, 3.6 * scale_f) and float(np.percentile(comp_dt, 85)) >= max(4.0, 2.2 * scale_f))
+                            )
                         ):
                             chibi_art_mask[labels == label_idx] = 255
                             continue
@@ -3313,6 +3357,28 @@ class BubbleCleaner:
                         neural_stroke_mask=neural_free,
                     )
 
+            scale_f_free = max(1.0, min(2.8, float(min(rw, rh)) / 64.0))
+            scale_area_free = scale_f_free * scale_f_free
+            dt_dark_free = cv2.distanceTransform((roi_gray < 175).astype(np.uint8), cv2.DIST_L2, 3)
+            pw_free = (roi_gray >= 215).astype(np.uint8) * 255
+            dist_to_pw_free = cv2.distanceTransform(cv2.bitwise_not(pw_free), cv2.DIST_L2, 3)
+
+            # Отсекаем массивные черные области волос/одежды (толщина > 2 * 3.8 * scale_f), чтобы они не попадали в маску текста
+            hair_obs_mask = (
+                (roi_gray < 85)
+                & (dt_dark_free >= max(5.5, 3.6 * scale_f_free))
+                & (dist_to_pw_free > 4.5 * scale_f_free)
+            ).astype(np.uint8) * 255
+            if np.any(hair_obs_mask > 0):
+                hair_obs_dil = cv2.dilate(
+                    hair_obs_mask,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                    iterations=1,
+                )
+                binary = cv2.bitwise_and(binary, cv2.bitwise_not(hair_obs_dil))
+            else:
+                hair_obs_dil = np.zeros_like(binary)
+
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
             clean_roi_mask = np.zeros_like(binary)
 
@@ -3326,15 +3392,21 @@ class BubbleCleaner:
                 if comp_area < 3:
                     continue
 
-                touches_left = comp_x <= 0
-                touches_top = comp_y <= 0
-                touches_right = (comp_x + comp_w) >= rw
-                touches_bottom = (comp_y + comp_h) >= rh
+                comp_dt = dt_dark_free[labels == label_idx]
+                max_dt_val = float(np.max(comp_dt)) if comp_dt.size > 0 else 1.5
+                if comp_area >= int(130 * scale_area_free) and max_dt_val >= max(6.0, 3.6 * scale_f_free):
+                    hair_obs_dil[labels == label_idx] = 255
+                    continue
+
+                touches_left = comp_x <= 1
+                touches_top = comp_y <= 1
+                touches_right = (comp_x + comp_w) >= rw - 1
+                touches_bottom = (comp_y + comp_h) >= rh - 1
                 border_touches = sum([touches_left, touches_top, touches_right, touches_bottom])
 
                 if is_free_text:
                     if border_touches >= 3 or (
-                        border_touches >= 2 and (comp_w > rw * 0.88 or comp_h > rh * 0.88)
+                        border_touches >= 2 and (comp_w > rw * 0.85 or comp_h > rh * 0.85)
                     ):
                         continue
                 else:
@@ -3369,6 +3441,8 @@ class BubbleCleaner:
                 else (kernel_free if is_free_text else kernel_bubble)
             )
             dilated_roi = cv2.dilate(clean_roi_mask, active_kernel, iterations=1)
+            if np.any(hair_obs_dil > 0):
+                dilated_roi = cv2.bitwise_and(dilated_roi, cv2.bitwise_not(hair_obs_dil))
             full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
 
         for block in blocks:
@@ -3473,9 +3547,9 @@ class BubbleCleaner:
                         if float(np.min(fill_color)) >= self.cleaner_cfg.off_white_max_threshold:
                             fill_color = np.array([255, 255, 255], dtype=np.uint8)
 
-                        if sigma_edge <= 1.8 and p50 >= 238.0:
+                        if (sigma_edge <= self.cleaner_cfg.mask_max_std_dev and p50 >= 232.0) or (p50 >= 242.0 and p80 >= 250.0):
                             out = self.sota_cleaner._route_inside_inpaint(
-                                out, mask_inside, cavity_mask, sigma_edge, fill_color
+                                out, mask_inside, cavity_mask, min(sigma_edge, 6.0), fill_color
                             )
                         else:
                             # Проблема №4: Гетерогенный фон баббла (плавный градиент Режима B, скринтон Режима C или лайнарт Режима D)
@@ -3522,27 +3596,34 @@ class BubbleCleaner:
                     )
                     return het_res["cleaned_roi"]
 
-        if self.lama_model is not None:
-            try:
-                lama_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                lama_mask_np = cv2.dilate(crop_mask_np, lama_k, iterations=1)
-                crop_pil = Image.fromarray(crop_rgb_np, mode="RGB")
-                mask_pil = Image.fromarray(lama_mask_np, mode="L")
-                inpainted_pil = self.lama_model(crop_pil, mask_pil).convert("RGB")
-                if inpainted_pil.size != (cw, ch):
-                    inpainted_pil = inpainted_pil.crop((0, 0, cw, ch))
-                return np.array(inpainted_pil)
-            except Exception as lama_exc:
-                logger.debug("Ошибка вызова LaMa на кропе (%s), переключаемся на OpenCV inpaint.", lama_exc)
+        # Экранирование темных препятствий (волос, рамок, черной одежды) на границе маски свободного текста (Zero Dark-Bleed Shielding),
+        # чтобы ни LaMa, ни OpenCV INPAINT_NS не размазывали черные волосы вверх на светлый фон под текстом!
+        crop_gray_fb = cv2.cvtColor(crop_rgb_np, cv2.COLOR_RGB2GRAY)
+        ring_fb_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        ring_fb = (cv2.dilate(crop_mask_np, ring_fb_k, iterations=1) > 0) & (crop_mask_np == 0)
+        shielded_rgb = crop_rgb_np.copy()
+        if np.any(ring_fb):
+            ring_g_vals = crop_gray_fb[ring_fb]
+            p75_fb = float(np.percentile(ring_g_vals, 75))
+            if p75_fb >= 185.0:
+                light_ring_px = crop_rgb_np[ring_fb & (crop_gray_fb >= 145)]
+                if len(light_ring_px) >= 8:
+                    bg_fill_fb = np.median(light_ring_px, axis=0).round().astype(np.uint8)
+                    if float(np.min(bg_fill_fb)) >= 238.0:
+                        bg_fill_fb = np.array([255, 255, 255], dtype=np.uint8)
+                    dark_obstacle_zone = (crop_gray_fb < 95) & (crop_mask_np == 0)
+                    shielded_rgb[dark_obstacle_zone] = bg_fill_fb
 
-        bgr_crop = cv2.cvtColor(crop_rgb_np, cv2.COLOR_RGB2BGR)
-        inpainted_bgr = cv2.inpaint(
-            bgr_crop,
-            crop_mask_np,
-            inpaintRadius=7,
-            flags=cv2.INPAINT_NS,
+        het_fb = classify_and_clean_heterogeneous_bubble(
+            roi_img=shielded_rgb,
+            raw_stroke_mask=crop_mask_np,
+            protected_wall_mask=np.zeros_like(crop_mask_np),
+            lama_runner=self._invoke_lama_np if self.lama_model is not None else None,
+            scale_f=1.0,
         )
-        return cv2.cvtColor(inpainted_bgr, cv2.COLOR_BGR2RGB)
+        out_fb = crop_rgb_np.copy()
+        out_fb[crop_mask_np > 0] = het_fb["cleaned_roi"][crop_mask_np > 0]
+        return out_fb
 
     def _apply_custom_strokes_fast(
         self,
@@ -3732,7 +3813,7 @@ class BubbleCleaner:
                     bool(is_free_text),
                     int(mdil),
                     int(self.dilate_size),
-                    "v4.1-sota-topo",
+                    "v5.0-zero-stain",
                 )
                 with self._cache_lock:
                     cached_crop_pair = self._block_crop_cache.get(block_crop_key)
@@ -3863,7 +3944,7 @@ class BubbleCleaner:
                         if np.count_nonzero(crop_mask) == 0:
                             continue
 
-                        if is_free_text and pre_batched_lama_rgb is not None:
+                        if False and is_free_text and pre_batched_lama_rgb is not None:
                             inpainted_crop = pre_batched_lama_rgb[cy1:cy2, cx1:cx2].copy()
                         else:
                             inpainted_crop = self._inpaint_crop(

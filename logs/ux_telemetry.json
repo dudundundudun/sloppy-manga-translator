@@ -1,1 +1,739 @@
-{}
+{
+  "schema_version": 1,
+  "created_at": "2026-11-01 06:47:23",
+  "updated_at": "2026-11-01 07:20:05",
+  "total_events": 76,
+  "total_mouse_clicks": 27,
+  "total_hotkey_presses": 48,
+  "total_canvas_manipulations": 1,
+  "total_text_edits": 0,
+  "active_usage_sec": 403.0,
+  "actions": {
+    "pickFolderDialog": {
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку с мангой",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-11-01 06:51:39"
+    },
+    "page-row-select": {
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 15,
+      "last_used": "2026-11-01 07:01:47"
+    },
+    "chk-force-retranslate": {
+      "action_id": "chk-force-retranslate",
+      "label": "Переключатель: chk-force-retranslate -> ВЫКЛ",
+      "zone": "left_sidebar",
+      "event_type": "control_change",
+      "count": 2,
+      "last_used": "2026-11-01 07:01:11"
+    },
+    "btn-primary-folder": {
+      "action_id": "btn-primary-folder",
+      "label": "🔄 Перевести с нуля через ИИ (88 стр.)",
+      "zone": "left_sidebar",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-11-01 06:51:51"
+    },
+    "btn-pins-toggle": {
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar",
+      "event_type": "button_click",
+      "count": 2,
+      "last_used": "2026-11-01 07:02:11"
+    },
+    "bbox-pin-del": {
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin",
+      "event_type": "button_click",
+      "count": 4,
+      "last_used": "2026-11-01 07:00:35"
+    },
+    "canvas:pin_click": {
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin",
+      "event_type": "canvas_action",
+      "count": 1,
+      "last_used": "2026-11-01 07:00:51"
+    },
+    "retranslateFromInlinePopup": {
+      "action_id": "retranslateFromInlinePopup",
+      "label": "🔄 ИИ",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-11-01 07:01:03"
+    },
+    "closeInlineBubblePopup": {
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup",
+      "event_type": "button_click",
+      "count": 1,
+      "last_used": "2026-11-01 07:01:27"
+    },
+    "hotkey:nav_page_prev": {
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey",
+      "event_type": "hotkey_use",
+      "count": 48,
+      "last_used": "2026-11-01 07:19:59"
+    }
+  },
+  "zones": {
+    "left_sidebar": 19,
+    "viewer_toolbar": 2,
+    "viewer_stage_pin": 5,
+    "inline_popup": 2,
+    "keyboard_hotkey": 48
+  },
+  "hotkeys": {
+    "A / ←": {
+      "hotkey": "A / ←",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "count": 48
+    }
+  },
+  "missed_hotkeys": {},
+  "canvas_ops": {
+    "canvas:pin_click": {
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "count": 1
+    }
+  },
+  "features_used": {
+    "act:retranslate_single_block": 3,
+    "act:pin_click": 1,
+    "act:nav_prev_next": 48
+  },
+  "transitions": {
+    "pickFolderDialog>>>page-row-select": {
+      "from_id": "pickFolderDialog",
+      "from_label": "📁 Выбрать папку с мангой",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 1
+    },
+    "page-row-select>>>chk-force-retranslate": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "chk-force-retranslate",
+      "to_label": "Переключатель: chk-force-retranslate -> ВКЛ",
+      "count": 1
+    },
+    "chk-force-retranslate>>>btn-primary-folder": {
+      "from_id": "chk-force-retranslate",
+      "from_label": "Переключатель: chk-force-retranslate -> ВКЛ",
+      "to_id": "btn-primary-folder",
+      "to_label": "🔄 Перевести с нуля через ИИ (88 стр.)",
+      "count": 1
+    },
+    "page-row-select>>>btn-pins-toggle": {
+      "from_id": "page-row-select",
+      "from_label": "Выбор страницы в списке главы слева",
+      "to_id": "btn-pins-toggle",
+      "to_label": "📌 Рамки #N",
+      "count": 2
+    },
+    "btn-pins-toggle>>>bbox-pin-del": {
+      "from_id": "btn-pins-toggle",
+      "from_label": "📌 Рамки #N",
+      "to_id": "bbox-pin-del",
+      "to_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "count": 1
+    },
+    "bbox-pin-del>>>canvas:pin_click": {
+      "from_id": "bbox-pin-del",
+      "from_label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "to_id": "canvas:pin_click",
+      "to_label": "Клик по рамке #N прямо на странице манги",
+      "count": 1
+    },
+    "canvas:pin_click>>>retranslateFromInlinePopup": {
+      "from_id": "canvas:pin_click",
+      "from_label": "Клик по рамке #N прямо на странице манги",
+      "to_id": "retranslateFromInlinePopup",
+      "to_label": "🔄 ИИ",
+      "count": 1
+    },
+    "retranslateFromInlinePopup>>>chk-force-retranslate": {
+      "from_id": "retranslateFromInlinePopup",
+      "from_label": "🔄 ИИ",
+      "to_id": "chk-force-retranslate",
+      "to_label": "Переключатель: chk-force-retranslate -> ВЫКЛ",
+      "count": 1
+    },
+    "chk-force-retranslate>>>closeInlineBubblePopup": {
+      "from_id": "chk-force-retranslate",
+      "from_label": "Переключатель: chk-force-retranslate -> ВЫКЛ",
+      "to_id": "closeInlineBubblePopup",
+      "to_label": "✕ (Закрыть попап)",
+      "count": 1
+    },
+    "closeInlineBubblePopup>>>page-row-select": {
+      "from_id": "closeInlineBubblePopup",
+      "from_label": "✕ (Закрыть попап)",
+      "to_id": "page-row-select",
+      "to_label": "Выбор страницы в списке главы слева",
+      "count": 1
+    }
+  },
+  "dwell_sec": {
+    "dock_right": 403.0,
+    "dock_bottom": 0.0,
+    "dock_floating": 0.0,
+    "view_split": 403.0,
+    "view_translated": 0.0,
+    "view_original": 0.0,
+    "edit_in_popup": 0.0,
+    "edit_in_drawer": 0.0
+  },
+  "last_action_key": "hotkey:nav_page_prev",
+  "last_action_label": "Клавиша A / ← (Предыдущая страница)",
+  "last_action_ts": 1793506799.2149675,
+  "recent_events": [
+    {
+      "time": "06:51:39",
+      "type": "button_click",
+      "action_id": "pickFolderDialog",
+      "label": "📁 Выбрать папку с мангой",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:51:43",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:51:47",
+      "type": "control_change",
+      "action_id": "chk-force-retranslate",
+      "label": "Переключатель: chk-force-retranslate -> ВКЛ",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:51:51",
+      "type": "button_click",
+      "action_id": "btn-primary-folder",
+      "label": "🔄 Перевести с нуля через ИИ (88 стр.)",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:58:39",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:58:43",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:58:47",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:58:55",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:58:59",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:58:59",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:59:19",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:59:27",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:59:39",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:59:43",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:59:43",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "06:59:55",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:00:19",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:00:31",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "07:00:31",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "07:00:31",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "07:00:35",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "07:00:35",
+      "type": "button_click",
+      "action_id": "bbox-pin-del",
+      "label": "🗑 Удалить рамку #N кнопкой на самой рамке",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "07:00:51",
+      "type": "canvas_action",
+      "action_id": "canvas:pin_click",
+      "label": "Клик по рамке #N прямо на странице манги",
+      "zone": "viewer_stage_pin"
+    },
+    {
+      "time": "07:01:03",
+      "type": "button_click",
+      "action_id": "retranslateFromInlinePopup",
+      "label": "🔄 ИИ",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "07:01:11",
+      "type": "control_change",
+      "action_id": "chk-force-retranslate",
+      "label": "Переключатель: chk-force-retranslate -> ВЫКЛ",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:01:27",
+      "type": "button_click",
+      "action_id": "closeInlineBubblePopup",
+      "label": "✕ (Закрыть попап)",
+      "zone": "inline_popup"
+    },
+    {
+      "time": "07:01:47",
+      "type": "button_click",
+      "action_id": "page-row-select",
+      "label": "Выбор страницы в списке главы слева",
+      "zone": "left_sidebar"
+    },
+    {
+      "time": "07:02:11",
+      "type": "button_click",
+      "action_id": "btn-pins-toggle",
+      "label": "📌 Рамки #N",
+      "zone": "viewer_toolbar"
+    },
+    {
+      "time": "07:15:27",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:17:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:15",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:23",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:23",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:23",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:23",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:27",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:18:59",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:07",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:39",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:39",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:39",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:43",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:47",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:51",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:55",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:59",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    },
+    {
+      "time": "07:19:59",
+      "type": "hotkey_use",
+      "action_id": "hotkey:nav_page_prev",
+      "label": "Клавиша A / ← (Предыдущая страница)",
+      "zone": "keyboard_hotkey"
+    }
+  ]
+}
