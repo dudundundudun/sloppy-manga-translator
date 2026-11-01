@@ -2596,9 +2596,10 @@ class MangaOCREngine:
         )
 
     def get_detector_backend_name(self) -> str:
+        y26_suffix = " + YOLO26s-seg" if (self._yolo26_seg_available and self._yolo26_seg_model is not None) else ""
         if self._rtdetr_available and self._rtdetr_model is not None:
-            return "Hybrid RT-DETR-v2 (3-class: bubble + text_bubble + text_free) + YOLOv8m + TightInkCrop"
-        return "YOLOv8m + OpenCV Contours + TightInkCrop"
+            return f"Hybrid RT-DETR-v2 (3-class: bubble + text_bubble + text_free) + YOLOv8m{y26_suffix} + TightInkCrop"
+        return f"YOLOv8m{y26_suffix} + OpenCV Contours + TightInkCrop"
 
     def get_ja_ocr_backend_name(self) -> str:
         if self._ja_nar_available and self._ja_nar_recognizer is not None:
@@ -3241,12 +3242,11 @@ class MangaOCREngine:
         detector.to(self.device)
         return detector
 
-    def _get_yolo26_seg_detector(self, download_if_missing: bool = False) -> Any | None:
+    def _get_yolo26_seg_detector(self, download_if_missing: bool = True) -> Any | None:
         """
-        Опциональный сегментационный детектор 2026 года `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (YOLO26s-seg):
+        Сегментационный детектор 2026 года `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (YOLO26s-seg):
         Находит и сегментирует `frame`, `balloon` и `text` на ч/б манге.
-        Подгружается автоматически, если файл `models/manga109-yolov26s-seg.pt` уже скачан,
-        либо скачивается по запросу при `download_if_missing=True`.
+        Подгружается автоматически и докачивает `models/manga109-yolov26s-seg.pt` (~23.4 МБ) с HuggingFace при `download_if_missing=True`.
         """
         if not self.use_yolo26_seg or YOLO is None:
             return None
@@ -3257,10 +3257,10 @@ class MangaOCREngine:
 
         local_weights = self.models_dir / LOCAL_YOLO26_SEG_FILENAME
         if not local_weights.exists():
-            if not download_if_missing:
+            if not download_if_missing or hf_hub_download is None:
                 return None
             try:
-                logger.info("Скачивание весов сегментатора %s/%s...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
+                logger.info("Скачивание весов сегментатора %s/%s (~23.4 МБ)...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
                 dl_path = hf_hub_download(
                     repo_id=HF_YOLO26_SEG_REPO,
                     filename=HF_YOLO26_SEG_FILENAME,
@@ -3268,8 +3268,9 @@ class MangaOCREngine:
                 )
                 import shutil
                 shutil.copy2(dl_path, local_weights)
+                logger.info("Веса YOLO26s-seg сохранены в %s", local_weights)
             except Exception as exc:
-                logger.debug("YOLO26s-seg недоступен (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
+                logger.warning("Не удалось скачать YOLO26s-seg с HuggingFace (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
                 self._yolo26_seg_available = False
                 return None
 
@@ -3278,10 +3279,15 @@ class MangaOCREngine:
             seg_model.to(self.device)
             self._yolo26_seg_model = seg_model
             self._yolo26_seg_available = True
+            self.last_detection_stats["yolo26_seg_active"] = True
+            self.last_detection_stats["detector_backend"] = self.get_detector_backend_name()
             logger.info("Сегментатор масок YOLO26s-seg (%s) подключен на %s!", LOCAL_YOLO26_SEG_FILENAME, self.device)
             return seg_model
         except Exception as exc:
-            logger.debug("Не удалось загрузить YOLO26s-seg (%s).", exc)
+            logger.warning(
+                "Не удалось инициализировать YOLO26s-seg (%s). Для архитектуры YOLO26 рекомендуется обновить ultralytics (`pip install -U ultralytics>=8.4.0`). Продолжаем на связке RT-DETR-v2 + YOLOv8m.",
+                exc,
+            )
             self._yolo26_seg_available = False
             return None
 
@@ -3293,8 +3299,9 @@ class MangaOCREngine:
         img_h: int,
         active_conf: float,
         min_box_size: int = 14,
+        download_if_missing: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        seg_det = self._get_yolo26_seg_detector(download_if_missing=False)
+        seg_det = self._get_yolo26_seg_detector(download_if_missing=download_if_missing)
         if seg_det is None:
             return [], []
         seg_bubbles: list[dict[str, Any]] = []
@@ -6147,6 +6154,8 @@ class MangaOCREngine:
         rtdetr_bubbles: list[dict[str, Any]] = []
         rtdetr_text_bubbles: list[dict[str, Any]] = []
         rtdetr_free_texts: list[dict[str, Any]] = []
+        yolo26_seg_bubbles_count: int = 0
+        yolo26_seg_texts_count: int = 0
 
         active_conf = conf_override if conf_override is not None else self.conf_threshold
 
@@ -6229,7 +6238,7 @@ class MangaOCREngine:
                     if rt_free:
                         rtdetr_free_texts.extend(rt_free)
 
-                # 2.5. В режиме максимальной точности (accuracy) подключаем сегментатор YOLO26s-seg (если веса доступны)
+                # 2.5. В режиме максимальной точности (accuracy) подключаем сегментатор YOLO26s-seg (с автодокачкой весов)
                 if eff_pmode == "accuracy" and self.use_yolo26_seg:
                     s_bub, s_txt = self._run_yolo26_seg_on_slice(
                         slice_np,
@@ -6238,10 +6247,13 @@ class MangaOCREngine:
                         img_h=img_h,
                         active_conf=active_conf,
                         min_box_size=max(12, min_box_size - 2),
+                        download_if_missing=True,
                     )
                     if s_bub:
+                        yolo26_seg_bubbles_count += len(s_bub)
                         rtdetr_bubbles.extend(s_bub)
                     if s_txt:
+                        yolo26_seg_texts_count += len(s_txt)
                         rtdetr_text_bubbles.extend(s_txt)
 
         # Если RT-DETR-v2 пометил текст внутри белого экрана телефона / таблички / записки как `2: text_free`,
@@ -6268,10 +6280,13 @@ class MangaOCREngine:
             {
                 "detector_backend": self.get_detector_backend_name(),
                 "rtdetr_active": bool(self._rtdetr_available and self._rtdetr_model is not None),
+                "yolo26_seg_active": bool(self._yolo26_seg_available and self._yolo26_seg_model is not None),
                 "yolo_bubbles": len(yolo_detections),
                 "rtdetr_bubbles": len(rtdetr_bubbles),
                 "rtdetr_text_bubbles": len(rtdetr_text_bubbles),
                 "rtdetr_free_texts": len(rtdetr_free_texts),
+                "yolo26_seg_bubbles": yolo26_seg_bubbles_count,
+                "yolo26_seg_texts": yolo26_seg_texts_count,
             }
         )
 
@@ -7227,6 +7242,8 @@ class MangaOCREngine:
                 "rtdetr_bubbles": int(self.last_detection_stats.get("rtdetr_bubbles", 0)),
                 "rtdetr_text_bubbles": int(self.last_detection_stats.get("rtdetr_text_bubbles", 0)),
                 "rtdetr_free_texts": int(self.last_detection_stats.get("rtdetr_free_texts", 0)),
+                "yolo26_seg_bubbles": int(self.last_detection_stats.get("yolo26_seg_bubbles", 0)),
+                "yolo26_seg_texts": int(self.last_detection_stats.get("yolo26_seg_texts", 0)),
                 "split_multi_bubbles": int(self.last_detection_stats.get("split_multi_bubbles", 0)),
                 "rescued_orphan_text_bubbles": int(self.last_detection_stats.get("rescued_orphan_text_bubbles", 0)),
                 "no_ink_count": 0,
@@ -7521,6 +7538,8 @@ class MangaOCREngine:
             "rtdetr_bubbles": int(self.last_detection_stats.get("rtdetr_bubbles", 0)),
             "rtdetr_text_bubbles": int(self.last_detection_stats.get("rtdetr_text_bubbles", 0)),
             "rtdetr_free_texts": int(self.last_detection_stats.get("rtdetr_free_texts", 0)),
+                "yolo26_seg_bubbles": int(self.last_detection_stats.get("yolo26_seg_bubbles", 0)),
+                "yolo26_seg_texts": int(self.last_detection_stats.get("yolo26_seg_texts", 0)),
             "split_multi_bubbles": int(self.last_detection_stats.get("split_multi_bubbles", 0)),
             "rescued_orphan_text_bubbles": int(self.last_detection_stats.get("rescued_orphan_text_bubbles", 0)),
             "no_ink_count": no_ink_count,
