@@ -675,14 +675,14 @@ class ComicTextStrokeSegmenter:
         self._has_pretrained_weights: bool = False
         self._init_done: bool = False
 
-    def _lazy_init(self) -> None:
-        if self._init_done:
+    def _lazy_init(self, allow_download: bool = False) -> None:
+        if self._init_done and not (allow_download and self.model is None):
             return
         self._init_done = True
         if torch is None or nn is None:
             return
         try:
-            unet_path = ensure_comic_text_detector_weights(self.models_dir, allow_download=False)
+            unet_path = ensure_comic_text_detector_weights(self.models_dir, allow_download=allow_download)
             if load_safetensors is not None and unet_path.is_file():
                 self.model = ComicTextUNetHead(in_channels=3, base_ch=32).to(self.device)
                 sd = load_safetensors(str(unet_path), device=str(self.device))
@@ -2453,6 +2453,9 @@ class BubbleCleaner:
         self._block_crop_cache_max = 256
         self._base_page_cache_max = 10
         self.cleaner_cfg = CleanerConfig()
+        self.pipeline_mode: str = "balanced"
+        self.inpaint_backend: str = "anime_lama_sota"
+        self.active_lama_variant: str = "anime-manga-big-lama"
 
         if disk_cache_dir is not None:
             self.disk_cache_dir: Path | None = Path(disk_cache_dir).resolve()
@@ -2502,11 +2505,159 @@ class BubbleCleaner:
             stroke_segmenter=self.stroke_segmenter,
         )
 
-    def _invoke_lama_np(self, img_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
-        """Обёртка вызова `self.lama_model` на numpy-массивах `(H, W, 3)` и `(H, W)`."""
-        ch, cw = img_rgb.shape[:2]
+    def set_model_stack_backends(
+        self,
+        inpaint_backend: str | None = None,
+        pipeline_mode: str | None = None,
+    ) -> None:
+        if pipeline_mode and str(pipeline_mode).strip().lower() in ("fast", "balanced", "accuracy", "ultra"):
+            self.pipeline_mode = str(pipeline_mode).strip().lower()
+        if inpaint_backend and str(inpaint_backend).strip() in (
+            "anime_lama_sota",
+            "ultra_deep_redraw",
+            "big_lama",
+            "fast_telea",
+        ):
+            target_b = str(inpaint_backend).strip()
+            self.inpaint_backend = target_b
+            desired_variant = "big-lama" if target_b == "big_lama" else "anime-manga-big-lama"
+            if target_b != "fast_telea" and (
+                self.lama_model is None or getattr(self, "active_lama_variant", "") != desired_variant
+            ):
+                try:
+                    self.lama_model = StandaloneLaMaInpainter(
+                        model_variant=desired_variant,
+                        models_dir=self.models_dir,
+                        device=self.device,
+                    )
+                    self.active_lama_variant = desired_variant
+                    self.sota_cleaner.lama_inpainter = self._invoke_lama_np
+                except Exception as exc:
+                    logger.debug("Не удалось переключить вариант LaMa (%s): %s", desired_variant, exc)
+
+    def get_inpaint_backend_label(self) -> str:
+        if self.inpaint_backend == "fast_telea":
+            return "Harmonic Laplace-Dirichlet + OpenCV Telea (Fast No-DL)"
+        if self.inpaint_backend == "ultra_deep_redraw" or self.pipeline_mode == "ultra":
+            return "Ultra Deep Redraw (1.5x Super-Sampled Anime-LaMa + 2-Pass Feather + RFFT2 Screentone + Hermite Wall)"
+        if self.inpaint_backend == "big_lama":
+            return "Standalone Big-LaMa (big-lama.pt) + Zero-Bleed"
         if self.lama_model is not None:
+            return "Standalone Anime-Manga Big-LaMa (anime-manga-big-lama.pt) + Zero-Bleed"
+        return "Pure White Fill + OpenCV Telea"
+
+    def get_local_models_storage_info(self) -> list[dict[str, Any]]:
+        specs = [
+            {
+                "id": "anime_lama",
+                "title": "🎨 Инпейнтер Anime-Manga Big-LaMa (anime-manga-big-lama.pt)",
+                "role": "inpaint",
+                "path": self.models_dir / "anime-manga-big-lama.pt",
+                "loaded_in_vram": bool(self.lama_model is not None and getattr(self, "active_lama_variant", "") == "anime-manga-big-lama"),
+                "can_redownload": True,
+            },
+            {
+                "id": "big_lama",
+                "title": "🎨 Универсальный инпейнтер Big-LaMa (big-lama.pt)",
+                "role": "inpaint",
+                "path": self.models_dir / "big-lama.pt",
+                "loaded_in_vram": bool(self.lama_model is not None and getattr(self, "active_lama_variant", "") == "big-lama"),
+                "can_redownload": True,
+            },
+            {
+                "id": "ctd_unet",
+                "title": "✒️ Попиксельный сегментатор штрихов Comic-Text-Detector (unet.safetensors)",
+                "role": "inpaint",
+                "path": self.models_dir / "comic-text-detector" / "unet.safetensors",
+                "loaded_in_vram": bool(self.stroke_segmenter is not None and getattr(self.stroke_segmenter, "model", None) is not None),
+                "can_redownload": True,
+            },
+        ]
+        out: list[dict[str, Any]] = []
+        for sp in specs:
+            p_main: Path = sp["path"]
+            exists = p_main.is_file() and p_main.stat().st_size > 1024
+            size_bytes = p_main.stat().st_size if exists else 0
+            out.append(
+                {
+                    "id": sp["id"],
+                    "title": sp["title"],
+                    "category": "local_weights",
+                    "role": sp["role"],
+                    "installed": exists,
+                    "size_mb": round(size_bytes / (1024 * 1024), 1),
+                    "size_gb": round(size_bytes / (1024**3), 2),
+                    "loaded_in_vram": sp["loaded_in_vram"],
+                    "path_str": str(p_main),
+                    "can_redownload": sp["can_redownload"],
+                }
+            )
+        return out
+
+    def delete_local_model_weights(self, model_key: str) -> dict[str, Any]:
+        key = (model_key or "").strip().lower()
+        target_path: Path | None = None
+        if key == "anime_lama":
+            if getattr(self, "active_lama_variant", "") == "anime-manga-big-lama":
+                self.lama_model = None
+            target_path = self.models_dir / "anime-manga-big-lama.pt"
+        elif key == "big_lama":
+            if getattr(self, "active_lama_variant", "") == "big-lama":
+                self.lama_model = None
+            target_path = self.models_dir / "big-lama.pt"
+        elif key == "ctd_unet":
+            if self.stroke_segmenter is not None:
+                self.stroke_segmenter.model = None
+                self.stroke_segmenter._has_pretrained_weights = False
+            target_path = self.models_dir / "comic-text-detector" / "unet.safetensors"
+        else:
+            return {"ok": False, "error": f"Неизвестный ключ модели очистки: {model_key}"}
+
+        freed_bytes = 0
+        removed: list[str] = []
+        if target_path is not None and target_path.exists():
+            freed_bytes = target_path.stat().st_size
+            target_path.unlink(missing_ok=True)
+            removed.append(str(target_path))
+
+        if torch is not None and torch.cuda.is_available():
             try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+        return {
+            "ok": True,
+            "model_id": key,
+            "freed_mb": round(freed_bytes / (1024 * 1024), 1),
+            "removed_paths": removed,
+        }
+
+    def _invoke_lama_np(self, img_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
+        """Обёртка вызова `self.lama_model` на numpy-массивах `(H, W, 3)` и `(H, W)` с поддержкой 1.5x Super-Sampled Two-Pass Deep Redraw."""
+        ch, cw = img_rgb.shape[:2]
+        is_ultra_redraw = (self.pipeline_mode == "ultra") or (self.inpaint_backend == "ultra_deep_redraw")
+        if self.inpaint_backend != "fast_telea" and self.lama_model is not None:
+            try:
+                if is_ultra_redraw and max(ch, cw) <= 960 and ch >= 16 and cw >= 16:
+                    up_w = max(16, int(round(cw * 1.5)))
+                    up_h = max(16, int(round(ch * 1.5)))
+                    up_rgb = cv2.resize(img_rgb, (up_w, up_h), interpolation=cv2.INTER_LANCZOS4)
+                    up_msk = cv2.resize((mask_u8 > 0).astype(np.uint8) * 255, (up_w, up_h), interpolation=cv2.INTER_NEAREST)
+                    if hasattr(self.lama_model, "inpaint_rgb_crop"):
+                        pass1_up = self.lama_model.inpaint_rgb_crop(up_rgb, up_msk)
+                    else:
+                        pass1_up = np.array(self.lama_model(Image.fromarray(up_rgb), Image.fromarray(up_msk)).convert("RGB"))
+                    k_seam = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                    seam_ring = cv2.subtract(cv2.dilate(up_msk, k_seam, iterations=1), cv2.erode(up_msk, k_seam, iterations=1))
+                    if np.count_nonzero(seam_ring) >= 12 and hasattr(self.lama_model, "inpaint_rgb_crop"):
+                        blend_in = up_rgb.copy()
+                        blend_in[up_msk > 0] = pass1_up[up_msk > 0]
+                        pass2_up = self.lama_model.inpaint_rgb_crop(blend_in, seam_ring)
+                        alpha_s = cv2.GaussianBlur((seam_ring > 0).astype(np.float32), (5, 5), 1.2)[..., None]
+                        pass1_up = np.clip(pass2_up.astype(np.float32) * alpha_s + pass1_up.astype(np.float32) * (1.0 - alpha_s), 0, 255).astype(np.uint8)
+                    down_rgb = cv2.resize(pass1_up, (cw, ch), interpolation=cv2.INTER_AREA)
+                    return down_rgb
+
                 if hasattr(self.lama_model, "inpaint_rgb_crop"):
                     return self.lama_model.inpaint_rgb_crop(img_rgb, mask_u8)
                 crop_pil = Image.fromarray(img_rgb, mode="RGB")
@@ -3804,6 +3955,11 @@ class BubbleCleaner:
                 cy2 = min(orig_h, y2 + pad)
                 if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
                     continue
+                eff_redraw_tag = (
+                    "v5.3-ultra-redraw"
+                    if (self.pipeline_mode == "ultra" or self.inpaint_backend == "ultra_deep_redraw")
+                    else f"v5.3-{self.inpaint_backend}"
+                )
                 block_crop_key = (
                     img_fp,
                     int(x1),
@@ -3813,7 +3969,7 @@ class BubbleCleaner:
                     bool(is_free_text),
                     int(mdil),
                     int(self.dilate_size),
-                    "v5.0-zero-stain",
+                    eff_redraw_tag,
                 )
                 with self._cache_lock:
                     cached_crop_pair = self._block_crop_cache.get(block_crop_key)

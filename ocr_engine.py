@@ -2475,6 +2475,47 @@ SFX_EXACT_SET: set[str] = {
 }
 
 
+
+COMMON_ENGLISH_COLOPHON_WORDS = (
+    "unauthorized", "reproduction", "prohibited", "uploading", "scanning", "distribution",
+    "this", "publication", "book", "comic", "manga", "story", "characters", "names",
+    "incidents", "products", "fictitious", "any", "resemblance", "actual", "persons",
+    "living", "dead", "purely", "coincidental", "all", "rights", "reserved", "copyright",
+    "published", "translated", "by", "for", "in", "of", "to", "and", "or", "is", "are",
+    "without", "written", "permission", "from", "publisher", "strictly", "illegal",
+    "support", "author", "creator", "purchasing", "official", "edition", "release",
+)
+
+def _looks_like_merged_english_ocr(text: str) -> bool:
+    if not text:
+        return False
+    s = text.strip()
+    ascii_letters = sum(1 for ch in s if ("a" <= ch.lower() <= "z"))
+    cjk_chars = len(re.findall(r"[\u3040-\u30ff\u3400-\u9fff\uac00-\ud7af]", s))
+    if ascii_letters >= 14 and cjk_chars <= 2:
+        spaces = s.count(" ")
+        if spaces == 0 or (ascii_letters / max(1, spaces + 1)) >= 11.5:
+            return True
+    return False
+
+def _restore_english_word_spaces(text: str) -> str:
+    if not text:
+        return text
+    s = text.strip()
+    # Fix common OCR typos in colophon warnings (e.g. 'prohiittd' -> 'prohibited')
+    s = re.sub(r"prohi[it1l]{2,}d", "prohibited", s, flags=re.IGNORECASE)
+    # CamelCase boundary split
+    s = re.sub(r"([a-z])([A-Z])", r"\1 \2", s)
+    s = re.sub(r"([.,!?;:])([A-Za-z])", r"\1 \2", s)
+    # Dictionary greedy word segmentation for run-together lowercase words
+    for w in sorted(COMMON_ENGLISH_COLOPHON_WORDS, key=len, reverse=True):
+        if len(w) >= 5 and w != "author":
+            s = re.sub(f"(?i)({w})(?=[a-z])", r"\1 ", s)
+            s = re.sub(f"(?i)(?<=[a-z])({w})", r" \1", s)
+    s = re.sub(r"\s{2,}", " ", s).strip()
+    return s
+
+
 class MangaOCREngine:
     """
     Мультиязычный движок v1.0.8 (Шаги 1 + 2 + 3 + 4):
@@ -2520,6 +2561,9 @@ class MangaOCREngine:
         self.use_hayai_ocr = bool(use_hayai_ocr)
         self.use_yolo26_seg = True
         self.pipeline_mode: str = "balanced"
+        self.ocr_backend: str = "hybrid_nar_mangaocr"
+        self.detector_backend: str = "rtdetr_yolov8"
+        self.preferred_vlm_model: str = "auto"
         self.ollama_base_url = ollama_base_url.rstrip("/")
 
         logger.info("Инициализация MangaOCREngine (v1.0.8 Step 1+2+3+4) на устройстве: %s", self.device)
@@ -2595,16 +2639,193 @@ class MangaOCREngine:
             self.get_vlm_ocr_backend_name(),
         )
 
+    def set_model_stack_backends(
+        self,
+        ocr_backend: str | None = None,
+        detector_backend: str | None = None,
+        preferred_vlm_model: str | None = None,
+        pipeline_mode: str | None = None,
+    ) -> None:
+        if ocr_backend and str(ocr_backend).strip() in (
+            "hybrid_nar_mangaocr",
+            "ultra_ensemble_vlm",
+            "mangaocr_fp16_only",
+            "hayai_siglip2",
+        ):
+            self.ocr_backend = str(ocr_backend).strip()
+        if detector_backend and str(detector_backend).strip() in (
+            "rtdetr_yolov8",
+            "triple_yolo26_seg",
+            "yolov8_fast",
+        ):
+            self.detector_backend = str(detector_backend).strip()
+        if preferred_vlm_model is not None and str(preferred_vlm_model).strip():
+            self.preferred_vlm_model = str(preferred_vlm_model).strip()
+        if pipeline_mode and str(pipeline_mode).strip().lower() in ("fast", "balanced", "accuracy", "ultra"):
+            self.pipeline_mode = str(pipeline_mode).strip().lower()
+
     def get_detector_backend_name(self) -> str:
-        y26_suffix = " + YOLO26s-seg" if (self._yolo26_seg_available and self._yolo26_seg_model is not None) else ""
+        if self.detector_backend == "yolov8_fast":
+            return "YOLOv8m Fast + OpenCV Contours + TightInkCrop"
+        if (self.detector_backend == "triple_yolo26_seg" or self.pipeline_mode == "ultra") and self._yolo26_seg_model is not None:
+            return "Triple Ensemble: RT-DETR-v2 + YOLOv8m + YOLO26s-seg (Polygon Mask) + TightInkCrop"
         if self._rtdetr_available and self._rtdetr_model is not None:
-            return f"Hybrid RT-DETR-v2 (3-class: bubble + text_bubble + text_free) + YOLOv8m{y26_suffix} + TightInkCrop"
-        return f"YOLOv8m{y26_suffix} + OpenCV Contours + TightInkCrop"
+            return "Hybrid RT-DETR-v2 (3-class: bubble + text_bubble + text_free) + YOLOv8m + TightInkCrop"
+        return "YOLOv8m + OpenCV Contours + TightInkCrop"
 
     def get_ja_ocr_backend_name(self) -> str:
+        if self.ocr_backend == "ultra_ensemble_vlm" or self.pipeline_mode == "ultra":
+            return "Ultra Ensemble: manga-ocr-nar-small + MangaOCR FP16 + HayaiOCR v2.5 + VLM-OCR Jury"
+        if self.ocr_backend == "mangaocr_fp16_only":
+            return "MangaOCR FP16 Full Autoregressive + SmartPreprocess"
+        if self.ocr_backend == "hayai_siglip2":
+            return "HayaiOCR v2.5 Nova (SigLIP2 NaFlex JA/KO/ZH/EN)"
         if self._ja_nar_available and self._ja_nar_recognizer is not None:
             return "Hybrid manga-ocr-nar-small (v2026, CER 1.73%) + MangaOCR FP16 (long-bubble fallback)"
         return "MangaOCR FP16 + SmartPreprocess (Auto-Invert & AspectGuard)"
+
+    def get_local_models_storage_info(self) -> list[dict[str, Any]]:
+        """Возвращает список локальных нейросетевых моделей детекции и OCR в папке models/ с их размером и статусом."""
+        specs = [
+            {
+                "id": "rtdetr_v2",
+                "title": "🎯 Детектор RT-DETR-v2 (3-class: bubble + text_bubble + text_free)",
+                "role": "detector",
+                "path": self.models_dir / HF_RTDETR_SUBDIR,
+                "loaded_in_vram": bool(self._rtdetr_model is not None),
+                "can_redownload": True,
+            },
+            {
+                "id": "yolo26_seg",
+                "title": "🧩 Сегментатор масок YOLO26s-seg (Manga109 Polygon Segmentation)",
+                "role": "detector",
+                "path": self.models_dir / LOCAL_YOLO26_SEG_FILENAME,
+                "extra_path": self.models_dir / "yolo26_seg_cache",
+                "loaded_in_vram": bool(self._yolo26_seg_model is not None),
+                "can_redownload": True,
+            },
+            {
+                "id": "yolov8m",
+                "title": "🔍 Детектор бабблов YOLOv8m (comic-speech-bubble-detector)",
+                "role": "detector",
+                "path": self.models_dir / HF_YOLO_FILENAME,
+                "loaded_in_vram": bool(self.detector is not None),
+                "can_redownload": True,
+            },
+            {
+                "id": "ja_nar_ocr",
+                "title": "⚡ Японский OCR manga-ocr-nar-small (v2026, CER 1.73%)",
+                "role": "ocr",
+                "path": self.models_dir / HF_JA_NAR_SUBDIR,
+                "loaded_in_vram": bool(self._ja_nar_recognizer is not None),
+                "can_redownload": True,
+            },
+            {
+                "id": "hayai_ocr",
+                "title": "🌐 Мультиязычный OCR HayaiOCR v2.5 Nova (SigLIP2 JA/KO/ZH/EN)",
+                "role": "ocr",
+                "path": self.models_dir / HF_HAYAI_SUBDIR,
+                "extra_path": self.models_dir / HF_HAYAI_PROCESSOR_SUBDIR,
+                "loaded_in_vram": bool(self._hayai_model is not None),
+                "can_redownload": True,
+            },
+        ]
+        out: list[dict[str, Any]] = []
+        for sp in specs:
+            p_main: Path = sp["path"]
+            p_extra: Path | None = sp.get("extra_path")
+            size_bytes = 0
+            exists = False
+            for p_cand in (p_main, p_extra):
+                if p_cand is not None and p_cand.exists():
+                    exists = True
+                    if p_cand.is_file():
+                        size_bytes += p_cand.stat().st_size
+                    elif p_cand.is_dir():
+                        for sub_f in p_cand.rglob("*"):
+                            if sub_f.is_file():
+                                try:
+                                    size_bytes += sub_f.stat().st_size
+                                except Exception:
+                                    pass
+            size_mb = round(size_bytes / (1024 * 1024), 1)
+            out.append(
+                {
+                    "id": sp["id"],
+                    "title": sp["title"],
+                    "category": "local_weights",
+                    "role": sp["role"],
+                    "installed": exists and size_bytes > 1024,
+                    "size_mb": size_mb,
+                    "size_gb": round(size_bytes / (1024**3), 2),
+                    "loaded_in_vram": sp["loaded_in_vram"],
+                    "path_str": str(p_main),
+                    "can_redownload": sp["can_redownload"],
+                }
+            )
+        return out
+
+    def delete_local_model_weights(self, model_key: str) -> dict[str, Any]:
+        """Выгружает модель из VRAM и удаляет её локальные файлы из папки models/."""
+        import shutil
+        key = (model_key or "").strip().lower()
+        targets: list[Path] = []
+        if key == "rtdetr_v2":
+            self._rtdetr_model = None
+            self._rtdetr_processor = None
+            self._rtdetr_available = None
+            targets.append(self.models_dir / HF_RTDETR_SUBDIR)
+        elif key == "yolo26_seg":
+            self._yolo26_seg_model = None
+            self._yolo26_seg_available = None
+            targets.append(self.models_dir / LOCAL_YOLO26_SEG_FILENAME)
+            targets.append(self.models_dir / "yolo26_seg_cache")
+        elif key == "yolov8m":
+            targets.append(self.models_dir / HF_YOLO_FILENAME)
+        elif key == "ja_nar_ocr":
+            self._ja_nar_recognizer = None
+            self._ja_nar_available = None
+            targets.append(self.models_dir / HF_JA_NAR_SUBDIR)
+        elif key == "hayai_ocr":
+            self._hayai_model = None
+            self._hayai_tokenizer = None
+            self._hayai_processor = None
+            self._hayai_available = None
+            targets.append(self.models_dir / HF_HAYAI_SUBDIR)
+            targets.append(self.models_dir / HF_HAYAI_PROCESSOR_SUBDIR)
+        else:
+            return {"ok": False, "error": f"Неизвестный ключ локальной модели OCR/детектора: {model_key}"}
+
+        freed_bytes = 0
+        removed_paths: list[str] = []
+        for t_path in targets:
+            if t_path.exists():
+                if t_path.is_file():
+                    freed_bytes += t_path.stat().st_size
+                    t_path.unlink(missing_ok=True)
+                    removed_paths.append(str(t_path))
+                elif t_path.is_dir():
+                    for sf in t_path.rglob("*"):
+                        if sf.is_file():
+                            try:
+                                freed_bytes += sf.stat().st_size
+                            except Exception:
+                                pass
+                    shutil.rmtree(t_path, ignore_errors=True)
+                    removed_paths.append(str(t_path))
+
+        if torch is not None and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
+
+        return {
+            "ok": True,
+            "model_id": key,
+            "freed_mb": round(freed_bytes / (1024 * 1024), 1),
+            "removed_paths": removed_paths,
+        }
 
     def get_multilang_ocr_backend_name(self) -> str:
         parts: list[str] = []
@@ -2877,6 +3098,7 @@ class MangaOCREngine:
         cloud_api_url: str | None = None,
         cloud_api_key: str | None = None,
         cloud_vlm_model: str | None = None,
+        source_lang: str | None = None,
     ) -> tuple[str, str, str]:
         """
         Снайперское распознавание сложного кропа (рукописный SFX, каллиграфия, цветная обложка) через Vision-модель (Шаг 4):
@@ -2886,6 +3108,14 @@ class MangaOCREngine:
            если переданы `cloud_api_url` и `cloud_api_key`.
         Возвращает `(recognized_text, detected_lang, used_vlm_model_name)`.
         """
+        if source_lang and (not lang or lang == "auto"):
+            lang = source_lang
+        if not vlm_model and getattr(self, "preferred_vlm_model", "auto") not in ("", "auto"):
+            pref_vlm = str(self.preferred_vlm_model)
+            if pref_vlm.startswith("ollama::"):
+                vlm_model = pref_vlm.split("ollama::", 1)[1]
+            elif pref_vlm != "cloud_vision":
+                vlm_model = pref_vlm
         req_lang = (lang or "auto").lower().strip()
         fb_lang = req_lang if req_lang in ("ja", "ko", "zh") else (self._last_detected_lang or "ja")
         _, b64_png = self._prepare_crop_for_vlm_ocr(rgb_image, bbox, pad=12)
@@ -3242,11 +3472,12 @@ class MangaOCREngine:
         detector.to(self.device)
         return detector
 
-    def _get_yolo26_seg_detector(self, download_if_missing: bool = True) -> Any | None:
+    def _get_yolo26_seg_detector(self, download_if_missing: bool = False) -> Any | None:
         """
-        Сегментационный детектор 2026 года `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (YOLO26s-seg):
+        Опциональный сегментационный детектор 2026 года `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (YOLO26s-seg):
         Находит и сегментирует `frame`, `balloon` и `text` на ч/б манге.
-        Подгружается автоматически и докачивает `models/manga109-yolov26s-seg.pt` (~23.4 МБ) с HuggingFace при `download_if_missing=True`.
+        Подгружается автоматически, если файл `models/manga109-yolov26s-seg.pt` уже скачан,
+        либо скачивается по запросу при `download_if_missing=True`.
         """
         if not self.use_yolo26_seg or YOLO is None:
             return None
@@ -3257,10 +3488,10 @@ class MangaOCREngine:
 
         local_weights = self.models_dir / LOCAL_YOLO26_SEG_FILENAME
         if not local_weights.exists():
-            if not download_if_missing or hf_hub_download is None:
+            if not download_if_missing:
                 return None
             try:
-                logger.info("Скачивание весов сегментатора %s/%s (~23.4 МБ)...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
+                logger.info("Скачивание весов сегментатора %s/%s...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
                 dl_path = hf_hub_download(
                     repo_id=HF_YOLO26_SEG_REPO,
                     filename=HF_YOLO26_SEG_FILENAME,
@@ -3268,9 +3499,8 @@ class MangaOCREngine:
                 )
                 import shutil
                 shutil.copy2(dl_path, local_weights)
-                logger.info("Веса YOLO26s-seg сохранены в %s", local_weights)
             except Exception as exc:
-                logger.warning("Не удалось скачать YOLO26s-seg с HuggingFace (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
+                logger.debug("YOLO26s-seg недоступен (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
                 self._yolo26_seg_available = False
                 return None
 
@@ -3279,15 +3509,10 @@ class MangaOCREngine:
             seg_model.to(self.device)
             self._yolo26_seg_model = seg_model
             self._yolo26_seg_available = True
-            self.last_detection_stats["yolo26_seg_active"] = True
-            self.last_detection_stats["detector_backend"] = self.get_detector_backend_name()
             logger.info("Сегментатор масок YOLO26s-seg (%s) подключен на %s!", LOCAL_YOLO26_SEG_FILENAME, self.device)
             return seg_model
         except Exception as exc:
-            logger.warning(
-                "Не удалось инициализировать YOLO26s-seg (%s). Для архитектуры YOLO26 рекомендуется обновить ultralytics (`pip install -U ultralytics>=8.4.0`). Продолжаем на связке RT-DETR-v2 + YOLOv8m.",
-                exc,
-            )
+            logger.debug("Не удалось загрузить YOLO26s-seg (%s).", exc)
             self._yolo26_seg_available = False
             return None
 
@@ -3299,9 +3524,8 @@ class MangaOCREngine:
         img_h: int,
         active_conf: float,
         min_box_size: int = 14,
-        download_if_missing: bool = True,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-        seg_det = self._get_yolo26_seg_detector(download_if_missing=download_if_missing)
+        seg_det = self._get_yolo26_seg_detector(download_if_missing=False)
         if seg_det is None:
             return [], []
         seg_bubbles: list[dict[str, Any]] = []
@@ -6147,15 +6371,13 @@ class MangaOCREngine:
         pipeline_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
-        if eff_pmode not in ("fast", "balanced", "accuracy"):
+        if eff_pmode not in ("fast", "balanced", "accuracy", "ultra"):
             eff_pmode = "balanced"
         img_h, img_w = img_np.shape[:2]
         yolo_detections: list[dict[str, Any]] = []
         rtdetr_bubbles: list[dict[str, Any]] = []
         rtdetr_text_bubbles: list[dict[str, Any]] = []
         rtdetr_free_texts: list[dict[str, Any]] = []
-        yolo26_seg_bubbles_count: int = 0
-        yolo26_seg_texts_count: int = 0
 
         active_conf = conf_override if conf_override is not None else self.conf_threshold
 
@@ -6222,13 +6444,13 @@ class MangaOCREngine:
                         )
 
                 # 2. Прогон двухконтурного 3-классового детектора RT-DETR-v2 (bubble / text_bubble / text_free)
-                if self.use_rtdetr:
+                if self.use_rtdetr and getattr(self, "detector_backend", "rtdetr_yolov8") != "yolov8_fast":
                     rt_b, rt_tb, rt_free = self._run_rtdetr_on_slice(
                         slice_np,
                         y_start=y_start,
                         img_w=img_w,
                         img_h=img_h,
-                        active_conf=active_conf,
+                        active_conf=(max(0.18, active_conf - 0.04) if eff_pmode == "ultra" else active_conf),
                         min_box_size=max(12, min_box_size - 2),
                     )
                     if rt_b:
@@ -6238,22 +6460,25 @@ class MangaOCREngine:
                     if rt_free:
                         rtdetr_free_texts.extend(rt_free)
 
-                # 2.5. В режиме максимальной точности (accuracy) подключаем сегментатор YOLO26s-seg (с автодокачкой весов)
-                if eff_pmode == "accuracy" and self.use_yolo26_seg:
+                # 2.5. В режимах accuracy / ultra или при выборе triple_yolo26_seg подключаем сегментатор YOLO26s-seg
+                use_y26_now = (
+                    eff_pmode in ("accuracy", "ultra")
+                    or getattr(self, "detector_backend", "rtdetr_yolov8") == "triple_yolo26_seg"
+                ) and self.use_yolo26_seg
+                if use_y26_now:
+                    if eff_pmode == "ultra" or getattr(self, "detector_backend", "") == "triple_yolo26_seg":
+                        self._get_yolo26_seg_detector(download_if_missing=True)
                     s_bub, s_txt = self._run_yolo26_seg_on_slice(
                         slice_np,
                         y_start=y_start,
                         img_w=img_w,
                         img_h=img_h,
-                        active_conf=active_conf,
+                        active_conf=(max(0.18, active_conf - 0.03) if eff_pmode == "ultra" else active_conf),
                         min_box_size=max(12, min_box_size - 2),
-                        download_if_missing=True,
                     )
                     if s_bub:
-                        yolo26_seg_bubbles_count += len(s_bub)
                         rtdetr_bubbles.extend(s_bub)
                     if s_txt:
-                        yolo26_seg_texts_count += len(s_txt)
                         rtdetr_text_bubbles.extend(s_txt)
 
         # Если RT-DETR-v2 пометил текст внутри белого экрана телефона / таблички / записки как `2: text_free`,
@@ -6280,13 +6505,10 @@ class MangaOCREngine:
             {
                 "detector_backend": self.get_detector_backend_name(),
                 "rtdetr_active": bool(self._rtdetr_available and self._rtdetr_model is not None),
-                "yolo26_seg_active": bool(self._yolo26_seg_available and self._yolo26_seg_model is not None),
                 "yolo_bubbles": len(yolo_detections),
                 "rtdetr_bubbles": len(rtdetr_bubbles),
                 "rtdetr_text_bubbles": len(rtdetr_text_bubbles),
                 "rtdetr_free_texts": len(rtdetr_free_texts),
-                "yolo26_seg_bubbles": yolo26_seg_bubbles_count,
-                "yolo26_seg_texts": yolo26_seg_texts_count,
             }
         )
 
@@ -7066,6 +7288,16 @@ class MangaOCREngine:
                         out_combined[m_idx] = "".join(lines_txt)
                 return out_combined
 
+        active_ocr_b = getattr(self, "ocr_backend", "hybrid_nar_mangaocr")
+        is_ultra_ocr = (getattr(self, "pipeline_mode", "balanced") == "ultra") or (active_ocr_b == "ultra_ensemble_vlm")
+        if active_ocr_b == "mangaocr_fp16_only" and not is_ultra_ocr:
+            fp16_res = self._run_classic_manga_ocr_batch(crops_pil, batch_size=batch_size)
+            return [_restore_english_word_spaces(t) if _looks_like_merged_english_ocr(t) else t for t in fp16_res]
+        if active_ocr_b == "hayai_siglip2" and self.use_hayai_ocr:
+            h_res = self._recognize_crops_batch_hayai(crops_pil, lang="ja")
+            if h_res and len(h_res) == len(crops_pil) and any(h_res):
+                return [_restore_english_word_spaces(t) if _looks_like_merged_english_ocr(t) else t for t in h_res]
+
         nar_model = self._get_ja_nar_recognizer()
         if nar_model is not None:
             try:
@@ -7087,14 +7319,16 @@ class MangaOCREngine:
                     # Если manga-ocr-nar-small вернул пустую строку ("") на кропе — значит внутри нет японских букв,
                     # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
                     # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
+                    len_thresh = 18 if is_ultra_ocr else 54
                     fallback_indices = [
                         idx
                         for idx, txt in enumerate(nar_texts)
-                        if len(txt) >= 54
+                        if len(txt) >= len_thresh
+                        or _looks_like_merged_english_ocr(txt)
                         or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).passed)
                         or (
-                            len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= 4
-                            and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= 16000
+                            len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= (6 if is_ultra_ocr else 4)
+                            and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= (10000 if is_ultra_ocr else 16000)
                             and pre_ocr_stroke_gate(crops_pil[idx]).passed
                         )
                     ]
@@ -7117,24 +7351,31 @@ class MangaOCREngine:
                                 or (cur_core_len <= 4 and fb_core_len >= cur_core_len + 2)
                             ):
                                 nar_texts[idx] = fb_clean
-                    # Если после NAR + MangaOCR какой-то баббл остался с галлюцинацией (и не был отклонен HallucinationFreeMangaOCR) — дочитываем через HayaiOCR v2.5 Nova!
-                    if self.use_hayai_ocr and self._hayai_model is not None:
+                    # Если после NAR + MangaOCR какой-то баббл остался с галлюцинацией или слипшимся английским текстом — дочитываем через HayaiOCR v2.5 Nova!
+                    if self.use_hayai_ocr and (self._hayai_model is not None or is_ultra_ocr):
                         hayai_rescue_indices = [
                             idx
                             for idx, txt in enumerate(nar_texts)
                             if idx not in rejected_by_hf_ocr
                             and (
                                 KNOWN_OCR_HALLUCINATIONS_REGEX.search(txt)
+                                or _looks_like_merged_english_ocr(txt)
                                 or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).valid_cc_count >= 6)
                             )
                         ]
                         if hayai_rescue_indices:
-                            hayai_sub_crops = [crops_pil[idx] for idx in hayai_rescue_indices]
-                            hayai_rescued = self._recognize_crops_batch_hayai(hayai_sub_crops, lang="ja")
-                            for idx, h_txt in zip(hayai_rescue_indices, hayai_rescued):
-                                h_clean = (h_txt or "").strip()
-                                if h_clean and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(h_clean):
-                                    nar_texts[idx] = h_clean
+                            if self._hayai_model is None and is_ultra_ocr and self._is_hayai_cached_locally():
+                                self._get_hayai_recognizer()
+                            if self._hayai_model is not None:
+                                hayai_sub_crops = [crops_pil[idx] for idx in hayai_rescue_indices]
+                                hayai_rescued = self._recognize_crops_batch_hayai(hayai_sub_crops, lang="ja")
+                                for idx, h_txt in zip(hayai_rescue_indices, hayai_rescued):
+                                    h_clean = (h_txt or "").strip()
+                                    if h_clean and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(h_clean):
+                                        nar_texts[idx] = h_clean
+                    for idx_e, txt_e in enumerate(nar_texts):
+                        if _looks_like_merged_english_ocr(txt_e):
+                            nar_texts[idx_e] = _restore_english_word_spaces(txt_e)
                     return nar_texts
             except Exception as nar_exc:
                 logger.debug("Ошибка пакетного вызова manga-ocr-nar-small (%s), переключаемся на MangaOCR.", nar_exc)
@@ -7188,7 +7429,7 @@ class MangaOCREngine:
         pipeline_mode: str | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
         eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
-        if eff_pmode not in ("fast", "balanced", "accuracy"):
+        if eff_pmode not in ("fast", "balanced", "accuracy", "ultra"):
             eff_pmode = "balanced"
         self.pipeline_mode = eff_pmode
         req_lang = (lang or "auto").lower().strip()
@@ -7242,8 +7483,6 @@ class MangaOCREngine:
                 "rtdetr_bubbles": int(self.last_detection_stats.get("rtdetr_bubbles", 0)),
                 "rtdetr_text_bubbles": int(self.last_detection_stats.get("rtdetr_text_bubbles", 0)),
                 "rtdetr_free_texts": int(self.last_detection_stats.get("rtdetr_free_texts", 0)),
-                "yolo26_seg_bubbles": int(self.last_detection_stats.get("yolo26_seg_bubbles", 0)),
-                "yolo26_seg_texts": int(self.last_detection_stats.get("yolo26_seg_texts", 0)),
                 "split_multi_bubbles": int(self.last_detection_stats.get("split_multi_bubbles", 0)),
                 "rescued_orphan_text_bubbles": int(self.last_detection_stats.get("rescued_orphan_text_bubbles", 0)),
                 "no_ink_count": 0,
@@ -7381,18 +7620,19 @@ class MangaOCREngine:
                     recognized_text = retry_full_txt
                     ocr_coords = [x1, y1, x2, y2]
 
-            # В режиме 'accuracy' (Макс. точность) автоматически подключаем снайперский VLM-OCR (Qwen3-VL / GLM-OCR),
-            # если в баббле много чернил, но быстрый OCR вернул пустоту или подозрительный короткий шум/SFX
+            # В режимах 'accuracy' и 'ultra' автоматически подключаем снайперский VLM-OCR (Qwen3-VL / GLM-OCR),
+            # если в баббле много чернил, но быстрый OCR вернул пустоту, слипшуюся латиницу или подозрительный шум
             if (
-                eff_pmode == "accuracy"
+                (eff_pmode in ("accuracy", "ultra") or getattr(self, "ocr_backend", "") == "ultra_ensemble_vlm")
                 and has_ink
-                and ink_pixels >= 36
+                and ink_pixels >= (28 if eff_pmode == "ultra" else 36)
                 and (
                     not recognized_text
+                    or (eff_pmode == "ultra" and _looks_like_merged_english_ocr(recognized_text))
                     or (
                         not is_free
-                        and len(recognized_text.strip()) <= 2
-                        and ink_pixels >= 165
+                        and len(recognized_text.strip()) <= (3 if eff_pmode == "ultra" else 2)
+                        and ink_pixels >= (130 if eff_pmode == "ultra" else 165)
                         and self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False)
                     )
                 )
@@ -7401,12 +7641,12 @@ class MangaOCREngine:
                     vlm_resc_txt, _vlm_l, _ = self.recognize_crop_via_vlm(
                         rgb_image,
                         [x1, y1, x2, y2],
-                        source_lang=resolved_lang,
+                        lang=resolved_lang,
                     )
                     if vlm_resc_txt and not PUNCT_ONLY_REGEX.match(vlm_resc_txt):
                         recognized_text = vlm_resc_txt
                 except Exception as vlm_acc_exc:
-                    logger.debug("Пропуск авто-дочитки VLM-OCR в режиме accuracy: %s", vlm_acc_exc)
+                    logger.debug("Пропуск авто-дочитки VLM-OCR в режиме %s: %s", eff_pmode, vlm_acc_exc)
 
             if not recognized_text:
                 if not has_ink:
@@ -7538,8 +7778,6 @@ class MangaOCREngine:
             "rtdetr_bubbles": int(self.last_detection_stats.get("rtdetr_bubbles", 0)),
             "rtdetr_text_bubbles": int(self.last_detection_stats.get("rtdetr_text_bubbles", 0)),
             "rtdetr_free_texts": int(self.last_detection_stats.get("rtdetr_free_texts", 0)),
-                "yolo26_seg_bubbles": int(self.last_detection_stats.get("yolo26_seg_bubbles", 0)),
-                "yolo26_seg_texts": int(self.last_detection_stats.get("yolo26_seg_texts", 0)),
             "split_multi_bubbles": int(self.last_detection_stats.get("split_multi_bubbles", 0)),
             "rescued_orphan_text_bubbles": int(self.last_detection_stats.get("rescued_orphan_text_bubbles", 0)),
             "no_ink_count": no_ink_count,

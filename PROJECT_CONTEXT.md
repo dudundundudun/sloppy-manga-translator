@@ -186,3 +186,14 @@
 - **Поддержка сегментатора `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (`YOLO26s-seg`)**:
   - Подключается в `ocr_engine.py` в режиме `accuracy` при наличии локальных весов `models/manga109-yolov26s-seg.pt`.
 
+
+
+## 11. Обновление v5.3 Ultra Edition (Режим «💎 Ультра-качество», Менеджер удаления моделей и Дефолтные связки `Default Model Stack`)
+- **Четвёртый режим работы `ultra` («💎 Ультра-качество (Deep Redraw & 2-Pass AI)»)**:
+  - **2-Pass AI Translation (`extract_chapter_glossary_prepass` + `proofread_chapter_book_script`)**: перед переводом пачки автоматически сканирует японские/корейские/китайские реплики и извлекает канонический глоссарий имён и гендера персонажей (`心花 -> Kokona`, `猫又 -> Nekomata`), затем выполняет перевод с Image-Aware превью повышенного разрешения (`1024px`) и проводит второй проход литературной вычитки всей пачки чанками по 36 реплик.
+  - **Ансамбль OCR `ultra_ensemble_vlm` + исправление слипшегося английского текста**: сверка `manga-ocr-nar-small` + `HallucinationFreeMangaOCR FP16` (от 18 символов) + `HayaiOCR v2.5 Nova` + автоматическая дочитка сложных бабблов через `VLM-OCR` (`recognize_crop_via_vlm`), а также восстановление пробелов на английских выходных данных (`_looks_like_merged_english_ocr` + `_restore_english_word_spaces`).
+  - **Глубокий редро бабблов `ultra_deep_redraw` (`cleaner.py`)**: 1.5x Lanczos Super-Sampled Two-Pass LaMa Inpainting с доводкой переходного шва, 2D-RFFT синтезом периодического скринтона и сплайн-реконструкцией пробитых рамок.
+- **Система дефолтных связок всех моделей (`default_model_stack`, `saved_model_stacks`, `GET/POST /model_stack`)**:
+  - Позволяет выбрать дефолты сразу для всех 6 ролей пайплайна (`translation_model`, `fallback_model`, `vlm_model`, `ocr_backend`, `detector_backend`, `inpaint_backend`), закрепить любимую связку как дефолтную при запуске (`config.json`) или сохранить её как именованный пресет в 1 клик.
+- **Менеджер удаления моделей и очистки VRAM/диска (`GET /model_storage`, `POST /delete_model`)**:
+  - Удаление любых моделей из локального Ollama (`DELETE /api/delete` + `ollama rm` + очистка `.gguf` кэша в `models/gguf/`) и выгрузка/удаление локальных весов детекторов, OCR и LaMa из папки `models/` прямо из интерфейса студии.

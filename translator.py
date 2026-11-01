@@ -824,14 +824,108 @@ PIPELINE_MODES: dict[str, dict[str, Any]] = {
     },
     "accuracy": {
         "id": "accuracy",
-        "title": "🎯 Макс. точность (Ультра HQ)",
+        "title": "🎯 Макс. точность (HQ)",
         "short_title": "🎯 Макс. точность",
         "translation_profile": "eco_book",
         "use_image_context": True,
         "vlm_ocr_auto": True,
-        "description": "Максимальное качество: полный ансамбль детекторов (включая YOLO26s-seg), авто-дочитка сложных шрифтов через VLM-OCR (Qwen3-VL / GLM-OCR) и передача картинки страницы с бабблами #1..#N в ИИ (Image-Aware Context).",
+        "description": "Повышенная точность: ансамбль детекторов (включая YOLO26s-seg), авто-дочитка сложных шрифтов через VLM-OCR (Qwen3-VL / GLM-OCR) и передача картинки страницы с бабблами #1..#N в ИИ (Image-Aware Context).",
+    },
+    "ultra": {
+        "id": "ultra",
+        "title": "💎 Ультра-качество (Deep Redraw & 2-Pass AI)",
+        "short_title": "💎 Ультра",
+        "translation_profile": "eco_book",
+        "use_image_context": True,
+        "vlm_ocr_auto": True,
+        "two_pass_proofread": True,
+        "auto_pre_glossary": True,
+        "deep_redraw": True,
+        "description": "Режим без лимита времени для эталонного качества: 2-проходный перевод (авто-сбор глоссария имен главы + литературная вычитка всей пачки), двойная сверка OCR + VLM-жюри, 1.5x Super-Sampled Anime-LaMa + RFFT2 скринтон и реконструкция пробитых стенок бабблов.",
     },
 }
+
+DEFAULT_MODEL_STACK_TEMPLATE: dict[str, str] = {
+    "translation_model": "auto",
+    "fallback_model": "auto",
+    "vlm_model": "auto",
+    "ocr_backend": "hybrid_nar_mangaocr",
+    "detector_backend": "rtdetr_yolov8",
+    "inpaint_backend": "anime_lama_sota",
+    "pipeline_mode": "balanced",
+    "translation_profile": "balanced",
+}
+
+BUILT_IN_MODEL_STACK_PRESETS: list[dict[str, Any]] = [
+    {
+        "id": "preset_ultra_sota",
+        "name": "💎 Ультра-качество (Deep Redraw + 2-Pass AI + VLM Jury)",
+        "badge": "💎 Ультра SOTA",
+        "builtin": True,
+        "description": "Без спешки, всё на максимум: Shisa V2.1 14B / Gemma 3 27B (или DeepSeek Pro), авто-глоссарий + 2-проходная вычитка, тройной детектор с YOLO26s-seg, ансамбль OCR + VLM и 1.5x Super-Sampled редро бабблов.",
+        "stack": {
+            "translation_model": "ollama::hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M",
+            "fallback_model": "ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M",
+            "vlm_model": "ollama::qwen3-vl:8b",
+            "ocr_backend": "ultra_ensemble_vlm",
+            "detector_backend": "triple_yolo26_seg",
+            "inpaint_backend": "ultra_deep_redraw",
+            "pipeline_mode": "ultra",
+            "translation_profile": "eco_book",
+        },
+    },
+    {
+        "id": "preset_local_18plus_ja_en",
+        "name": "🔥 Локальный 18+ без цензуры JA➔EN (Sugoi 14B Ultra + Anime-LaMa)",
+        "badge": "🔥 18+ JA➔EN",
+        "builtin": True,
+        "description": "Лучшая связка для японской 18+ манги и додзинси на английский: специализированная Sugoi 14B Ultra (0% отказов), двухконтурный RT-DETR-v2 и чистый инпейнтинг Anime-LaMa.",
+        "stack": {
+            "translation_model": "ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M",
+            "fallback_model": "ollama::hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF",
+            "vlm_model": "ollama::glm-ocr:latest",
+            "ocr_backend": "hybrid_nar_mangaocr",
+            "detector_backend": "rtdetr_yolov8",
+            "inpaint_backend": "anime_lama_sota",
+            "pipeline_mode": "accuracy",
+            "translation_profile": "local_only",
+        },
+    },
+    {
+        "id": "preset_local_shisa_ru_en",
+        "name": "🌸 Японская манга JA➔RU/EN (Shisa V2.1 14B + 12B Uncensored)",
+        "badge": "🌸 Shisa JA➔RU/EN",
+        "builtin": True,
+        "description": "Литературный перевод японской манги на русский и английский: флагман Shisa V2.1 14B (Phi-4) с подхватом 18+ сцен через Shisa V2 12B Uncensored.",
+        "stack": {
+            "translation_model": "ollama::hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M",
+            "fallback_model": "ollama::hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF",
+            "vlm_model": "ollama::qwen3-vl:8b",
+            "ocr_backend": "hybrid_nar_mangaocr",
+            "detector_backend": "rtdetr_yolov8",
+            "inpaint_backend": "anime_lama_sota",
+            "pipeline_mode": "balanced",
+            "translation_profile": "eco_book",
+        },
+    },
+    {
+        "id": "preset_cloud_pro_hybrid",
+        "name": "☁️ Облачный Максимум + Локальный 18+ щит (DeepSeek Pro + Ultra Redraw)",
+        "badge": "☁️ Cloud Pro + Redraw",
+        "builtin": True,
+        "description": "Облачный DeepSeek Pro для идеального контекста + мгновенный перехват 18+ цензуры локальной Sugoi/Shisa + глубокая перерисовка бабблов.",
+        "stack": {
+            "translation_model": "unsloth::deepseek-v4-pro",
+            "fallback_model": "ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M",
+            "vlm_model": "ollama::qwen3-vl:8b",
+            "ocr_backend": "ultra_ensemble_vlm",
+            "detector_backend": "triple_yolo26_seg",
+            "inpaint_backend": "ultra_deep_redraw",
+            "pipeline_mode": "ultra",
+            "translation_profile": "eco_book",
+        },
+    },
+]
 
 # Каталог лучших локальных моделей для перевода манги (с прямыми GGUF-ссылками для авто-обхода блокировки Fake-IP 198.18.x.x в Ollama)
 RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
@@ -964,6 +1058,32 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "size_gb": "6.2 ГБ",
         "langs": "Vision OCR + Image-Aware Перевод: JA / KO / ZH",
         "description": "Новейшая мультимодальная модель Alibaba Qwen 3 VL 8B (2026). Безошибочно читает стилизованные SFX и вертикальные плашки, а также анализирует лица и пол персонажей на странице в режиме Image-Aware Context.",
+    },
+    {
+        "ollama_tag": "gemma3:27b-it-qat",
+        "local_tag": "gemma3:27b-it-qat",
+        "hf_repo": "MaziyarPanahi/gemma-3-27b-it-GGUF",
+        "hf_filename": "gemma-3-27b-it.Q4_K_M.gguf",
+        "hf_quant": "Q4_K_M",
+        "id": "ollama::gemma3:27b-it-qat",
+        "title": "👑 Gemma 3 27B QAT (Vision) — Ультра-переводчик под 16 ГБ VRAM JA/KO/ZH➔RU/EN (~14.5 ГБ)",
+        "short_name": "Gemma 3 27B QAT (Ultra)",
+        "size_gb": "14.5 ГБ",
+        "langs": "JA / KO / ZH ➔ RU / EN (Vision + QAT)",
+        "description": "Тяжелая флагманская модель Google Gemma 3 27B с квантованием QAT (помещается в 16 ГБ VRAM вашей RTX 5070 Ti!). Лидер тестов перевода визуальных новелл и манги с поддержкой зрения (Image-Aware Context).",
+    },
+    {
+        "ollama_tag": "qwen3:30b-a3b",
+        "local_tag": "qwen3:30b-a3b",
+        "hf_repo": "Qwen/Qwen3-30B-A3B-GGUF",
+        "hf_filename": "Qwen3-30B-A3B-Q4_K_M.gguf",
+        "hf_quant": "Q4_K_M",
+        "id": "ollama::qwen3:30b-a3b",
+        "title": "🏆 Qwen 3 30B-A3B MoE — Топ-3 JP-TL-Bench (84.3% WR) JA/KO/ZH➔RU/EN (~16.0 ГБ)",
+        "short_name": "Qwen 3 30B-A3B MoE",
+        "size_gb": "16.0 ГБ",
+        "langs": "JA / KO / ZH ➔ RU / EN (MoE 30B)",
+        "description": "Крупная MoE-модель (30 млрд параметров, 3 млрд активных на токен), занявшая 3-е место в бенчмарке художественного японского перевода JP-TL-Bench (84.33% побед, выше GPT-4o!).",
     },
 ]
 
@@ -2439,6 +2559,8 @@ class OllamaTranslator:
         self.local_fallback_model_multilang: str = "auto"
         self.anti_censorship_prompt: bool = False
         self.anti_censorship_custom_prompt: str = ""
+        self.default_model_stack: dict[str, str] = dict(DEFAULT_MODEL_STACK_TEMPLATE)
+        self.saved_model_stacks: list[dict[str, Any]] = []
         self.auto_glossary = AutoGlossaryTracker()
         self.aimd = AIMDConcurrencyLimiter(initial_limit=4, min_limit=1, max_limit=8)
         self._endpoint_breakers: dict[str, EndpointCircuitBreaker] = {}
@@ -2707,6 +2829,15 @@ class OllamaTranslator:
                     self.ui_settings.update(data["ui_settings"])
                 if isinstance(data.get("glossary"), list):
                     self.glossary = normalize_glossary_entries(data["glossary"])
+                if isinstance(data.get("default_model_stack"), dict):
+                    for k_st, v_st in data["default_model_stack"].items():
+                        if k_st in self.default_model_stack and isinstance(v_st, str) and v_st.strip():
+                            self.default_model_stack[k_st] = v_st.strip()
+                if isinstance(data.get("saved_model_stacks"), list):
+                    self.saved_model_stacks = [
+                        s for s in data["saved_model_stacks"]
+                        if isinstance(s, dict) and s.get("id") and s.get("name") and isinstance(s.get("stack"), dict)
+                    ]
                 # Автоматическая миграция старых настроек фильтрации (v1.0.9), чтобы реплики внутри бабблов не пропускались без ведома пользователя
                 if not data.get("filter_v109_migrated"):
                     self.text_filter_mode = "bubbles_only"
@@ -2753,6 +2884,8 @@ class OllamaTranslator:
         glossary: list[dict[str, str]] | None = None,
         anti_censorship_prompt: bool | None = None,
         anti_censorship_custom_prompt: str | None = None,
+        default_model_stack: dict[str, str] | None = None,
+        saved_model_stacks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         prev_url = self.unsloth_url
         prev_key = self.unsloth_api_key
@@ -2848,6 +2981,17 @@ class OllamaTranslator:
         if anti_censorship_custom_prompt is not None:
             self.anti_censorship_custom_prompt = str(anti_censorship_custom_prompt).strip()
 
+        if isinstance(default_model_stack, dict):
+            for k_st, v_st in default_model_stack.items():
+                if k_st in self.default_model_stack and isinstance(v_st, str) and v_st.strip():
+                    self.default_model_stack[k_st] = v_st.strip()
+
+        if isinstance(saved_model_stacks, list):
+            self.saved_model_stacks = [
+                s for s in saved_model_stacks
+                if isinstance(s, dict) and s.get("id") and s.get("name") and isinstance(s.get("stack"), dict)
+            ]
+
         # БЛОК 5: Сбрасывать кэш моделей ТОЛЬКО при изменении api_url или api_key
         if self.unsloth_url != prev_url or self.unsloth_api_key != prev_key:
             self._cache_timestamp = 0.0
@@ -2878,6 +3022,8 @@ class OllamaTranslator:
             "batch_pages": self.batch_pages,
             "ui_settings": self.ui_settings,
             "glossary": self.glossary,
+            "default_model_stack": self.default_model_stack,
+            "saved_model_stacks": self.saved_model_stacks,
         }
         try:
             self.config_path.write_text(
@@ -3426,6 +3572,188 @@ class OllamaTranslator:
                 }
             )
             return self.pull_state
+
+    async def list_installed_ollama_models_detailed(self) -> list[dict[str, Any]]:
+        """Возвращает подробный список всех реально установленных моделей в локальном Ollama с их размером в ГБ и кэшем GGUF."""
+        out: list[dict[str, Any]] = []
+        seen_names: set[str] = set()
+        gguf_files_map: dict[str, Path] = {}
+        if self.gguf_dir.exists():
+            for gf in self.gguf_dir.glob("*.gguf"):
+                gguf_files_map[gf.name.lower()] = gf
+
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(4.0, connect=1.2), trust_env=False) as client:
+                resp = await client.get(f"{self.base_url}/api/tags")
+                if resp.status_code == 200:
+                    for item in resp.json().get("models", []):
+                        m_name = str(item.get("name") or "").strip()
+                        if not m_name or m_name.lower() in seen_names:
+                            continue
+                        seen_names.add(m_name.lower())
+                        size_bytes = int(item.get("size") or 0)
+                        details = item.get("details") if isinstance(item.get("details"), dict) else {}
+                        quant = str(details.get("quantization_level") or "")
+                        param_sz = str(details.get("parameter_size") or "")
+                        # Проверим, есть ли соответствующий локальный .gguf файл в models/gguf/
+                        matched_gguf: Path | None = None
+                        for rec in RECOMMENDED_LOCAL_MODELS:
+                            if m_name.lower() in (rec["ollama_tag"].lower(), rec.get("local_tag", "").lower()):
+                                fn = rec.get("hf_filename", "").lower()
+                                if fn and fn in gguf_files_map:
+                                    matched_gguf = gguf_files_map[fn]
+                                break
+                        out.append(
+                            {
+                                "id": f"ollama::{m_name}",
+                                "name": m_name,
+                                "title": f"🦙 {m_name}" + (f" ({param_sz}, {quant})" if param_sz else ""),
+                                "category": "ollama",
+                                "role": "vlm" if ("vl" in m_name.lower() or "ocr" in m_name.lower()) else "llm",
+                                "installed": True,
+                                "size_mb": round(size_bytes / (1024 * 1024), 1),
+                                "size_gb": round(size_bytes / (1024**3), 2),
+                                "gguf_cache_path": str(matched_gguf) if matched_gguf else "",
+                                "gguf_cache_gb": round(matched_gguf.stat().st_size / (1024**3), 2) if matched_gguf else 0.0,
+                                "is_active": bool(self._resolved_model and m_name.lower() in self._resolved_model.lower()),
+                            }
+                        )
+        except Exception as exc:
+            logger.debug("Не удалось получить детальный список моделей из /api/tags: %s", exc)
+
+        if not out:
+            for cli_name in self._list_ollama_cli_models():
+                if cli_name.lower() in seen_names:
+                    continue
+                seen_names.add(cli_name.lower())
+                out.append(
+                    {
+                        "id": f"ollama::{cli_name}",
+                        "name": cli_name,
+                        "title": f"🦙 {cli_name}",
+                        "category": "ollama",
+                        "role": "vlm" if ("vl" in cli_name.lower() or "ocr" in cli_name.lower()) else "llm",
+                        "installed": True,
+                        "size_mb": 0.0,
+                        "size_gb": 0.0,
+                        "gguf_cache_path": "",
+                        "gguf_cache_gb": 0.0,
+                        "is_active": bool(self._resolved_model and cli_name.lower() in self._resolved_model.lower()),
+                    }
+                )
+        return out
+
+    async def delete_ollama_model(
+        self,
+        model_name: str,
+        delete_gguf_cache: bool = True,
+    ) -> dict[str, Any]:
+        """
+        Выгружает из VRAM и полностью удаляет модель из локального Ollama (`DELETE /api/delete` + `ollama rm`),
+        а также опционально удаляет скачанный `.gguf` файл в `models/gguf/`.
+        """
+        clean_tag = (model_name or "").strip()
+        if clean_tag.startswith("ollama::"):
+            clean_tag = clean_tag.split("ollama::", 1)[1]
+        if clean_tag.startswith("ollama/"):
+            clean_tag = clean_tag.split("ollama/", 1)[1]
+        if not clean_tag:
+            return {"ok": False, "error": "Не указано имя модели Ollama для удаления."}
+
+        # Также проверим возможный алиас (local_tag <-> ollama_tag) в RECOMMENDED_LOCAL_MODELS
+        tags_to_remove = [clean_tag]
+        gguf_candidates: list[Path] = []
+        for rec in RECOMMENDED_LOCAL_MODELS:
+            if clean_tag.lower() in (rec["ollama_tag"].lower(), rec.get("local_tag", "").lower()):
+                for t_cand in (rec["ollama_tag"], rec.get("local_tag", "")):
+                    if t_cand and t_cand not in tags_to_remove:
+                        tags_to_remove.append(t_cand)
+                if rec.get("hf_filename") and self.gguf_dir.exists():
+                    gf_p = self.gguf_dir / Path(rec["hf_filename"]).name
+                    if gf_p.exists():
+                        gguf_candidates.append(gf_p)
+
+        removed_any = False
+        last_err = ""
+        async with httpx.AsyncClient(timeout=httpx.Timeout(12.0, connect=3.0), trust_env=False) as client:
+            for t_name in tags_to_remove:
+                # 1. Выгружаем модель из VRAM (keep_alive = 0)
+                try:
+                    await client.post(
+                        f"{self.base_url}/api/generate",
+                        json={"model": t_name, "prompt": "", "keep_alive": 0},
+                    )
+                except Exception:
+                    pass
+                # 2. Вызываем DELETE /api/delete
+                try:
+                    del_resp = await client.request(
+                        "DELETE",
+                        f"{self.base_url}/api/delete",
+                        json={"name": t_name},
+                    )
+                    if del_resp.status_code in (200, 204):
+                        removed_any = True
+                    else:
+                        last_err = f"HTTP {del_resp.status_code}: {del_resp.text[:160]}"
+                except Exception as exc:
+                    last_err = str(exc)
+
+                # 3. Дублируем через CLI `ollama rm <t_name>` на случай нестандартного тега
+                try:
+                    proc = await asyncio.to_thread(
+                        subprocess.run,
+                        ["ollama", "rm", t_name],
+                        capture_output=True,
+                        text=True,
+                        encoding="utf-8",
+                        errors="ignore",
+                        timeout=10,
+                    )
+                    if proc.returncode == 0:
+                        removed_any = True
+                except Exception:
+                    pass
+
+        freed_gguf_mb = 0.0
+        removed_files: list[str] = []
+        if delete_gguf_cache:
+            for gf_p in gguf_candidates:
+                if gf_p.exists():
+                    freed_gguf_mb += round(gf_p.stat().st_size / (1024 * 1024), 1)
+                    gf_p.unlink(missing_ok=True)
+                    removed_files.append(str(gf_p))
+                    removed_any = True
+            if self.gguf_dir.exists():
+                safe_mod_name = re.sub(r"[^a-zA-Z0-9_.-]+", "_", clean_tag)
+                mf_p = self.gguf_dir / f"Modelfile.{safe_mod_name}"
+                if mf_p.exists():
+                    mf_p.unlink(missing_ok=True)
+
+        # Если удаленная модель стояла как активная или дефолтная — переключаем на 'auto'
+        if self._resolved_model and any(t.lower() in self._resolved_model.lower() for t in tags_to_remove):
+            self._resolved_model = None
+            self.save_config(selected_model="auto")
+
+        self._cached_ollama_tags = None
+        self._cache_timestamp = 0.0
+        await self.list_available_models(force_refresh=True)
+
+        if not removed_any and last_err:
+            return {"ok": False, "error": f"Не удалось удалить модель '{clean_tag}': {last_err}"}
+        return {
+            "ok": True,
+            "deleted_model": clean_tag,
+            "freed_gguf_mb": freed_gguf_mb,
+            "removed_files": removed_files,
+        }
+
+    def get_all_model_stacks_info(self) -> dict[str, Any]:
+        return {
+            "default_model_stack": dict(self.default_model_stack),
+            "built_in_presets": list(BUILT_IN_MODEL_STACK_PRESETS),
+            "saved_model_stacks": list(self.saved_model_stacks),
+        }
 
     async def list_available_models(self, force_refresh: bool = False) -> list[dict[str, str]]:
         now = time.monotonic()
@@ -5745,11 +6073,13 @@ class OllamaTranslator:
         eff_use_img_ctx = (
             bool(use_image_context)
             if use_image_context is not None
-            else (bool(getattr(self, "use_image_context", False)) or eff_pmode == "accuracy")
+            else (bool(getattr(self, "use_image_context", False)) or eff_pmode in ("accuracy", "ultra"))
         )
         page_img_b64: str | None = None
         if eff_use_img_ctx and page_image is not None:
-            page_img_b64 = build_annotated_page_context_b64(page_image, blocks, max_side=768, jpeg_quality=80)
+            img_side = 1024 if eff_pmode == "ultra" else 768
+            img_qual = 88 if eff_pmode == "ultra" else 80
+            page_img_b64 = build_annotated_page_context_b64(page_image, blocks, max_side=img_side, jpeg_quality=img_qual)
 
         prof_cfg = self.get_profile_config(profile)
         active_model = await self.resolve_model(
@@ -6247,6 +6577,87 @@ class OllamaTranslator:
             external_cache.update(self.phrase_cache)
 
         return blocks_copy
+
+    async def extract_chapter_glossary_prepass(
+        self,
+        blocks: list[dict[str, Any]],
+        source_lang: str = "ja",
+        target_lang: str = "en",
+        model: str | None = None,
+        existing_glossary: list[dict[str, str]] | None = None,
+    ) -> list[dict[str, str]]:
+        """
+        Проход 0 для режима 💎 Ультра (Pre-Scan Auto-Glossary Extraction):
+        До начала основного перевода сканирует реплики главы/пачки, находит имена персонажей (кандзи/катакана/хангыль),
+        фиксирует каноническое чтение и пол персонажа (например, 心花 -> Kokona [female], 猫又 -> Nekomata [male]),
+        чтобы исключить разнобой имен между чанками.
+        """
+        if not blocks or self.stop_requested or target_lang.lower().strip() == "romaji":
+            return []
+        cjk_lines: list[str] = []
+        seen_s: set[str] = set()
+        for b in blocks:
+            if b.get("is_deleted"):
+                continue
+            orig = str(b.get("original_text") or "").strip()
+            if len(orig) >= 2 and self._contains_cjk(orig) and orig not in seen_s:
+                seen_s.add(orig)
+                cjk_lines.append(orig)
+                if len(cjk_lines) >= 85:
+                    break
+        if len(cjk_lines) < 4:
+            return []
+
+        active_model = await self.resolve_model(model, source_lang=source_lang, target_lang=target_lang)
+        client = self._get_http_client()
+        t_lang = (target_lang or "en").lower().strip()
+        existing_srcs = {
+            str(g.get("src") or "").strip()
+            for g in (existing_glossary or []) + (self.glossary or [])
+            if isinstance(g, dict) and g.get("src")
+        }
+        target_name_lang = "Russian (Cyrillic)" if t_lang == "ru" else "English (Hepburn Romanization)"
+        sys_p = (
+            f"{FICTION_NOVEL_CONTEXT_NOTE}\n"
+            f"You are a manga localization linguist. Scan the following {source_lang.upper()} manga dialogue lines and extract ONLY recurring character proper names, family names, or unique nicknames.\n"
+            f"For each character name found, provide its canonical {target_name_lang} spelling and gender/role note (e.g., 'female protagonist', 'male classmate').\n"
+            "Do NOT include common nouns, interjections, or regular verbs.\n"
+            "Return ONLY a valid JSON object mapping the exact source CJK name to its canonical target name, e.g.:\n"
+            '{"心花": "Kokona (female)", "猫又": "Nekomata (male)"}'
+        )
+        usr_p = "Extract character proper names from these dialogue lines into a JSON glossary object:\n" + "\n".join(cjk_lines[:70])
+        try:
+            raw_map = await self._call_llm_json(
+                client=client,
+                full_model_id=active_model,
+                system_prompt=sys_p,
+                user_prompt=usr_p,
+            )
+            extracted: list[dict[str, str]] = []
+            for k_raw, v_raw in (raw_map or {}).items():
+                if k_raw in ("__refusal__", "__partial_refusal__"):
+                    continue
+                src_term = str(k_raw or "").strip()
+                val_str = str(v_raw or "").strip()
+                if not src_term or len(src_term) > 12 or not self._contains_cjk(src_term) or src_term in existing_srcs:
+                    continue
+                if not val_str or self._is_bubble_refusal_value(val_str):
+                    continue
+                note_part = ""
+                dst_term = val_str
+                m_paren = re.match(r"^(.+?)\s*\(([^)]+)\)\s*$", val_str)
+                if m_paren:
+                    dst_term = m_paren.group(1).strip()
+                    note_part = m_paren.group(2).strip()
+                if dst_term:
+                    extracted.append({"src": src_term, "dst": dst_term, "note": note_part or "auto-extracted"})
+                    existing_srcs.add(src_term)
+            if extracted:
+                logger.info("💎 [Ultra Pre-Pass Glossary] Автоматически извлечено %d имен персонажей: %s", len(extracted), ", ".join(f"{e['src']}->{e['dst']}" for e in extracted))
+            return extracted
+        except Exception as exc:
+            logger.debug("Пропуск предскана глоссария в режиме ultra: %s", exc)
+            return []
 
     async def proofread_chapter_book_script(
         self,

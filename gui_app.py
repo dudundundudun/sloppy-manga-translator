@@ -75,6 +75,8 @@ RECOMMENDED_DOWNLOAD_MAP = {
     "🐉 Qwen 3 14B (Топ-универсал 2026 JA/KO/ZH + Ромадзи, ~9.0 ГБ)": "qwen3:14b",
     "👁 GLM-OCR 0.9B (Vision — Снайперский OCR для SFX, ~1.9 ГБ)": "glm-ocr:latest",
     "👁 Qwen 3 VL 8B (Vision — Снайперский VLM-OCR + Контекст, ~6.2 ГБ)": "qwen3-vl:8b",
+    "👑 Gemma 3 27B QAT (Vision — Ультра под 16 ГБ VRAM JA/KO/ZH➔RU/EN, ~14.5 ГБ)": "gemma3:27b-it-qat",
+    "🏆 Qwen 3 30B-A3B MoE (Топ-3 JP-TL-Bench 84.3% WR, ~16.0 ГБ)": "qwen3:30b-a3b",
 }
 
 CLOUD_PRESET_MAP = {
@@ -195,8 +197,8 @@ class MikoMangaStudioGUI:
                 if self.target_lang not in ("en", "ru", "romaji"):
                     self.target_lang = "en"
                 pm = str(data.get("pipeline_mode", "balanced")).strip().lower()
-                self.pipeline_mode = pm if pm in ("fast", "balanced", "accuracy") else "balanced"
-                self.use_image_context = bool(data.get("use_image_context", self.pipeline_mode == "accuracy"))
+                self.pipeline_mode = pm if pm in ("fast", "balanced", "accuracy", "ultra") else "balanced"
+                self.use_image_context = bool(data.get("use_image_context", self.pipeline_mode in ("accuracy", "ultra")))
                 self.var_min_font.set(int(data.get("min_font_size", 12)))
                 self.var_max_font.set(int(data.get("max_font_size", 32)))
                 self.var_uppercase.set(bool(data.get("uppercase", False)))
@@ -381,7 +383,8 @@ class MikoMangaStudioGUI:
         for m_code, m_label in (
             ("fast", "⚡ Быстрый"),
             ("balanced", "⚖️ Оптимальный"),
-            ("accuracy", "🎯 Макс. точность"),
+            ("accuracy", "🎯 Точность"),
+            ("ultra", "💎 Ультра"),
         ):
             m_btn = tk.Button(
                 mode_bar,
@@ -886,14 +889,15 @@ class MikoMangaStudioGUI:
         self.lbl_summary_chip.config(text=f"Шрифт: {mn}–{mx}px · {mode_short} · ИИ: {short_mod}")
 
     def _set_pipeline_mode(self, mode_code: str, notify: bool = True) -> None:
-        if mode_code not in ("fast", "balanced", "accuracy"):
+        if mode_code not in ("fast", "balanced", "accuracy", "ultra"):
             mode_code = "balanced"
         self.pipeline_mode = mode_code
-        self.use_image_context = (mode_code == "accuracy")
+        self.use_image_context = mode_code in ("accuracy", "ultra")
         active_colors = {
             "fast": "#d97706",
             "balanced": "#059669",
             "accuracy": ACCENT_SAKURA,
+            "ultra": "#7c3aed",
         }
         for code, btn in getattr(self, "pipeline_mode_btns", {}).items():
             if code == mode_code:
@@ -906,6 +910,7 @@ class MikoMangaStudioGUI:
                 "fast": "Включен ⚡ Быстрый режим (Турбо): ускоренный OCR и параллельный перевод! 🚀",
                 "balanced": "Включен ⚖️ Оптимальный режим: двухконтурный RT-DETR-v2 и чистый клининг Zero-Stain! 🌸",
                 "accuracy": "Включен 🎯 Режим максимальной точности: авто VLM-OCR (Qwen3-VL) + визуальный контекст страницы! ✨",
+                "ultra": "Включен 💎 Режим Ультра-качества (Deep Redraw & 2-Pass AI): авто-глоссарий, вычитка и 1.5x Super-Sampled редро! 👑",
             }
             self.lbl_miko_speech.config(text=mode_msgs.get(mode_code, ""))
 

@@ -2564,6 +2564,12 @@
       border-color: rgba(244, 114, 182, 0.60);
       box-shadow: 0 0 12px rgba(244, 114, 182, 0.22);
     }
+    .pmode-btn.active[data-pmode="ultra"] {
+      background: linear-gradient(135deg, rgba(168, 85, 247, 0.34), rgba(56, 189, 248, 0.28));
+      color: #f3e8ff;
+      border-color: rgba(192, 132, 252, 0.85);
+      box-shadow: 0 0 14px rgba(168, 85, 247, 0.38);
+    }
     .sidebar-mode-card {
       display: flex;
       flex-direction: column;
@@ -2575,8 +2581,39 @@
     }
     .sidebar-mode-pills {
       display: grid;
-      grid-template-columns: repeat(3, 1fr);
+      grid-template-columns: repeat(4, 1fr);
       gap: 3px;
+    }
+    .model-storage-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      padding: 7px 10px;
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 9px;
+      font-size: 11.5px;
+      flex-wrap: wrap;
+    }
+    .model-storage-row:hover {
+      border-color: rgba(244, 114, 182, 0.35);
+    }
+    .btn-danger-mini {
+      background: rgba(244, 63, 94, 0.16);
+      color: #fda4af;
+      border: 1px solid rgba(244, 63, 94, 0.45);
+      border-radius: 7px;
+      padding: 4px 9px;
+      font-size: 11px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.15s ease;
+    }
+    .btn-danger-mini:hover {
+      background: rgba(244, 63, 94, 0.32);
+      color: #ffffff;
+      border-color: rgba(244, 63, 94, 0.8);
     }
     .sidebar-mode-pills .pmode-btn {
       padding: 5px 4px;
@@ -2616,7 +2653,8 @@
       <div class="pipeline-mode-group" title="Главный переключатель режима работы программы: Быстрый (скорость), Оптимальный (баланс), Макс. точность (VLM-OCR + визуальный контекст страницы)">
         <button type="button" class="pmode-btn" id="pmode-top-fast" data-pmode="fast" onclick="setPipelineMode('fast', true)" title="⚡ Быстрый режим (~0.5с/стр): ускоренный проход детектора без глубокого перебора плашек, параллельные пачки перевода">⚡ Быстрый</button>
         <button type="button" class="pmode-btn active" id="pmode-top-balanced" data-pmode="balanced" onclick="setPipelineMode('balanced', true)" title="⚖️ Оптимальный режим: двухконтурный RT-DETR-v2 + YOLOv8m, гибридный клининг Zero-Stain + Big-LaMa, пачки по 15 стр.">⚖️ Оптимальный</button>
-        <button type="button" class="pmode-btn" id="pmode-top-accuracy" data-pmode="accuracy" onclick="setPipelineMode('accuracy', true)" title="🎯 Максимальная точность: полный ансамбль детекторов + авто-дочитка сложных шрифтов через VLM-OCR (Qwen3-VL) + передача превью страницы в ИИ (Image-Aware Context)">🎯 Макс. точность</button>
+        <button type="button" class="pmode-btn" id="pmode-top-accuracy" data-pmode="accuracy" onclick="setPipelineMode('accuracy', true)" title="🎯 Максимальная точность: ансамбль детекторов + авто-дочитка сложных шрифтов через VLM-OCR (Qwen3-VL) + передача превью страницы в ИИ (Image-Aware Context)">🎯 Точность</button>
+        <button type="button" class="pmode-btn" id="pmode-top-ultra" data-pmode="ultra" onclick="setPipelineMode('ultra', true)" title="💎 Ультра-качество (без лимита времени): 2-проходный ИИ-перевод (авто-сбор глоссария имен главы + литературная вычитка), ансамбль OCR + VLM-жюри, 1.5x Super-Sampled LaMa + RFFT синтез скринтона и перерисовка рамок бабблов">💎 Ультра</button>
       </div>
       <select id="sel-translation-profile" class="lang-select" onchange="onTranslationProfileChange(this.value, true)" title="Профиль пакетного перевода: управляет числом запросов к API, режимом Книги главы и оффлайн-режимом">
         <option value="eco_book">💎 Эконом + Книга (1–2 запроса)</option>
@@ -2713,7 +2751,8 @@
             <div class="sidebar-mode-pills">
               <button type="button" class="pmode-btn" id="pmode-side-fast" data-pmode="fast" onclick="setPipelineMode('fast', true)" title="Максимальная скорость (~0.5с/стр)">⚡ Быстрый</button>
               <button type="button" class="pmode-btn active" id="pmode-side-balanced" data-pmode="balanced" onclick="setPipelineMode('balanced', true)" title="Золотая середина скорости и чистоты">⚖️ Оптима</button>
-              <button type="button" class="pmode-btn" id="pmode-side-accuracy" data-pmode="accuracy" onclick="setPipelineMode('accuracy', true)" title="Ультра HQ: VLM-OCR + Визуальный контекст страницы">🎯 Точность</button>
+              <button type="button" class="pmode-btn" id="pmode-side-accuracy" data-pmode="accuracy" onclick="setPipelineMode('accuracy', true)" title="Повышенная точность: VLM-OCR + Визуальный контекст страницы">🎯 Точн.</button>
+              <button type="button" class="pmode-btn" id="pmode-side-ultra" data-pmode="ultra" onclick="setPipelineMode('ultra', true)" title="💎 Ультра-качество (Deep Redraw & 2-Pass AI): 2-проходный перевод с авто-глоссарием и вычиткой + 1.5x Super-Sampled редро">💎 Ультра</button>
             </div>
             <div id="pmode-side-desc" style="font-size:10.5px; color:var(--text-muted); line-height:1.3;">
               Двухконтурный RT-DETR-v2 + клининг Zero-Stain + сквозной глоссарий
@@ -3222,6 +3261,8 @@
                 <option value="qwen3:14b">🐉 Qwen 3 14B — Топ-универсал 2026 JA/KO/ZH➔RU/EN + Ромадзи (~9.0 ГБ)</option>
                 <option value="glm-ocr:latest">👁 GLM-OCR 0.9B (Vision) — Снайперский OCR для сложных SFX и обложек (~1.9 ГБ)</option>
                 <option value="qwen3-vl:8b">👁 Qwen 3 VL 8B (Vision) — Снайперский VLM-OCR + Визуальный контекст (~6.2 ГБ)</option>
+                <option value="gemma3:27b-it-qat">👑 Gemma 3 27B QAT (Vision) — Ультра-переводчик под 16 ГБ VRAM JA/KO/ZH➔RU/EN (~14.5 ГБ)</option>
+                <option value="qwen3:30b-a3b">🏆 Qwen 3 30B-A3B MoE — Топ-3 JP-TL-Bench (84.3% WR) JA/KO/ZH➔RU/EN (~16.0 ГБ)</option>
               </select>
             </div>
             <div id="recommended-model-desc-box" style="font-size:12px; color:var(--text-primary); background:rgba(129, 140, 248, 0.11); border:1px solid rgba(129, 140, 248, 0.32); border-radius:10px; padding:9px 12px; line-height:1.45;">
@@ -3258,6 +3299,111 @@
                 <div class="progress-bar-fill" id="pull-progress-fill"></div>
               </div>
             </div>
+          </div>
+
+          <!-- ==================== NEW: DEFAULT MODEL STACK & PRESETS BUILDER ==================== -->
+          <div class="section-box" style="border-color:rgba(192, 132, 252, 0.55); background:linear-gradient(180deg, rgba(168, 85, 247, 0.08), rgba(15, 23, 42, 0.45));">
+            <div class="section-title">
+              <span>🔗 Дефолтная связка всех моделей (Default Model Stack) и Любимые пресеты</span>
+              <button type="button" class="romaji-copy-btn" onclick="loadModelStorageAndStacks()">🔄 Обновить связки</button>
+            </div>
+            <div class="section-desc">
+              Соберите свою любимую комбинацию из <b>6 моделей конвейера</b> (Перевод, 18+ Фоллбэк, VLM-OCR, базовый OCR, Детектор бабблов и Инпейнтинг/Редро) и нажмите <b>«📌 Сделать дефолтной при запуске»</b> или сохраните её как именованный пресет для переключения в 1 клик!
+            </div>
+
+            <div style="font-size:11.5px; font-weight:700; color:var(--sakura); margin-top:2px;">⚡ Готовые и сохранённые пресеты связок (кликните, чтобы подставить и включить):</div>
+            <div class="choice-cards-grid" id="model-stacks-cards-grid" style="grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); gap:8px;"></div>
+
+            <div class="form-grid" style="margin-top:6px;">
+              <div class="field-box">
+                <label>1. 🤖 Основная модель перевода (JA/KO/ZH ➔ EN/RU):</label>
+                <select id="stack-sel-translation"></select>
+              </div>
+              <div class="field-box">
+                <label>2. 🔥 Локальная модель 18+ фоллбэка и мультиязычности:</label>
+                <select id="stack-sel-fallback">
+                  <option value="auto">✨ Автовыбор лучшей локальной модели (Sugoi / Shisa / Gemma)</option>
+                  <option value="ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M">⚡ Sugoi 14B Ultra (18+ без цензуры JA➔EN)</option>
+                  <option value="ollama::hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored (18+ без цензуры JA➔RU/EN)</option>
+                  <option value="ollama::hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4, JA➔RU/EN)</option>
+                  <option value="ollama::gemma3:27b-it-qat">👑 Gemma 3 27B QAT (Ультра под 16 ГБ VRAM)</option>
+                  <option value="ollama::qwen3:30b-a3b">🏆 Qwen 3 30B-A3B MoE (Топ-3 JP-TL-Bench)</option>
+                  <option value="ollama::translategemma:12b">🌐 TranslateGemma 12B (JA/KO/ZH➔RU/EN)</option>
+                </select>
+              </div>
+              <div class="field-box">
+                <label>3. 👁 Модель VLM-OCR и Визуального контекста страницы:</label>
+                <select id="stack-sel-vlm">
+                  <option value="auto">✨ Авто (Qwen3-VL 8B / GLM-OCR / Gemma 3 / Cloud Vision)</option>
+                  <option value="ollama::qwen3-vl:8b">👁 Qwen 3 VL 8B (Vision OCR + лица/пол персонажей)</option>
+                  <option value="ollama::glm-ocr:latest">👁 GLM-OCR 0.9B (Снайперский OCR для сложных SFX)</option>
+                  <option value="ollama::gemma3:27b-it-qat">👑 Gemma 3 27B QAT Vision (Максимальный VLM-контекст)</option>
+                  <option value="ollama::gemma3:12b">💎 Gemma 3 12B Vision</option>
+                  <option value="cloud_vision">☁️ Облачный Vision API</option>
+                </select>
+              </div>
+              <div class="field-box">
+                <label>4. 🔍 Движок распознавания текста (OCR):</label>
+                <select id="stack-sel-ocr">
+                  <option value="hybrid_nar_mangaocr">⚡ Гибрид manga-ocr-nar-small + MangaOCR FP16 (Быстрый и точный)</option>
+                  <option value="ultra_ensemble_vlm">💎 Ультра-ансамбль: NAR + MangaOCR FP16 + HayaiOCR + VLM-жюри</option>
+                  <option value="mangaocr_fp16_only">🎯 Только полный авторегрессионный MangaOCR FP16 на все бабблы</option>
+                  <option value="hayai_siglip2">🌐 Мультиязычный HayaiOCR v2.5 Nova (SigLIP2 NaFlex JA/KO/ZH/EN)</option>
+                </select>
+              </div>
+              <div class="field-box">
+                <label>5. 🎯 Детектор и сегментатор бабблов:</label>
+                <select id="stack-sel-detector">
+                  <option value="rtdetr_yolov8">⚖️ Двухконтурный RT-DETR-v2 (3-class) + YOLOv8m + TightInkCrop</option>
+                  <option value="triple_yolo26_seg">💎 Тройной ансамбль: RT-DETR-v2 + YOLOv8m + полигоны YOLO26s-seg</option>
+                  <option value="yolov8_fast">⚡ Быстрый YOLOv8m + OpenCV контуры (Турбо)</option>
+                </select>
+              </div>
+              <div class="field-box">
+                <label>6. 🎨 Движок замазки текста и перерисовки бабблов (Inpainting):</label>
+                <select id="stack-sel-inpaint">
+                  <option value="anime_lama_sota">⚖️ Anime-Manga Big-LaMa + Гармонический Лаплас + Zero-Bleed</option>
+                  <option value="ultra_deep_redraw">💎 Ультра Deep Redraw (1.5x Super-Sampled LaMa в 2 прохода + RFFT скринтон + редро стенок)</option>
+                  <option value="big_lama">🌐 Универсальная Big-LaMa (big-lama.pt) + Zero-Bleed</option>
+                  <option value="fast_telea">⚡ Быстрый математический Лаплас + OpenCV Telea (без нейросети)</option>
+                </select>
+              </div>
+            </div>
+
+            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px;">
+              <button type="button" class="cta-main" style="flex:1; min-width:220px; padding:9px 14px; font-size:12px;" onclick="applyAndSaveDefaultStack()">
+                📌 Сделать эту связку ДЕФОЛТНОЙ (при запуске)
+              </button>
+              <button type="button" class="soft-btn" style="padding:9px 12px; font-size:12px;" onclick="applyStackSessionOnly()">
+                ⚡ Применить на текущую сессию
+              </button>
+            </div>
+
+            <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:4px; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.14);">
+              <input id="inp-stack-preset-name" type="text" placeholder="Название вашего пресета (например: Моя сборка 18+ Ультра)..." style="flex:1; min-width:200px;" />
+              <button type="button" class="soft-btn" style="border-color:rgba(52, 211, 153, 0.5); color:var(--mint); font-weight:700;" onclick="saveCurrentStackAsPreset()">
+                💾 Сохранить как мой пресет связки
+              </button>
+            </div>
+            <div id="stack-status-banner" style="display:none; font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.3); border-radius:8px; padding:6px 10px;"></div>
+          </div>
+
+          <!-- ==================== NEW: MODEL STORAGE & DELETION MANAGER ==================== -->
+          <div class="section-box" style="border-color:rgba(244, 63, 94, 0.38);">
+            <div class="section-title">
+              <span>🗑️ Менеджер установленных моделей и удаление (Ollama + Локальные веса)</span>
+              <button type="button" class="romaji-copy-btn" onclick="loadModelStorageAndStacks()">🔄 Обновить список и размеры</button>
+            </div>
+            <div class="section-desc">
+              Удаляйте ненужные языковые модели из Ollama (включая кэш <code>.gguf</code>) или локальные нейросети OCR/детекции/LaMa прямо из программы, чтобы мгновенно освободить видеопамять (VRAM) и гигабайты на диске:
+            </div>
+            <div id="model-storage-summary-bar" style="font-size:11.5px; font-weight:700; color:var(--amber); background:rgba(251, 191, 36, 0.08); border:1px solid rgba(251, 191, 36, 0.25); border-radius:8px; padding:7px 10px;">
+              ⏳ Загрузка информации о моделях на диске...
+            </div>
+            <div style="font-size:11.5px; font-weight:700; color:var(--text-secondary); margin-top:4px;">🦙 Установленные модели в локальном Ollama:</div>
+            <div id="storage-ollama-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+            <div style="font-size:11.5px; font-weight:700; color:var(--text-secondary); margin-top:6px;">🧩 Локальные нейросети конвейера в папке <code>models/</code> (Детекторы, OCR, LaMa Inpainting):</div>
+            <div id="storage-local-list" style="display:flex; flex-direction:column; gap:5px;"></div>
           </div>
         </div>
 
@@ -4222,7 +4368,12 @@ Step 1:`;
         accuracy: {
           badge: "🎯 Макс. точность",
           color: "#fbcfe8",
-          desc: "Ультра HQ: авто-дочитка VLM-OCR (Qwen3-VL) + картинка страницы в ИИ (Image-Aware)"
+          desc: "HQ: авто-дочитка VLM-OCR (Qwen3-VL) + картинка страницы в ИИ (Image-Aware)"
+        },
+        ultra: {
+          badge: "💎 Ультра-качество",
+          color: "#e9d5ff",
+          desc: "2-Pass ИИ (авто-глоссарий + вычитка) + ансамбль OCR/VLM + 1.5x Super-Sampled редро бабблов"
         }
       };
       const curMeta = metaMap[modeId] || metaMap.balanced;
@@ -4241,10 +4392,10 @@ Step 1:`;
     }
 
     async function setPipelineMode(modeId, persistImmediately = true) {
-      if (!["fast", "balanced", "accuracy"].includes(modeId)) modeId = "balanced";
-      useImageContext = (modeId === "accuracy");
+      if (!["fast", "balanced", "accuracy", "ultra"].includes(modeId)) modeId = "balanced";
+      useImageContext = (modeId === "accuracy" || modeId === "ultra");
       try { localStorage.setItem("miko_use_image_context_v1", String(useImageContext)); } catch (e) {}
-      const mappedProf = modeId === "fast" ? "turbo" : (modeId === "accuracy" ? "eco_book" : "balanced");
+      const mappedProf = modeId === "fast" ? "turbo" : ((modeId === "accuracy" || modeId === "ultra") ? "eco_book" : "balanced");
       if (translationProfile !== "local_only") {
         syncTranslationProfileSelects(mappedProf);
       }
@@ -4266,7 +4417,8 @@ Step 1:`;
       const mikoMsgs = {
         fast: "Включен ⚡ Быстрый режим (Турбо): максимальная скорость сканирования и параллельный перевод! 🚀",
         balanced: "Включен ⚖️ Оптимальный режим: баланс скорости, двухконтурного RT-DETR-v2 и чистой ретуши Zero-Stain! 🌸",
-        accuracy: "Включен 🎯 Режим максимальной точности: авто-дочитка сложных шрифтов через VLM-OCR (Qwen3-VL) и передача визуального контекста страницы в ИИ! ✨"
+        accuracy: "Включен 🎯 Режим максимальной точности: ансамбль детекторов, авто VLM-OCR (Qwen3-VL) и визуальный контекст страницы! ✨",
+        ultra: "Включен 💎 Режим Ультра-качества (без спешки): 2-проходный перевод с авто-сбором глоссария и вычиткой + 1.5x Super-Sampled редро бабблов! 👑"
       };
       sayMiko(mikoMsgs[modeId] || mikoMsgs.balanced);
     }
@@ -5260,6 +5412,18 @@ Step 1:`;
         langs: "Vision OCR + Image-Aware Перевод: JA / KO / ZH",
         size_gb: "6.2 ГБ",
         description: "Новейшая мультимодальная модель Alibaba Qwen 3 VL 8B (2026). Безошибочно читает стилизованные SFX и вертикальные плашки, а также анализирует лица и пол персонажей на странице в режиме Image-Aware Context."
+      },
+      "gemma3:27b-it-qat": {
+        short_name: "👑 Gemma 3 27B QAT (Ultra Vision)",
+        langs: "JA / KO / ZH ➔ RU / EN (Vision + QAT)",
+        size_gb: "14.5 ГБ",
+        description: "Тяжелая флагманская модель Google Gemma 3 27B с квантованием QAT (помещается в 16 ГБ VRAM вашей RTX 5070 Ti!). Лидер тестов перевода визуальных новелл и манги с поддержкой зрения."
+      },
+      "qwen3:30b-a3b": {
+        short_name: "🏆 Qwen 3 30B-A3B MoE (Top-3 JP-TL-Bench)",
+        langs: "JA / KO / ZH ➔ RU / EN (MoE 30B)",
+        size_gb: "16.0 ГБ",
+        description: "Крупная MoE-модель (30 млрд параметров, 3 млрд активных на токен), занявшая 3-е место в бенчмарке художественного японского перевода JP-TL-Bench (84.33% побед, выше GPT-4o!)."
       }
     };
     let recommendedModelsCatalog = { ...FALLBACK_RECOMMENDED_MODELS_META };
@@ -5374,7 +5538,7 @@ Step 1:`;
           useImageContext = data.use_image_context;
           try { localStorage.setItem("miko_use_image_context_v1", String(useImageContext)); } catch (e) {}
         }
-        if (data.pipeline_mode && ["fast", "balanced", "accuracy"].includes(data.pipeline_mode)) {
+        if (data.pipeline_mode && ["fast", "balanced", "accuracy", "ultra"].includes(data.pipeline_mode)) {
           syncPipelineModeUi(data.pipeline_mode, true);
         } else {
           syncPipelineModeUi(pipelineMode, true);
@@ -5460,9 +5624,339 @@ Step 1:`;
           if (m.id === data.selected_model) opt.selected = true;
           sel.appendChild(opt);
         });
+        populateStackTranslationSelect(models, data.default_model_stack?.translation_model || data.selected_model || "auto", act);
+        if (data.default_model_stack) {
+          applyStackObjectToSelectors(data.default_model_stack);
+        }
+        renderModelStackPresetCards(data.built_in_model_stacks || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        loadModelStorageAndStacks(false);
         updateSummaryChip();
       } catch (e) {
         sayMiko("Ой, нет связи с локальным сервером! Убедись, что сервер запущен~");
+      }
+    }
+
+    function populateStackTranslationSelect(models, selectedVal, activeShort) {
+      const sel = document.getElementById("stack-sel-translation");
+      if (!sel) return;
+      sel.innerHTML = "";
+      const optAuto = document.createElement("option");
+      optAuto.value = "auto";
+      optAuto.textContent = `✨ Автовыбор лучшей модели (${activeShort || "auto"})`;
+      sel.appendChild(optAuto);
+
+      const seen = new Set(["auto"]);
+      (models || []).forEach(m => {
+        if (!m || !m.id || seen.has(m.id)) return;
+        if (String(m.id).toLowerCase().includes("glm-ocr")) return;
+        seen.add(m.id);
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.name || m.id;
+        if (m.id === selectedVal) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      if (selectedVal && !seen.has(selectedVal)) {
+        const optCustom = document.createElement("option");
+        optCustom.value = selectedVal;
+        optCustom.textContent = selectedVal;
+        optCustom.selected = true;
+        sel.appendChild(optCustom);
+      }
+    }
+
+    function applyStackObjectToSelectors(stack) {
+      if (!stack || typeof stack !== "object") return;
+      const mapIds = {
+        "stack-sel-translation": stack.translation_model,
+        "stack-sel-fallback": stack.fallback_model,
+        "stack-sel-vlm": stack.vlm_model,
+        "stack-sel-ocr": stack.ocr_backend,
+        "stack-sel-detector": stack.detector_backend,
+        "stack-sel-inpaint": stack.inpaint_backend
+      };
+      Object.entries(mapIds).forEach(([elId, val]) => {
+        const el = document.getElementById(elId);
+        if (!el || !val) return;
+        let exists = Array.from(el.options).some(o => o.value === val);
+        if (!exists) {
+          const opt = document.createElement("option");
+          opt.value = val;
+          opt.textContent = val;
+          el.appendChild(opt);
+        }
+        el.value = val;
+      });
+    }
+
+    function readCurrentSelectorsStack() {
+      return {
+        translation_model: document.getElementById("stack-sel-translation")?.value || "auto",
+        fallback_model: document.getElementById("stack-sel-fallback")?.value || "auto",
+        vlm_model: document.getElementById("stack-sel-vlm")?.value || "auto",
+        ocr_backend: document.getElementById("stack-sel-ocr")?.value || "hybrid_nar_mangaocr",
+        detector_backend: document.getElementById("stack-sel-detector")?.value || "rtdetr_yolov8",
+        inpaint_backend: document.getElementById("stack-sel-inpaint")?.value || "anime_lama_sota",
+        pipeline_mode: pipelineMode || "balanced",
+        translation_profile: translationProfile || "balanced"
+      };
+    }
+
+    function renderModelStackPresetCards(builtInList, userList, activeDefaultStack) {
+      const grid = document.getElementById("model-stacks-cards-grid");
+      if (!grid) return;
+      const allPresets = [...(builtInList || []), ...(userList || [])];
+      grid.innerHTML = allPresets.map(p => {
+        const st = p.stack || {};
+        const isCurrent = activeDefaultStack &&
+          st.translation_model === activeDefaultStack.translation_model &&
+          st.ocr_backend === activeDefaultStack.ocr_backend &&
+          st.inpaint_backend === activeDefaultStack.inpaint_backend &&
+          st.pipeline_mode === activeDefaultStack.pipeline_mode;
+        const delBtnHtml = p.builtin
+          ? ""
+          : `<button type="button" class="btn-danger-mini" style="padding:2px 6px; font-size:10px;" onclick="event.stopPropagation(); deleteUserStackPreset('${escapeHtml(p.id)}')" title="Удалить этот пользовательский пресет">✕</button>`;
+        return (
+          `<div class="choice-card ${isCurrent ? 'selected' : ''}" onclick="activateStackPreset('${escapeHtml(p.id)}')">` +
+            `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">` +
+              `<div class="choice-card-title">${escapeHtml(p.name || p.id)}</div>` +
+              `${delBtnHtml}` +
+            `</div>` +
+            `<div class="choice-card-sub" style="margin-top:4px;">${escapeHtml(p.description || "")}</div>` +
+            `<div style="margin-top:6px; font-size:10px; color:var(--mint); font-family:Consolas, monospace;">` +
+              `Режим: <b>${escapeHtml(st.pipeline_mode || "balanced")}</b> · OCR: <b>${escapeHtml(st.ocr_backend || "")}</b> · Redraw: <b>${escapeHtml(st.inpaint_backend || "")}</b>` +
+            `</div>` +
+          `</div>`
+        );
+      }).join("");
+    }
+
+    async function activateStackPreset(presetId) {
+      try {
+        const res = await fetch("/model_stack", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ action: "apply_and_set_default", preset_id: presetId })
+        });
+        const data = await res.json();
+        if (data.applied_stack) {
+          applyStackObjectToSelectors(data.applied_stack);
+          if (data.applied_stack.pipeline_mode) {
+            syncPipelineModeUi(data.applied_stack.pipeline_mode, true);
+          }
+          if (data.applied_stack.translation_profile) {
+            syncTranslationProfileSelects(data.applied_stack.translation_profile);
+          }
+        }
+        renderModelStackPresetCards(data.built_in_presets || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        await loadHealth(false);
+        const banner = document.getElementById("stack-status-banner");
+        if (banner) {
+          banner.style.display = "block";
+          banner.innerHTML = `✅ Связка моделей применена и сохранена как <b>дефолтная при запуске</b>! Активная LLM: <b>${escapeHtml((data.active_model || "").replace(/^.*?::/, ""))}</b>`;
+        }
+        sayMiko(`Пресет связки моделей включен и назначен дефолтным! Все 6 этапов конвейера синхронизированы~ 🌸✨`);
+      } catch (e) {
+        sayMiko(`Ошибка переключения пресета связки: ${e.message}`);
+      }
+    }
+
+    async function applyAndSaveDefaultStack() {
+      const stack = readCurrentSelectorsStack();
+      try {
+        const res = await fetch("/model_stack", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ action: "apply_and_set_default", stack })
+        });
+        const data = await res.json();
+        renderModelStackPresetCards(data.built_in_presets || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        await loadHealth(false);
+        const banner = document.getElementById("stack-status-banner");
+        if (banner) {
+          banner.style.display = "block";
+          banner.innerHTML = `📌 Ваша связка из 6 моделей установлена как <b>дефолтная при запуске</b> в <code>config.json</code>!`;
+        }
+        sayMiko(`Отлично! Эта связка моделей теперь стоит по умолчанию для всех запусков программы~ 📌🌸`);
+      } catch (e) {
+        sayMiko(`Ошибка сохранения дефолтной связки: ${e.message}`);
+      }
+    }
+
+    async function applyStackSessionOnly() {
+      const stack = readCurrentSelectorsStack();
+      try {
+        const res = await fetch("/model_stack", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ action: "apply_only", stack })
+        });
+        const data = await res.json();
+        await loadHealth(false);
+        const banner = document.getElementById("stack-status-banner");
+        if (banner) {
+          banner.style.display = "block";
+          banner.innerHTML = `⚡ Связка моделей применена на текущую сессию!`;
+        }
+        sayMiko(`Связка моделей активирована на текущую сессию! ⚡`);
+      } catch (e) {
+        sayMiko(`Ошибка применения связки: ${e.message}`);
+      }
+    }
+
+    async function saveCurrentStackAsPreset() {
+      const stack = readCurrentSelectorsStack();
+      const nameInp = document.getElementById("inp-stack-preset-name");
+      const presetName = (nameInp?.value || "").trim() || `Моя связка (${stack.pipeline_mode.toUpperCase()})`;
+      try {
+        const res = await fetch("/model_stack", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            action: "save_preset",
+            preset_name: presetName,
+            preset_description: `LLM: ${stack.translation_model.replace(/^.*?::/, "")} · Фоллбэк: ${stack.fallback_model.replace(/^.*?::/, "")} · VLM: ${stack.vlm_model.replace(/^.*?::/, "")}`,
+            stack
+          })
+        });
+        const data = await res.json();
+        if (nameInp) nameInp.value = "";
+        renderModelStackPresetCards(data.built_in_presets || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        await loadHealth(false);
+        const banner = document.getElementById("stack-status-banner");
+        if (banner) {
+          banner.style.display = "block";
+          banner.innerHTML = `💾 Пресет <b>«${escapeHtml(presetName)}»</b> сохранен в карточки выше и назначен дефолтным!`;
+        }
+        sayMiko(`Сохранила твою связку моделей «${presetName}» в карточки быстрого выбора! 💾✨`);
+      } catch (e) {
+        sayMiko(`Ошибка сохранения пресета: ${e.message}`);
+      }
+    }
+
+    async function deleteUserStackPreset(presetId) {
+      try {
+        const res = await fetch("/model_stack", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({ action: "delete_preset", preset_id: presetId })
+        });
+        const data = await res.json();
+        renderModelStackPresetCards(data.built_in_presets || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        sayMiko("Пользовательский пресет связки удален.");
+      } catch (e) {}
+    }
+
+    async function loadModelStorageAndStacks(showSay = false) {
+      try {
+        const res = await fetch("/model_storage");
+        const data = await res.json();
+        const sumBar = document.getElementById("model-storage-summary-bar");
+        if (sumBar) {
+          sumBar.innerHTML =
+            `📊 <b>Занято моделями на диске:</b> Ollama (${(data.ollama_models || []).length} шт.) — <b style="color:var(--mint);">${data.total_ollama_gb || 0} ГБ</b> · ` +
+            `Локальные веса в <code>models/</code> — <b style="color:var(--sakura);">${data.total_local_mb || 0} МБ</b>`;
+        }
+        const olBox = document.getElementById("storage-ollama-list");
+        if (olBox) {
+          const olList = data.ollama_models || [];
+          if (olList.length === 0) {
+            olBox.innerHTML = `<div style="font-size:11.5px; color:var(--text-muted); padding:6px;">В локальном Ollama сейчас нет скачанных моделей.</div>`;
+          } else {
+            olBox.innerHTML = olList.map(m => {
+              const ggufNote = m.gguf_cache_gb > 0 ? ` <span style="color:var(--amber);">(+ кэш .gguf: ${m.gguf_cache_gb} ГБ)</span>` : "";
+              const actBadge = m.is_active ? `<span style="background:rgba(52,211,153,0.2); color:var(--mint); border:1px solid rgba(52,211,153,0.45); border-radius:6px; padding:1px 6px; font-size:10px; font-weight:700;">Активна ✅</span>` : "";
+              return (
+                `<div class="model-storage-row">` +
+                  `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">` +
+                    `<span style="font-weight:700; color:var(--text-primary);">${escapeHtml(m.title || m.name)}</span>` +
+                    `<span style="color:var(--mint); font-weight:700;">${m.size_gb || 0} ГБ</span>` +
+                    `${ggufNote}` +
+                    `${actBadge}` +
+                  `</div>` +
+                  `<div style="display:flex; gap:6px; align-items:center;">` +
+                    `<button type="button" class="romaji-copy-btn" onclick="setQuickDefaultTranslationModel('${escapeHtml(m.id)}')" title="Сделать эту модель активной моделью перевода">⭐ Выбрать для перевода</button>` +
+                    `<button type="button" class="btn-danger-mini" onclick="deleteModelFromStudio('${escapeHtml(m.name)}', 'ollama', '${escapeHtml(m.title || m.name)}')">🗑️ Удалить модель</button>` +
+                  `</div>` +
+                `</div>`
+              );
+            }).join("");
+          }
+        }
+
+        const locBox = document.getElementById("storage-local-list");
+        if (locBox) {
+          const locList = data.local_weights || [];
+          locBox.innerHTML = locList.map(w => {
+            const vramBadge = w.loaded_in_vram
+              ? `<span style="color:var(--mint); font-size:10.5px; font-weight:700;">🟢 В VRAM</span>`
+              : `<span style="color:var(--text-muted); font-size:10.5px;">⚪ На диске</span>`;
+            const statusHtml = w.installed
+              ? `<span style="color:var(--amber); font-weight:700;">${w.size_mb} МБ</span> · ${vramBadge}`
+              : `<span style="color:var(--text-muted);">Не скачана (0 МБ — скачается автоматически при необходимости)</span>`;
+            const delBtn = w.installed
+              ? `<button type="button" class="btn-danger-mini" onclick="deleteModelFromStudio('${escapeHtml(w.id)}', 'local_weights', '${escapeHtml(w.title)}')">🗑️ Выгрузить и удалить (${w.size_mb} МБ)</button>`
+              : "";
+            return (
+              `<div class="model-storage-row">` +
+                `<div style="display:flex; flex-direction:column; gap:2px;">` +
+                  `<span style="font-weight:700; color:var(--text-primary);">${escapeHtml(w.title)}</span>` +
+                  `<div style="font-size:11px;">${statusHtml}</div>` +
+                `</div>` +
+                `<div>${delBtn}</div>` +
+              `</div>`
+            );
+          }).join("");
+        }
+
+        if (data.built_in_model_stacks || data.saved_model_stacks) {
+          renderModelStackPresetCards(data.built_in_model_stacks || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        }
+        if (showSay) {
+          sayMiko("Список установленных моделей и занимаемого места обновлен! 🗑️✨");
+        }
+      } catch (e) {}
+    }
+
+    async function setQuickDefaultTranslationModel(modelId) {
+      const selMod = document.getElementById("sel-model");
+      if (selMod) selMod.value = modelId;
+      const stSel = document.getElementById("stack-sel-translation");
+      if (stSel) stSel.value = modelId;
+      await fetch("/settings", {
+        method: "POST",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({ selected_model: modelId })
+      });
+      await loadHealth(true);
+      sayMiko(`Модель «${modelId.replace(/^.*?::/, "")}» назначена активной моделью перевода! ⭐🌸`);
+    }
+
+    async function deleteModelFromStudio(modelId, category, displayTitle) {
+      const confirmMsg = category === "ollama"
+        ? `Удалить модель «${displayTitle}» из локального Ollama (и очистить её .gguf кэш)?`
+        : `Выгрузить из видеопамяти (VRAM) и удалить локальные веса «${displayTitle}» с диска?`;
+      if (!window.confirm(confirmMsg)) return;
+      try {
+        sayMiko(`Удаляю модель «${displayTitle}» и освобождаю память... 🗑️`);
+        const res = await fetch("/delete_model", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({
+            model_id: modelId,
+            category: category,
+            delete_gguf_cache: true
+          })
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.detail || "Ошибка удаления модели");
+        }
+        await loadHealth(true);
+        await loadModelStorageAndStacks(false);
+        sayMiko(`Готово! Модель «${displayTitle}» успешно удалена, память освобождена~ 🧹✨`);
+      } catch (e) {
+        sayMiko(`Не удалось удалить модель: ${e.message}`);
       }
     }
 

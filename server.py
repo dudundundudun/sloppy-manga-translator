@@ -78,8 +78,10 @@ import tempfile
 from typing import Awaitable, Callable
 
 from translator import (
+    BUILT_IN_MODEL_STACK_PRESETS,
     CLOUD_API_PRESETS,
-    DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
+     DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
+    DEFAULT_MODEL_STACK_TEMPLATE,
     FICTION_NOVEL_CONTEXT_NOTE,
     PIPELINE_MODES,
     RECOMMENDED_LOCAL_MODELS,
@@ -816,6 +818,50 @@ def launch_studio_window(url: str = "http://127.0.0.1:5000/") -> None:
         logger.warning("Не удалось автоматически открыть окно браузера: %s", exc)
 
 
+def _apply_stack_to_engines(stack: dict[str, Any], save_config: bool = False) -> dict[str, str]:
+    """Применяет связку моделей (6 ролей + режим) одновременно к translator_engine, ocr_engine и cleaner_engine."""
+    if translator_engine is None:
+        return dict(DEFAULT_MODEL_STACK_TEMPLATE)
+    merged_stack = dict(translator_engine.default_model_stack)
+    for k, v in (stack or {}).items():
+        if k in DEFAULT_MODEL_STACK_TEMPLATE and isinstance(v, str) and v.strip():
+            merged_stack[k] = v.strip()
+
+    tr_mod = merged_stack.get("translation_model", "auto")
+    fb_mod = merged_stack.get("fallback_model", "auto")
+    vlm_mod = merged_stack.get("vlm_model", "auto")
+    ocr_b = merged_stack.get("ocr_backend", "hybrid_nar_mangaocr")
+    det_b = merged_stack.get("detector_backend", "rtdetr_yolov8")
+    inp_b = merged_stack.get("inpaint_backend", "anime_lama_sota")
+    pmode = merged_stack.get("pipeline_mode", translator_engine.pipeline_mode or "balanced")
+    tprof = merged_stack.get("translation_profile", translator_engine.translation_profile or "balanced")
+
+    if ocr_engine is not None and hasattr(ocr_engine, "set_model_stack_backends"):
+        ocr_engine.set_model_stack_backends(
+            ocr_backend=ocr_b,
+            detector_backend=det_b,
+            preferred_vlm_model=vlm_mod,
+            pipeline_mode=pmode,
+        )
+    if cleaner_engine is not None and hasattr(cleaner_engine, "set_model_stack_backends"):
+        cleaner_engine.set_model_stack_backends(
+            inpaint_backend=inp_b,
+            pipeline_mode=pmode,
+        )
+
+    if save_config:
+        translator_engine.save_config(
+            selected_model=tr_mod,
+            local_fallback_model_multilang=fb_mod,
+            pipeline_mode=pmode,
+            translation_profile=tprof,
+            default_model_stack=merged_stack,
+        )
+    else:
+        translator_engine.default_model_stack = merged_stack
+    return merged_stack
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global ocr_engine, translator_engine, cleaner_engine, renderer_engine
@@ -840,6 +886,8 @@ async def lifespan(app: FastAPI):
         uppercase_comic_style=bool(getattr(translator_engine, "uppercase", False)),
         overflow_mode=getattr(translator_engine, "overflow_mode", "shrink"),
     )
+    # Применяем дефолтную связку моделей (default_model_stack) из config.json ко всем движкам при старте
+    _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
     resolved_model = await translator_engine.resolve_model()
 
     print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.8)", flush=True)
@@ -1195,8 +1243,26 @@ class PageFileTranslateRequest(BaseModel):
     use_image_context: bool | None = Field(default=None)
 
 
+class DeleteModelRequest(BaseModel):
+    model_id: str = Field(description="ID или тег модели (например, 'ollama::qwen3:14b' или 'yolo26_seg')")
+    category: str = Field(default="auto", description="'ollama', 'local_weights' или 'auto'")
+    delete_gguf_cache: bool = Field(default=True, description="Удалять ли также скачанный .gguf файл из models/gguf/")
+
+
+class ModelStackActionRequest(BaseModel):
+    action: str = Field(
+        default="apply_and_set_default",
+        description="'apply_only', 'apply_and_set_default', 'save_preset', 'delete_preset'",
+    )
+    stack: dict[str, str] | None = Field(default=None)
+    preset_id: str | None = Field(default=None)
+    preset_name: str | None = Field(default=None)
+    preset_description: str | None = Field(default=None)
+
+
 class ServerSettingsRequest(BaseModel):
     unsloth_url: str | None = Field(default=None)
+    default_model_stack: dict[str, str] | None = Field(default=None)
     unsloth_api_key: str | None = Field(default=None)
     selected_model: str | None = Field(default=None)
     translation_profile: str | None = Field(default=None)
@@ -2901,8 +2967,12 @@ async def process_single_pil_image(
     eff_img_ctx = (
         bool(use_image_context)
         if use_image_context is not None
-        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode == "accuracy")
+        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode in ("accuracy", "ultra"))
     )
+    if cleaner_engine is not None:
+        cleaner_engine.pipeline_mode = eff_pmode
+    if ocr_engine is not None:
+        ocr_engine.pipeline_mode = eff_pmode
 
     eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
         detect_free_text=detect_free_text,
@@ -3066,8 +3136,12 @@ async def _run_folder_translation_job(
     eff_img_ctx = (
         bool(use_image_context)
         if use_image_context is not None
-        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode == "accuracy")
+        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode in ("accuracy", "ultra"))
     )
+    if cleaner_engine is not None:
+        cleaner_engine.pipeline_mode = eff_pmode
+    if ocr_engine is not None:
+        ocr_engine.pipeline_mode = eff_pmode
     eff_prof_arg = translation_profile
     if not eff_prof_arg and getattr(translator_engine, "translation_profile", "balanced") != "local_only":
         eff_prof_arg = str(PIPELINE_MODES[eff_pmode]["translation_profile"])
@@ -3364,7 +3438,19 @@ async def _run_folder_translation_job(
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
                 try:
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
-                    first_valid_pil = next((sp.get("pil") for sp in scanned_pages if sp.get("ok") and sp.get("pil") is not None), None)
+                    if eff_pmode == "ultra" and len(combined_blocks) >= 4 and target_lang.lower().strip() != "romaji":
+                        folder_job_state["current_file"] = f"💎 [Ультра Проход 0/2: Авто-сбор глоссария имен персонажей ({len(combined_blocks)} фраз)]..."
+                        extracted_gloss = await translator_engine.extract_chapter_glossary_prepass(
+                            blocks=combined_blocks,
+                            source_lang=batch_detected_lang,
+                            target_lang=target_lang,
+                            model=active_mod,
+                            existing_glossary=folder_glossary_entries,
+                        )
+                        if extracted_gloss:
+                            folder_glossary_entries = merge_glossaries(folder_glossary_entries, extracted_gloss)
+                            manifest["glossary"] = folder_glossary_entries
+                    first_valid_pil = next((sp.get("pil_img") or sp.get("pil") for sp in scanned_pages if sp.get("ok") and (sp.get("pil_img") is not None or sp.get("pil") is not None)), None)
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -3387,6 +3473,34 @@ async def _run_folder_translation_job(
                         skip_reason_by_gid[gid_eb] = str(eb.get("skip_reason") or "")
                         api_censored_by_gid[gid_eb] = bool(eb.get("api_censored", False))
                         api_failed_by_gid[gid_eb] = bool(eb.get("api_failed", False))
+
+                    # В режиме 💎 Ультра (2-Pass AI) выполняем автоматическую литературную вычитку пачки (Проход 2/2)
+                    if eff_pmode == "ultra" and not _folder_stop_requested and target_lang.lower().strip() in ("en", "ru"):
+                        book_for_proof: dict[str, dict[str, str]] = {}
+                        for eb in enriched_combined:
+                            gid_p = str(eb["id"])
+                            tr_p = translated_by_gid.get(gid_p, "").strip()
+                            orig_p = str(eb.get("original_text") or "").strip()
+                            if tr_p and orig_p and source_by_gid.get(gid_p) == "llm":
+                                book_for_proof[gid_p] = {"orig": orig_p, "trans": tr_p}
+                        if len(book_for_proof) >= 3:
+                            folder_job_state["current_file"] = f"💎 [Ультра Проход 2/2: Литературная вычитка и сверка рода ({len(book_for_proof)} реплик)]..."
+                            proof_keys = list(book_for_proof.keys())
+                            for p_start in range(0, len(proof_keys), 36):
+                                if _folder_stop_requested:
+                                    break
+                                sub_keys = proof_keys[p_start : p_start + 36]
+                                sub_book = {k: book_for_proof[k] for k in sub_keys}
+                                polished_map = await translator_engine.proofread_chapter_book_script(
+                                    book_map=sub_book,
+                                    source_lang=batch_detected_lang,
+                                    target_lang=target_lang,
+                                    model=active_mod,
+                                    glossary_entries=folder_glossary_entries,
+                                )
+                                for pk, pv in (polished_map or {}).items():
+                                    if pk in translated_by_gid and pv and pv.strip():
+                                        translated_by_gid[pk] = pv.strip()
                 except Exception as llm_exc:
                     logger.exception("Ошибка пакетного ИИ-перевода пачки страниц: %s", llm_exc)
 
@@ -3870,7 +3984,14 @@ async def health_check() -> dict[str, Any]:
         "supported_target_langs": ["en", "ru", "romaji"],
         "easyocr_installed": easyocr_ok,
         "ocr_engine_updated": has_multilang_engine,
-        "inpaint_backend": inpaint_backend,
+        "inpaint_backend": (
+            cleaner_engine.get_inpaint_backend_label()
+            if (cleaner_engine is not None and hasattr(cleaner_engine, "get_inpaint_backend_label"))
+            else inpaint_backend
+        ),
+        "default_model_stack": translator_engine.default_model_stack if translator_engine else dict(DEFAULT_MODEL_STACK_TEMPLATE),
+        "built_in_model_stacks": BUILT_IN_MODEL_STACK_PRESETS,
+        "saved_model_stacks": translator_engine.saved_model_stacks if translator_engine else [],
         "font": renderer_engine.font_path if renderer_engine is not None else None,
         "available_fonts": (
             renderer_engine.list_available_fonts()
@@ -3940,6 +4061,189 @@ async def get_pull_status_endpoint() -> dict[str, Any]:
     return translator_engine.pull_state
 
 
+@app.get("/model_storage")
+async def get_model_storage_endpoint() -> dict[str, Any]:
+    """
+    Возвращает полный список всех установленных моделей в программе:
+    1) Установленные языковые и VLM модели в Ollama (с их точным размером в ГБ и путем к кэшу .gguf);
+    2) Локальные нейросетевые веса детекторов, OCR и инпейнтинга LaMa в папке models/ (с размером в МБ и флагом VRAM).
+    """
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    ollama_installed = await translator_engine.list_installed_ollama_models_detailed()
+    local_weights: list[dict[str, Any]] = []
+    if ocr_engine is not None and hasattr(ocr_engine, "get_local_models_storage_info"):
+        local_weights.extend(ocr_engine.get_local_models_storage_info())
+    if cleaner_engine is not None and hasattr(cleaner_engine, "get_local_models_storage_info"):
+        local_weights.extend(cleaner_engine.get_local_models_storage_info())
+
+    total_ollama_gb = round(sum(float(m.get("size_gb") or 0.0) for m in ollama_installed), 2)
+    total_local_mb = round(sum(float(m.get("size_mb") or 0.0) for m in local_weights if m.get("installed")), 1)
+    return {
+        "status": "ok",
+        "ollama_models": ollama_installed,
+        "local_weights": local_weights,
+        "total_ollama_gb": total_ollama_gb,
+        "total_local_mb": total_local_mb,
+        "default_model_stack": translator_engine.default_model_stack,
+        "built_in_model_stacks": BUILT_IN_MODEL_STACK_PRESETS,
+        "saved_model_stacks": translator_engine.saved_model_stacks,
+    }
+
+
+@app.post("/delete_model")
+async def delete_model_endpoint(payload: DeleteModelRequest) -> dict[str, Any]:
+    """
+    Удаляет выбранную модель прямо из программы (модель Ollama, кэш GGUF или локальные веса OCR/Detector/LaMa),
+    предварительно выгружая её из видеопамяти (VRAM).
+    """
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    raw_id = (payload.model_id or "").strip()
+    cat = (payload.category or "auto").strip().lower()
+    if not raw_id:
+        raise HTTPException(status_code=400, detail="Не указан model_id для удаления.")
+
+    local_keys = {"rtdetr_v2", "yolo26_seg", "yolov8m", "ja_nar_ocr", "hayai_ocr", "anime_lama", "big_lama", "ctd_unet"}
+    if cat == "local_weights" or (cat == "auto" and raw_id.lower() in local_keys):
+        key_l = raw_id.lower()
+        if key_l in {"rtdetr_v2", "yolo26_seg", "yolov8m", "ja_nar_ocr", "hayai_ocr"}:
+            if ocr_engine is None:
+                raise HTTPException(status_code=503, detail="OCR движок не инициализирован.")
+            res = await asyncio.to_thread(ocr_engine.delete_local_model_weights, key_l)
+        else:
+            if cleaner_engine is None:
+                raise HTTPException(status_code=503, detail="Cleaner движок не инициализирован.")
+            res = await asyncio.to_thread(cleaner_engine.delete_local_model_weights, key_l)
+        if not res.get("ok"):
+            raise HTTPException(status_code=400, detail=str(res.get("error") or "Ошибка удаления весов"))
+        storage_now = await get_model_storage_endpoint()
+        return {
+            "status": "ok",
+            "deleted_category": "local_weights",
+            "result": res,
+            "storage": storage_now,
+        }
+
+    # Иначе удаляем модель Ollama
+    del_res = await translator_engine.delete_ollama_model(
+        model_name=raw_id,
+        delete_gguf_cache=bool(payload.delete_gguf_cache),
+    )
+    if not del_res.get("ok"):
+        raise HTTPException(status_code=400, detail=str(del_res.get("error") or "Ошибка удаления модели Ollama"))
+    models = await translator_engine.list_available_models(force_refresh=True)
+    active = await translator_engine.resolve_model()
+    storage_now = await get_model_storage_endpoint()
+    return {
+        "status": "ok",
+        "deleted_category": "ollama",
+        "result": del_res,
+        "active_model": active,
+        "selected_model": translator_engine._resolved_model or "auto",
+        "models": models,
+        "storage": storage_now,
+    }
+
+
+@app.get("/model_stack")
+async def get_model_stack_endpoint() -> dict[str, Any]:
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    return {
+        "status": "ok",
+        **translator_engine.get_all_model_stacks_info(),
+        "current_active": {
+            "translation_model": translator_engine._resolved_model or "auto",
+            "fallback_model": translator_engine.local_fallback_model_multilang or "auto",
+            "vlm_model": getattr(ocr_engine, "preferred_vlm_model", "auto") if ocr_engine else "auto",
+            "ocr_backend": getattr(ocr_engine, "ocr_backend", "hybrid_nar_mangaocr") if ocr_engine else "hybrid_nar_mangaocr",
+            "detector_backend": getattr(ocr_engine, "detector_backend", "rtdetr_yolov8") if ocr_engine else "rtdetr_yolov8",
+            "inpaint_backend": getattr(cleaner_engine, "inpaint_backend", "anime_lama_sota") if cleaner_engine else "anime_lama_sota",
+            "pipeline_mode": translator_engine.pipeline_mode or "balanced",
+            "translation_profile": translator_engine.translation_profile or "balanced",
+        },
+    }
+
+
+@app.post("/model_stack")
+async def update_model_stack_endpoint(payload: ModelStackActionRequest) -> dict[str, Any]:
+    """
+    Управляет связками моделей (Default Model Stack & Presets):
+    - action='apply_only': применяет выбранную связку моделей на текущую сессию;
+    - action='apply_and_set_default': делает связку дефолтной для всех последующих запусков (сохраняет в config.json);
+    - action='save_preset': сохраняет текущую связку как именованный пользовательский пресет (и ставит её дефолтом);
+    - action='delete_preset': удаляет пользовательский пресет связки.
+    """
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    act = (payload.action or "apply_and_set_default").strip().lower()
+
+    if act == "delete_preset":
+        pid = (payload.preset_id or "").strip()
+        if not pid:
+            raise HTTPException(status_code=400, detail="Не указан preset_id для удаления.")
+        new_saved = [s for s in translator_engine.saved_model_stacks if s.get("id") != pid]
+        translator_engine.save_config(saved_model_stacks=new_saved)
+        return {
+            "status": "ok",
+            "action": act,
+            **translator_engine.get_all_model_stacks_info(),
+        }
+
+    # Если передан preset_id, ищем стек в built-in или пользовательских пресетах
+    target_stack: dict[str, str] = {}
+    if payload.preset_id:
+        for bp in BUILT_IN_MODEL_STACK_PRESETS:
+            if bp["id"] == payload.preset_id:
+                target_stack = dict(bp["stack"])
+                break
+        if not target_stack:
+            for up in translator_engine.saved_model_stacks:
+                if up.get("id") == payload.preset_id and isinstance(up.get("stack"), dict):
+                    target_stack = dict(up["stack"])
+                    break
+    if isinstance(payload.stack, dict) and payload.stack:
+        target_stack.update({k: str(v).strip() for k, v in payload.stack.items() if v is not None})
+
+    if not target_stack:
+        target_stack = dict(translator_engine.default_model_stack)
+
+    if act == "save_preset":
+        p_name = (payload.preset_name or "").strip() or f"Моя связка #{len(translator_engine.saved_model_stacks) + 1}"
+        p_desc = (payload.preset_description or "").strip() or "Пользовательская связка моделей для перевода, OCR и очистки."
+        p_id = payload.preset_id or f"user_stack_{int(time.time())}"
+        new_entry = {
+            "id": p_id,
+            "name": p_name,
+            "badge": "⭐ Мой пресет",
+            "builtin": False,
+            "description": p_desc,
+            "stack": target_stack,
+        }
+        updated_list = [s for s in translator_engine.saved_model_stacks if s.get("id") != p_id]
+        updated_list.append(new_entry)
+        translator_engine.saved_model_stacks = updated_list
+        applied = _apply_stack_to_engines(target_stack, save_config=True)
+        translator_engine.save_config(saved_model_stacks=updated_list, default_model_stack=applied)
+    elif act == "apply_only":
+        applied = _apply_stack_to_engines(target_stack, save_config=False)
+    else:
+        applied = _apply_stack_to_engines(target_stack, save_config=True)
+
+    active_mod = await translator_engine.resolve_model()
+    return {
+        "status": "ok",
+        "action": act,
+        "applied_stack": applied,
+        "active_model": active_mod,
+        "selected_model": translator_engine._resolved_model or "auto",
+        "pipeline_mode": translator_engine.pipeline_mode,
+        "translation_profile": translator_engine.translation_profile,
+        **translator_engine.get_all_model_stacks_info(),
+    }
+
+
 @app.post("/settings")
 async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, Any]:
     if translator_engine is None:
@@ -3971,7 +4275,15 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         ui_settings=payload.ui_settings,
         anti_censorship_prompt=payload.anti_censorship_prompt,
         anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
+        default_model_stack=payload.default_model_stack,
     )
+    if payload.default_model_stack:
+        _apply_stack_to_engines(payload.default_model_stack, save_config=False)
+    elif payload.pipeline_mode:
+        if ocr_engine is not None:
+            ocr_engine.pipeline_mode = saved.get("pipeline_mode", "balanced")
+        if cleaner_engine is not None:
+            cleaner_engine.pipeline_mode = saved.get("pipeline_mode", "balanced")
     if renderer_engine is not None:
         if payload.overflow_mode:
             renderer_engine.overflow_mode = renderer_engine._normalize_overflow_mode(payload.overflow_mode)
