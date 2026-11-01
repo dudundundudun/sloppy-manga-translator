@@ -72,9 +72,9 @@ RECOMMENDED_DOWNLOAD_MAP = {
     "🌐 TranslateGemma 12B (Спец. переводчик JA/KO/ZH➔RU/EN, ~7.3 ГБ)": "translategemma:12b",
     "🌍 Aya Expanse 8B (Легкая мультиязычная JA/KO/ZH➔RU/EN, ~5.1 ГБ)": "aya-expanse:8b",
     "💎 Gemma 3 12B (Литературный слог RU/EN, ~7.3 ГБ)": "gemma3:12b",
-    "🐉 Qwen 2.5 14B (Универсал JA/KO/ZH + Ромадзи, ~8.4 ГБ)": "qwen2.5:14b",
+    "🐉 Qwen 3 14B (Топ-универсал 2026 JA/KO/ZH + Ромадзи, ~9.0 ГБ)": "qwen3:14b",
     "👁 GLM-OCR 0.9B (Vision — Снайперский OCR для SFX, ~1.9 ГБ)": "glm-ocr:latest",
-    "👁 Qwen 2.5 VL 7B (Vision — Мультимодальный VLM-OCR, ~5.0 ГБ)": "qwen2.5vl:7b",
+    "👁 Qwen 3 VL 8B (Vision — Снайперский VLM-OCR + Контекст, ~6.2 ГБ)": "qwen3-vl:8b",
 }
 
 CLOUD_PRESET_MAP = {
@@ -147,6 +147,8 @@ class MikoMangaStudioGUI:
 
         self.var_source_lang = tk.StringVar(value="✨ Авто (JA/KO/ZH)")
         self.target_lang: str = "en"
+        self.pipeline_mode: str = "balanced"
+        self.use_image_context: bool = False
         self.var_model_display = tk.StringVar(value="✨ Автовыбор лучшей модели (auto)")
         self.var_recommended_pull = tk.StringVar(value=list(RECOMMENDED_DOWNLOAD_MAP.keys())[0])
         self.var_cloud_preset = tk.StringVar(value=list(CLOUD_PRESET_MAP.keys())[0])
@@ -192,6 +194,9 @@ class MikoMangaStudioGUI:
                 self.target_lang = data.get("target_lang", "en")
                 if self.target_lang not in ("en", "ru", "romaji"):
                     self.target_lang = "en"
+                pm = str(data.get("pipeline_mode", "balanced")).strip().lower()
+                self.pipeline_mode = pm if pm in ("fast", "balanced", "accuracy") else "balanced"
+                self.use_image_context = bool(data.get("use_image_context", self.pipeline_mode == "accuracy"))
                 self.var_min_font.set(int(data.get("min_font_size", 12)))
                 self.var_max_font.set(int(data.get("max_font_size", 32)))
                 self.var_uppercase.set(bool(data.get("uppercase", False)))
@@ -233,10 +238,14 @@ class MikoMangaStudioGUI:
         data = {
             "lang": SOURCE_LANG_MAP.get(self.var_source_lang.get(), "auto"),
             "target_lang": self.target_lang,
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "uppercase": bool(self.var_uppercase.get()),
             "overflow_mode": self.var_overflow_mode.get(),
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
@@ -365,6 +374,27 @@ class MikoMangaStudioGUI:
             )
             btn.pack(side=tk.LEFT, padx=2)
             self.lang_pill_btns[code] = btn
+
+        mode_bar = tk.Frame(topbar, bg=BG_INNER, padx=6, pady=4)
+        mode_bar.pack(side=tk.LEFT, padx=8)
+        self.pipeline_mode_btns: dict[str, tk.Button] = {}
+        for m_code, m_label in (
+            ("fast", "⚡ Быстрый"),
+            ("balanced", "⚖️ Оптимальный"),
+            ("accuracy", "🎯 Макс. точность"),
+        ):
+            m_btn = tk.Button(
+                mode_bar,
+                text=m_label,
+                bd=0,
+                padx=10,
+                pady=4,
+                font=("Segoe UI", 9, "bold"),
+                cursor="hand2",
+                command=lambda mc=m_code: self._set_pipeline_mode(mc),
+            )
+            m_btn.pack(side=tk.LEFT, padx=2)
+            self.pipeline_mode_btns[m_code] = m_btn
 
         right_top = tk.Frame(topbar, bg=BG_BENTO)
         right_top.pack(side=tk.RIGHT)
@@ -796,6 +826,7 @@ class MikoMangaStudioGUI:
         self.preview_canvas.bind("<MouseWheel>", self._on_canvas_mouse_wheel)
 
         self._set_target_lang(self.target_lang, refresh=False)
+        self._set_pipeline_mode(self.pipeline_mode, notify=False)
         self._set_view_mode("split")
         self._set_overflow_mode(self.var_overflow_mode.get(), rerender=False)
         self._update_summary_chip()
@@ -853,6 +884,30 @@ class MikoMangaStudioGUI:
         }.get(mode, "Только диалоги")
         short_mod = self.active_model_short[:24] + "…" if len(self.active_model_short) > 26 else self.active_model_short
         self.lbl_summary_chip.config(text=f"Шрифт: {mn}–{mx}px · {mode_short} · ИИ: {short_mod}")
+
+    def _set_pipeline_mode(self, mode_code: str, notify: bool = True) -> None:
+        if mode_code not in ("fast", "balanced", "accuracy"):
+            mode_code = "balanced"
+        self.pipeline_mode = mode_code
+        self.use_image_context = (mode_code == "accuracy")
+        active_colors = {
+            "fast": "#d97706",
+            "balanced": "#059669",
+            "accuracy": ACCENT_SAKURA,
+        }
+        for code, btn in getattr(self, "pipeline_mode_btns", {}).items():
+            if code == mode_code:
+                btn.config(bg=active_colors.get(code, ACCENT_INDIGO), fg="#ffffff")
+            else:
+                btn.config(bg=BG_INNER, fg=FG_SECONDARY)
+        if notify:
+            self._save_gui_settings()
+            mode_msgs = {
+                "fast": "Включен ⚡ Быстрый режим (Турбо): ускоренный OCR и параллельный перевод! 🚀",
+                "balanced": "Включен ⚖️ Оптимальный режим: двухконтурный RT-DETR-v2 и чистый клининг Zero-Stain! 🌸",
+                "accuracy": "Включен 🎯 Режим максимальной точности: авто VLM-OCR (Qwen3-VL) + визуальный контекст страницы! ✨",
+            }
+            self.lbl_miko_speech.config(text=mode_msgs.get(mode_code, ""))
 
     def _set_target_lang(self, lang_code: str, refresh: bool = True) -> None:
         self.target_lang = lang_code
@@ -1728,6 +1783,8 @@ class MikoMangaStudioGUI:
                 "min_font_size": int(self.var_min_font.get()),
                 "max_font_size": int(self.var_max_font.get()),
                 "overflow_mode": self.var_overflow_mode.get(),
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
                 "return_image": True,
                 "prefer_url": False,
                 "image_format": "webp",
@@ -2301,6 +2358,8 @@ class MikoMangaStudioGUI:
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "return_image": True,
             "prefer_url": False,
             "image_format": "webp",
@@ -2516,6 +2575,8 @@ class MikoMangaStudioGUI:
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "return_image": True,
             "image_format": "webp",
             "blocks": self.last_blocks,
@@ -2580,6 +2641,8 @@ class MikoMangaStudioGUI:
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "detect_free_text": bool(self.var_detect_free_text.get()),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
@@ -2675,6 +2738,8 @@ class MikoMangaStudioGUI:
             "min_font_size": int(self.var_min_font.get()),
             "max_font_size": int(self.var_max_font.get()),
             "overflow_mode": self.var_overflow_mode.get(),
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "detect_free_text": bool(self.var_detect_free_text.get()),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),

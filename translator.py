@@ -733,6 +733,106 @@ def compute_bubble_geometry_budget(block: dict[str, Any]) -> dict[str, Any]:
         "meta_tag": meta_tag,
     }
 
+
+def build_annotated_page_context_b64(
+    page_image: Any,
+    blocks: list[dict[str, Any]],
+    max_side: int = 768,
+    jpeg_quality: int = 80,
+) -> str | None:
+    """
+    Готовит уменьшенное превью страницы манги (до `max_side` px по длинной стороне)
+    с контрастными номерами бабблов `#1`, `#2`, `#3` (Image-Aware VLM Context, arXiv:2610.17908).
+    Позволяет мультимодальной модели видеть пол говорящего, выражение лица и контекст сцены.
+    """
+    if page_image is None or not blocks:
+        return None
+    try:
+        import base64
+        import io
+        from PIL import Image, ImageDraw
+
+        if isinstance(page_image, Image.Image):
+            pil_img = page_image.convert("RGB")
+        else:
+            import numpy as np
+            if isinstance(page_image, np.ndarray):
+                pil_img = Image.fromarray(page_image).convert("RGB")
+            else:
+                return None
+
+        orig_w, orig_h = pil_img.size
+        if orig_w < 16 or orig_h < 16:
+            return None
+
+        scale = min(1.0, float(max_side) / float(max(orig_w, orig_h)))
+        new_w = max(16, int(round(orig_w * scale)))
+        new_h = max(16, int(round(orig_h * scale)))
+        if scale < 0.999:
+            resample_enum = getattr(Image, "Resampling", Image).LANCZOS
+            canvas = pil_img.resize((new_w, new_h), resample_enum)
+        else:
+            canvas = pil_img.copy()
+
+        draw = ImageDraw.Draw(canvas)
+        for blk in blocks:
+            if blk.get("is_deleted"):
+                continue
+            bbox = blk.get("bbox")
+            if not isinstance(bbox, (list, tuple)) or len(bbox) < 4:
+                continue
+            x1 = max(0, min(new_w - 2, int(round(float(bbox[0]) * scale))))
+            y1 = max(0, min(new_h - 2, int(round(float(bbox[1]) * scale))))
+            x2 = max(x1 + 2, min(new_w - 1, int(round(float(bbox[2]) * scale))))
+            y2 = max(y1 + 2, min(new_h - 1, int(round(float(bbox[3]) * scale))))
+            bid = str(blk.get("id") or "")
+            label = f"#{bid}"
+            draw.rectangle([x1, y1, x2, y2], outline=(244, 63, 94), width=2)
+            tw = max(18, 7 * len(label) + 6)
+            th = 14
+            bx1 = x1
+            by1 = max(0, y1 - th)
+            draw.rectangle([bx1, by1, min(new_w - 1, bx1 + tw), min(new_h - 1, by1 + th)], fill=(15, 23, 42), outline=(244, 63, 94))
+            draw.text((bx1 + 3, by1 + 1), label, fill=(255, 255, 255))
+
+        buf = io.BytesIO()
+        canvas.save(buf, format="JPEG", quality=jpeg_quality, optimize=True)
+        return base64.b64encode(buf.getvalue()).decode("ascii")
+    except Exception as exc:
+        logger.debug("Не удалось подготовить Image-Aware превью страницы: %s", exc)
+        return None
+
+
+PIPELINE_MODES: dict[str, dict[str, Any]] = {
+    "fast": {
+        "id": "fast",
+        "title": "⚡ Быстрый (Турбо)",
+        "short_title": "⚡ Быстрый",
+        "translation_profile": "turbo",
+        "use_image_context": False,
+        "vlm_ocr_auto": False,
+        "description": "Максимальная скорость (~0.5 сек/стр): быстрый проход детектора без глубокого перебора наклонных плашек и параллельный перевод.",
+    },
+    "balanced": {
+        "id": "balanced",
+        "title": "⚖️ Оптимальный (Баланс)",
+        "short_title": "⚖️ Оптимальный",
+        "translation_profile": "balanced",
+        "use_image_context": False,
+        "vlm_ocr_auto": False,
+        "description": "Золотая середина скорости и чистоты: двухконтурный RT-DETR-v2 + YOLOv8m, гибридный клининг Zero-Stain + Big-LaMa, пачки по 15 стр.",
+    },
+    "accuracy": {
+        "id": "accuracy",
+        "title": "🎯 Макс. точность (Ультра HQ)",
+        "short_title": "🎯 Макс. точность",
+        "translation_profile": "eco_book",
+        "use_image_context": True,
+        "vlm_ocr_auto": True,
+        "description": "Максимальное качество: полный ансамбль детекторов (включая YOLO26s-seg), авто-дочитка сложных шрифтов через VLM-OCR (Qwen3-VL / GLM-OCR) и передача картинки страницы с бабблами #1..#N в ИИ (Image-Aware Context).",
+    },
+}
+
 # Каталог лучших локальных моделей для перевода манги (с прямыми GGUF-ссылками для авто-обхода блокировки Fake-IP 198.18.x.x в Ollama)
 RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
     {
@@ -827,17 +927,17 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "description": "Универсальная модель от Google с естественным и выразительным художественным слогом на русском и английском языках для повседневной и романтической манги.",
     },
     {
-        "ollama_tag": "qwen2.5:14b",
-        "local_tag": "qwen2.5:14b",
-        "hf_repo": "tensorblock/Qwen2.5-14B-Instruct-GGUF",
-        "hf_filename": "Qwen2.5-14B-Instruct-Q4_K_M.gguf",
+        "ollama_tag": "qwen3:14b",
+        "local_tag": "qwen3:14b",
+        "hf_repo": "Qwen/Qwen3-14B-GGUF",
+        "hf_filename": "Qwen3-14B-Q4_K_M.gguf",
         "hf_quant": "Q4_K_M",
-        "id": "ollama::qwen2.5:14b",
-        "title": "🐉 Qwen 2.5 14B — Универсал JA/KO/ZH + Ромадзи (~8.4 ГБ)",
-        "short_name": "Qwen 2.5 14B",
-        "size_gb": "8.4 ГБ",
+        "id": "ollama::qwen3:14b",
+        "title": "🐉 Qwen 3 14B — Топ-универсал 2026 JA/KO/ZH➔RU/EN + Ромадзи (~9.0 ГБ)",
+        "short_name": "Qwen 3 14B",
+        "size_gb": "9.0 ГБ",
         "langs": "JA / KO / ZH ➔ RU / EN + Ромадзи",
-        "description": "Мощная азиатская модель от Alibaba для одновременной работы с японской мангой, корейской манхвой, китайской маньхуа (культивация/сянься) и точной транслитерацией кандзи в Ромадзи.",
+        "description": "Новейшая флагманская модель Alibaba Qwen 3 14B (работает в быстром режиме /no_think без лишних рассуждений). Лучший выбор для корейской манхвы, китайской маньхуа, японской манги и чтения кандзи в Ромадзи.",
     },
     {
         "ollama_tag": "glm-ocr:latest",
@@ -853,17 +953,17 @@ RECOMMENDED_LOCAL_MODELS: list[dict[str, str]] = [
         "description": "Специализированная компактная Vision-OCR модель (0.9B, #1 на OmniDocBench V1.5) для снайперского чтения рукописных звуковых эффектов (SFX), изогнутых логотипов и цветных обложек при выделении «➕ Обвести» или по кнопке «👁 VLM-OCR».",
     },
     {
-        "ollama_tag": "qwen2.5vl:7b",
-        "local_tag": "qwen2.5vl:7b",
-        "hf_repo": "Qwen/Qwen2.5-VL-7B-Instruct-GGUF",
+        "ollama_tag": "qwen3-vl:8b",
+        "local_tag": "qwen3-vl:8b",
+        "hf_repo": "Qwen/Qwen3-VL-8B-Instruct-GGUF",
         "hf_filename": "",
         "hf_quant": "Q4_K_M",
-        "id": "ollama::qwen2.5vl:7b",
-        "title": "👁 Qwen 2.5 VL 7B (Vision) — Мультимодальный VLM-OCR для сложных шрифтов JA/KO/ZH (~5.0 ГБ)",
-        "short_name": "Qwen 2.5 VL 7B (VLM-OCR)",
-        "size_gb": "5.0 ГБ",
-        "langs": "Vision OCR + Перевод: JA / KO / ZH",
-        "description": "Мощная визуально-языковая модель Alibaba Qwen 2.5 VL 7B. Безошибочно читает стилизованные каллиграфические шрифты, декоративные плашки, вертикальные и наклонные SFX на японском, корейском и китайском языках.",
+        "id": "ollama::qwen3-vl:8b",
+        "title": "👁 Qwen 3 VL 8B (Vision) — Снайперский VLM-OCR + Визуальный контекст JA/KO/ZH (~6.2 ГБ)",
+        "short_name": "Qwen 3 VL 8B (VLM-OCR + Vision)",
+        "size_gb": "6.2 ГБ",
+        "langs": "Vision OCR + Image-Aware Перевод: JA / KO / ZH",
+        "description": "Новейшая мультимодальная модель Alibaba Qwen 3 VL 8B (2026). Безошибочно читает стилизованные SFX и вертикальные плашки, а также анализирует лица и пол персонажей на странице в режиме Image-Aware Context.",
     },
 ]
 
@@ -2334,6 +2434,8 @@ class OllamaTranslator:
         self.overflow_mode: str = "shrink"
         self.batch_pages: int = 15
         self.translation_profile: str = "balanced"
+        self.pipeline_mode: str = "balanced"
+        self.use_image_context: bool = False
         self.local_fallback_model_multilang: str = "auto"
         self.anti_censorship_prompt: bool = False
         self.anti_censorship_custom_prompt: str = ""
@@ -2500,6 +2602,8 @@ class OllamaTranslator:
             "overflow_mode": self.overflow_mode,
             "batch_pages": self.batch_pages,
             "translation_profile": self.translation_profile,
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "local_fallback_model_multilang": self.local_fallback_model_multilang,
             "anti_censorship_prompt": self.anti_censorship_prompt,
             "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
@@ -2589,6 +2693,10 @@ class OllamaTranslator:
                     self.batch_pages = max(1, min(50, int(data["batch_pages"])))
                 if data.get("translation_profile") and str(data["translation_profile"]).strip().lower() in TRANSLATION_PROFILES:
                     self.translation_profile = str(data["translation_profile"]).strip().lower()
+                if data.get("pipeline_mode") and str(data["pipeline_mode"]).strip().lower() in PIPELINE_MODES:
+                    self.pipeline_mode = str(data["pipeline_mode"]).strip().lower()
+                if "use_image_context" in data and data["use_image_context"] is not None:
+                    self.use_image_context = bool(data["use_image_context"])
                 if data.get("local_fallback_model_multilang"):
                     self.local_fallback_model_multilang = str(data["local_fallback_model_multilang"]).strip()
                 if "anti_censorship_prompt" in data and data["anti_censorship_prompt"] is not None:
@@ -2626,6 +2734,8 @@ class OllamaTranslator:
         unsloth_api_key: str | None = None,
         selected_model: str | None = None,
         translation_profile: str | None = None,
+        pipeline_mode: str | None = None,
+        use_image_context: bool | None = None,
         local_fallback_model_multilang: str | None = None,
         auto_save_web_pages: bool | None = None,
         web_save_dir: str | None = None,
@@ -2658,6 +2768,22 @@ class OllamaTranslator:
             if clean_sel.startswith("unsloth::ollama/"):
                 clean_sel = "ollama::" + clean_sel.split("unsloth::ollama/", 1)[1]
             self._resolved_model = None if clean_sel in ("", "auto") else clean_sel
+
+        if pipeline_mode is not None:
+            clean_pmode = str(pipeline_mode).strip().lower()
+            if clean_pmode in PIPELINE_MODES:
+                self.pipeline_mode = clean_pmode
+                if use_image_context is None:
+                    self.use_image_context = bool(PIPELINE_MODES[clean_pmode]["use_image_context"])
+                if translation_profile is None and self.translation_profile != "local_only":
+                    mapped_prof = str(PIPELINE_MODES[clean_pmode]["translation_profile"])
+                    if mapped_prof in TRANSLATION_PROFILES:
+                        self.translation_profile = mapped_prof
+                        if batch_pages is None:
+                            self.batch_pages = int(TRANSLATION_PROFILES[mapped_prof]["pages_per_batch"])
+
+        if use_image_context is not None:
+            self.use_image_context = bool(use_image_context)
 
         if translation_profile is not None:
             clean_prof = str(translation_profile).strip().lower()
@@ -2733,6 +2859,8 @@ class OllamaTranslator:
             "unsloth_api_key": self.unsloth_api_key,
             "selected_model": self._resolved_model or "auto",
             "translation_profile": self.translation_profile,
+            "pipeline_mode": self.pipeline_mode,
+            "use_image_context": self.use_image_context,
             "local_fallback_model_multilang": self.local_fallback_model_multilang,
             "anti_censorship_prompt": self.anti_censorship_prompt,
             "anti_censorship_custom_prompt": self.anti_censorship_custom_prompt,
@@ -3548,7 +3676,7 @@ class OllamaTranslator:
 
         for m in installed_ollama:
             low_id = m["id"].lower()
-            if any(k in low_id for k in ("translategemma", "gemma3", "qwen2.5:14b", "aya-expanse", "sugoi")):
+            if any(k in low_id for k in ("translategemma", "gemma3", "qwen3:14b", "qwen2.5:14b", "aya-expanse", "sugoi")):
                 return m["id"]
 
         for m in installed_ollama:
@@ -4282,8 +4410,10 @@ class OllamaTranslator:
                     )
                     return None
                 priority_tuple = (
-                    "qwen2.5",
+                    "qwen3:14b",
                     "qwen3",
+                    "qwen2.5:14b",
+                    "qwen2.5",
                     "qwen",
                     "translategemma",
                     "gemma3",
@@ -4481,6 +4611,7 @@ class OllamaTranslator:
         system_prompt: str,
         user_prompt: str,
         persist_as_default: bool = True,
+        page_image_b64: str | None = None,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
         clean_name = ollama_model_name.strip()
@@ -4531,6 +4662,8 @@ class OllamaTranslator:
         eff_system_prompt = system_prompt
         if is_sugoi and "NAME GLOSSARY & CONTEXT" in eff_system_prompt:
             eff_system_prompt = eff_system_prompt.split("NAME GLOSSARY & CONTEXT", 1)[0].strip()
+        if "qwen3" in clean_name.lower() and "/no_think" not in eff_system_prompt:
+            eff_system_prompt = "/no_think\n" + eff_system_prompt
 
         # Защита от HTTP 500 Internal Server Error в Ollama при сбросе больших пачек (>16 блоков):
         max_direct_chunk = 8 if is_sugoi else 16
@@ -4552,11 +4685,16 @@ class OllamaTranslator:
                     system_prompt=eff_system_prompt,
                     user_prompt=sub_usr,
                     persist_as_default=persist_as_default,
+                    page_image_b64=page_image_b64,
                 )
                 part_res.pop("__refusal__", None)
                 merged_micro.update(part_res)
             return merged_micro
 
+        is_vision_ollama = any(
+            v_kw in clean_name.lower()
+            for v_kw in ("vl", "vision", "gemma3", "minicpm", "llava", "pixtral", "internvl")
+        )
         payload: dict[str, Any] = {
             "model": clean_name,
             "system": eff_system_prompt,
@@ -4565,6 +4703,7 @@ class OllamaTranslator:
             "stream": False,
             "think": False,
             "keep_alive": "30m",
+            **({"images": [page_image_b64]} if (page_image_b64 and is_vision_ollama) else {}),
             "options": {
                 "temperature": 0.1 if is_sugoi else 0.2,
                 "top_k": 40,
@@ -4655,12 +4794,13 @@ class OllamaTranslator:
         full_model_id: str,
         system_prompt: str,
         user_prompt: str,
+        page_image_b64: str | None = None,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
         if full_model_id.startswith("unsloth::ollama/") and not self._is_remote_cloud_url(self.unsloth_url):
             real_ollama = full_model_id.split("unsloth::ollama/", 1)[1]
             logger.info("Перенаправление прокси-модели '%s' напрямую в Ollama (%s)...", full_model_id, real_ollama)
-            return await self._call_ollama_direct(client, real_ollama, system_prompt, user_prompt)
+            return await self._call_ollama_direct(client, real_ollama, system_prompt, user_prompt, page_image_b64=page_image_b64)
 
         if full_model_id.startswith("unsloth::"):
             model_name = full_model_id.split("unsloth::", 1)[1].strip()
@@ -4715,11 +4855,29 @@ class OllamaTranslator:
                     or is_moduleapi
                     or uses_anti_censor_header
                 )
+                is_cloud_vision_capable = bool(
+                    page_image_b64
+                    and any(
+                        vk in model_name.lower()
+                        for vk in ("vl", "vision", "gpt-4", "gemini", "claude", "gemma-3", "pixtral", "omni")
+                    )
+                )
+                user_msg_content: Any = (
+                    [
+                        {"type": "text", "text": user_prompt},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": f"data:image/jpeg;base64,{page_image_b64}", "detail": "low"},
+                        },
+                    ]
+                    if is_cloud_vision_capable
+                    else user_prompt
+                )
                 payload_cloud: dict[str, Any] = {
                     "model": model_name,
                     "messages": [
                         {"role": "system", "content": eff_sys_cloud},
-                        {"role": "user", "content": user_prompt},
+                        {"role": "user", "content": user_msg_content},
                     ],
                     "temperature": 0.1,
                     "max_tokens": 4096 if (omit_resp_fmt or items_cnt <= 80) else 8192,
@@ -4748,10 +4906,15 @@ class OllamaTranslator:
                                 self.last_refusal_message = f"HTTP {response.status_code} Censorship: {err_body[:180]}"
                                 self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
                                 return {"__refusal__": self.last_refusal_message}
-                            if response.status_code in (400, 422) and ("response_format" in payload_cloud or payload_cloud.get("max_tokens", 4096) > 4096):
+                            if response.status_code in (400, 422) and (
+                                "response_format" in payload_cloud
+                                or payload_cloud.get("max_tokens", 4096) > 4096
+                                or isinstance(payload_cloud["messages"][-1].get("content"), list)
+                            ):
                                 self._cloud_omit_response_format = True
                                 payload_cloud.pop("response_format", None)
                                 payload_cloud["max_tokens"] = 4096
+                                payload_cloud["messages"][-1]["content"] = user_prompt
                                 response = await client.post(
                                     f"{self.unsloth_url}/v1/chat/completions",
                                     headers=self._unsloth_headers(),
@@ -4944,7 +5107,7 @@ class OllamaTranslator:
                     )
                 raise
 
-        return await self._call_ollama_direct(client, full_model_id, system_prompt, user_prompt)
+        return await self._call_ollama_direct(client, full_model_id, system_prompt, user_prompt, page_image_b64=page_image_b64)
 
     async def _translate_batch_chunk(
         self,
@@ -4956,6 +5119,8 @@ class OllamaTranslator:
         context_lines: list[str] | None = None,
         glossary_entries: list[dict[str, str]] | None = None,
         provenance_out: dict[str, dict[str, str]] | None = None,
+        page_image_b64: str | None = None,
+        use_image_context: bool = False,
     ) -> dict[str, str]:
         if self.stop_requested or not chunk_blocks:
             return {}
@@ -5000,11 +5165,21 @@ class OllamaTranslator:
             auto_glossary_header=auto_gloss_hdr,
         )
 
+        if use_image_context:
+            img_ctx_note = (
+                "\n[IMAGE-AWARE VLM CONTEXT (arXiv:2610.17908)]: Use the visual scene, speaker tags, bubble coordinates, "
+                "and attached page image (with numbered bubbles #1..#N when supported by the model) to determine "
+                "each speaker's gender (e.g. Russian past tense '-л'/'-ла'), emotional tone, and addressee accurately."
+            )
+            if img_ctx_note not in system_prompt:
+                system_prompt = system_prompt + img_ctx_note
+
         translated_map = await self._call_llm_json(
             client=client,
             full_model_id=active_model,
             system_prompt=system_prompt,
             user_prompt=user_prompt,
+            page_image_b64=(page_image_b64 if use_image_context else None),
         )
         for ak in anchor_keys:
             translated_map.pop(ak, None)
@@ -5559,9 +5734,22 @@ class OllamaTranslator:
         skip_sighs: bool | None = None,
         glossary_entries: list[dict[str, str]] | None = None,
         profile: str | None = None,
+        page_image: Any | None = None,
+        use_image_context: bool | None = None,
+        pipeline_mode: str | None = None,
     ) -> list[dict[str, Any]]:
         if not blocks or self.stop_requested:
             return []
+
+        eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
+        eff_use_img_ctx = (
+            bool(use_image_context)
+            if use_image_context is not None
+            else (bool(getattr(self, "use_image_context", False)) or eff_pmode == "accuracy")
+        )
+        page_img_b64: str | None = None
+        if eff_use_img_ctx and page_image is not None:
+            page_img_b64 = build_annotated_page_context_b64(page_image, blocks, max_side=768, jpeg_quality=80)
 
         prof_cfg = self.get_profile_config(profile)
         active_model = await self.resolve_model(
@@ -5814,6 +6002,8 @@ class OllamaTranslator:
                             context_lines=ctx_snapshot,
                             glossary_entries=glossary_entries,
                             provenance_out=sub_prov,
+                            page_image_b64=page_img_b64,
+                            use_image_context=eff_use_img_ctx,
                         )
                         return sub_map, sub_prov
                     except Exception as sub_exc:
@@ -5886,6 +6076,8 @@ class OllamaTranslator:
                         context_lines=running_context if running_context else None,
                         glossary_entries=glossary_entries,
                         provenance_out=sub_prov,
+                        page_image_b64=page_img_b64,
+                        use_image_context=eff_use_img_ctx,
                     )
                 except Exception as chunk_exc:
                     self._record_incident(

@@ -81,6 +81,7 @@ from translator import (
     CLOUD_API_PRESETS,
     DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
     FICTION_NOVEL_CONTEXT_NOTE,
+    PIPELINE_MODES,
     RECOMMENDED_LOCAL_MODELS,
     TRANSLATION_PROFILES,
     EndpointCircuitBreaker,
@@ -933,6 +934,14 @@ class TranslateRequest(BaseModel):
         default=False,
         description="Принудительно перевести все блоки заново через ИИ (игнорируя и обновляя старый кэш фраз)",
     )
+    pipeline_mode: str | None = Field(
+        default=None,
+        description="Режим конвейера: 'fast' (Быстрый), 'balanced' (Оптимальный), 'accuracy' (Макс. точность)",
+    )
+    use_image_context: bool | None = Field(
+        default=None,
+        description="Передавать уменьшенное превью страницы с номерами бабблов #1..#N в мультимодальную модель (Image-Aware VLM Context)",
+    )
 
 
 class TextBlock(BaseModel):
@@ -1138,6 +1147,14 @@ class FolderTranslateRequest(BaseModel):
         default=None,
         description="Профиль перевода: 'eco_book', 'balanced', 'turbo', 'local_only'",
     )
+    pipeline_mode: str | None = Field(
+        default=None,
+        description="Режим работы конвейера: 'fast', 'balanced', 'accuracy'",
+    )
+    use_image_context: bool | None = Field(
+        default=None,
+        description="Включить передачу визуального контекста страницы в VLM при переводе",
+    )
     anti_censorship_prompt: bool | None = Field(
         default=None,
         description="Если True, добавляет в самое начало системного промпта для DeepSeek усиленный анти-цензурный блок",
@@ -1174,6 +1191,8 @@ class PageFileTranslateRequest(BaseModel):
     )
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
+    pipeline_mode: str | None = Field(default=None)
+    use_image_context: bool | None = Field(default=None)
 
 
 class ServerSettingsRequest(BaseModel):
@@ -1181,6 +1200,8 @@ class ServerSettingsRequest(BaseModel):
     unsloth_api_key: str | None = Field(default=None)
     selected_model: str | None = Field(default=None)
     translation_profile: str | None = Field(default=None)
+    pipeline_mode: str | None = Field(default=None)
+    use_image_context: bool | None = Field(default=None)
     local_fallback_model_multilang: str | None = Field(default=None)
     anti_censorship_prompt: bool | None = Field(default=None)
     anti_censorship_custom_prompt: str | None = Field(default=None)
@@ -2801,6 +2822,7 @@ def _run_ocr_compat(
     skip_sighs: bool = True,
     skip_sfx: bool = True,
     min_text_length: int = 2,
+    pipeline_mode: str | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
     try:
         res = engine.process_image(
@@ -2811,6 +2833,7 @@ def _run_ocr_compat(
             skip_sighs=skip_sighs,
             skip_sfx=skip_sfx,
             min_text_length=min_text_length,
+            pipeline_mode=pipeline_mode,
         )
     except TypeError as type_exc:
         if "unexpected keyword argument" in str(type_exc):
@@ -2860,11 +2883,26 @@ async def process_single_pil_image(
     src_file: Path | str | None = None,
     glossary_entries: list[dict[str, str]] | None = None,
     use_cache: bool = True,
+    pipeline_mode: str | None = None,
+    use_image_context: bool | None = None,
 ) -> tuple[Image.Image, Image.Image, Image.Image, list[dict[str, Any]], str, str]:
     assert ocr_engine is not None
     assert translator_engine is not None
     assert cleaner_engine is not None
     assert renderer_engine is not None
+
+    eff_pmode = (
+        pipeline_mode.strip().lower()
+        if (pipeline_mode and pipeline_mode.strip())
+        else getattr(translator_engine, "pipeline_mode", "balanced")
+    )
+    if eff_pmode not in PIPELINE_MODES:
+        eff_pmode = "balanced"
+    eff_img_ctx = (
+        bool(use_image_context)
+        if use_image_context is not None
+        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode == "accuracy")
+    )
 
     eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
         detect_free_text=detect_free_text,
@@ -2887,6 +2925,7 @@ async def process_single_pil_image(
             eff_skip_sighs,
             eff_skip_sfx,
             eff_min_len,
+            eff_pmode,
         )
     _ocr_sec = round(time.perf_counter() - _t0_ocr, 2)
 
@@ -2908,6 +2947,9 @@ async def process_single_pil_image(
         use_cache=use_cache,
         skip_sighs=eff_skip_sighs,
         glossary_entries=glossary_entries,
+        page_image=pil_image,
+        use_image_context=eff_img_ctx,
+        pipeline_mode=eff_pmode,
     )
     _llm_sec = round(time.perf_counter() - _t0_llm, 2)
 
@@ -3002,6 +3044,8 @@ async def _run_folder_translation_job(
     skip_sfx: bool | None = None,
     min_text_length: int | None = None,
     overflow_mode: str | None = None,
+    pipeline_mode: str | None = None,
+    use_image_context: bool | None = None,
 ) -> None:
     global _folder_stop_requested
     assert ocr_engine is not None
@@ -3012,7 +3056,22 @@ async def _run_folder_translation_job(
     _folder_stop_requested = False
     translator_engine.stop_requested = False
     start_ts = time.perf_counter()
-    prof_cfg = translator_engine.get_profile_config(translation_profile)
+    eff_pmode = (
+        pipeline_mode.strip().lower()
+        if (pipeline_mode and pipeline_mode.strip())
+        else getattr(translator_engine, "pipeline_mode", "balanced")
+    )
+    if eff_pmode not in PIPELINE_MODES:
+        eff_pmode = "balanced"
+    eff_img_ctx = (
+        bool(use_image_context)
+        if use_image_context is not None
+        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode == "accuracy")
+    )
+    eff_prof_arg = translation_profile
+    if not eff_prof_arg and getattr(translator_engine, "translation_profile", "balanced") != "local_only":
+        eff_prof_arg = str(PIPELINE_MODES[eff_pmode]["translation_profile"])
+    prof_cfg = translator_engine.get_profile_config(eff_prof_arg)
     active_profile_id = str(prof_cfg["id"])
     pages_per_batch = (
         int(prof_cfg["pages_per_batch"])
@@ -3199,6 +3258,7 @@ async def _run_folder_translation_job(
                             eff_skip_sighs,
                             eff_skip_sfx,
                             eff_min_len,
+                            eff_pmode,
                         )
                         p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
                     # Фиксируем язык главы как 'ja' или 'ko' только при наличии каны/хангыля,
@@ -3304,6 +3364,7 @@ async def _run_folder_translation_job(
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
                 try:
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
+                    first_valid_pil = next((sp.get("pil") for sp in scanned_pages if sp.get("ok") and sp.get("pil") is not None), None)
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -3315,6 +3376,9 @@ async def _run_folder_translation_job(
                         skip_sighs=eff_skip_sighs,
                         glossary_entries=folder_glossary_entries,
                         profile=active_profile_id,
+                        page_image=first_valid_pil,
+                        use_image_context=eff_img_ctx,
+                        pipeline_mode=eff_pmode,
                     )
                     for eb in enriched_combined:
                         gid_eb = str(eb["id"])
@@ -3790,6 +3854,9 @@ async def health_check() -> dict[str, Any]:
         "batch_pages": translator_engine.batch_pages if translator_engine else 15,
         "translation_profile": getattr(translator_engine, "translation_profile", "balanced") if translator_engine else "balanced",
         "translation_profiles": list(TRANSLATION_PROFILES.values()),
+        "pipeline_mode": getattr(translator_engine, "pipeline_mode", "balanced") if translator_engine else "balanced",
+        "pipeline_modes": list(PIPELINE_MODES.values()),
+        "use_image_context": bool(getattr(translator_engine, "use_image_context", False)) if translator_engine else False,
         "local_fallback_model_multilang": getattr(translator_engine, "local_fallback_model_multilang", "auto") if translator_engine else "auto",
         "anti_censorship_prompt": bool(getattr(translator_engine, "anti_censorship_prompt", False)) if translator_engine else False,
         "anti_censorship_custom_prompt": getattr(translator_engine, "anti_censorship_custom_prompt", "") if translator_engine else "",
@@ -3886,6 +3953,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         unsloth_api_key=payload.unsloth_api_key,
         selected_model=payload.selected_model,
         translation_profile=payload.translation_profile,
+        pipeline_mode=payload.pipeline_mode,
+        use_image_context=payload.use_image_context,
         local_fallback_model_multilang=payload.local_fallback_model_multilang,
         auto_save_web_pages=payload.auto_save_web_pages,
         web_save_dir=payload.web_save_dir,
@@ -3916,6 +3985,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "active_model": active,
         "selected_model": saved["selected_model"],
         "translation_profile": saved.get("translation_profile", "balanced"),
+        "pipeline_mode": saved.get("pipeline_mode", "balanced"),
+        "use_image_context": bool(saved.get("use_image_context", False)),
         "local_fallback_model_multilang": saved.get("local_fallback_model_multilang", "auto"),
         "anti_censorship_prompt": bool(saved.get("anti_censorship_prompt", False)),
         "anti_censorship_custom_prompt": saved.get("anti_censorship_custom_prompt", ""),
@@ -4208,6 +4279,8 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
                 skip_sfx=payload.skip_sfx,
                 min_text_length=payload.min_text_length,
                 use_cache=(not payload.force_retranslate),
+                pipeline_mode=payload.pipeline_mode,
+                use_image_context=payload.use_image_context,
             )
         )
     except RuntimeError as exc:
@@ -4397,6 +4470,8 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
         src_file=src_file,
         glossary_entries=normalize_glossary_entries(manifest.get("glossary", [])) if manifest else None,
         use_cache=(not is_retranslate),
+        pipeline_mode=payload.pipeline_mode,
+        use_image_context=payload.use_image_context,
     )
 
     if not blocks:
@@ -5543,6 +5618,8 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
             skip_sighs=payload.skip_sighs,
             skip_sfx=payload.skip_sfx,
             min_text_length=payload.min_text_length,
+            pipeline_mode=payload.pipeline_mode,
+            use_image_context=payload.use_image_context,
         )
     )
 

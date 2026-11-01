@@ -2323,6 +2323,10 @@ def build_bubble_geometry_context(
 HF_YOLO_REPO = "ogkalu/comic-speech-bubble-detector-yolov8m"
 HF_YOLO_FILENAME = "comic-speech-bubble-detector.pt"
 
+HF_YOLO26_SEG_REPO = "ShadowB/Manga109-panel-balloon-text-yolov26-segmentation"
+HF_YOLO26_SEG_FILENAME = "best.pt"
+LOCAL_YOLO26_SEG_FILENAME = "manga109-yolov26s-seg.pt"
+
 HF_RTDETR_REPO = "ogkalu/comic-text-and-bubble-detector"
 HF_RTDETR_SUBDIR = "comic-text-and-bubble-detector"
 HF_RTDETR_PT_FILES = ("config.json", "preprocessor_config.json", "model.safetensors")
@@ -2514,6 +2518,8 @@ class MangaOCREngine:
         self.use_rtdetr = bool(use_rtdetr)
         self.use_ja_nar = bool(use_ja_nar)
         self.use_hayai_ocr = bool(use_hayai_ocr)
+        self.use_yolo26_seg = True
+        self.pipeline_mode: str = "balanced"
         self.ollama_base_url = ollama_base_url.rstrip("/")
 
         logger.info("Инициализация MangaOCREngine (v1.0.8 Step 1+2+3+4) на устройстве: %s", self.device)
@@ -2532,6 +2538,9 @@ class MangaOCREngine:
         self._rtdetr_processor: Any | None = None
         self._rtdetr_available: bool | None = None if self.use_rtdetr else False
         self._last_rtdetr_free_boxes: list[dict[str, Any]] = []
+
+        self._yolo26_seg_model: Any | None = None
+        self._yolo26_seg_available: bool | None = None
 
         self._rapidocr_reader: Any | None = None
         self._rapidocr_available: bool | None = None
@@ -2552,7 +2561,7 @@ class MangaOCREngine:
             "rtdetr_active": False,
             "hayai_active": False,
             "rapidocr_active": False,
-            "vlm_ocr_backend": "Auto (Ollama GLM-OCR / Qwen2.5-VL / Gemma3 / Cloud Vision)",
+            "vlm_ocr_backend": "Auto (Ollama Qwen3-VL / GLM-OCR / Qwen2.5-VL / Gemma3 / Cloud Vision)",
             "vlm_ocr_calls": 0,
             "yolo_bubbles": 0,
             "rtdetr_bubbles": 0,
@@ -2612,7 +2621,7 @@ class MangaOCREngine:
     def get_vlm_ocr_backend_name(self) -> str:
         if self._last_vlm_model_used:
             return f"Sniper VLM-OCR ({self._last_vlm_model_used}, вызовов: {self._vlm_ocr_calls_count})"
-        return "Sniper VLM-OCR (Ollama GLM-OCR / Qwen2.5-VL / Gemma3 / Cloud Vision)"
+        return "Sniper VLM-OCR (Ollama Qwen3-VL / GLM-OCR / Qwen2.5-VL / Gemma3 / Cloud Vision)"
 
     def _is_hayai_cached_locally(self) -> bool:
         local_dir = self.models_dir / HF_HAYAI_SUBDIR
@@ -3231,6 +3240,113 @@ class MangaOCREngine:
         detector = YOLO(str(local_weights))
         detector.to(self.device)
         return detector
+
+    def _get_yolo26_seg_detector(self, download_if_missing: bool = False) -> Any | None:
+        """
+        Опциональный сегментационный детектор 2026 года `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (YOLO26s-seg):
+        Находит и сегментирует `frame`, `balloon` и `text` на ч/б манге.
+        Подгружается автоматически, если файл `models/manga109-yolov26s-seg.pt` уже скачан,
+        либо скачивается по запросу при `download_if_missing=True`.
+        """
+        if not self.use_yolo26_seg or YOLO is None:
+            return None
+        if self._yolo26_seg_available is False:
+            return None
+        if self._yolo26_seg_model is not None:
+            return self._yolo26_seg_model
+
+        local_weights = self.models_dir / LOCAL_YOLO26_SEG_FILENAME
+        if not local_weights.exists():
+            if not download_if_missing:
+                return None
+            try:
+                logger.info("Скачивание весов сегментатора %s/%s...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
+                dl_path = hf_hub_download(
+                    repo_id=HF_YOLO26_SEG_REPO,
+                    filename=HF_YOLO26_SEG_FILENAME,
+                    local_dir=str(self.models_dir / "yolo26_seg_cache"),
+                )
+                import shutil
+                shutil.copy2(dl_path, local_weights)
+            except Exception as exc:
+                logger.debug("YOLO26s-seg недоступен (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
+                self._yolo26_seg_available = False
+                return None
+
+        try:
+            seg_model = YOLO(str(local_weights))
+            seg_model.to(self.device)
+            self._yolo26_seg_model = seg_model
+            self._yolo26_seg_available = True
+            logger.info("Сегментатор масок YOLO26s-seg (%s) подключен на %s!", LOCAL_YOLO26_SEG_FILENAME, self.device)
+            return seg_model
+        except Exception as exc:
+            logger.debug("Не удалось загрузить YOLO26s-seg (%s).", exc)
+            self._yolo26_seg_available = False
+            return None
+
+    def _run_yolo26_seg_on_slice(
+        self,
+        slice_np: np.ndarray,
+        y_start: int,
+        img_w: int,
+        img_h: int,
+        active_conf: float,
+        min_box_size: int = 14,
+    ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+        seg_det = self._get_yolo26_seg_detector(download_if_missing=False)
+        if seg_det is None:
+            return [], []
+        seg_bubbles: list[dict[str, Any]] = []
+        seg_texts: list[dict[str, Any]] = []
+        try:
+            res_list = seg_det.predict(
+                source=slice_np,
+                conf=max(0.22, active_conf),
+                iou=self.iou_threshold,
+                imgsz=self.imgsz,
+                device=self.device,
+                verbose=False,
+            )
+            if not res_list or res_list[0].boxes is None:
+                return [], []
+            r0 = res_list[0]
+            names_map = getattr(r0, "names", {}) or {}
+            xyxy_arr = r0.boxes.xyxy.cpu().numpy().tolist()
+            conf_arr = r0.boxes.conf.cpu().numpy().tolist()
+            cls_arr = r0.boxes.cls.cpu().numpy().tolist() if r0.boxes.cls is not None else [0] * len(xyxy_arr)
+            for bbox, conf, cls_id in zip(xyxy_arr, conf_arr, cls_arr):
+                x1, y1, x2, y2 = [int(round(c)) for c in bbox]
+                y1 += y_start
+                y2 += y_start
+                x1 = max(0, min(x1, img_w - 1))
+                y1 = max(0, min(y1, img_h - 1))
+                x2 = max(x1 + 1, min(x2, img_w))
+                y2 = max(y1 + 1, min(y2, img_h))
+                if (x2 - x1) < min_box_size or (y2 - y1) < min_box_size:
+                    continue
+                cls_name = str(names_map.get(int(cls_id), "")).lower()
+                if "balloon" in cls_name or "bubble" in cls_name or int(cls_id) == 2:
+                    seg_bubbles.append(
+                        {
+                            "bbox": [x1, y1, x2, y2],
+                            "confidence": round(float(conf), 4),
+                            "is_free_text": False,
+                            "_source": "yolo26_seg_balloon",
+                        }
+                    )
+                elif "text" in cls_name or int(cls_id) == 1:
+                    seg_texts.append(
+                        {
+                            "bbox": [x1, y1, x2, y2],
+                            "confidence": round(float(conf), 4),
+                            "is_free_text": False,
+                            "_source": "yolo26_seg_text",
+                        }
+                    )
+        except Exception as exc:
+            logger.debug("Ошибка YOLO26s-seg на слайсе: %s", exc)
+        return seg_bubbles, seg_texts
 
     def _get_rtdetr_detector(self) -> tuple[Any, Any] | None:
         """
@@ -6021,7 +6137,11 @@ class MangaOCREngine:
         img_np: np.ndarray,
         min_box_size: int = 16,
         conf_override: float | None = None,
+        pipeline_mode: str | None = None,
     ) -> list[dict[str, Any]]:
+        eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
+        if eff_pmode not in ("fast", "balanced", "accuracy"):
+            eff_pmode = "balanced"
         img_h, img_w = img_np.shape[:2]
         yolo_detections: list[dict[str, Any]] = []
         rtdetr_bubbles: list[dict[str, Any]] = []
@@ -6109,6 +6229,21 @@ class MangaOCREngine:
                     if rt_free:
                         rtdetr_free_texts.extend(rt_free)
 
+                # 2.5. В режиме максимальной точности (accuracy) подключаем сегментатор YOLO26s-seg (если веса доступны)
+                if eff_pmode == "accuracy" and self.use_yolo26_seg:
+                    s_bub, s_txt = self._run_yolo26_seg_on_slice(
+                        slice_np,
+                        y_start=y_start,
+                        img_w=img_w,
+                        img_h=img_h,
+                        active_conf=active_conf,
+                        min_box_size=max(12, min_box_size - 2),
+                    )
+                    if s_bub:
+                        rtdetr_bubbles.extend(s_bub)
+                    if s_txt:
+                        rtdetr_text_bubbles.extend(s_txt)
+
         # Если RT-DETR-v2 пометил текст внутри белого экрана телефона / таблички / записки как `2: text_free`,
         # но штрихи букв лежат внутри чистой белой полости (`_is_text_on_clean_white_cavity`),
         # переводим такой бокс в `rtdetr_text_bubbles`, чтобы он переводился даже в профиле `bubbles_only`!
@@ -6187,14 +6322,15 @@ class MangaOCREngine:
                                 cand_det["bbox"] = [max(bx1, cx1_m - 10), by1, min(bx2, cx2_m + 10), by2]
 
         # 5. Детекция пропущенных или частично обрезанных экранов телефонов, мониторов, писем и наклонных табличек
-        # с множеством глифов на чистой белой полости (включая наклонные экраны, касающиеся краев фрейма)
-        screen_added = self._detect_missed_screen_and_tilted_text_containers(
-            img_np,
-            raw_detections,
-            min_box_size=max(24, min_box_size),
-        )
-        if screen_added:
-            raw_detections.extend(screen_added)
+        # В режиме 'fast' пропускаем тяжелый перебор углов наклона, если нейросети уже нашли облачка на странице
+        if eff_pmode != "fast" or len(raw_detections) == 0:
+            screen_added = self._detect_missed_screen_and_tilted_text_containers(
+                img_np,
+                raw_detections,
+                min_box_size=max(24, min_box_size),
+            )
+            if screen_added:
+                raw_detections.extend(screen_added)
 
         return raw_detections
 
@@ -7034,7 +7170,12 @@ class MangaOCREngine:
         skip_sighs: bool = False,
         skip_sfx: bool = True,
         min_text_length: int = 1,
+        pipeline_mode: str | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
+        eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
+        if eff_pmode not in ("fast", "balanced", "accuracy"):
+            eff_pmode = "balanced"
+        self.pipeline_mode = eff_pmode
         req_lang = (lang or "auto").lower().strip()
         if req_lang not in ("auto", "ja", "ko", "zh"):
             req_lang = "auto"
@@ -7062,6 +7203,7 @@ class MangaOCREngine:
             img_np,
             min_box_size=effective_min_box,
             conf_override=yolo_conf,
+            pipeline_mode=eff_pmode,
         )
 
         if effective_free_text:
@@ -7209,7 +7351,7 @@ class MangaOCREngine:
                         is_free_text=is_free,
                     )
 
-            if not recognized_text and not is_free and has_ink and ink_pixels >= 28 and ocr_coords != [x1, y1, x2, y2]:
+            if eff_pmode != "fast" and not recognized_text and not is_free and has_ink and ink_pixels >= 28 and ocr_coords != [x1, y1, x2, y2]:
                 full_raw_np = img_np[y1:y2, x1:x2]
                 full_padded = self._crop_with_padding(rgb_image, [x1, y1, x2, y2], pad=12)
                 retry_full_txt = self._recognize_crop(
@@ -7221,6 +7363,33 @@ class MangaOCREngine:
                 if retry_full_txt:
                     recognized_text = retry_full_txt
                     ocr_coords = [x1, y1, x2, y2]
+
+            # В режиме 'accuracy' (Макс. точность) автоматически подключаем снайперский VLM-OCR (Qwen3-VL / GLM-OCR),
+            # если в баббле много чернил, но быстрый OCR вернул пустоту или подозрительный короткий шум/SFX
+            if (
+                eff_pmode == "accuracy"
+                and has_ink
+                and ink_pixels >= 36
+                and (
+                    not recognized_text
+                    or (
+                        not is_free
+                        and len(recognized_text.strip()) <= 2
+                        and ink_pixels >= 165
+                        and self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False)
+                    )
+                )
+            ):
+                try:
+                    vlm_resc_txt, _vlm_l, _ = self.recognize_crop_via_vlm(
+                        rgb_image,
+                        [x1, y1, x2, y2],
+                        source_lang=resolved_lang,
+                    )
+                    if vlm_resc_txt and not PUNCT_ONLY_REGEX.match(vlm_resc_txt):
+                        recognized_text = vlm_resc_txt
+                except Exception as vlm_acc_exc:
+                    logger.debug("Пропуск авто-дочитки VLM-OCR в режиме accuracy: %s", vlm_acc_exc)
 
             if not recognized_text:
                 if not has_ink:

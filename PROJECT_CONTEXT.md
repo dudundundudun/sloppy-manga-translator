@@ -173,3 +173,16 @@
   2. **Опциональная интеграция графа `Speaker-to-Bubble` (по архитектуре `ragavsachdeva/magi`, `https://github.com/ragavsachdeva/magi`)**:
      - Сопоставлять луч хвостика баббла с ближайшим персонажем во фрейме (`segment_manga_panels`), группируя бабблы одного персонажа на странице под единым тегом `speaker_id` (`Speaker_A`, `Speaker_B`, `Monologue_Box` для прямоугольных рамок без хвостика).
   3. Передавать `speaker_id` и тип рамки (`[Bubble: dialogue, speaker=A]` vs `[Box: narration/monologue]`) в промпт `OllamaTranslator` (`translator.py`) и связывать с `AutoGlossaryTracker`, чтобы род говорящего удерживался со 100% точностью на протяжении всей главы.
+
+## 10. Обновление v5.2 (3-режимный переключатель + Qwen3 / Qwen3-VL + Image-Aware Context + YOLO26s-seg)
+- **Переключатель режимов работы на главном окне (`⚡ Быстрый`, `⚖️ Оптимальный`, `🎯 Макс. точность`)**:
+  - Добавлен в верхнюю панель (`topbar`) и в левую панель управления (`sidebar-mode-card`) в `web_studio.html`, а также в главное окно `gui_app.py`.
+  - Координирует сразу все 4 этапа пайплайна (`ocr_engine.py`, `cleaner.py`, `translator.py`, `server.py`).
+- **Обновление локального каталога Ollama до моделей 2026 года**:
+  - `qwen3:14b` (с автоматическим отключением тегов рассуждений `/no_think` и `"think": False`) вместо `qwen2.5:14b`.
+  - `qwen3-vl:8b` для снайперского VLM-OCR и мультимодального перевода вместо `qwen2.5vl:7b`.
+- **Image-Aware VLM Context (`build_annotated_page_context_b64`, arXiv:2610.17908)**:
+  - При включенной опции `use_image_context` (или автоматически в режиме `🎯 Макс. точность`) генерирует уменьшенное превью страницы (`768px`) с контрастными номерами бабблов `#1..#N` и передает его в мультимодальные модели (`Qwen3-VL`, `Gemma 3`, `Cloud Vision`) для безошибочного определения пола говорящего, рода глаголов и эмоций сцены.
+- **Поддержка сегментатора `ShadowB/Manga109-panel-balloon-text-yolov26-segmentation` (`YOLO26s-seg`)**:
+  - Подключается в `ocr_engine.py` в режиме `accuracy` при наличии локальных весов `models/manga109-yolov26s-seg.pt`.
+
