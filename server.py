@@ -582,6 +582,11 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     block.setdefault("aspect_ratio", None)
     block.setdefault("shape_hint", None)
     block.setdefault("recommended_max_chars", None)
+    block.setdefault("speaker_id", None)
+    block.setdefault("speaker_tag", None)
+    block.setdefault("box_role", None)
+    block.setdefault("tail_vector", None)
+    block.setdefault("condense_ratio", None)
 
     return block
 
@@ -1043,6 +1048,26 @@ class TextBlock(BaseModel):
     recommended_max_chars: int | None = Field(
         default=None,
         description="Рекомендуемый лимит символов для комфортной верстки в бабле",
+    )
+    speaker_id: str | None = Field(
+        default=None,
+        description="Идентификатор говорящего персонажа на странице (Speaker_A, Speaker_B, Monologue_Box, SFX_Free)",
+    )
+    speaker_tag: str | None = Field(
+        default=None,
+        description="Тег роли и говорящего для LLM ([Bubble: dialogue, speaker=A] или [Box: narration/monologue])",
+    )
+    box_role: str | None = Field(
+        default=None,
+        description="Топологическая роль рамки: dialogue, monologue, sfx",
+    )
+    tail_vector: list[float] | None = Field(
+        default=None,
+        description="Единичный вектор направления хвостика баббла [tail_dx, tail_dy]",
+    )
+    condense_ratio: float | None = Field(
+        default=None,
+        description="Коэффициент горизонтального анаморфного сжатия строк (0.88..1.00) при полиграфическом тайпсеттинге",
     )
     mask_dilate: int | None = Field(
         default=None,

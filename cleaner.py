@@ -99,7 +99,19 @@ LAMA_WEIGHTS_URLS: tuple[str, ...] = (
     "https://github.com/enesmsahin/simple-lama-inpainting/releases/download/v0.1.0/big-lama.pt",
 )
 
-# Реестр проверенных весов TorchScript JIT с резервными зеркалами и криптографическими хэшами
+try:
+    from safetensors.torch import load_file as load_safetensors
+except ImportError:
+    load_safetensors = None  # type: ignore[assignment]
+
+try:
+    import torch.nn as nn
+    import torch.nn.functional as F
+except ImportError:
+    nn = None  # type: ignore[assignment]
+    F = None  # type: ignore[assignment]
+
+# Реестр проверенных весов TorchScript JIT и специализированных чекпойнтов манги
 LAMA_MODEL_REGISTRY: Dict[str, Dict[str, Union[str, List[str]]]] = {
     "anime-manga-big-lama": {
         "filename": "anime-manga-big-lama.pt",
@@ -118,7 +130,78 @@ LAMA_MODEL_REGISTRY: Dict[str, Dict[str, Union[str, List[str]]]] = {
         "md5": "e3aa4aaa15225a33ec84f9f4bc47e500",
         "sha256": "344c77bbcb158f17dd143070d1e789f38a66c04202311ae3a258ef66667a9ea9",
     },
+    "lama-mpe": {
+        "filename": "inpainting_lama_mpe.ckpt",
+        "urls": [
+            "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/inpainting_lama_mpe.ckpt",
+        ],
+        "md5": "",
+        "sha256": "",
+    },
+    "lama-large-512px": {
+        "filename": "lama_large_512px.ckpt",
+        "urls": [
+            "https://github.com/zyddnys/manga-image-translator/releases/download/beta-0.3/lama_large_512px.ckpt",
+        ],
+        "md5": "",
+        "sha256": "",
+    },
 }
+
+COMIC_TEXT_DETECTOR_FILES: Dict[str, str] = {
+    "config.json": "https://huggingface.co/mayocream/comic-text-detector/resolve/main/config.json",
+    "unet.safetensors": "https://huggingface.co/mayocream/comic-text-detector/resolve/main/unet.safetensors",
+}
+_CTD_DOWNLOAD_ATTEMPTED: bool = False
+
+
+def _download_file_no_proxy(url: str, dst_path: Path, timeout: int = 120) -> None:
+    """Скачивает файл в обход системного Fake-IP прокси (NO_PROXY, ProxyHandler({}))."""
+    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/v5.0-Python3.14"})
+    with opener.open(req, timeout=timeout) as resp, open(dst_path, "wb") as out_f:
+        while True:
+            buf = resp.read(1024 * 1024)
+            if not buf:
+                break
+            out_f.write(buf)
+        out_f.flush()
+        os.fsync(out_f.fileno())
+
+
+def ensure_comic_text_detector_weights(
+    models_dir: Union[str, Path] = "models",
+    allow_download: bool = True,
+) -> Path:
+    """
+    Автономно проверяет и загружает веса сегментационной головы U-Net (`unet.safetensors`, `config.json`)
+    из `mayocream/comic-text-detector` (`dmMaze/comic-text-detector`) в `models/comic-text-detector/`.
+    """
+    global _CTD_DOWNLOAD_ATTEMPTED
+    ctd_dir = Path(models_dir) / "comic-text-detector"
+    ctd_dir.mkdir(parents=True, exist_ok=True)
+    unet_path = ctd_dir / "unet.safetensors"
+    if unet_path.is_file() and unet_path.stat().st_size > 64 * 1024:
+        return unet_path
+    if not allow_download or _CTD_DOWNLOAD_ATTEMPTED:
+        return unet_path
+
+    _CTD_DOWNLOAD_ATTEMPTED = True
+    for fname, url in COMIC_TEXT_DETECTOR_FILES.items():
+        fpath = ctd_dir / fname
+        if fpath.is_file() and fpath.stat().st_size > 128:
+            continue
+        tmp_p = fpath.with_suffix(fpath.suffix + ".part")
+        try:
+            logger.info("Загрузка компонента U-Net Stroke Segmenter (%s) из %s...", fname, url)
+            _download_file_no_proxy(url, tmp_p, timeout=25)
+            tmp_p.replace(fpath)
+        except Exception as exc:
+            tmp_p.unlink(missing_ok=True)
+            logger.debug("Компонент U-Net (%s) недоступен онлайн (%s), используется мультимасштабный режим.", fname, exc)
+            break
+    return unet_path
 
 
 def _compute_hashes(file_path: Path) -> Tuple[str, str]:
@@ -137,7 +220,7 @@ def ensure_lama_weights(
 ) -> Path:
     """
     Автономно проверяет наличие и целостность весов LaMa в папке `models/` проекта.
-    При отсутствии файла скачивает его напрямую через `torch.hub.download_url_to_file` / `urllib`
+    При отсутствии файла скачивает его напрямую через `torch.hub.download_url_to_file` / `_download_file_no_proxy`
     и сверяет контрольные суммы MD5 и SHA256.
     """
     if model_variant not in LAMA_MODEL_REGISTRY:
@@ -148,8 +231,8 @@ def ensure_lama_weights(
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = str(spec["filename"])
     model_path = target_dir / filename
-    expected_md5 = str(spec["md5"])
-    expected_sha256 = str(spec["sha256"])
+    expected_md5 = str(spec.get("md5") or "")
+    expected_sha256 = str(spec.get("sha256") or "")
 
     torch_home = Path(os.environ.get("TORCH_HOME", str(Path.home() / ".cache" / "torch")))
     candidate_paths = [
@@ -161,10 +244,12 @@ def ensure_lama_weights(
 
     for cand in candidate_paths:
         if cand.is_file():
+            if not expected_md5 and cand.stat().st_size > 32 * 1024 * 1024:
+                return cand
             actual_md5, actual_sha256 = _compute_hashes(cand)
             if actual_md5 == expected_md5 and actual_sha256 == expected_sha256:
                 return cand
-            if cand == model_path:
+            if cand == model_path and expected_md5:
                 logger.warning(
                     "Поврежденный файл весов %s (MD5=%s, ожидался %s). Перезагрузка...",
                     cand,
@@ -185,27 +270,18 @@ def ensure_lama_weights(
                 try:
                     torch.hub.download_url_to_file(url, str(tmp_path), progress=True)
                 except Exception:
-                    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/Python3.14"})
-                    with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out_f:
-                        while True:
-                            buf = resp.read(1024 * 1024)
-                            if not buf:
-                                break
-                            out_f.write(buf)
+                    _download_file_no_proxy(url, tmp_path, timeout=120)
             else:
-                req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/Python3.14"})
-                with urllib.request.urlopen(req, timeout=120) as resp, open(tmp_path, "wb") as out_f:
-                    while True:
-                        buf = resp.read(1024 * 1024)
-                        if not buf:
-                            break
-                        out_f.write(buf)
+                _download_file_no_proxy(url, tmp_path, timeout=120)
 
-            actual_md5, actual_sha256 = _compute_hashes(tmp_path)
-            if actual_md5 != expected_md5 or actual_sha256 != expected_sha256:
-                raise RuntimeError(
-                    f"Несовпадение контрольной суммы для {url}: MD5={actual_md5} (ожидался {expected_md5})"
-                )
+            if expected_md5:
+                actual_md5, actual_sha256 = _compute_hashes(tmp_path)
+                if actual_md5 != expected_md5 or actual_sha256 != expected_sha256:
+                    raise RuntimeError(
+                        f"Несовпадение контрольной суммы для {url}: MD5={actual_md5} (ожидался {expected_md5})"
+                    )
+            elif tmp_path.stat().st_size < 32 * 1024 * 1024:
+                raise RuntimeError(f"Скачанный файл весов {tmp_path} слишком мал (< 32 МБ)")
 
             tmp_path.replace(model_path)
             logger.info("Веса LaMa успешно загружены и верифицированы: %s", model_path)
@@ -518,6 +594,330 @@ def hermite_wall_bridge(
     return np.round(pts).astype(np.int32)
 
 
+class _DoubleConvBlock(nn.Module if nn is not None else object):
+    def __init__(self, in_ch: int, out_ch: int) -> None:
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_ch),
+            nn.SiLU(inplace=True),
+        )
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        return self.net(x)
+
+
+class ComicTextUNetHead(nn.Module if nn is not None else object):
+    """
+    Легковесная U-Net / SegNet голова попиксельной сегментации штрихов текста
+    по архитектуре dmMaze/comic-text-detector (mayocream/comic-text-detector)
+    на чистом PyTorch + safetensors (без сторонних C++ зависимостей для Python 3.14).
+    """
+
+    def __init__(self, in_channels: int = 3, base_ch: int = 32) -> None:
+        super().__init__()
+        self.enc1 = _DoubleConvBlock(in_channels, base_ch)
+        self.enc2 = _DoubleConvBlock(base_ch, base_ch * 2)
+        self.enc3 = _DoubleConvBlock(base_ch * 2, base_ch * 4)
+        self.bottleneck = _DoubleConvBlock(base_ch * 4, base_ch * 8)
+
+        self.up3 = nn.ConvTranspose2d(base_ch * 8, base_ch * 4, kernel_size=2, stride=2)
+        self.dec3 = _DoubleConvBlock(base_ch * 8, base_ch * 4)
+        self.up2 = nn.ConvTranspose2d(base_ch * 4, base_ch * 2, kernel_size=2, stride=2)
+        self.dec2 = _DoubleConvBlock(base_ch * 4, base_ch * 2)
+        self.up1 = nn.ConvTranspose2d(base_ch * 2, base_ch, kernel_size=2, stride=2)
+        self.dec1 = _DoubleConvBlock(base_ch * 2, base_ch)
+        self.out_conv = nn.Conv2d(base_ch, 1, kernel_size=1)
+
+    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
+        e1 = self.enc1(x)
+        e2 = self.enc2(F.max_pool2d(e1, 2))
+        e3 = self.enc3(F.max_pool2d(e2, 2))
+        b = self.bottleneck(F.max_pool2d(e3, 2))
+
+        d3 = self.up3(b)
+        if d3.shape[-2:] != e3.shape[-2:]:
+            d3 = F.interpolate(d3, size=e3.shape[-2:], mode="bilinear", align_corners=False)
+        d3 = self.dec3(torch.cat([d3, e3], dim=1))
+
+        d2 = self.up2(d3)
+        if d2.shape[-2:] != e2.shape[-2:]:
+            d2 = F.interpolate(d2, size=e2.shape[-2:], mode="bilinear", align_corners=False)
+        d2 = self.dec2(torch.cat([d2, e2], dim=1))
+
+        d1 = self.up1(d2)
+        if d1.shape[-2:] != e1.shape[-2:]:
+            d1 = F.interpolate(d1, size=e1.shape[-2:], mode="bilinear", align_corners=False)
+        d1 = self.dec1(torch.cat([d1, e1], dim=1))
+        return torch.sigmoid(self.out_conv(d1))
+
+
+class ComicTextStrokeSegmenter:
+    """
+    Попиксельный нейросетевой и мультимасштабный сегментатор штрихов текста (Шаг 1 Roadmap v5.0).
+    Подгружает веса `models/comic-text-detector/unet.safetensors` на чистом PyTorch + safetensors
+    и комбинирует отклик U-Net с многомасштабным тензорным фильтром BlackHat / TopHat и подавлением
+    длинных линий лайнарта (волосы, ресницы, стенки баббла) с защитой касающихся стенок глифов.
+    """
+
+    def __init__(
+        self,
+        models_dir: Union[str, Path] = "models",
+        device: Optional[str] = None,
+    ) -> None:
+        self.models_dir = Path(models_dir)
+        has_cuda = bool(torch is not None and torch.cuda.is_available())
+        self.device = torch.device(device or ("cuda" if has_cuda else "cpu")) if torch is not None else None
+        self.model: Optional[ComicTextUNetHead] = None
+        self._has_pretrained_weights: bool = False
+        self._init_done: bool = False
+
+    def _lazy_init(self) -> None:
+        if self._init_done:
+            return
+        self._init_done = True
+        if torch is None or nn is None:
+            return
+        try:
+            unet_path = ensure_comic_text_detector_weights(self.models_dir, allow_download=False)
+            if load_safetensors is not None and unet_path.is_file():
+                self.model = ComicTextUNetHead(in_channels=3, base_ch=32).to(self.device)
+                sd = load_safetensors(str(unet_path), device=str(self.device))
+                missing, _ = self.model.load_state_dict(sd, strict=False)
+                # Активируем нейросетевую ветку только если выходная голова out_conv и основные блоки загружены из весов
+                if "out_conv.weight" not in missing and len(missing) <= 4:
+                    self._has_pretrained_weights = True
+                    self.model.eval()
+                else:
+                    self.model = None
+        except Exception as exc:
+            logger.debug("Инициализация U-Net Stroke Segmenter переключена в гибридный режим: %s", exc)
+            self.model = None
+
+    @_torch_inference_mode()
+    def predict_stroke_mask(
+        self,
+        roi_rgb: np.ndarray,
+        text_bbox_rel: Optional[Tuple[int, int, int, int]] = None,
+    ) -> np.ndarray:
+        """
+        Возвращает попиксельную карту вероятностей штрихов `neural_stroke_mask`: uint8 [0..255] размера (H, W).
+        """
+        if roi_rgb is None or roi_rgb.size == 0:
+            return np.zeros((1, 1), dtype=np.uint8)
+        self._lazy_init()
+
+        H, W = roi_rgb.shape[:2]
+        gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY) if roi_rgb.ndim == 3 else roi_rgb
+
+        # 1. Мультимасштабное морфологическое выделение штрихов (устойчивое к градиентам и цветным подложкам)
+        if text_bbox_rel is not None:
+            tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox_rel]
+            ty1_c, ty2_c = max(0, min(H - 1, ty1)), max(1, min(H, ty2))
+            tx1_c, tx2_c = max(0, min(W - 1, tx1)), max(1, min(W, tx2))
+            tb_slice = (slice(ty1_c, ty2_c), slice(tx1_c, tx2_c))
+        else:
+            tb_slice = (
+                slice(max(0, int(0.15 * H)), max(1, int(0.85 * H))),
+                slice(max(0, int(0.15 * W)), max(1, int(0.85 * W))),
+            )
+
+        se_small = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+        se_med = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        bhat = np.maximum(
+            cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, se_small),
+            cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, se_med),
+        )
+        that = np.maximum(
+            cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, se_small),
+            cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, se_med),
+        )
+        sub_b = bhat[tb_slice]
+        sub_t = that[tb_slice]
+        p90_b = float(np.percentile(sub_b if sub_b.size > 0 else bhat, 90))
+        p90_t = float(np.percentile(sub_t if sub_t.size > 0 else that, 90))
+        stroke_energy = bhat.astype(np.float32) if p90_b >= p90_t else that.astype(np.float32)
+
+        # Нормализация энергетической карты штрихов по текстовому ядру в диапазон [0..1]
+        ref_energy = stroke_energy[tb_slice]
+        p98 = max(25.0, float(np.percentile(ref_energy if ref_energy.size > 0 else stroke_energy, 98)))
+        prob_morph = np.clip((stroke_energy - 10.0) / (p98 - 10.0 + 1e-5), 0.0, 1.0)
+
+        # 2. Если доступны тензорные веса U-Net на PyTorch — смешиваем с предсказанием нейросети
+        if self.model is not None and self._has_pretrained_weights and torch is not None:
+            try:
+                rgb_in = roi_rgb if roi_rgb.ndim == 3 else np.stack([roi_rgb] * 3, axis=-1)
+                pad_h = _ceil_modulo(H, 8)
+                pad_w = _ceil_modulo(W, 8)
+                padded = cv2.copyMakeBorder(rgb_in, 0, pad_h - H, 0, pad_w - W, cv2.BORDER_REFLECT_101)
+                t_in = torch.from_numpy(padded.transpose(2, 0, 1)).float().div_(255.0).unsqueeze(0).to(self.device)
+                if (
+                    self.device.type == "cuda"
+                    and hasattr(torch.cuda, "is_bf16_supported")
+                    and torch.cuda.is_bf16_supported()
+                ):
+                    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                        unet_prob = self.model(t_in)[0, 0, :H, :W].float().cpu().numpy()
+                else:
+                    unet_prob = self.model(t_in)[0, 0, :H, :W].float().cpu().numpy()
+                prob_morph = 0.60 * unet_prob + 0.40 * prob_morph
+            except Exception:
+                pass
+
+        # 3. Подавление протяжённых внешних линий лайнарта (ресницы, пряди волос, рамки),
+        # с защитой глифов внутри текстового ядра (отсекаем перемычки на границе text_bbox_rel)
+        raw_bin = (prob_morph >= 0.36).astype(np.uint8) * 255
+        if text_bbox_rel is not None:
+            tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox_rel]
+            cv2.rectangle(
+                raw_bin,
+                (max(0, tx1), max(0, ty1)),
+                (min(W - 1, tx2), min(H - 1, ty2)),
+                0,
+                1,
+            )
+        n_cc, labels, stats, _ = cv2.connectedComponentsWithStats(raw_bin, connectivity=8)
+        for lbl in range(1, n_cc):
+            cw = int(stats[lbl, cv2.CC_STAT_WIDTH])
+            ch = int(stats[lbl, cv2.CC_STAT_HEIGHT])
+            ca = int(stats[lbl, cv2.CC_STAT_AREA])
+            fill_r = float(ca) / float(max(1, cw * ch))
+            if (cw > 0.68 * W or ch > 0.68 * H) and fill_r <= 0.15:
+                prob_morph[labels == lbl] *= 0.20
+
+        return np.clip(prob_morph * 255.0, 0.0, 255.0).round().astype(np.uint8)
+
+
+def fuse_neural_stroke_and_pcleaner_mask(
+    roi_gray: np.ndarray,
+    morph_mask: np.ndarray,
+    neural_stroke_mask: Optional[np.ndarray],
+    protected_wall_mask: Optional[np.ndarray] = None,
+    text_bbox_guard_mask: Optional[np.ndarray] = None,
+) -> np.ndarray:
+    """
+    Объединяет морфологическую маску с neural_stroke_mask, геодезическим ореолом и защитой стенок.
+    """
+    if neural_stroke_mask is not None and neural_stroke_mask.shape == morph_mask.shape:
+        high_conf_stroke = (neural_stroke_mask >= 145).astype(np.uint8) * 255
+        soft_support = (neural_stroke_mask >= 70).astype(np.uint8) * 255
+        combined = cv2.bitwise_or(
+            high_conf_stroke,
+            cv2.bitwise_and(morph_mask, soft_support),
+        )
+    else:
+        combined = morph_mask.copy()
+
+    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+    dilated_ring = cv2.subtract(cv2.dilate(combined, k3, iterations=2), combined)
+    bright_halo = ((roi_gray >= 238) & (dilated_ring > 0)).astype(np.uint8) * 255
+    combined = cv2.bitwise_or(combined, bright_halo)
+
+    if text_bbox_guard_mask is not None and text_bbox_guard_mask.shape == combined.shape:
+        combined = cv2.bitwise_and(combined, text_bbox_guard_mask)
+
+    if protected_wall_mask is not None and protected_wall_mask.shape == combined.shape:
+        combined = cv2.bitwise_and(combined, cv2.bitwise_not(protected_wall_mask))
+
+    return combined
+
+
+def synthesize_periodic_screentone_rfft2(
+    roi_img: np.ndarray,
+    inpaint_mask: np.ndarray,
+    harmonic_base: np.ndarray,
+    top_k_peaks: int = 10,
+    valid_tone_mask: Optional[np.ndarray] = None,
+) -> Tuple[np.ndarray, float]:
+    """
+    Шаг 3 (Roadmap v5.0): Спектральный 2D-RFFT реконструктор периодической растровой сетки (Screentone Amiten).
+    Если в чистом кольце вокруг маски текста (`valid == 1`) обнаружен периодический пик Брэгга (`fft_pmr > 18.0`),
+    выделяет доминирующие гармоники растровой решетки и синтезирует неразмытую точечную текстуру через `irfft2`,
+    накладывая её на базовый уровень яркости Лапласа–Дирихле `harmonic_base`.
+    Возвращает `(synthesized_img, fft_pmr)`.
+    """
+    is_color = roi_img.ndim == 3
+    H, W = roi_img.shape[:2]
+    mask_bool = inpaint_mask > 0
+    if not np.any(mask_bool) or H < 16 or W < 16:
+        return harmonic_base, 0.0
+
+    roi_gray = cv2.cvtColor(roi_img, cv2.COLOR_RGB2GRAY) if is_color else roi_img
+    harm_gray = (
+        cv2.cvtColor(np.clip(harmonic_base, 0, 255).astype(np.uint8), cv2.COLOR_RGB2GRAY)
+        if is_color
+        else np.clip(harmonic_base, 0, 255).astype(np.uint8)
+    )
+
+    # Чистое кольцо скринтона вокруг маски текста (valid == 1), без захвата черных стенок баббла
+    k_ring = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (17, 17))
+    ring_bool = (cv2.dilate(mask_bool.astype(np.uint8), k_ring, iterations=1) > 0) & (~mask_bool)
+    if valid_tone_mask is not None and valid_tone_mask.shape == ring_bool.shape:
+        clean_ring = ring_bool & (valid_tone_mask > 0)
+        if np.count_nonzero(clean_ring) >= 16:
+            ring_bool = clean_ring
+    if np.count_nonzero(ring_bool) < 20:
+        return harmonic_base, 0.0
+
+    # Заполняем дыру маски гладким гармоническим решением и выделяем высокочастотную решетку точек
+    work_gray = roi_gray.astype(np.float32).copy()
+    work_gray[mask_bool] = harm_gray[mask_bool].astype(np.float32)
+    smooth_carrier = cv2.GaussianBlur(work_gray, (0, 0), sigmaX=2.8, sigmaY=2.8)
+    hf_dots = work_gray - smooth_carrier
+
+    # Двумерное окно Ханна для подавления краевых утечек спектра
+    win_2d = np.hanning(H)[:, None] * np.hanning(W)[None, :]
+    spec = np.fft.rfft2(hf_dots * win_2d)
+    mag = np.abs(spec)
+
+    # Исключаем постоянную составляющую и низкие частоты (период > min(H, W) / 3.5)
+    fy = np.fft.fftfreq(H)[:, None] * H
+    fx = np.fft.rfftfreq(W)[None, :] * W
+    rad = np.hypot(fy, fx)
+    hf_band = rad >= max(3.5, min(H, W) / 14.0)
+    hf_vals = mag[hf_band]
+    if hf_vals.size == 0:
+        return harmonic_base, 0.0
+
+    fft_pmr = float(np.max(hf_vals) / (np.median(hf_vals) + 1e-5))
+    if fft_pmr <= 18.0:
+        return harmonic_base, fft_pmr
+
+    # Выделяем топ-K кристаллических пиков Брэгга решетки скринтона (размывая фазовые провалы маски окрестностью 3x3)
+    mag_masked = np.where(hf_band, mag, 0.0)
+    k_eff = min(top_k_peaks, mag_masked.size)
+    flat_top = np.argpartition(mag_masked.ravel(), -k_eff)[-k_eff:]
+    py_list, px_list = np.unravel_index(flat_top, mag_masked.shape)
+
+    filtered_spec = np.zeros_like(spec)
+    for py, px in zip(py_list, px_list):
+        if mag_masked[py, px] <= 0.0:
+            continue
+        y0, y1 = max(0, int(py) - 1), min(spec.shape[0], int(py) + 2)
+        x0, x1 = max(0, int(px) - 1), min(spec.shape[1], int(px) + 2)
+        filtered_spec[y0:y1, x0:x1] = spec[y0:y1, x0:x1]
+
+    synth_wave = np.fft.irfft2(filtered_spec, s=(H, W)).astype(np.float32)
+
+    # Нормируем амплитуду синтезированной решетки по эталонному кольцу скринтона (valid == 1)
+    ring_std_ref = float(np.std(hf_dots[ring_bool]))
+    ring_std_syn = float(np.std(synth_wave[ring_bool]) + 1e-5)
+    gain = np.clip(ring_std_ref / ring_std_syn, 0.25, 4.0)
+    synth_wave *= gain
+
+    alpha_tone = cv2.GaussianBlur(mask_bool.astype(np.float32), (5, 5), 1.2)
+    if is_color:
+        synth_wave = synth_wave[:, :, None]
+        alpha_tone = alpha_tone[:, :, None]
+
+    harm_f = harmonic_base.astype(np.float32)
+    synthesized = harm_f * (1.0 - alpha_tone) + np.clip(harm_f + synth_wave, 0.0, 255.0) * alpha_tone
+    return np.clip(synthesized, 0.0, 255.0).round().astype(np.uint8), fft_pmr
+
+
 def classify_and_clean_heterogeneous_bubble(
     roi_img: np.ndarray,
     raw_stroke_mask: np.ndarray,
@@ -560,21 +960,33 @@ def classify_and_clean_heterogeneous_bubble(
     val_img = gray_f * valid
 
     win_sz = (int(round(15 * s)) | 1, int(round(15 * s)) | 1)
-    w_sum = np.maximum(cv2.boxFilter(valid, cv2.CV_32F, win_sz), 1e-4)
-    mean_local = cv2.boxFilter(val_img, cv2.CV_32F, win_sz) / w_sum
-    sq_mean_local = cv2.boxFilter(val_img * val_img, cv2.CV_32F, win_sz) / w_sum
+    wide_cls_win = (int(round(45 * s)) | 1, int(round(45 * s)) | 1)
+    w_raw = cv2.boxFilter(valid, cv2.CV_32F, win_sz)
+    w_sum = np.maximum(w_raw, 1e-4)
+    w_wide = np.maximum(cv2.boxFilter(valid, cv2.CV_32F, wide_cls_win), 1e-4)
+
+    mean_15 = cv2.boxFilter(val_img, cv2.CV_32F, win_sz) / w_sum
+    mean_45 = cv2.boxFilter(val_img, cv2.CV_32F, wide_cls_win) / w_wide
+    mean_local = np.where(w_raw > 0.05, mean_15, mean_45)
+
+    sq_15 = cv2.boxFilter(val_img * val_img, cv2.CV_32F, win_sz) / w_sum
+    sq_45 = cv2.boxFilter(val_img * val_img, cv2.CV_32F, wide_cls_win) / w_wide
+    sq_mean_local = np.where(w_raw > 0.05, sq_15, sq_45)
     sigma_local = np.sqrt(np.maximum(0.0, sq_mean_local - mean_local * mean_local))
 
     smooth_bg = cv2.GaussianBlur(gray_f, (5, 5), 1.2)
     hf_res = np.abs(gray_f - smooth_bg) * valid
-    hf_energy = cv2.boxFilter(hf_res, cv2.CV_32F, win_sz) / w_sum
+    hf_15 = cv2.boxFilter(hf_res, cv2.CV_32F, win_sz) / w_sum
+    hf_45 = cv2.boxFilter(hf_res, cv2.CV_32F, wide_cls_win) / w_wide
+    hf_energy = np.where(w_raw > 0.05, hf_15, hf_45)
 
     k3 = np.ones((3, 3), dtype=np.uint8)
     local_max = (cv2.dilate(roi_gray, k3) == roi_gray) & (roi_gray > mean_local + 8.0) & (inpaint_mask == 0)
     local_min = (cv2.erode(roi_gray, k3) == roi_gray) & (roi_gray < mean_local - 8.0) & (inpaint_mask == 0)
-    extrema_density = (
-        cv2.boxFilter((local_max | local_min).astype(np.float32), cv2.CV_32F, win_sz) / w_sum
-    )
+    ext_f = (local_max | local_min).astype(np.float32)
+    ext_15 = cv2.boxFilter(ext_f, cv2.CV_32F, win_sz) / w_sum
+    ext_45 = cv2.boxFilter(ext_f, cv2.CV_32F, wide_cls_win) / w_wide
+    extrema_density = np.where(w_raw > 0.05, ext_15, ext_45)
 
     # Карта режимов: 0 = Flat (A), 1 = Smooth Gradient (B), 2 = Screentone Amiten (C), 3 = Line Art (D)
     regime_map = np.zeros((H, W), dtype=np.uint8)
@@ -618,6 +1030,20 @@ def classify_and_clean_heterogeneous_bubble(
                 + harmonic_out[ys_m, xs_m + 1]
             )
 
+    # 3.5. Шаг 3 (v5.0): Спектральный 2D-RFFT синтез периодического скринтона (Amiten) для Режима C
+    tone_mask_u8 = ((regime_map == 2) & m_bool).astype(np.uint8) * 255
+    valid_tone_ring = ((regime_map == 2) & (~m_bool) & (protected_wall_mask == 0)).astype(np.uint8) * 255
+    fft_pmr_val = 0.0
+    if int(np.count_nonzero(tone_mask_u8)) >= 12:
+        synth_res, fft_pmr_val = synthesize_periodic_screentone_rfft2(
+            roi_img=roi_img,
+            inpaint_mask=tone_mask_u8,
+            harmonic_base=harmonic_out,
+            valid_tone_mask=valid_tone_ring,
+        )
+        if fft_pmr_val > 18.0:
+            harmonic_out[tone_mask_u8 > 0] = synth_res[tone_mask_u8 > 0].astype(np.float32)
+
     # 4. Гибридное бесшовное слияние с LaMa для зон Режима C (Скринтон) и Режима D (Лайнарт)
     need_lama_mask = ((regime_map >= 2) & m_bool).astype(np.uint8) * 255
     num_cd_pixels = int(np.count_nonzero(need_lama_mask))
@@ -638,7 +1064,12 @@ def classify_and_clean_heterogeneous_bubble(
             lama_rgb = lama_runner(sub_rgb, sub_mask)
             lama_patch = cv2.cvtColor(lama_rgb, cv2.COLOR_RGB2GRAY) if lama_rgb.ndim == 3 else lama_rgb
 
-        alpha_cd = cv2.GaussianBlur((regime_map[ly1:ly2, lx1:lx2] >= 2).astype(np.float32), (9, 9), 3.0)
+        raw_cd_weight = (regime_map[ly1:ly2, lx1:lx2] >= 2).astype(np.float32)
+        if fft_pmr_val > 18.0:
+            # На периодическом скринтоне Брэгга удерживаем кристаллическую фазу RFFT-решетки (65% RFFT + 35% LaMa)
+            is_sub_tone = regime_map[ly1:ly2, lx1:lx2] == 2
+            raw_cd_weight = np.where(is_sub_tone, 0.35, raw_cd_weight)
+        alpha_cd = cv2.GaussianBlur(raw_cd_weight, (9, 9), 3.0)
         if is_color:
             alpha_cd = alpha_cd[:, :, None]
 
@@ -793,9 +1224,11 @@ class SotaMangaCleaner:
         self,
         config: Optional[CleanerConfig] = None,
         lama_inpainter: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]] = None,
+        stroke_segmenter: Optional[ComicTextStrokeSegmenter] = None,
     ) -> None:
         self.cfg = config or CleanerConfig()
         self.lama_inpainter = lama_inpainter
+        self.stroke_segmenter = stroke_segmenter
 
     def clean_region(
         self,
@@ -836,9 +1269,12 @@ class SotaMangaCleaner:
             cavity_roi = np.zeros((rh, rw), dtype=np.uint8)
             wall_roi = np.zeros((rh, rw), dtype=np.uint8)
 
-        local_neural = (
-            neural_stroke_mask[ry1:ry2, rx1:rx2] if neural_stroke_mask is not None else None
-        )
+        if neural_stroke_mask is not None:
+            local_neural = neural_stroke_mask[ry1:ry2, rx1:rx2]
+        elif self.stroke_segmenter is not None:
+            local_neural = self.stroke_segmenter.predict_stroke_mask(roi_rgb, text_bbox_rel=l_tb)
+        else:
+            local_neural = None
         stroke_core, obstacle_roi, median_sw = self._segment_strokes_and_obstacles(
             roi_rgb, l_tb, l_bb, cavity_roi, wall_roi, local_neural
         )
@@ -999,24 +1435,27 @@ class SotaMangaCleaner:
         tx1, ty1, tx2, ty2 = l_tb
         tw_box, th_box = max(1, tx2 - tx1), max(1, ty2 - ty1)
 
-        if local_neural is not None and np.any(local_neural > 127):
-            candidate_bin = (local_neural > 127).astype(np.uint8) * 255
-        else:
-            k_bh = int(np.clip(min(tw_box, th_box) // 6, 5, 25)) | 1
-            se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_bh, k_bh))
-            bhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, se)
-            that = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, se)
-            tb_bhat = bhat[ty1:ty2, tx1:tx2]
-            tb_that = that[ty1:ty2, tx1:tx2]
-            if tb_bhat.size > 0 and tb_that.size > 0:
-                polarity_map = (
-                    bhat if np.percentile(tb_bhat, 90) >= np.percentile(tb_that, 90) else that
-                )
-            else:
-                polarity_map = bhat
-            _, candidate_bin = cv2.threshold(
-                polarity_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        k_bh = int(np.clip(min(tw_box, th_box) // 6, 5, 25)) | 1
+        se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (k_bh, k_bh))
+        bhat = cv2.morphologyEx(gray, cv2.MORPH_BLACKHAT, se)
+        that = cv2.morphologyEx(gray, cv2.MORPH_TOPHAT, se)
+        tb_bhat = bhat[ty1:ty2, tx1:tx2]
+        tb_that = that[ty1:ty2, tx1:tx2]
+        if tb_bhat.size > 0 and tb_that.size > 0:
+            polarity_map = (
+                bhat if np.percentile(tb_bhat, 90) >= np.percentile(tb_that, 90) else that
             )
+        else:
+            polarity_map = bhat
+        _, morph_bin = cv2.threshold(
+            polarity_map, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+        )
+        if local_neural is not None and local_neural.shape == morph_bin.shape and np.any(local_neural >= 90):
+            high_neural = (local_neural >= 145).astype(np.uint8) * 255
+            soft_neural = (local_neural >= 75).astype(np.uint8) * 255
+            candidate_bin = cv2.bitwise_or(high_neural, cv2.bitwise_and(morph_bin, soft_neural))
+        else:
+            candidate_bin = morph_bin
 
         candidate_bin = cv2.bitwise_and(candidate_bin, cv2.bitwise_not(wall_roi))
 
@@ -2017,9 +2456,14 @@ class BubbleCleaner:
                     )
                     self.lama_model = None
 
+        self.stroke_segmenter = ComicTextStrokeSegmenter(
+            models_dir=self.models_dir,
+            device=self.device,
+        )
         self.sota_cleaner = SotaMangaCleaner(
             config=self.cleaner_cfg,
             lama_inpainter=self._invoke_lama_np if self.lama_model is not None else None,
+            stroke_segmenter=self.stroke_segmenter,
         )
 
     def _invoke_lama_np(self, img_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
@@ -2652,6 +3096,28 @@ class BubbleCleaner:
 
                 ink_thresh = max(165, int(p75 - 14))
                 dark_all = (roi_gray < ink_thresh).astype(np.uint8) * 255
+                sharp_core_ink = (roi_gray < min(145, int(p75 - 45))).astype(np.uint8) * 255
+                if self.stroke_segmenter is not None:
+                    tb_rel = (
+                        (
+                            max(0, tb_box[0] - ix1),
+                            max(0, tb_box[1] - iy1),
+                            min(rw, tb_box[2] - ix1),
+                            min(rh, tb_box[3] - iy1),
+                        )
+                        if has_valid_tb
+                        else (cx1_r, cy1_r, cx2_r, cy2_r)
+                    )
+                    neural_prob = self.stroke_segmenter.predict_stroke_mask(roi_rgb, text_bbox_rel=tb_rel)
+                    if neural_prob.shape == dark_all.shape and np.any(neural_prob >= 95):
+                        neural_support = cv2.dilate(
+                            (neural_prob >= 65).astype(np.uint8) * 255,
+                            np.ones((3, 3), np.uint8),
+                        )
+                        dark_all = cv2.bitwise_or(
+                            sharp_core_ink,
+                            cv2.bitwise_and(dark_all, neural_support),
+                        )
                 binary = cv2.bitwise_and(dark_all, cv2.bitwise_and(interior_mask, text_zone_mask))
 
                 num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
@@ -2838,6 +3304,14 @@ class BubbleCleaner:
                 _, binary = cv2.threshold(
                     roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
                 )
+            if self.stroke_segmenter is not None:
+                neural_free = self.stroke_segmenter.predict_stroke_mask(roi_rgb)
+                if neural_free.shape == binary.shape and np.any(neural_free >= 95):
+                    binary = fuse_neural_stroke_and_pcleaner_mask(
+                        roi_gray=roi_gray,
+                        morph_mask=binary,
+                        neural_stroke_mask=neural_free,
+                    )
 
             num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
             clean_roi_mask = np.zeros_like(binary)

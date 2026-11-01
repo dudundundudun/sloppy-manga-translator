@@ -33,6 +33,8 @@
 
 from __future__ import annotations
 
+import math
+
 import base64
 import io
 import logging
@@ -886,6 +888,228 @@ def sort_page_blocks_reading_order_dag(
                     in_d[nxt] -= 1
 
     return sorted_blocks
+
+
+def _detect_bubble_tail_vector(
+    page_gray: np.ndarray,
+    bubble_bbox: Tuple[int, int, int, int] | List[int],
+    is_free_text: bool = False,
+) -> Dict[str, Any]:
+    """
+    Шаг 4.1 (Roadmap v5.0): Детектор вектора хвостика баббла (_detect_bubble_tail_vector).
+    По контуру внешней стенки/чаши баббла cnt находит острый выступ хвостика
+    (через cv2.convexityDefects и локальный максимум кривизны за пределами вписанного эллипса чаши)
+    и вычисляет единичный луч направления хвостика (tail_dx, tail_dy) и координаты острия tip_xy.
+    Для прямоугольных рамок без хвостика возвращает box_role='monologue'.
+    """
+    if is_free_text or page_gray is None or page_gray.size == 0:
+        return {
+            "has_tail": False,
+            "box_role": "sfx" if is_free_text else "dialogue",
+            "tail_dx": 0.0,
+            "tail_dy": 0.0,
+            "tip_xy": None,
+        }
+
+    H, W = page_gray.shape[:2]
+    bx1, by1, bx2, by2 = [int(round(float(v))) for v in bubble_bbox[:4]]
+    bw, bh = max(8, bx2 - bx1), max(8, by2 - by1)
+    pad = max(12, int(round(min(bw, bh) * 0.18)))
+    rx1, ry1 = max(0, bx1 - pad), max(0, by1 - pad)
+    rx2, ry2 = min(W, bx2 + pad), min(H, by2 + pad)
+    roi = page_gray[ry1:ry2, rx1:rx2]
+    if roi.ndim == 3:
+        roi = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY)
+    rh, rw = roi.shape[:2]
+    if rh < 16 or rw < 16:
+        return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    # Выделяем светлую чашу баббла вместе с её хвостиком
+    _, white_bin = cv2.threshold(roi, 215, 255, cv2.THRESH_BINARY)
+    num_cc, labels, stats, _ = cv2.connectedComponentsWithStats(white_bin, connectivity=4)
+    cx_roi, cy_roi = (bx1 + bx2) * 0.5 - rx1, (by1 + by2) * 0.5 - ry1
+    center_lbl = int(labels[int(np.clip(cy_roi, 0, rh - 1)), int(np.clip(cx_roi, 0, rw - 1))])
+    if center_lbl <= 0:
+        return {"has_tail": False, "box_role": "monologue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    cav_mask = ((labels == center_lbl) * 255).astype(np.uint8)
+    cnts, _ = cv2.findContours(cav_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    cnt = max(cnts, key=cv2.contourArea)
+    area = float(cv2.contourArea(cnt))
+    peri = float(cv2.arcLength(cnt, True))
+    kx, ky, kw, kh = cv2.boundingRect(cnt)
+    extent = area / float(max(1, kw * kh))
+
+    hull_pts = cv2.convexHull(cnt)
+    hull_area = float(cv2.contourArea(hull_pts)) if hull_pts is not None else area
+    solidity = area / max(1.0, hull_area)
+
+    # Дополнительно проверяем наличие вогнутых сочленений у основания хвостика через cv2.convexityDefects
+    has_neck_defect = False
+    try:
+        hull_idx = cv2.convexHull(cnt, returnPoints=False)
+        if hull_idx is not None and hull_idx.size > 3:
+            hull_sorted = np.sort(np.asarray(hull_idx, dtype=np.int32).reshape(-1)).reshape(-1, 1)
+            defects = cv2.convexityDefects(cnt, hull_sorted)
+            if defects is not None:
+                def_arr = np.asarray(defects, dtype=np.int32).reshape(-1, 4)
+                if np.any(def_arr[:, 3] / 256.0 >= 2.5):
+                    has_neck_defect = True
+    except Exception:
+        pass
+
+    # Проверка на прямоугольную рамку повествования / монолога (4 прямых угла и высокий extent, либо выпуклый прямоугольник без вогнутой шейки)
+    approx = cv2.approxPolyDP(cnt, 0.028 * peri, True)
+    if (len(approx) == 4 and extent >= 0.82) or (extent >= 0.85 and solidity >= 0.96 and not has_neck_defect):
+        return {"has_tail": False, "box_role": "monologue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    if len(cnt) < 6 or (not has_neck_defect and solidity >= 0.955):
+        return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    try:
+        (ecx, ecy), (ma_w, ma_h), angle_deg = cv2.fitEllipseDirect(cnt)
+    except Exception:
+        ecx, ecy, ma_w, ma_h, angle_deg = float(kx + kw * 0.5), float(ky + kh * 0.5), float(kw), float(kh), 0.0
+
+    a = max(4.0, ma_w * 0.5)
+    b = max(4.0, ma_h * 0.5)
+    theta = np.deg2rad(angle_deg)
+    cos_t, sin_t = float(np.cos(theta)), float(np.sin(theta))
+
+    pts = cnt.reshape(-1, 2).astype(np.float32)
+    dx = pts[:, 0] - ecx
+    dy = pts[:, 1] - ecy
+    u = dx * cos_t + dy * sin_t
+    v = -dx * sin_t + dy * cos_t
+    ell_norm_dist = np.sqrt((u / a) ** 2 + (v / b) ** 2)
+
+    tip_idx = int(np.argmax(ell_norm_dist))
+    max_ell_r = float(ell_norm_dist[tip_idx])
+    if max_ell_r < (1.14 if has_neck_defect else 1.22):
+        return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    n_pts = len(pts)
+    step = max(2, n_pts // 20)
+    p_prev = pts[(tip_idx - step) % n_pts]
+    p_tip = pts[tip_idx]
+    p_next = pts[(tip_idx + step) % n_pts]
+    v1 = p_prev - p_tip
+    v2 = p_next - p_tip
+    cos_ang = float(
+        np.clip(np.dot(v1, v2) / (float(np.linalg.norm(v1)) * float(np.linalg.norm(v2)) + 1e-6), -1.0, 1.0)
+    )
+    tip_angle_deg = float(np.rad2deg(np.arccos(cos_ang)))
+    if tip_angle_deg > 120.0:
+        return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+
+    vx = float(p_tip[0] - ecx)
+    vy = float(p_tip[1] - ecy)
+    vlen = float(np.hypot(vx, vy)) + 1e-6
+    tip_abs_x = float(rx1 + p_tip[0])
+    tip_abs_y = float(ry1 + p_tip[1])
+    return {
+        "has_tail": True,
+        "box_role": "dialogue",
+        "tail_dx": round(vx / vlen, 4),
+        "tail_dy": round(vy / vlen, 4),
+        "tip_xy": [round(tip_abs_x, 1), round(tip_abs_y, 1)],
+    }
+
+
+def assign_speaker_diarization_magi_graph(
+    blocks: List[Dict[str, Any]],
+    page_bgr: Optional[np.ndarray] = None,
+) -> List[Dict[str, Any]]:
+    """
+    Шаг 4.2 (Roadmap v5.0): Граф привязки речевых бабблов к говорящим персонажам (Speaker-to-Bubble
+    по архитектуре ragavsachdeva/magi).
+    Сопоставляет луч хвостика баббла `(tail_dx, tail_dy)` с якорными позициями персонажей внутри фрейма
+    (`segment_manga_panels`), группируя реплики одного персонажа под единым `speaker_id`
+    (`Speaker_A`, `Speaker_B`, ..., либо `Monologue_Box` для прямоугольных рамок без хвостика).
+    """
+    if not blocks:
+        return blocks
+
+    page_gray = (
+        cv2.cvtColor(page_bgr, cv2.COLOR_BGR2GRAY)
+        if (page_bgr is not None and page_bgr.ndim == 3)
+        else page_bgr
+    )
+    panels = segment_manga_panels(page_bgr) if (page_bgr is not None and page_bgr.size > 0) else []
+
+    speaker_anchors: List[Tuple[int, float, float, str]] = []  # (panel_id, target_x, target_y, speaker_id)
+    alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+
+    for blk in blocks:
+        is_free = bool(blk.get("is_free_text", False))
+        bx1, by1, bx2, by2 = [int(round(float(c))) for c in blk["bbox"][:4]]
+        bw, bh = max(1, bx2 - bx1), max(1, by2 - by1)
+        bcx, bcy = 0.5 * (bx1 + bx2), 0.5 * (by1 + by2)
+
+        tail_meta = (
+            _detect_bubble_tail_vector(page_gray, (bx1, by1, bx2, by2), is_free_text=is_free)
+            if page_gray is not None
+            else {"has_tail": False, "box_role": "sfx" if is_free else "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+        )
+        box_role = str(tail_meta.get("box_role") or "dialogue")
+        blk["box_role"] = box_role
+        if tail_meta.get("has_tail"):
+            blk["tail_vector"] = [float(tail_meta["tail_dx"]), float(tail_meta["tail_dy"])]
+        else:
+            blk["tail_vector"] = None
+
+        if is_free:
+            blk["speaker_id"] = "SFX_Free"
+            blk["speaker_tag"] = "[SFX / Background Text]"
+            continue
+        if box_role == "monologue":
+            blk["speaker_id"] = "Monologue_Box"
+            blk["speaker_tag"] = "[Box: narration/monologue]"
+            continue
+
+        # Находим фрейм (панель), которому принадлежит баббл
+        panel_id = 0
+        for p in panels:
+            px1, py1, px2, py2 = p["bbox"]
+            if px1 <= bcx <= px2 and py1 <= bcy <= py2:
+                panel_id = int(p["id"])
+                break
+
+        # Проецируем луч хвостика на точку расположения головы/фигуры говорящего персонажа во фрейме
+        if tail_meta.get("has_tail") and tail_meta.get("tip_xy") is not None:
+            tx, ty = float(tail_meta["tip_xy"][0]), float(tail_meta["tip_xy"][1])
+            reach = max(bw, bh) * 0.85
+            char_x = tx + float(tail_meta["tail_dx"]) * reach
+            char_y = ty + float(tail_meta["tail_dy"]) * reach
+        else:
+            # Для баббла без видимого хвостика (сдвоенный/продолжение реплики) ориентируемся по стороне фрейма
+            char_x = bcx
+            char_y = bcy + bh * 0.55
+
+        matched_speaker: Optional[str] = None
+        cluster_tol = max(bw, bh) * 1.55
+        for p_id, ax, ay, spk_label in speaker_anchors:
+            if p_id == panel_id and math.hypot(char_x - ax, char_y - ay) <= cluster_tol:
+                matched_speaker = spk_label
+                break
+            # Если в соседнем фрейме персонаж стоит на той же относительной горизонтальной позиции (слева/справа)
+            if p_id != panel_id and abs(char_x - ax) <= max(bw, 90) * 0.85 and tail_meta.get("has_tail"):
+                matched_speaker = spk_label
+                break
+
+        if matched_speaker is None:
+            idx_s = min(len(speaker_anchors), len(alphabet) - 1)
+            matched_speaker = f"Speaker_{alphabet[idx_s]}"
+            speaker_anchors.append((panel_id, char_x, char_y, matched_speaker))
+
+        short_letter = matched_speaker.split("_")[-1]
+        blk["speaker_id"] = matched_speaker
+        blk["speaker_tag"] = f"[Bubble: dialogue, speaker={short_letter}]"
+
+    return blocks
 
 
 # ==============================================================================
@@ -7105,6 +7329,8 @@ class MangaOCREngine:
                 skipped_by_filter,
                 len(output_blocks),
             )
+
+        output_blocks = assign_speaker_diarization_magi_graph(output_blocks, page_bgr=img_np)
 
         zero_reason_code = ""
         zero_reason_ru = ""

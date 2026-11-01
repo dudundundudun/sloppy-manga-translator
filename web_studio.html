@@ -7734,6 +7734,14 @@ Step 1:`;
         if (!isDel && blk.font_too_small_warning) {
           qh += `<span class="qa-badge-small-font" title="Мелкий кегль (<72% от нормы страницы)">🔍 Мелкий кегль</span>`;
         }
+        if (blk.speaker_id && blk.speaker_id !== "SFX_Free") {
+          const spkLbl = blk.speaker_id === "Monologue_Box" ? "📖 Монолог" : `🗣️ ${blk.speaker_id.replace("Speaker_", "Говорящий ")}`;
+          qh += `<span class="romaji-copy-btn" style="cursor:default; pointer-events:none; opacity:0.9;" title="${blk.speaker_tag || blk.speaker_id}">${spkLbl}</span>`;
+        }
+        if (!isDel && blk.condense_ratio && blk.condense_ratio < 0.995) {
+          const cPct = Math.round(Number(blk.condense_ratio) * 100);
+          qh += `<span class="romaji-copy-btn" style="cursor:default; pointer-events:none; opacity:0.9;" title="Применено анаморфное микро-сжатие строк (${cPct}%) для сохранения крупного кегля">↔️ Condense ${cPct}%</span>`;
+        }
         qaEl.innerHTML = qh;
       }
       document.getElementById("popup-orig-text").textContent = `🇯🇵 ${blk.original_text || "—"}`;
@@ -8345,7 +8353,15 @@ Step 1:`;
         const isMultiSel = selectedBlockIds && selectedBlockIds.size >= 2 && selectedBlockIds.has(b.id);
         const isOvf = !isDel && Boolean(b.is_overflowing);
         const isSmallFs = !isDel && Boolean(b.font_too_small_warning);
+        const spkBadgeHtml = (b.speaker_id && b.speaker_id !== "SFX_Free")
+          ? `<span class="romaji-copy-btn" style="cursor:default; pointer-events:none; font-size:10px; padding:1px 6px;" title="${escapeHtml(b.speaker_tag || b.speaker_id)}">${b.speaker_id === "Monologue_Box" ? "📖 Монолог" : "🗣️ " + escapeHtml(b.speaker_id.replace("Speaker_", "Spk "))}</span>`
+          : "";
+        const condBadgeHtml = (!isDel && b.condense_ratio && Number(b.condense_ratio) < 0.995)
+          ? `<span class="romaji-copy-btn" style="cursor:default; pointer-events:none; font-size:10px; padding:1px 6px;" title="Анаморфное горизонтальное сжатие строки (Полиграфический тайпсеттинг 2.0)">↔️ ${Math.round(Number(b.condense_ratio) * 100)}%</span>`
+          : "";
         const qaBadgesHtml =
+          spkBadgeHtml +
+          condBadgeHtml +
           (isOvf ? `<span class="qa-badge-overflow" title="Текст не помещается в безопасную зону бабла — нажмите «✂️ Сократить под бабл (AI)» или выберите режим Вариант Б/В">⚠️ Выход за границы</span>` : "") +
           (isSmallFs ? `<span class="qa-badge-small-font" title="Кегль этого бабла (${b.rendered_font_size || "?"}px) меньше 72% от базового кегля страницы (${b.page_base_font_size || "?"}px) — рекомендуется сократить фразу">🔍 Мелкий кегль (&lt;72% от нормы страницы)</span>` : "");
         return (

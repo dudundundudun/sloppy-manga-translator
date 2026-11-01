@@ -427,10 +427,17 @@ class AutoGlossaryTracker:
     """
     def __init__(self, max_prompt_entries: int = 18, rolling_window_size: int = 5):
         self.entries: dict[str, CharacterState] = {}
+        self.speaker_gender_locks: dict[str, str] = {}
         self.max_prompt_entries = max_prompt_entries
         self.rolling_window_size = rolling_window_size
         self.rolling_context: list[tuple[str, str]] = []
         self._lock = asyncio.Lock()
+
+    def bind_speaker_gender(self, speaker_id: str, gender: str, char_name: str = "") -> None:
+        if speaker_id and gender.upper() in ("M", "F"):
+            self.speaker_gender_locks[speaker_id] = (
+                f"{speaker_id}={char_name}({gender.upper()})" if char_name else f"{speaker_id}=({gender.upper()})"
+            )
 
     async def ingest_piggybacked_meta(self, meta_strings: list[str], batch_idx: int = 0) -> None:
         async with self._lock:
@@ -505,6 +512,9 @@ class AutoGlossaryTracker:
                     for e in selected
                 ]
                 lines.append("[GLOSSARY_LOCK] " + " | ".join(items))
+            if self.speaker_gender_locks:
+                spk_items = [v for v in self.speaker_gender_locks.values()]
+                lines.append("[SPEAKER_DIARIZATION] " + " | ".join(spk_items))
             if self.rolling_context:
                 ctx = [f"{s} -> {d}" for s, d in self.rolling_context]
                 lines.append("[PREV_LINES] " + " // ".join(ctx))
@@ -522,6 +532,7 @@ class AutoGlossaryTracker:
                 }
                 for k, v in self.entries.items()
             },
+            "speaker_gender_locks": dict(self.speaker_gender_locks),
             "rolling_context": self.rolling_context,
         }
 
@@ -666,14 +677,18 @@ def build_qwen_local_system_prompt(source_lang: str, target_lang: str, header: s
     )
 
 SHAPE_META_TAG_REGEX = re.compile(r"\[\s*shape\s*:[^\]]*\]", flags=re.IGNORECASE)
+SPEAKER_META_TAG_REGEX = re.compile(
+    r"\[\s*(?:Bubble|Box|SFX)\s*:[^\]]*\]", flags=re.IGNORECASE
+)
 
 
 def compute_bubble_geometry_budget(block: dict[str, Any]) -> dict[str, Any]:
     """
-    БЛОК 5: Вычисляет геометрический бюджет бабла для контроля длины перевода:
+    БЛОК 5 + Шаг 4.2 (v5.0): Вычисляет геометрический бюджет баббла и тег говорящего персонажа:
     - `aspect_ratio = round(box_w / max(1, box_h), 2)`
     - `shape_hint`: `"narrow_vertical"` (< 0.65), `"round_oval"` (0.65..1.45), `"wide_horizontal"` (> 1.45)
     - `recommended_max_chars`: `int((box_w * box_h) / (18 * 18) * 1.3)`
+    - `speaker_tag`: `[Bubble: dialogue, speaker=A]` или `[Box: narration/monologue]`
     """
     raw_bbox = block.get("bbox") or block.get("clean_bbox") or [0, 0, 120, 120]
     if isinstance(raw_bbox, (list, tuple)) and len(raw_bbox) >= 4:
@@ -695,7 +710,18 @@ def compute_bubble_geometry_budget(block: dict[str, Any]) -> dict[str, Any]:
         shape_hint = "wide_horizontal"
 
     recommended_max_chars = max(8, min(220, int((box_w * box_h) / (18 * 18) * 1.3)))
-    meta_tag = f"[shape: {shape_hint}, max_chars: ~{recommended_max_chars}]"
+    speaker_tag = str(block.get("speaker_tag") or "").strip()
+    if not speaker_tag:
+        spk_id = str(block.get("speaker_id") or "").strip()
+        if spk_id == "Monologue_Box" or str(block.get("style_preset") or "") == "narration" or str(block.get("box_role") or "") == "monologue":
+            speaker_tag = "[Box: narration/monologue]"
+        elif spk_id.startswith("Speaker_"):
+            speaker_tag = f"[Bubble: dialogue, speaker={spk_id.split('_')[-1]}]"
+    if speaker_tag:
+        block["speaker_tag"] = speaker_tag
+
+    geom_part = f"[shape: {shape_hint}, max_chars: ~{recommended_max_chars}]"
+    meta_tag = f"{speaker_tag} {geom_part}".strip() if speaker_tag else geom_part
     block["aspect_ratio"] = aspect_ratio
     block["shape_hint"] = shape_hint
     block["recommended_max_chars"] = recommended_max_chars
@@ -703,6 +729,7 @@ def compute_bubble_geometry_budget(block: dict[str, Any]) -> dict[str, Any]:
         "aspect_ratio": aspect_ratio,
         "shape_hint": shape_hint,
         "recommended_max_chars": recommended_max_chars,
+        "speaker_tag": speaker_tag,
         "meta_tag": meta_tag,
     }
 
@@ -3969,6 +3996,7 @@ class OllamaTranslator:
             text = kana_to_romaji(text)
         from renderer import normalize_manga_special_symbols
         text = SHAPE_META_TAG_REGEX.sub("", text).strip()
+        text = SPEAKER_META_TAG_REGEX.sub("", text).strip()
         normalized = normalize_manga_special_symbols(text).translate(FULLWIDTH_PUNCT_MAP)
         no_cjk = CJK_REGEX.sub("", normalized)
         no_sym = CJK_SYMBOLS_REGEX.sub("", no_cjk)
@@ -4030,11 +4058,11 @@ class OllamaTranslator:
             if g_hint_lines:
                 joined_hints = "\n".join(g_hint_lines)
                 context_block_ru += (
-                    "\nГЕОМЕТРИЯ БАБЛОВ (Typesetting Budget — подбирай длину фразы под форму и лимит символов бабла, НЕ включай тег [shape: ...] в текст перевода):\n"
+                    "\nГЕОМЕТРИЯ И РОЛИ БАБЛОВ (Typesetting & Speaker Diarization — учитывай тег говорящего [Bubble: dialogue, speaker=A/B] или [Box: narration/monologue] для сохранения единого рода персонажа, подбирай длину фразы под форму и лимит символов бабла, НЕ включай теги [Bubble: ...], [Box: ...] или [shape: ...] в текст перевода):\n"
                     f"{joined_hints}"
                 )
                 context_block_en += (
-                    "\nBUBBLE GEOMETRY BUDGET (fit translation length to bubble shape & max_chars, do NOT include [shape: ...] tags in output values):\n"
+                    "\nBUBBLE GEOMETRY & SPEAKER DIARIZATION (keep consistent speaker voice/gender per [Bubble: dialogue, speaker=A/B] or [Box: narration/monologue], fit translation length to bubble shape & max_chars, do NOT include [Bubble: ...], [Box: ...] or [shape: ...] tags in output values):\n"
                     f"{joined_hints}"
                 )
 
@@ -4939,7 +4967,12 @@ class OllamaTranslator:
         for block in chunk_blocks:
             b_key = str(block["id"])
             g_budget = compute_bubble_geometry_budget(block)
-            if g_budget["shape_hint"] == "narrow_vertical" or g_budget["recommended_max_chars"] <= 55:
+            if (
+                block.get("speaker_tag")
+                or block.get("speaker_id")
+                or g_budget["shape_hint"] == "narrow_vertical"
+                or g_budget["recommended_max_chars"] <= 55
+            ):
                 geometry_hints_map[b_key] = g_budget["meta_tag"]
 
         # БЛОК 1.1 и БЛОК 2: Упреждающая оценка риска триггеров (<4 мс) и синтетические якоря для микро-пачек (1-3 реплики)

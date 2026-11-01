@@ -301,6 +301,29 @@ COMIC_CROSSBAR_FONT_KEYWORDS: tuple[str, ...] = (
 
 VECTOR_MANGA_SYMBOLS: set[str] = {"♥", "♡", "★", "☆", "✦", "♪", "♫", "◆", "◇"}
 
+# Шаг 2.2 (Roadmap v5.0): Оптическое выравнивание полей (Optical Margin Alignment / Hanging Punctuation)
+# Доля ширины краевого знака препинания (0.35..0.50), которой разрешено выступать за safe_bbox в белое поле баббла
+OPTICAL_HANGING_PUNCT_FACTORS: dict[str, float] = {
+    "-": 0.48,
+    "‐": 0.48,
+    "‑": 0.48,
+    "–": 0.42,
+    "—": 0.38,
+    '"': 0.45,
+    "'": 0.48,
+    "«": 0.42,
+    "»": 0.42,
+    "“": 0.45,
+    "”": 0.45,
+    ".": 0.48,
+    ",": 0.48,
+    "!": 0.36,
+    "?": 0.36,
+}
+
+# Анаморфное горизонтальное микро-сжатие строк в узких вертикальных бабблах (tategaki)
+MIN_ANAMORPHIC_CONDENSE_RATIO: float = 0.88
+
 INVISIBLE_TOFU_CHARS_RE = re.compile(r"[\ufe00-\ufe0f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufffc\ufffd]")
 
 SPECIAL_SYMBOLS_TRANSLATE_MAP = str.maketrans(
@@ -1591,6 +1614,91 @@ class MangaRenderer:
             return layer.crop(alpha_bbox)
         return layer
 
+    def _render_anamorphic_text_layer(
+        self,
+        wrapped_text: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+        spacing: int,
+        align: str,
+        text_fill: tuple[int, int, int],
+        stroke_fill: tuple[int, int, int],
+        stroke_w: int,
+        target_safe_w: int,
+        chord_profile: list[int] | None = None,
+        target_safe_h: int | None = None,
+    ) -> tuple[Image.Image, float]:
+        """
+        Шаг 2.1 (v5.0): Рендерит многострочный блок с индивидуальным горизонтальным микро-сжатием
+        длинных строк scale_x in [0.88, 1.00] через LANCZOS.
+        Возвращает (rgba_layer, min_condense_ratio).
+        """
+        fs = self._get_font_pixel_size(font)
+        dummy_img = Image.new("RGBA", (8, 8), (0, 0, 0, 0))
+        dummy_draw = ImageDraw.Draw(dummy_img)
+
+        lines = wrapped_text.split("\n")
+        n_lines = max(1, len(lines))
+        has_tall_cyr = any(ch in wrapped_text for ch in ("Ё", "Й", "ё", "й"))
+        ba_y1, ref_y0, ref_y1, _ = self._get_font_line_metrics(
+            font=font, font_size=fs, use_upper=False, has_tall_cyr=has_tall_cyr
+        )
+        glyph_h = max(fs, ref_y1 - ref_y0)
+        step_y = max(ba_y1 + 2 * stroke_w + spacing, glyph_h + 2 * stroke_w + max(2, int(round(fs * 0.12))))
+        total_h = max(glyph_h + 2 * stroke_w, (n_lines - 1) * step_y + glyph_h + 2 * stroke_w)
+        eff_sh = target_safe_h if (target_safe_h and target_safe_h > 0) else total_h
+
+        line_renders: list[tuple[Image.Image, int, float]] = []
+        min_scale_x = 1.0
+        for idx, ln in enumerate(lines):
+            if not ln.strip():
+                empty_im = Image.new("RGBA", (4, glyph_h + 2 * stroke_w), (0, 0, 0, 0))
+                line_renders.append((empty_im, 4, 1.0))
+                continue
+            single_layer = self._render_rich_text_layer(
+                wrapped_text=ln,
+                font=font,
+                spacing=0,
+                align="center",
+                text_fill=text_fill,
+                stroke_fill=stroke_fill,
+                stroke_w=stroke_w,
+            )
+            lw, lh = single_layer.size
+            opt_disc = self._compute_optical_margin_discount(dummy_draw, ln, font)
+            if chord_profile and len(chord_profile) >= 4 and n_lines > 1:
+                avail_w = self._compute_band_chord_width(chord_profile, idx, n_lines, float(step_y), int(eff_sh))
+                avail_w = max(float(target_safe_w) * 0.80, min(float(target_safe_w), avail_w))
+            else:
+                avail_w = float(target_safe_w)
+
+            allowed_line_w = min(float(target_safe_w) + 2.0, avail_w + min(4.0, opt_disc * 0.5))
+            if lw > allowed_line_w and lw > 8:
+                scale_x = max(MIN_ANAMORPHIC_CONDENSE_RATIO, allowed_line_w / float(lw))
+                new_lw = max(4, int(round(lw * scale_x)))
+                resample_lanczos = getattr(Image, "Resampling", Image).LANCZOS
+                single_layer = single_layer.resize((new_lw, lh), resample=resample_lanczos)
+                lw = new_lw
+                min_scale_x = min(min_scale_x, scale_x)
+            line_renders.append((single_layer, lw, min_scale_x))
+
+        max_w = max((item[1] for item in line_renders), default=16)
+        pad = 6
+        out_layer = Image.new("RGBA", (max_w + pad * 2, int(total_h) + pad * 2), (0, 0, 0, 0))
+        for idx, (l_im, lw, _) in enumerate(line_renders):
+            if align == "left":
+                px = pad
+            elif align == "right":
+                px = pad + (max_w - lw)
+            else:
+                px = pad + (max_w - lw) // 2
+            py = pad + idx * step_y
+            out_layer.alpha_composite(l_im, dest=(max(0, int(px)), max(0, int(py))))
+
+        alpha_bbox = out_layer.getbbox()
+        if alpha_bbox is not None:
+            out_layer = out_layer.crop(alpha_bbox)
+        return out_layer, round(min_scale_x, 3)
+
     @classmethod
     def _get_line_spacing(
         cls,
@@ -1685,6 +1793,7 @@ class MangaRenderer:
     }
     _EN_PREFIXES = (
         "under", "inter", "trans", "super", "hyper", "over", "anti", "auto",
+        "embar", "expec", "expect", "unauth", "unau", "author", "father", "mother", "brother", "sister",
         "semi", "non", "dis", "mis", "pre", "pro", "sub", "out", "un",
     )
     _EN_SUFFIXES = (
@@ -1711,10 +1820,11 @@ class MangaRenderer:
         core_word: str,
         min_part_len: int = 3,
         is_narrow_bubble: bool = False,
+        is_ultra_narrow: bool = False,
     ) -> list[int]:
         """
-        Блок 4.2: Слоговой и морфемный перенос длинных слов (RU + EN) с поддержкой pyphen + правил слогораздела:
-        - Порог длины слова от 8 букв (в узких баблах) и от 10 букв (в широких), минимум 3 буквы в каждой части.
+        Блок 4.2 + Шаг 2.3 (v5.0): Слоговой и морфемный перенос длинных слов (RU + EN) с поддержкой pyphen + правил слогораздела:
+        - Порог длины слова от 7 букв (в ультра-узких tategaki бабблах bw < 110 px), от 8 букв (в узких) и от 10 букв (в широких).
         - Если установлен `pyphen`, объединяет индексы `pyphen` с морфемными границами приставок/суффиксов.
         """
         if "'" in core_word or "’" in core_word:
@@ -1726,7 +1836,7 @@ class MangaRenderer:
         is_latin = bool(re.search(r"[a-zA-Z]", core_word)) and not is_cyrillic
 
         eff_min_part = max(3, min_part_len)
-        min_word_len = 8 if is_narrow_bubble else 10
+        min_word_len = 7 if is_ultra_narrow else (8 if is_narrow_bubble else 10)
 
         if n < max(min_word_len, eff_min_part * 2):
             return []
@@ -1841,17 +1951,35 @@ class MangaRenderer:
         safe_h: int = 160,
     ) -> list[str]:
         draw = self_draw
+        is_ultra_narrow = safe_w < 115
         word_px_w = self._measure_line_width(draw, word, font)
-        if word_px_w <= max_width * 0.62:
+        if word_px_w <= max_width * (0.55 if is_ultra_narrow else 0.62) and not (is_ultra_narrow and len(word) > 7):
             return [word]
 
+        # 1. Шаг 2.3 (v5.0): Многодефисный сплиттер составных слов ("Father-in-law" -> ["Father-", "in-law"] / ["Father-", "in-", "law"])
         if "-" in word and not word.startswith("-") and not word.endswith("-") and "--" not in word:
-            hyph_parts = word.split("-")
-            if len(hyph_parts) == 2 and len(hyph_parts[0]) >= 3 and len(hyph_parts[1]) >= 3:
-                p1 = hyph_parts[0] + "-"
-                p2 = hyph_parts[1]
-                if self._measure_line_width(draw, p1, font) <= max_width * 1.18:
-                    return [p1, p2]
+            hyph_parts = [p for p in word.split("-") if p]
+            if len(hyph_parts) >= 2:
+                best_two_split: list[str] | None = None
+                best_balance = 1e9
+                for split_k in range(1, len(hyph_parts)):
+                    left_s = "-".join(hyph_parts[:split_k]) + "-"
+                    right_s = "-".join(hyph_parts[split_k:])
+                    if len(left_s.rstrip("-")) >= 2 and len(right_s) >= 2:
+                        w1 = self._measure_line_width(draw, left_s, font) * MIN_ANAMORPHIC_CONDENSE_RATIO
+                        w2 = self._measure_line_width(draw, right_s, font) * MIN_ANAMORPHIC_CONDENSE_RATIO
+                        if w1 <= max_width * 1.15 and w2 <= max_width * 1.15:
+                            bal = abs(w1 - w2)
+                            if bal < best_balance:
+                                best_balance = bal
+                                best_two_split = [left_s, right_s]
+                if best_two_split is not None:
+                    return best_two_split
+                multi_parts = [
+                    (p + "-" if idx < len(hyph_parts) - 1 else p)
+                    for idx, p in enumerate(hyph_parts)
+                ]
+                return multi_parts
 
         if "'" in word or "’" in word:
             return [word]
@@ -1865,23 +1993,20 @@ class MangaRenderer:
         is_latin = bool(re.search(r"[a-zA-Z]", core)) and not is_cyrillic
 
         is_narrow_bubble = (safe_w < 165) or ((safe_w / max(1.0, float(safe_h))) < 0.82)
-        if is_latin:
-            min_en_len = 8 if (is_narrow_bubble or word_px_w > max_width * 0.82) else 10
-            if len(core) < min_en_len:
-                return [word]
-
-        min_ru_len = 8 if is_narrow_bubble else 10
-        if is_cyrillic and len(core) < min_ru_len:
+        min_req_len = 7 if is_ultra_narrow else (8 if (is_narrow_bubble or word_px_w > max_width * 0.82) else 10)
+        if (is_latin or is_cyrillic) and len(core) < min_req_len:
             return [word]
 
         split_candidates = self._find_syllable_split_indices(
             core,
             min_part_len=3,
-            is_narrow_bubble=is_narrow_bubble,
+            is_narrow_bubble=True if is_ultra_narrow else is_narrow_bubble,
+            is_ultra_narrow=is_ultra_narrow,
         )
         if not split_candidates:
             return [word]
 
+        condense_allow = (1.0 / MIN_ANAMORPHIC_CONDENSE_RATIO) if is_narrow_bubble else 1.0
         mid = len(core) / 2.0
         fitting_splits: list[tuple[float, int]] = []
         for idx in split_candidates:
@@ -1889,7 +2014,7 @@ class MangaRenderer:
             part2 = f"{core[idx:]}{trail_punct}"
             w1 = self._measure_line_width(draw, part1, font)
             w2 = self._measure_line_width(draw, part2, font)
-            if w1 <= max_width * 1.08 and w2 <= max_width * 1.12:
+            if w1 <= max_width * 1.08 * condense_allow and w2 <= max_width * 1.12 * condense_allow:
                 fitting_splits.append((abs(idx - mid), idx))
 
         if fitting_splits:
@@ -1898,6 +2023,42 @@ class MangaRenderer:
             return [f"{lead_punct}{core[:best_idx]}-", f"{core[best_idx:]}{trail_punct}"]
 
         return [word]
+
+    def _compute_optical_margin_discount(
+        self,
+        draw: ImageDraw.ImageDraw,
+        line: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> float:
+        """
+        Шаг 2.2 (v5.0): Вычисляет суммарный оптический выступ (35..50% ширины)
+        краевых дефисов, кавычек, точек, запятых и знаков !? за границу safe_bbox.
+        """
+        s = (line or "").strip()
+        if not s:
+            return 0.0
+        discount = 0.0
+        first_ch = s[0]
+        last_ch = s[-1]
+        if first_ch in OPTICAL_HANGING_PUNCT_FACTORS:
+            discount += self._measure_line_width(draw, first_ch, font) * OPTICAL_HANGING_PUNCT_FACTORS[first_ch]
+        if len(s) > 1 and last_ch in OPTICAL_HANGING_PUNCT_FACTORS:
+            discount += self._measure_line_width(draw, last_ch, font) * OPTICAL_HANGING_PUNCT_FACTORS[last_ch]
+            if len(s) > 2 and s[-2] in ("!", "?", ".") and last_ch in ("!", "?", ".", '"', "»"):
+                discount += self._measure_line_width(draw, s[-2], font) * 0.25
+        return discount
+
+    def _measure_optical_line_width(
+        self,
+        draw: ImageDraw.ImageDraw,
+        line: str,
+        font: ImageFont.FreeTypeFont | ImageFont.ImageFont,
+    ) -> float:
+        raw_w = self._measure_line_width(draw, line, font)
+        if raw_w <= 0.0:
+            return 0.0
+        disc = self._compute_optical_margin_discount(draw, line, font)
+        return max(raw_w * 0.82, raw_w - disc)
 
     @classmethod
     def _preprocess_tokens_no_orphans(cls, raw_words: list[str]) -> list[str]:
@@ -2008,7 +2169,7 @@ class MangaRenderer:
         safe_h = max(16, int(target_h if target_h and target_h > 0 else max_width))
         has_cyrillic = bool(re.search(r"[А-Яа-яЁё]", text))
 
-        eff_allow_hyph = bool(allow_hyphenation) or (has_cyrillic and safe_w < 145)
+        eff_allow_hyph = bool(allow_hyphenation) or (has_cyrillic and safe_w < 145) or (safe_w < 115)
 
         full_joined = " ".join(tokens)
         full_w = self._measure_line_width(draw, full_joined, font)
@@ -2019,9 +2180,23 @@ class MangaRenderer:
         is_soft_hyph: list[bool] = []
         for w in tokens:
             w_len = self._measure_line_width(draw, w, font)
-            if eff_allow_hyph and " " not in w and (w_len > safe_w * 0.65 or len(w) >= (8 if safe_w < 160 else 10)):
+            has_inner_hyph = ("-" in w and not w.startswith("-") and not w.endswith("-") and len(w) > 6)
+            should_try_split = (
+                " " not in w
+                and (
+                    has_inner_hyph
+                    or (
+                        eff_allow_hyph
+                        and (
+                            w_len > safe_w * (0.85 if not allow_hyphenation else 0.65)
+                            or len(w) >= (7 if safe_w < 115 else (8 if safe_w < 160 else 10))
+                        )
+                    )
+                )
+            )
+            if should_try_split:
                 parts = self._split_long_word(draw, w, font, safe_w, safe_w=safe_w, safe_h=safe_h)
-                if len(parts) == 2 and parts[0].endswith("-"):
+                if len(parts) == 2 and parts[0].endswith("-") and not has_inner_hyph:
                     words.append(parts[0])
                     is_soft_hyph.append(True)
                     words.append(parts[1])
@@ -2072,7 +2247,16 @@ class MangaRenderer:
                     total += word_widths[idx]
                     idx += 1
                 items_cnt += 1
-            return total + space_w * max(0, items_cnt - 1)
+            raw_total = total + space_w * max(0, items_cnt - 1)
+            # Оптическое выравнивание полей (Hanging Punctuation 35..50%) на первом и последнем слове строки
+            first_w = words[p_idx]
+            last_w = words[i_idx - 1]
+            opt_disc = 0.0
+            if first_w and first_w[0] in OPTICAL_HANGING_PUNCT_FACTORS:
+                opt_disc += self._measure_line_width(draw, first_w[0], font) * OPTICAL_HANGING_PUNCT_FACTORS[first_w[0]]
+            if last_w and last_w[-1] in OPTICAL_HANGING_PUNCT_FACTORS:
+                opt_disc += self._measure_line_width(draw, last_w[-1], font) * OPTICAL_HANGING_PUNCT_FACTORS[last_w[-1]]
+            return max(1.0, raw_total - opt_disc)
 
         total_text_w = sum(word_widths) + space_w * max(0, n - 1)
         max_single_w = max(word_widths, default=float(safe_w))
@@ -2341,8 +2525,20 @@ class MangaRenderer:
             total_w = bbox[2] - bbox[0]
             total_h = bbox[3] - bbox[1]
 
-        allowed_w = target_w * max(1.0, float(width_tolerance_ratio))
-        if total_w > allowed_w * 1.06 or total_h > target_h:
+        is_narrow_target = target_w < 145 or (target_w < target_h * 0.85)
+        condense_min = MIN_ANAMORPHIC_CONDENSE_RATIO if is_narrow_target else 0.94
+
+        opt_line_widths = [
+            self._measure_optical_line_width(draw, ln, font) + 2 * stroke_w for ln in lines
+        ]
+        raw_line_widths = [
+            self._measure_line_width(draw, ln, font) + 2 * stroke_w for ln in lines
+        ]
+        max_opt_w = max(opt_line_widths, default=0.0)
+        max_raw_w = max(raw_line_widths, default=0.0)
+        eff_tol_cap = min(1.05, max(1.0, float(width_tolerance_ratio)))
+        allowed_w = float(target_w) * eff_tol_cap
+        if max_opt_w * condense_min > allowed_w * 1.02 or max_raw_w * condense_min > float(target_w) * 1.06 or total_h > target_h:
             return False
 
         if not elliptical or len(lines) <= 1:
@@ -2350,8 +2546,7 @@ class MangaRenderer:
 
         n_lines = len(lines)
         line_h_est = float(total_h) / max(1.0, float(n_lines))
-        for idx, line in enumerate(lines):
-            line_w = self._measure_line_width(draw, line, font) + 2 * stroke_w
+        for idx, (line, opt_lw) in enumerate(zip(lines, opt_line_widths)):
             if chord_profile and len(chord_profile) >= 4:
                 band_cw = self._compute_band_chord_width(
                     chord_profile, idx, n_lines, line_h_est, target_h
@@ -2361,9 +2556,9 @@ class MangaRenderer:
                 lame_f = self._lame_superellipse_factor(idx, n_lines, p=1.85)
                 chord_w = allowed_w * min(1.02, lame_f * 1.14)
             if line.strip().count(" ") == 0:
-                if line_w > allowed_w * 1.05:
+                if opt_lw * condense_min > allowed_w * 1.05:
                     return False
-            elif line_w > max(chord_w * 1.02, allowed_w * 0.82):
+            elif opt_lw * condense_min > max(chord_w * 1.02, allowed_w * 0.82):
                 return False
 
         return True
@@ -3020,9 +3215,16 @@ class MangaRenderer:
             )
             p_tw = int(round(float(prelim_b[2] - prelim_b[0])))
             p_th = int(round(float(prelim_b[3] - prelim_b[1])))
-            is_ovf = (not it["fit_ok"]) or (p_tw > it["safe_w"] + 4) or (p_th > it["safe_h"] + 4)
+            needs_anamorphic = (
+                not it["is_free_text"]
+                and p_tw > it["safe_w"] + 2
+                and (p_tw * MIN_ANAMORPHIC_CONDENSE_RATIO) <= (it["safe_w"] * 1.12 + 8)
+            )
+            eff_p_tw = min(p_tw, it["safe_w"]) if needs_anamorphic else p_tw
+            is_ovf = (not it["fit_ok"]) or (eff_p_tw > it["safe_w"] + 4) or (p_th > it["safe_h"] + 4)
             it["is_overflowing_box"] = bool(is_ovf)
             it["block"]["is_overflowing"] = bool(is_ovf)
+            it["block"]["condense_ratio"] = 1.0
 
             if it["eff_stroke_override"] is None and not it["is_free_text"] and it["bg_style"] == "none":
                 # Проблема №5б: Попиксельный Contact Detector для выбора stroke_width = 0 внутри чистого белого баббла
@@ -3030,9 +3232,9 @@ class MangaRenderer:
                 geom_chk = it.get("geom") or {}
                 if bool(geom_chk.get("is_closed_bubble", False)) and not is_ovf:
                     cx_i, cy_i = int(round(float(it["opt_cx"]))), int(round(float(it["opt_cy"])))
-                    bx1_g = max(0, cx_i - max(8, p_tw // 2))
+                    bx1_g = max(0, cx_i - max(8, eff_p_tw // 2))
                     by1_g = max(0, cy_i - max(8, p_th // 2))
-                    bx2_g = min(img_w, cx_i + max(8, p_tw // 2))
+                    bx2_g = min(img_w, cx_i + max(8, eff_p_tw // 2))
                     by2_g = min(img_h, cy_i + max(8, p_th // 2))
                     sub_bg = img_np[by1_g:by2_g, bx1_g:bx2_g]
                     if sub_bg.size > 0:
@@ -3056,7 +3258,26 @@ class MangaRenderer:
                 it["use_sdf_halo"] = bool(is_ovf and it["eff_stroke_override"] is None)
 
             needs_rich = self._needs_special_rendering(f_obj, w_txt)
-            if needs_rich:
+            if needs_anamorphic:
+                r_layer, cond_ratio = self._render_anamorphic_text_layer(
+                    wrapped_text=w_txt,
+                    font=f_obj,
+                    spacing=sp_val,
+                    align=al_val,
+                    text_fill=tf_val,
+                    stroke_fill=sf_val,
+                    stroke_w=sw_val,
+                    target_safe_w=it["safe_w"],
+                    chord_profile=it.get("chord_profile"),
+                    target_safe_h=it["safe_h"],
+                )
+                tw_v, th_v = int(r_layer.size[0]), int(r_layer.size[1])
+                tb_v = (0, 0, tw_v, th_v)
+                it["block"]["condense_ratio"] = cond_ratio
+                if tw_v <= it["safe_w"] + 6 and th_v <= it["safe_h"] + 4:
+                    it["is_overflowing_box"] = False
+                    it["block"]["is_overflowing"] = False
+            elif needs_rich:
                 r_layer = self._render_rich_text_layer(
                     wrapped_text=w_txt,
                     font=f_obj,
