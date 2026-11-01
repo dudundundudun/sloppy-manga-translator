@@ -1,4 +1,4 @@
-# Контекстный Handoff-промпт для продолжения разработки Miko-chan Manga Studio (v1.2.0 · SOTA Scanlation Edition v4.1 -> Roadmap v5.0)
+# Контекстный Handoff-промпт для продолжения разработки Miko-chan Manga Studio (v5.3.0 Ultra Edition)
 
 Скопируйте весь текст ниже и отправьте его первым сообщением в новом чате (вместе с архивом `sloppy-manga-translator-fixed-v5.zip` или основными файлами проекта `server.py`, `translator.py`, `cleaner.py`, `renderer.py`, `ocr_engine.py`, `web_studio.html`), чтобы ИИ мгновенно вошел в курс дела и продолжил разработку с **Раздела 7 (Пошаговый план улучшений v5.0 Next-Gen Scanlation: Шаги 1–4)**.
 
@@ -6,7 +6,7 @@
 
 ## 1. Обзор проекта и аппаратно-сетевого окружения пользователя
 
-Мы разрабатываем **Miko-chan Manga Studio (Sloppy Manga Translator) v1.0.8 (Pro Scanlation Edition v3.5)** — локальную десктопную веб-студию на базе **FastAPI + PyTorch (CUDA) + RT-DETR-v2 / YOLOv8m + manga-ocr-nar-small / HayaiOCR v2.5 Nova / MangaOCR / EasyOCR + SimpleLama + Pillow + Vanilla JS/HTML/CSS** и расширение для браузера Chrome (Manifest V3) для автоматического перевода и интерактивного редактирования японской манги (`ja`), корейской манхвы (`ko`) и китайской маньхуа (`zh`) на русский (`ru`), английский (`en`) и транслитерацию в Хэпбёрн-ромадзи (`romaji`).
+Мы разрабатываем **Miko-chan Manga Studio (Sloppy Manga Translator) v5.3.0 (Ultra Scanlation Edition)** — локальную десктопную веб-студию на базе **FastAPI + PyTorch (CUDA) + RT-DETR-v2 / YOLOv8m + manga-ocr-nar-small / HayaiOCR v2.5 Nova / MangaOCR / EasyOCR + SimpleLama + Pillow + Vanilla JS/HTML/CSS** и расширение для браузера Chrome (Manifest V3) для автоматического перевода и интерактивного редактирования японской манги (`ja`), корейской манхвы (`ko`) и китайской маньхуа (`zh`) на русский (`ru`), английский (`en`) и транслитерацию в Хэпбёрн-ромадзи (`romaji`).
 
 ### Жёсткие технические ограничения окружения (НЕЛЬЗЯ НАРУШАТЬ):
 - **ОС**: Windows 11.

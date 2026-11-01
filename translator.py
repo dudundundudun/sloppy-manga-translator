@@ -1,5 +1,5 @@
 """
-Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v1.0.8).
+Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v5.3.0).
 
 Изменения v1.0.6 (Шаг 4):
 1. Глобальный глоссарий в `config.json` (`glossary: list[dict[str, str]]` с полями `src`, `dst`, `note`, `target_lang`)
@@ -119,7 +119,7 @@ def apply_deepseek_anti_censorship_prompt(
 
 SYSTEM_PROMPT = (
     f"{FICTION_NOVEL_CONTEXT_NOTE}\n"
-    "Ты — профессиональный переводчик и редактор локализации манги (Miko-chan Manga Studio v3.5 Pro Scanlation Edition).\n"
+    "Ты — профессиональный переводчик и редактор локализации манги (Miko-chan Manga Studio v5.3.0 Ultra Edition).\n"
     + TYPESETTING_AWARE_RULE_RU
 )
 
@@ -1369,7 +1369,10 @@ SHORT_INTERJECTIONS_RU = {
     "くそ": "Чёрт!",
     "クソ": "Чёрт!",
     "うん": "Угу!",
-    "운": "Угу!",
+    "ううん": "Не-а!",
+    "ううん☆": "Не-а!☆",
+    "ふぅん": "Хм...",
+    "ふあっ": "Ах!",
     "はい": "Да!",
     "いいえ": "Нет!",
     "お": "О!",
@@ -1551,6 +1554,10 @@ SHORT_INTERJECTIONS_EN = {
     "くそ": "Damn it!",
     "クソ": "Damn it!",
     "うん": "Yeah!",
+    "ううん": "Nope!",
+    "ううん☆": "Nope!☆",
+    "ふぅん": "Hmm...",
+    "ふあっ": "Huh!",
     "はい": "Yes!",
     "いいえ": "No!",
     "お": "Oh!",
@@ -1666,6 +1673,10 @@ SHORT_INTERJECTIONS_ROMAJI = {
     "イッちゃう": "Icchau!",
     "気持ちいい": "Kimochiii...",
     "きもちいい": "Kimochiii...",
+    "ううん": "Uun!",
+    "ううん☆": "Uun!☆",
+    "ふぅん": "Fuun...",
+    "ふあっ": "Fuah!",
     "すごい": "Sugoi!",
     "なに": "Nani?!",
     "何": "Nani?!",
@@ -1986,7 +1997,9 @@ def kana_to_romaji(text: str) -> str:
             i += step
         else:
             if geminate_next:
-                if out and out[-1] and out[-1][-1] in "aeiou":
+                if ch.isalpha() and ch.lower() in "bcdfghjklmnpqrstvwxz":
+                    out.append("t" if ch.lower() == "c" else ch.lower())
+                elif out and out[-1] and out[-1][-1] in "aeiou":
                     out.append("h")
                 geminate_next = False
             out.append(ch)
@@ -2005,6 +2018,31 @@ def kana_to_romaji(text: str) -> str:
 _MANGA_KANJI_TO_KANA_PAIRS: list[tuple[str, str]] = sorted(
     [
         # Местоимения и обращения
+        # Имена собственные, составные слова и грамматические конструкции (фикс v5.3.0)
+        ("心花ちゃん", "こはなちゃん "), ("心花", "こはな "), ("猫又くん", "ねこまたくん "), ("猫又君", "ねこまたくん "), ("猫又", "ねこまた "),
+        ("お義父さん", "おとうさん "), ("義父さん", "おとうさん "), ("義父", "ぎふ "), ("愛娘", "まなむすめ "),
+        ("気に入ってた", "きにいってた "), ("気に入って", "きにいって "), ("気に入り", "きにいり "), ("気に入る", "きにいる "),
+        ("男勝りな", "おとこまさりな "), ("男勝り", "おとこまさり "), ("普段は", "ふだん wa "), ("普段", "ふだん "),
+        ("家庭は", "かてい wa "), ("家庭", "かてい "), ("崩壊する", "ほうかいする "), ("崩壊", "ほうかい "),
+        ("相手が", "あいて ga "), ("相手は", "あいて wa "), ("相手", "あいて "),
+        ("一生会え", "いっしょうあえ"), ("一生", "いっしょう "), ("私自身", "わたしじしん "), ("自身", "じしん "),
+        ("安心して", "あんしんして "), ("安心", "あんしん "), ("仲良し", "なかよし "), ("仲良", "なかよ"), ("仲も", "なか mo "), ("仲", "なか "),
+        ("制服姿", "せいふくすがた "), ("後ろ姿", "うしろすがた "), ("姿", "すがた "), ("娘", "むすめ "),
+        ("似たやつ", "にたやつ "), ("似た", "にた "), ("似て", "にて "), ("似る", "にる "),
+        ("着てもら", "きてもら"), ("着て", "きて "), ("着る", "きる "), ("着せ", "きせ "),
+        ("呼んだ", "よんだ "), ("呼んで", "よんで "), ("呼ぶ", "よぶ "), ("呼び", "よび "),
+        ("始める", "はじめる "), ("始め", "はじめ "), ("始ま", "はじま"),
+        ("選んだ", "えらんだ "), ("選んで", "えらんで "), ("選ぶ", "えらぶ "), ("選び", "えらび "),
+        ("味わって", "あじわって "), ("味わっ", "あじわっ"), ("味わう", "あじわう "), ("味わい", "あじわい "), ("味", "あじ "),
+        ("会えなく", "あえなく"), ("会えな", "あえな"), ("会える", "あえる "), ("会って", "あって "), ("会っ", "あっ"), ("会う", "あう "),
+        ("知られれ", "しられれ"), ("知られ", "しられ"), ("自宅", "じたく "), ("防音", "ぼうおん "), ("周り", "まわり "),
+        ("迎え", "むかえ "), ("注意点", "ちゅういてん "), ("注意", "ちゅうい "), ("丁度", "ちょうど "),
+        ("軽く", "かるく "), ("お伝え", "おつたえ "), ("伝え", "つたえ"), ("決して", "けっして "),
+        ("仕草", "しぐさ "), ("その他", "そのほか "), ("身バレ", "みばれ "), ("身パレ", "みばれ "),
+        ("ご承知", "ごしょうち "), ("承知", "しょうち "), ("勿論", "もちろん "), ("ご自身", "ごじしん "),
+        ("行為", "こうい "), ("了承", "りょうしょう "), ("貰って", "もらって "), ("貰っ", "もらっ"), ("貰う", "もらう "),
+        ("適当", "てきとう "), ("浴び", "あび"), ("香水", "こうすい "), ("口臭消し", "こうしゅうけし "), ("口臭", "こうしゅう "),
+        ("消し", "けし "), ("念には念", "ねんにはねん "), ("開け", "あけ"), ("花", "はな "), ("庭", "にわ "),
         ("私達", "わたしたち "), ("私たち", "わたしたち "), ("俺達", "おれたち "), ("俺たち", "おれたち "),
         ("僕達", "ぼくたち "), ("僕たち", "ぼくたち "), ("貴方", "あなた "), ("彼女", "かのじょ "),
         ("彼氏", "かれし "), ("先輩", " せんぱい "), ("先生", " せんせい "), ("お兄ちゃん", "おにいちゃん "),
@@ -2039,7 +2077,7 @@ _MANGA_KANJI_TO_KANA_PAIRS: list[tuple[str, str]] = sorted(
         ("仕事", "しごと "), ("会社", "かいしゃ "), ("世界", "せかい "), ("人間", "にんげん "),
         ("友達", "ともだち "), ("友人", "ゆうじん "), ("家族", "かぞく "), ("両親", "りょうしん "),
         ("母親", "ははおや "), ("父親", "ちちおや "), ("お母さん", "おかあさん "), ("お父さん", "おとうさん "),
-        ("B兄", "あに"), ("姉", "あね"), ("妹", "いもうと "), ("弟", "おとうと "),
+        ("兄", "あに "), ("姉", "あね"), ("妹", "いもうと "), ("弟", "おとうと "),
         ("男の子", "おとこのこ "), ("女の子", "おんなのこ "), ("女性", "じょせい "), ("男性", "だんせい "),
         ("子供", "こども "), ("大人", "おとな "), ("名前", "なまえ "), ("意味", "いみ "),
         ("理由", "りゆう "), ("約束", "やくそく "), ("秘密", "ひみつ "), ("準備", "じゅんび "),
@@ -2073,7 +2111,7 @@ _MANGA_KANJI_TO_KANA_PAIRS: list[tuple[str, str]] = sorted(
         ("持っ", "もっ"), ("持つ", "もつ"), ("持ち", "もち"),
         ("買っ", "かっ"), ("買う", "かう"), ("売る", "うる"),
         ("読ん", "よん"), ("読む", "よむ"), ("書い", "かい"), ("書く", "かく"),
-        ("선", ""), ("話", "はなし"), ("소", ""), ("声", "こえ "), ("身体", "からだ "), ("体", "からだ "),
+        ("話", "はなし"), ("声", "こえ "), ("身体", "からだ "), ("体", "からだ "),
         ("顔", "かお "), ("目", "め "), ("瞳", "ひとみ "), ("口", "くち "), ("唇", "くちびる "),
         ("手", "て "), ("指", "ゆび "), ("足", "あし "), ("脚", "あし "), ("胸", "むね "),
         ("お尻", "おしり "), ("尻", "しり "), ("お腹", "おなか "), ("頭", "あたま "), ("髪", "かみ "),
@@ -2081,7 +2119,7 @@ _MANGA_KANJI_TO_KANA_PAIRS: list[tuple[str, str]] = sorted(
         ("汗", "あせ "), ("血", "ち "), ("息", "いき "), ("奥", "おく "), ("中", "なか "),
         ("外", "そと "), ("上", "うえ "), ("下", "した "), ("前", "まえ "), ("後ろ", "うしろ "),
         ("隣", "となり "), ("横", "よこ "), ("側", "そば "), ("先", "さき "), ("次", "つぎ "),
-        ("今", "いま "), (" مع", ""), ("少し", "すこし "), ("ちょっと", "ちょっと "),
+        ("今", "いま "), ("少し", "すこし "), ("ちょっと", "ちょっと "),
         ("沢山", "たくさん "), ("一杯", "いっぱい "), ("一回", "いっかい "), ("もう一度", "もういちど "),
         ("一度", "いちど "), ("一番", "いちばん "), ("元気", "げんき "), ("本気", "ほんき "),
         ("気", "き "), ("事", "こと "), ("物", "もの "), ("人", "ひと "), ("方", "かた "),
@@ -2100,6 +2138,55 @@ _ROMAJI_PARTICLE_SPACING_RULES: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"([a-zA-Z])([!?.,~])"), r"§ "),
     (re.compile(r"\s+"), " "),
 ]
+
+
+# Таблица чтений одиночных кандзи (фоллбэк, если редкое сочетание не нашлось в словаре биграмм)
+_SINGLE_KANJI_FALLBACK_KANA: dict[str, str] = {
+    "花": "はな", "庭": "にわ", "娘": "むすめ", "姿": "すがた", "似": "に", "着": "き",
+    "呼": "よ", "仲": "なか", "安": "あん", "猫": "ねこ", "又": "また", "始": "はじ",
+    "選": "えら", "自": "じ", "身": "しん", "相": "あい", "崩": "ほう", "壊": "かい",
+    "生": "せい", "会": "あ", "味": "あじ", "普": "ふ", "段": "だん", "男": "おとこ",
+    "勝": "まさ", "父": "ちち", "母": "はは", "親": "おや", "兄": "あに", "姉": "あね",
+    "妹": "いもうと", "弟": "おとうと", "義": "ぎ", "夫": "おっと", "妻": "つま", "嫁": "よめ",
+    "友": "とも", "達": "たち", "人": "ひと", "女": "おんな", "子": "こ", "先": "さき",
+    "生": "せい", "輩": "ぱい", "学": "がく", "校": "こう", "教": "きょう", "室": "しつ",
+    "部": "ぶ", "活": "かつ", "家": "いえ", "宅": "たく", "部": "へ", "屋": "や",
+    "店": "みせ", "社": "しゃ", "仕": "し", "事": "ごと", "電": "でん", "車": "しゃ",
+    "話": "わ", "声": "こえ", "音": "おと", "防": "ぼう", "周": "まわ", "迎": "むか",
+    "注": "ちゅう", "意": "い", "点": "てん", "丁": "ちょう", "度": "ど", "軽": "かる",
+    "伝": "つた", "決": "けっ", "草": "ぐさ", "他": "ほか", "承": "しょう", "知": "ち",
+    "勿": "もち", "論": "ろん", "行": "こう", "為": "い", "了": "りょう", "貰": "もら",
+    "適": "てき", "当": "とう", "浴": "あ", "香": "こう", "水": "すい", "口": "こう",
+    "臭": "しゅう", "消": "け", "念": "ねん", "開": "あ", "閉": "し", "隣": "となり",
+    "横": "よこ", "前": "まえ", "後": "うし", "上": "うえ", "下": "した", "中": "なか",
+    "外": "そと", "奥": "おく", "右": "みぎ", "左": "ひだり", "近": "ちか", "遠": "とお",
+    "高": "たか", "低": "ひく", "広": "ひろ", "狭": "せま", "明": "あか", "暗": "くら",
+    "白": "しろ", "黒": "くろ", "赤": "あか", "青": "あお", "色": "いろ", "光": "ひかり",
+    "影": "かげ", "رات": "", "朝": "あさ", "昼": "ひる", "夜": "よる", "晩": "ばん",
+    "今": "いま", "昔": "むかし", "次": "つぎ", "初": "はじ", "終": "お", "続": "つづ",
+    "止": "と", "動": "うご", "走": "はし", "歩": "ある", "立": "た", "座": "すわ",
+    "寝": "ね", "起": "お", "食": "た", "飲": "の", "見": "み", "聞": "き",
+    "言": "い", "思": "おも", "考": "かんが", "感": "かん", "分": "わ", "解": "かい",
+    "信": "しん", "疑": "うたが", "忘": "わす", "覚": "おぼ", "笑": "わら", "泣": "な",
+    "怒": "おこ", "喜": "よろこ", "驚": "おどろ", "恐": "おそ", "怖": "こわ", "痛": "いた",
+    "苦": "くる", "楽": "たの", "嬉": "うれ", "悲": "かな", "寂": "さび", "恥": "は",
+    "好": "す", "嫌": "きら", "愛": "あい", "恋": "こい", "優": "やさ", "強": "つよ",
+    "弱": "よわ", "悪": "わる", "良": "よ", "正": "ただ", "間": "ま", "違": "ちが",
+    "同": "おな", "別": "べつ", "特": "とく", "普": "ふ", "通": "つう", "変": "へん",
+    "態": "たい", "馬": "ば", "鹿": "か", "阿": "あ", "呆": "ほ", "無": "む",
+    "理": "り", "駄": "だ", "目": "め", "耳": "みみ", "鼻": "はな", "手": "て",
+    "足": "あし", "指": "ゆび", "頭": "あたま", "顔": "かお", "髪": "かみ", "胸": "むね",
+    "腹": "はら", "尻": "しり", "背": "せ", "肩": "かた", "首": "くび", "喉": "のど",
+    "肌": "はだ", "血": "ち", "汗": "あせ", "涙": "なみだ", "息": "いき", "心": "こころ",
+    "気": "き", "力": "ちから", "熱": "あつ", "冷": "つめ", "寒": "さむ", "暑": "あつ",
+    "暖": "あたた", "温": "あたた", "重": "おも", "軽": "かる", "固": "かた", "柔": "やわ",
+    "深": "ふか", "浅": "あさ", "太": "ふと", "細": "ほそ", "長": "なが", "短": "みじか",
+    "早": "はや", "速": "はや", "遅": "おそ", "新": "あたら", "古": "ふる", "若": "わか",
+    "多": "おお", "少": "すく", "全": "ぜん", "半": "はん", "一": "いち", "二": "に",
+    "三": "さん", "四": "よん", "五": "ご", "六": "ろく", "七": "なな", "八": "はち",
+    "九": "きゅう", "十": "じゅう", "百": "ひゃく", "千": "せん", "万": "まん", "回": "かい",
+    "度": "ど", "番": "ばん", "枚": "まい", "個": "こ", "本": "ほん", "杯": "はい",
+}
 
 _PYKAKASI_CONV: Any | None = None
 _PYKAKASI_CHECKED: bool = False
@@ -2150,6 +2237,11 @@ def japanese_to_romaji_local(text: str) -> str:
 
     working = raw.translate(FULLWIDTH_PUNCT_MAP)
 
+    # 0. Если перед 君 идет имя/кана/тире (きー君は, 猫又君), это суффикс -kun, а не местоимение kimi!
+    working = re.sub(r"([ぁ-んァ-ヶ])\-(?=君|ちゃん|さん|くん)", r"\1ー", working)
+    working = re.sub(r"(?<=[一-龯ぁ-んァ-ヶー\-])君は", "-kun wa ", working)
+    working = re.sub(r"(?<=[一-龯ぁ-んァ-ヶー\-])君", "-kun ", working)
+
     # 1. Устойчивые связки с частицей は (читается как wa) и частые разговорные конструкции
     for pat, repl in (
         ("今日は", " きょう wa "),
@@ -2158,6 +2250,11 @@ def japanese_to_romaji_local(text: str) -> str:
         ("俺は", " おれ wa "),
         ("僕は", " ぼく wa "),
         ("君は", " きみ wa "),
+        ("普段は", " ふだん wa "),
+        ("家庭は", " かてい wa "),
+        ("悪いのは", " わるいの wa "),
+        ("なのは", "なの wa "),
+        ("では", " de wa "),
         ("あなたは", " あなた wa "),
         ("あいつは", " あいつ wa "),
         ("これは", " これ wa "),
@@ -2281,6 +2378,20 @@ def japanese_to_romaji_local(text: str) -> str:
         if part_kana in working:
             working = working.replace(part_kana, part_rom)
 
+    # 5. Фоллбэк для любых оставшихся одиночных кандзи, чтобы в romaji_text никогда не оставались сырые иероглифы
+    if re.search(r"[\u4e00-\u9fff]", working):
+        out_chars: list[str] = []
+        for ch_k in working:
+            if "\u4e00" <= ch_k <= "\u9fff":
+                fb_k = _SINGLE_KANJI_FALLBACK_KANA.get(ch_k, "")
+                if fb_k:
+                    out_chars.append(f" {fb_k} ")
+                # Если редкий кандзи не найден, опускаем сырой иероглиф в латинской транслитерации
+            else:
+                out_chars.append(ch_k)
+        working = "".join(out_chars)
+        working = re.sub(r"\s+は(?=[\s!?.…,~]|$)", " wa ", working)
+
     rom = kana_to_romaji(working)
     rom = re.sub(r"\s+-", "-", rom)
     rom = re.sub(r"\s+([!?.,~])", r"\1", rom)
@@ -2290,6 +2401,53 @@ def japanese_to_romaji_local(text: str) -> str:
     return rom[:1].upper() + rom[1:] if rom else ""
 
 
+
+
+
+# Известные альтернативные чтения японских имен, которые модели могут путать между прогонами
+_KNOWN_CJK_NAME_VARIANTS: dict[str, tuple[str, ...]] = {
+    "心花": ("Kohana", "Kokona", "Shinka", "Кохана", "Кокона"),
+    "猫又": ("Nekomata", "Нэкомата", "Некомата"),
+}
+
+
+def enforce_glossary_on_translated_text(
+    orig_text: str,
+    translated_text: str,
+    glossary_entries: list[dict[str, str]] | None,
+    target_lang: str = "en",
+) -> str:
+    """
+    Гарантирует, что перевод из кэша (`phrase_cache`) или ответа LLM строго соответствует активному глоссарию главы:
+    если в `orig_text` встречается `src` из глоссария (например, `心花`), а в `translated_text` записано старое
+    альтернативное чтение (`Kohana` вместо `Kokona` или наоборот), автоматически заменяет его на каноническое `dst`.
+    """
+    if not orig_text or not translated_text or not glossary_entries:
+        return translated_text
+    t_lang = (target_lang or "en").lower().strip()
+    if t_lang == "romaji":
+        return translated_text
+
+    out = translated_text
+    for g in glossary_entries:
+        if not isinstance(g, dict):
+            continue
+        src = str(g.get("src") or "").strip()
+        dst = str(g.get("dst") or "").strip()
+        g_lang = str(g.get("target_lang") or "all").lower().strip()
+        if not src or not dst or (src not in orig_text and src not in _KNOWN_CJK_NAME_VARIANTS):
+            continue
+        if g_lang not in ("all", t_lang):
+            continue
+        if re.search(re.escape(dst), out, flags=re.IGNORECASE):
+            continue
+        variants = list(_KNOWN_CJK_NAME_VARIANTS.get(src, ()))
+        for v in variants:
+            if v.lower() == dst.lower():
+                continue
+            if re.search(r"\b" + re.escape(v) + r"(?=-|\b|'s)", out, flags=re.IGNORECASE):
+                out = re.sub(r"\b" + re.escape(v) + r"(?=-|\b|'s)", dst, out, flags=re.IGNORECASE)
+    return out
 
 
 def normalize_glossary_entries(entries: Any) -> list[dict[str, str]]:
@@ -3048,7 +3206,7 @@ class OllamaTranslator:
         headers = {
             "Content-Type": "application/json",
             "Accept": "application/json",
-            "User-Agent": "MikoMangaStudio/1.0.8",
+            "User-Agent": "MikoMangaStudio/5.3.0",
         }
         if self.unsloth_api_key:
             headers["Authorization"] = f"Bearer {self.unsloth_api_key}"
@@ -3256,7 +3414,7 @@ class OllamaTranslator:
 
         target_filename = default_filename
         api_url = f"https://huggingface.co/api/models/{hf_repo}"
-        dl_headers = {"User-Agent": "MikoMangaStudio/1.0.8 (Python-GGUF-Bypass)"}
+        dl_headers = {"User-Agent": "MikoMangaStudio/5.3.0 (Python-GGUF-Bypass)"}
         hf_token = os.getenv("HF_TOKEN") or os.getenv("HUGGING_FACE_HUB_TOKEN")
         if hf_token:
             dl_headers["Authorization"] = f"Bearer {hf_token}"
@@ -5418,7 +5576,22 @@ class OllamaTranslator:
                 if not omit_resp_fmt:
                     payload_cloud["response_format"] = {"type": "json_object"}
                 last_cloud_err: Exception | None = None
-                max_attempts = 2 if items_cnt <= 15 else 3
+                cloud_cooldown_until = float(getattr(self, "_cloud_down_until_ts", 0.0) or 0.0)
+                if cloud_cooldown_until > time.time():
+                    low_sys = (system_prompt + " " + user_prompt).lower()
+                    hint_src = "zh" if ("chinese manhua" in low_sys or "китайской маньхуа" in low_sys) else ("ko" if ("korean manhwa" in low_sys or "корейской манхвы" in low_sys) else "ja")
+                    hint_tgt = "ru" if "русск" in low_sys else "en"
+                    fb_fast = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
+                    if fb_fast:
+                        logger.info("⚡ Circuit Breaker: облачный API в режиме охлаждения (еще %.0fс), мгновенный маршрут в %s", cloud_cooldown_until - time.time(), fb_fast)
+                        return await self._call_ollama_direct(
+                            client,
+                            fb_fast,
+                            system_prompt,
+                            user_prompt,
+                            persist_as_default=False,
+                        )
+                max_attempts = 2
                 for attempt in range(max_attempts):
                     if self.stop_requested:
                         return {}
@@ -5454,7 +5627,7 @@ class OllamaTranslator:
                                     timeout=req_timeout,
                                 )
                         if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
-                            wait_s = 1.5 * (attempt + 1)
+                            wait_s = 0.8 * (attempt + 1)
                             self.diagnostics_stats["network_retries_count"] = (
                                 int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
                             )
@@ -5545,6 +5718,7 @@ class OllamaTranslator:
                         last_cloud_err = c_exc
                         break
                 if last_cloud_err is not None:
+                    self._cloud_down_until_ts = time.time() + 60.0
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", str(last_cloud_err))
                     low_sys = (system_prompt + " " + user_prompt).lower()
                     hint_src = "zh" if ("chinese manhua" in low_sys or "китайской маньхуа" in low_sys) else ("ko" if ("korean manhwa" in low_sys or "корейской манхвы" in low_sys) else "ja")
@@ -6424,7 +6598,7 @@ class OllamaTranslator:
                     "note": f"Короткий вздох/стон «{orig_raw}» намеренно пропущен (skip_sighs=True)",
                 }
                 continue
-            collapsed_orig = re.sub(r"(.)\1+", r"\1", norm_orig)
+            collapsed_orig = norm_orig if norm_orig in ("ううん", "うーん", "ええ") else re.sub(r"(.)\1+", r"\1", norm_orig)
             matched_interj_key = norm_orig if (norm_orig in interj_dict and len(norm_orig) <= 5) else (
                 collapsed_orig if (collapsed_orig in interj_dict and len(norm_orig) <= 7 and not re.search(r"[\u4e00-\u9fff]", norm_orig)) else ""
             )
@@ -6440,6 +6614,8 @@ class OllamaTranslator:
                         dict_val = q_overrides_ru[norm_orig]
                     elif not dict_val.endswith("?"):
                         dict_val = re.sub(r"[!\.…]+$", "", dict_val) + "?"
+                if has_star_mark and "☆" not in dict_val and t_lang in ("en", "ru", "romaji"):
+                    dict_val = dict_val.rstrip("!.") + "☆"
                 translated_map[k] = dict_val
                 cached_hits += 1
                 self.diagnostics_stats["dict_interjections_used_count"] = (
@@ -6467,6 +6643,13 @@ class OllamaTranslator:
                     if external_cache is not None:
                         external_cache.pop(cache_key, None)
                 else:
+                    merged_gloss_for_cache = (glossary_entries or []) + (self.glossary or [])
+                    cached_cand = enforce_glossary_on_translated_text(orig_raw, cached_cand, merged_gloss_for_cache, t_lang)
+                    if cached_cand == "*sigh*" and ("ううん" in orig_raw):
+                        cached_cand = "Nope!☆" if "☆" in orig_raw else "Nope!"
+                    self.phrase_cache[cache_key] = cached_cand
+                    if external_cache is not None:
+                        external_cache[cache_key] = cached_cand
                     translated_map[k] = cached_cand
                     cached_hits += 1
                     block_prov[k] = {
@@ -6732,11 +6915,17 @@ class OllamaTranslator:
                 block_copy["romaji_text"] = translated_text
             else:
                 cached_rom = self.phrase_cache.get(f"romaji||{orig_raw}", "")
-                block_copy["romaji_text"] = (
-                    cached_rom
-                    or str(block.get("romaji_text") or "").strip()
-                    or japanese_to_romaji_local(orig_raw)
-                )
+                if cached_rom and self._contains_cjk(cached_rom):
+                    cached_rom = ""
+                existing_blk_rom = str(block.get("romaji_text") or "").strip()
+                if existing_blk_rom and self._contains_cjk(existing_blk_rom):
+                    existing_blk_rom = ""
+                fresh_rom = cached_rom or existing_blk_rom or japanese_to_romaji_local(orig_raw)
+                block_copy["romaji_text"] = fresh_rom
+                if orig_raw and fresh_rom:
+                    self.phrase_cache[f"romaji||{orig_raw}"] = fresh_rom
+                    if external_cache is not None:
+                        external_cache[f"romaji||{orig_raw}"] = fresh_rom
             enriched_blocks.append(block_copy)
 
         return enriched_blocks
@@ -6851,13 +7040,37 @@ class OllamaTranslator:
             if isinstance(g, dict) and g.get("src")
         }
         target_name_lang = "Russian (Cyrillic)" if t_lang == "ru" else "English (Hepburn Romanization)"
+        # Сначала проверяем, есть ли уже устоявшиеся переводы имен в phrase_cache (например, 心花 -> Kohana),
+        # чтобы пре-пасс глоссария не создавал конфликт с уже переведенными страницами главы!
+        pre_locked: list[dict[str, str]] = []
+        cache_values_joined = " ".join(str(v) for k, v in (self.phrase_cache or {}).items() if str(k).startswith(f"{t_lang}||"))
+        for cjk_name, cand_variants in _KNOWN_CJK_NAME_VARIANTS.items():
+            if cjk_name in existing_srcs:
+                continue
+            if any(cjk_name in ln for ln in cjk_lines):
+                for v_cand in cand_variants:
+                    if re.search(r"\b" + re.escape(v_cand) + r"(?=-|\b|'s)", cache_values_joined, flags=re.IGNORECASE):
+                        pre_locked.append({"src": cjk_name, "dst": v_cand, "note": "locked-from-cache"})
+                        existing_srcs.add(cjk_name)
+                        break
+
+        # Если все строки пачки уже есть в кэше, не тратим сетевой вызов к LLM на пре-пасс
+        uncached_cjk = [
+            ln for ln in cjk_lines
+            if f"{t_lang}||{ln}" not in (self.phrase_cache or {})
+        ]
+        if not uncached_cjk:
+            if pre_locked:
+                logger.info("💎 [Ultra Pre-Pass Glossary] Синхронизировано %d имен из кэша главы (0 вызовов API): %s", len(pre_locked), ", ".join(f"{e['src']}->{e['dst']}" for e in pre_locked))
+            return pre_locked
+
         sys_p = (
             f"{FICTION_NOVEL_CONTEXT_NOTE}\n"
             f"You are a manga localization linguist. Scan the following {source_lang.upper()} manga dialogue lines and extract ONLY recurring character proper names, family names, or unique nicknames.\n"
             f"For each character name found, provide its canonical {target_name_lang} spelling and gender/role note (e.g., 'female protagonist', 'male classmate').\n"
             "Do NOT include common nouns, interjections, or regular verbs.\n"
             "Return ONLY a valid JSON object mapping the exact source CJK name to its canonical target name, e.g.:\n"
-            '{"心花": "Kokona (female)", "猫又": "Nekomata (male)"}'
+            '{"美咲": "Misaki (female)", "猫又": "Nekomata (male)"}'
         )
         usr_p = "Extract character proper names from these dialogue lines into a JSON glossary object:\n" + "\n".join(cjk_lines[:70])
         try:
@@ -6867,7 +7080,7 @@ class OllamaTranslator:
                 system_prompt=sys_p,
                 user_prompt=usr_p,
             )
-            extracted: list[dict[str, str]] = []
+            extracted: list[dict[str, str]] = list(pre_locked)
             for k_raw, v_raw in (raw_map or {}).items():
                 if k_raw in ("__refusal__", "__partial_refusal__"):
                     continue

@@ -1,5 +1,5 @@
 @echo off
-title Miko-chan Manga Studio v5.3 - Download Shisa and Top Models (with VPN 198.18.x.x Bypass)
+title Miko-chan Manga Studio v5.3.0 - Download Shisa and Top Models (with VPN 198.18.x.x Bypass)
 cd /d "%~dp0"
 
 set PYTHONUTF8=1
@@ -8,7 +8,7 @@ set NO_PROXY=127.0.0.1,localhost
 set no_proxy=127.0.0.1,localhost
 
 echo ==========================================================================
-echo   Download Best Manga Translation and VLM-OCR Models (v5.3 VPN Bypass)
+echo   Download Best Manga Translation and VLM-OCR Models (v5.3.0 VPN Bypass)
 echo ==========================================================================
 echo   [1]  Shisa V2.1 14B (Phi-4, Top-1 for Japanese Manga, ~8.3 GB) [DEFAULT]
 echo   [2]  Shisa V2.1 8B  (Qwen3, Fast Japanese/Russian, ~5.0 GB)

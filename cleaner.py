@@ -1,5 +1,5 @@
 """
-Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (v4.1 SOTA Deep Research Edition).
+Модуль очистки бабблов и свободных надписей от оригинального текста — Inpainting (v5.3.0 Ultra Edition).
 
 Архитектура v4.0 (на основе отчёта Deep Research + полная обратная совместимость с v3.5–v3.7):
 1. Попиксельная сегментация штрихов, белого ореола (Geodesic Halo Extraction) и топологическая защита:
@@ -159,7 +159,7 @@ def _download_file_no_proxy(url: str, dst_path: Path, timeout: int = 120) -> Non
     """Скачивает файл в обход системного Fake-IP прокси (NO_PROXY, ProxyHandler({}))."""
     os.environ["NO_PROXY"] = "127.0.0.1,localhost"
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/v5.0-Python3.14"})
+    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/v5.3.0-Python3.14"})
     with opener.open(req, timeout=timeout) as resp, open(dst_path, "wb") as out_f:
         while True:
             buf = resp.read(1024 * 1024)
@@ -2284,7 +2284,10 @@ def analyze_bubble_geometry(
     else:
         cx_roi, cy_roi = float(max_loc[0]), float(max_loc[1])
 
-    if preset == "shout":
+    is_ultra_narrow_bub = (bubble_w < 92) and (bubble_h >= bubble_w * 1.45)
+    if is_ultra_narrow_bub:
+        margin_px = max(3, int(bubble_w * 0.048))
+    elif preset == "shout":
         margin_px = max(5, int(min(bubble_w, bubble_h) * 0.068))
     elif preset == "narration":
         margin_px = max(6, int(min(bubble_w, bubble_h) * 0.078))
@@ -2325,9 +2328,10 @@ def analyze_bubble_geometry(
     sx2_abs = min(img_w, rx1 + sx2_roi)
     sy2_abs = min(img_h, ry1 + sy2_roi)
 
-    sx1_abs = max(sx1_abs, bub_x1_abs + 4)
+    pad_clamp_x = 2 if is_ultra_narrow_bub else 4
+    sx1_abs = max(sx1_abs, bub_x1_abs + pad_clamp_x)
     sy1_abs = max(sy1_abs, bub_y1_abs + 4)
-    sx2_abs = min(sx2_abs, max(sx1_abs + 12, bub_x2_abs - 4))
+    sx2_abs = min(sx2_abs, max(sx1_abs + 12, bub_x2_abs - pad_clamp_x))
     sy2_abs = min(sy2_abs, max(sy1_abs + 12, bub_y2_abs - 4))
 
     safe_w = max(12, sx2_abs - sx1_abs)
@@ -4037,9 +4041,9 @@ class BubbleCleaner:
                 if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
                     continue
                 eff_redraw_tag = (
-                    "v5.3-ultra-redraw"
+                    "v5.3.0-ultra-redraw"
                     if (self.pipeline_mode == "ultra" or self.inpaint_backend == "ultra_deep_redraw")
-                    else f"v5.3-{self.inpaint_backend}"
+                    else f"v5.3.0-{self.inpaint_backend}"
                 )
                 block_crop_key = (
                     img_fp,

@@ -1,5 +1,5 @@
 @echo off
-title Miko-chan Manga Studio v1.0.8 - Install Korean and Chinese OCR Support (EasyOCR)
+title Miko-chan Manga Studio v5.3.0 - Install Korean and Chinese OCR Support (EasyOCR)
 cd /d "%~dp0"
 
 echo =======================================================================

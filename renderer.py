@@ -1,5 +1,5 @@
 """
-Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Miko-chan Manga Studio v4.1 SOTA Deep Research Edition).
+Модуль верстки и отрисовки переведенного текста в бабблах и на фоне — Typesetting (Miko-chan Manga Studio v5.3.0 Ultra Edition).
 
 Архитектура обновления v4.0 (на основе отчёта Deep Research + полная обратная совместимость с v3.5–v3.7):
 1. Двухуровневая матрица профессиональных сканлейт-шрифтов (RU / EN):
@@ -943,7 +943,7 @@ class SotaShapeAwareRenderer:
 
 
 class MangaRenderer:
-    """Вписывает переведенный текст в очищенные бабблы и свободные области страницы манги (v4.0 SOTA Deep Research Edition)."""
+    """Вписывает переведенный текст в очищенные бабблы и свободные области страницы манги (v5.3.0 Ultra Edition)."""
 
     _PYPHEN_HYPHENATORS: dict[str, Any] = {}
 
@@ -1840,8 +1840,8 @@ class MangaRenderer:
         is_cyrillic = bool(re.search(r"[а-яА-ЯёЁ]", core_word))
         is_latin = bool(re.search(r"[a-zA-Z]", core_word)) and not is_cyrillic
 
-        eff_min_part = max(3, min_part_len)
-        min_word_len = 7 if is_ultra_narrow else (8 if is_narrow_bubble else 10)
+        eff_min_part = max(2 if is_ultra_narrow else 3, min_part_len)
+        min_word_len = 6 if is_ultra_narrow else (8 if is_narrow_bubble else 10)
 
         if n < max(min_word_len, eff_min_part * 2):
             return []
@@ -1894,7 +1894,7 @@ class MangaRenderer:
                         continue
                     morpheme_splits.add(i)
                     continue
-                if n >= 8 and left_low[-1] in cls._VOWELS_EN and right_low[0] not in cls._VOWELS_EN:
+                if n >= (6 if is_ultra_narrow else 8) and left_low[-1] in cls._VOWELS_EN and right_low[0] not in cls._VOWELS_EN:
                     if len(right_low) >= 2 and right_low[1] in cls._VOWELS_EN:
                         morpheme_splits.add(i)
 
@@ -2217,6 +2217,11 @@ class MangaRenderer:
 
         n = len(words)
         if n == 1:
+            single_w = self._measure_line_width(draw, words[0], font)
+            if safe_w < 95 and single_w * MIN_ANAMORPHIC_CONDENSE_RATIO > safe_w * 0.98 and len(words[0]) >= 6:
+                forced_parts = self._split_long_word(draw, words[0], font, int(safe_w * 0.85), safe_w=safe_w, safe_h=safe_h)
+                if len(forced_parts) >= 2:
+                    return "\n".join(forced_parts)
             return words[0]
 
         word_widths = [self._measure_line_width(draw, w, font) for w in words]
@@ -2916,7 +2921,7 @@ class MangaRenderer:
         overflow_mode: str | None = None,
     ) -> Image.Image:
         """
-        Двухпроходный SOTA конвейер тайпсеттинга страницы манги (v4.0 Deep Research Edition):
+        Двухпроходный SOTA конвейер тайпсеттинга страницы манги (v5.3.0 Ultra Edition):
         - Проход 1: Геометрическая сегментация внутренней полости каждого бабла (`_analyze_bubble_geometry`),
           разделение сдвоенных баблов («восьмёрок») через Watershed на `-DT`, поиск индивидуального максимального кегля
           `raw_best_fs[i]` по пересечению скан-хорд и расчет базового кегля страницы `page_base_fs` (взвешенная медиана).
@@ -3409,8 +3414,10 @@ class MangaRenderer:
                 words_cnt = len(raw_text.split())
                 chars_cnt = len(raw_text.strip())
 
-                if style_preset == "dialogue" and words_cnt <= 3 and chars_cnt <= 14:
-                    harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * 1.30)), min(b_max, 24)))
+                is_monologue_role = str(block.get("box_role") or "") == "monologue"
+                if (style_preset == "dialogue" and words_cnt <= 4 and chars_cnt <= 18) or (is_monologue_role and page_base_fs <= 22):
+                    cap_mult = 1.22 if is_monologue_role else 1.28
+                    harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * cap_mult)), min(b_max, 23 if is_monologue_role else 24)))
                 elif style_preset == "whisper":
                     harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * 0.80))))
                 elif style_preset == "shout":

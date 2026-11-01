@@ -1,7 +1,7 @@
 /**
- * Content Script (v1.0.8) — Локальный и облачный AI-переводчик Манги / Манхвы / Маньхуа
+ * Content Script (v5.3.0) — Локальный и облачный AI-переводчик Манги / Манхвы / Маньхуа
  *
- * Ключевые улучшения v1.0.8:
+ * Ключевые улучшения v5.3.0:
  * 1. Полностью переработан интерфейс выбора ИИ-моделей:
  *    - Информативная карточка активной модели с бейджем провайдера (✨ Авто / ☁️ Cloud / 🦙 Ollama),
  *      открывающая сгруппированный список моделей с быстрым поиском.
@@ -673,7 +673,7 @@
       <div class="mt-title">
         <span id="mt-server-dot" class="mt-server-dot" title="Статус локального сервера"></span>
         <span>Manga Translator</span>
-        <span class="mt-ver-tag">v1.0.8</span>
+        <span class="mt-ver-tag">v5.3.0</span>
       </div>
       <div style="display:flex; gap:4px;">
         <button id="mt-web-ui-btn" class="mt-icon-btn" title="Открыть локальную Веб-Студию (http://127.0.0.1:5000/)">🌐</button>

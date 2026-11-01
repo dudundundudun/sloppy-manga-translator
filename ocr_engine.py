@@ -1,5 +1,5 @@
 """
-Мультиязычный модуль детекции бабблов, свободных надписей и распознавания текста (v1.0.8 — Шаги 1 + 2 + 3 + 4).
+Мультиязычный модуль детекции бабблов, свободных надписей и распознавания текста (v5.3.0 — Шаги 1 + 2 + 3 + 4).
 
 Изменения v1.0.7:
 - Шаг 1 (Двухконтурная детекция и точный кроп текста):
@@ -934,13 +934,26 @@ def _detect_bubble_tail_vector(
     if rh < 16 or rw < 16:
         return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
 
-    # Выделяем светлую чашу баббла вместе с её хвостиком
-    _, white_bin = cv2.threshold(roi, 215, 255, cv2.THRESH_BINARY)
-    num_cc, labels, stats, _ = cv2.connectedComponentsWithStats(white_bin, connectivity=4)
+    # Выделяем светлую чашу баббла вместе с её хвостиком.
+    # ВАЖНО: закрываем черные штрихи букв внутри баббла морфологическим закрытием, чтобы попадание
+    # центральной точки (cx_roi, cy_roi) на черную букву не сбрасывало center_lbl в 0 (ложный monologue)!
+    _, white_raw = cv2.threshold(roi, 212, 255, cv2.THRESH_BINARY)
+    k_ink_fill = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+    white_bin = cv2.morphologyEx(white_raw, cv2.MORPH_CLOSE, k_ink_fill, iterations=1)
+    num_cc, labels, stats, _ = cv2.connectedComponentsWithStats(white_bin, connectivity=8)
     cx_roi, cy_roi = (bx1 + bx2) * 0.5 - rx1, (by1 + by2) * 0.5 - ry1
-    center_lbl = int(labels[int(np.clip(cy_roi, 0, rh - 1)), int(np.clip(cx_roi, 0, rw - 1))])
+    cy_i, cx_i = int(np.clip(cy_roi, 0, rh - 1)), int(np.clip(cx_roi, 0, rw - 1))
+    center_lbl = int(labels[cy_i, cx_i])
     if center_lbl <= 0:
-        return {"has_tail": False, "box_role": "monologue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
+        # Ищем ближайшую крупную светлую компоненту в центральной окрестности баббла
+        win_r = max(6, min(rw, rh) // 6)
+        sub_lbls = labels[max(0, cy_i - win_r):min(rh, cy_i + win_r + 1), max(0, cx_i - win_r):min(rw, cx_i + win_r + 1)]
+        pos_lbls = sub_lbls[sub_lbls > 0]
+        if pos_lbls.size > 0:
+            vals, cnts_l = np.unique(pos_lbls, return_counts=True)
+            center_lbl = int(vals[int(np.argmax(cnts_l))])
+    if center_lbl <= 0:
+        return {"has_tail": False, "box_role": "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
 
     cav_mask = ((labels == center_lbl) * 255).astype(np.uint8)
     cnts, _ = cv2.findContours(cav_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -1065,6 +1078,9 @@ def assign_speaker_diarization_magi_graph(
             else {"has_tail": False, "box_role": "sfx" if is_free else "dialogue", "tail_dx": 0.0, "tail_dy": 0.0, "tip_xy": None}
         )
         box_role = str(tail_meta.get("box_role") or "dialogue")
+        orig_txt_blk = str(blk.get("original_text") or "")
+        if box_role == "monologue" and re.search(r"[☆★♪♡♥！？!?]|(?:でしょ|ます|だよ|よ〜|よね|ね\?|かな|ちゃん|くん)", orig_txt_blk):
+            box_role = "dialogue"
         blk["box_role"] = box_role
         if tail_meta.get("has_tail"):
             blk["tail_vector"] = [float(tail_meta["tail_dx"]), float(tail_meta["tail_dy"])]
@@ -2637,7 +2653,7 @@ def _restore_english_word_spaces(text: str) -> str:
 
 class MangaOCREngine:
     """
-    Мультиязычный движок v1.0.8 (Шаги 1 + 2 + 3 + 4):
+    Мультиязычный движок v5.3.0 (Шаги 1 + 2 + 3 + 4):
     - Двухконтурная детекция (`RT-DETR-v2` 3-class `bubble` / `text_bubble` / `text_free` + `YOLOv8m` + OpenCV)
     - Плотная подгонка кропа по чернилам (`_compute_tight_ink_bbox`)
     - Японский OCR (`muscgab/manga-ocr-nar-small` + `MangaOCR FP16`)
@@ -2685,7 +2701,7 @@ class MangaOCREngine:
         self.preferred_vlm_model: str = "auto"
         self.ollama_base_url = ollama_base_url.rstrip("/")
 
-        logger.info("Инициализация MangaOCREngine (v1.0.8 Step 1+2+3+4) на устройстве: %s", self.device)
+        logger.info("Инициализация MangaOCREngine (v5.3.0 Step 1+2+3+4) на устройстве: %s", self.device)
         self.detector = self._load_detector()
         self.ja_recognizer = self._load_manga_ocr()
 
@@ -3328,7 +3344,7 @@ class MangaOCREngine:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "Authorization": f"Bearer {cloud_api_key.strip()}",
-                "User-Agent": "MikoMangaStudio/1.0.8",
+                "User-Agent": "MikoMangaStudio/5.3.0",
             }
             with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), trust_env=False) as client:
                 for c_mod in candidate_cloud_models[:2]:
@@ -7525,7 +7541,7 @@ class MangaOCREngine:
                         return False
 
                     is_acc_or_ultra = is_ultra_ocr or (getattr(self, "pipeline_mode", "balanced") == "accuracy")
-                    len_thresh = 18 if is_ultra_ocr else (26 if is_acc_or_ultra else 34)
+                    len_thresh = 28 if is_ultra_ocr else (32 if is_acc_or_ultra else 38)
                     fallback_indices = [
                         idx
                         for idx, txt in enumerate(nar_texts)
@@ -7845,7 +7861,7 @@ class MangaOCREngine:
                         not is_free
                         and len(recognized_text.strip()) <= (3 if eff_pmode == "ultra" else 2)
                         and ink_pixels >= (130 if eff_pmode == "ultra" else 165)
-                        and self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False)
+                        and not skip_sfx and self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False)
                     )
                 )
             ):

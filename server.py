@@ -1,5 +1,5 @@
 """
-FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v1.0.8).
+FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v5.3.0).
 
 Изменения v1.0.6:
 - Расширение схемы `TextBlock` полями профессиональной верстки и локальной ретуши маски:
@@ -78,6 +78,7 @@ import tempfile
 from typing import Awaitable, Callable
 
 from translator import (
+    enforce_glossary_on_translated_text,
     BUILT_IN_MODEL_STACK_PRESETS,
     CLOUD_API_PRESETS,
      DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
@@ -890,7 +891,7 @@ async def lifespan(app: FastAPI):
     _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v1.0.8)", flush=True)
+    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v5.3.0)", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -913,7 +914,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="1.0.8",
+    version="5.3.0",
     lifespan=lifespan,
 )
 
@@ -1528,8 +1529,51 @@ def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
                         if not b.get("skip_reason"):
                             b["skip_reason"] = f"Реплика «{orig_t}» восстановлена для автоматического доперевода"
                         page_needs_retranslate = True
+            for b in p_blocks:
+                if not isinstance(b, dict):
+                    continue
+                orig_s = str(b.get("original_text") or "").strip()
+                cur_rom_s = str(b.get("romaji_text") or "").strip()
+                if orig_s and (not cur_rom_s or OllamaTranslator._contains_cjk(cur_rom_s)):
+                    cached_r = str(pc.get(f"romaji||{orig_s}", "")).strip() if isinstance(pc, dict) else ""
+                    if cached_r and OllamaTranslator._contains_cjk(cached_r):
+                        cached_r = ""
+                    healed_r = cached_r or japanese_to_romaji_local(orig_s)
+                    b["romaji_text"] = healed_r
+                    if isinstance(pc, dict) and healed_r:
+                        pc[f"romaji||{orig_s}"] = healed_r
+                cur_tr_s = str(b.get("translated_text") or "").strip()
+                if orig_s and cur_tr_s:
+                    if cur_tr_s == "*sigh*" and "ううん" in orig_s:
+                        cur_tr_s = "Nope!☆" if "☆" in orig_s else "Nope!"
+                        b["translated_text"] = cur_tr_s
+                    gloss_list = data.get("glossary") if isinstance(data.get("glossary"), list) else []
+                    if gloss_list:
+                        synced_tr = enforce_glossary_on_translated_text(
+                            orig_s, cur_tr_s, gloss_list, str(data.get("target_lang") or "en")
+                        )
+                        if synced_tr != cur_tr_s:
+                            b["translated_text"] = synced_tr
+                            if isinstance(pc, dict):
+                                t_l = str(data.get("target_lang") or "en").lower().strip()
+                                pc[f"{t_l}||{orig_s}"] = synced_tr
             if page_needs_retranslate:
                 p_meta["needs_retranslate"] = True
+    if isinstance(pc, dict):
+        gloss_list = data.get("glossary") if isinstance(data.get("glossary"), list) else []
+        for ck, cv in list(pc.items()):
+            if not isinstance(ck, str) or not isinstance(cv, str):
+                continue
+            if ck.startswith("romaji||") and OllamaTranslator._contains_cjk(cv):
+                orig_k = ck.split("||", 1)[1]
+                pc[ck] = japanese_to_romaji_local(orig_k)
+            elif "||" in ck and not ck.startswith("romaji||"):
+                t_l, orig_k = ck.split("||", 1)
+                if cv == "*sigh*" and "ううん" in orig_k:
+                    cv = "Nope!☆" if "☆" in orig_k else "Nope!"
+                    pc[ck] = cv
+                if gloss_list:
+                    pc[ck] = enforce_glossary_on_translated_text(orig_k, cv, gloss_list, t_l)
     return data
 
 
@@ -2202,7 +2246,7 @@ def _generate_and_save_folder_report(
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v1.0.8",
+        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v5.3.0",
         "========================================================================================",
         f"• Исходная папка манги     : {source_dir}",
         f"• Папка готового перевода  : {output_dir}",
@@ -2516,11 +2560,14 @@ def _generate_and_save_folder_report(
             ]
         )
         for b_item in batches_log[-30:]:
+            b_mod_lbl = str(b_item.get('model') or active_llm)
+            if source_counter.get('llm', 0) == 0 and (source_counter.get('cache', 0) + source_counter.get('interjection_dict', 0)) >= max(1, tot_translated_ok):
+                b_mod_lbl = f"{b_mod_lbl} (из кэша/фоллбэка)"
             lines.append(
                 f"  • [{b_item.get('time', '—')}] {b_item.get('label')} | Файлы: {b_item.get('files_range', '—')} | "
                 f"Блоков: {b_item.get('blocks_count', 0)} (перев.: {b_item.get('translated_count', 0)}, отфильтр.: {b_item.get('filtered_count', 0)}) | "
                 f"OCR={b_item.get('ocr_sec', 0)}с, ИИ={b_item.get('llm_sec', 0)}с, Рендер={b_item.get('render_sec', 0)}с "
-                f"=> ВСЕГО={b_item.get('total_sec', 0)}с ({b_item.get('sec_per_page', 0)}с/стр) | Модель: {b_item.get('model', active_llm)}"
+                f"=> ВСЕГО={b_item.get('total_sec', 0)}с ({b_item.get('sec_per_page', 0)}с/стр) | Модель: {b_mod_lbl}"
             )
 
     lines.extend(
@@ -3494,6 +3541,8 @@ async def _run_folder_translation_job(
 
                 try:
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
+                    if phrase_cache and not force_retranslate:
+                        translator_engine.phrase_cache.update(phrase_cache)
                     if eff_pmode == "ultra" and len(combined_blocks) >= 4 and target_lang.lower().strip() != "romaji":
                         folder_job_state["current_file"] = f"💎 [Ультра Проход 0/2: Авто-сбор глоссария имен персонажей ({len(combined_blocks)} фраз)]..."
                         extracted_gloss = await translator_engine.extract_chapter_glossary_prepass(
@@ -3963,7 +4012,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v1.0.8 Server Running</h1>")
+    return HTMLResponse(content="<h1>Manga Translator v5.3.0 Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -4010,7 +4059,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "1.0.8",
+        "version": "5.3.0",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -6061,7 +6110,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "1.0.8",
+            "version": "5.3.0",
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -7120,7 +7169,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
     }
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v1.0.8 ===",
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v5.3.0 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -7238,7 +7287,7 @@ async def clear_diagnostics_endpoint() -> dict[str, str]:
 
 
 # ==============================================================================
-#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v1.0.8)
+#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v5.3.0)
 # ==============================================================================
 
 _ux_telemetry_lock = threading.Lock()
@@ -7689,7 +7738,7 @@ def _generate_ux_usage_report(store: dict[str, Any] | None = None) -> tuple[str,
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v1.0.8",
+        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v5.3.0",
         "========================================================================================",
         f"• Файл отчета              : {UX_REPORT_TXT_FILE}",
         f"• База накопленной телеметрии: {UX_TELEMETRY_JSON_FILE}",
@@ -7951,10 +8000,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.8":
+                if running_ver not in ("5.3.0", "5.3"):
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v1.0.8...",
+                        f"Останавливаю старый процесс для запуска v5.3.0...",
                         flush=True,
                     )
                     try:
@@ -7979,5 +8028,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v1.0.8 на 127.0.0.1:5000...", flush=True)
+    print("Запуск локального сервера Manga Translator v5.3.0 на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)

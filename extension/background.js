@@ -1,7 +1,7 @@
 /**
- * Background Service Worker (v1.0.8)
+ * Background Service Worker (v5.3.0)
  *
- * Изменения v1.0.8:
+ * Изменения v5.3.0:
  * 1. Выделена команда `SET_ACTIVE_MODEL`, которая переключает только `selected_model` на сервере
  *    без перезаписи/сброса сохраненного `unsloth_api_key` и других настроек `config.json`.
  * 2. В `SAVE_SERVER_SETTINGS` передаются только явно заданные поля (пустой ключ не затирает серверный,

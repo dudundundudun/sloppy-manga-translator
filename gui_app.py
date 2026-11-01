@@ -1,7 +1,7 @@
 """
-Локальное графическое приложение (GUI) «Miko-chan Manga Studio» (v1.0.8).
+Локальное графическое приложение (GUI) «Miko-chan Manga Studio» (v5.3.0).
 
-Изменения v1.0.8:
+Изменения v5.3.0:
 1. В окно «⚙️ Настройки» добавлена секция скачивания в 1 клик лучших моделей манги
    (Shisa V2.1 14B, Shisa V2.1 8B, Shisa V2 12B Uncensored, Gemma 3 12B, Qwen 2.5 14B)
    напрямую через локальный сервер Ollama с прогресс-баром и автоматической установкой по умолчанию!
@@ -101,12 +101,12 @@ OVERFLOW_LABEL_BY_CODE = {v: k for k, v in OVERFLOW_MODE_MAP.items()}
 
 
 class MikoMangaStudioGUI:
-    """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v1.0.8)."""
+    """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v5.3.0)."""
 
     def __init__(self, root: tk.Tk) -> None:
-        print("[GUI] Инициализация окна Miko-chan Manga Studio v1.0.8...", flush=True)
+        print("[GUI] Инициализация окна Miko-chan Manga Studio v5.3.0...", flush=True)
         self.root = root
-        self.root.title("🌸 Miko-chan Manga Studio v1.0.8")
+        self.root.title("🌸 Miko-chan Manga Studio v5.3.0")
         self.root.geometry("1460x880")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_DEEP)
@@ -526,7 +526,7 @@ class MikoMangaStudioGUI:
 
         self.lbl_miko_speech = tk.Label(
             speech_wrap,
-            text="Привет! Версия v1.0.8 готова: двухконтурный детектор RT-DETR-v2, мультиязычный HayaiOCR v2.5 Nova, VLM-OCR и пресеты DeepSeek Flash/Pro~ 🌸",
+            text="Привет! Версия v5.3.0 готова: двухконтурный детектор RT-DETR-v2, мультиязычный HayaiOCR v2.5 Nova, VLM-OCR и пресеты DeepSeek Flash/Pro~ 🌸",
             bg="#141122",
             fg=FG_PRIMARY,
             font=("Segoe UI", 9),
@@ -973,7 +973,7 @@ class MikoMangaStudioGUI:
 
     def _open_diagnostics_modal(self) -> None:
         win = tk.Toplevel(self.root)
-        win.title("🩺 Диагностика, Тайминги и Логи (v1.0.8)")
+        win.title("🩺 Диагностика, Тайминги и Логи (v5.3.0)")
         win.geometry("880x640")
         win.configure(bg=BG_BENTO)
         win.transient(self.root)
@@ -1942,8 +1942,8 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver != "1.0.8":
-                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v1.0.8...", flush=True)
+                if running_ver not in ("5.3.0", "5.3"):
+                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v5.3.0...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)
                     except Exception:
