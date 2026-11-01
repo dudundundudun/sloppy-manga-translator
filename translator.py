@@ -1172,6 +1172,10 @@ FULLWIDTH_PUNCT_MAP = str.maketrans(
         "！": "!",
         "？": "?",
         "。": ".",
+        "．": ".",
+        "⋯": "...",
+        "︙": "...",
+        "︰": "..",
         "，": ",",
         "、": ", ",
         "・": " ",
@@ -1852,14 +1856,14 @@ def is_translated_sigh_text(translated_text: str, original_text: str = "") -> bo
         return True
     if "?" in (original_text or "") or "？" in (original_text or "") or "?" in translated_text:
         return False
-    orig_clean = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", original_text or "")
+    orig_clean = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", original_text or "")
     if len(orig_clean) > 4:
         return False
     if orig_clean and orig_clean not in PURE_SIGH_KEYS_JA:
         return False
 
     cleaned = re.sub(
-        r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+",
+        r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+",
         " ",
         translated_text.strip().lower(),
     ).strip()
@@ -2128,7 +2132,7 @@ def japanese_to_romaji_local(text: str) -> str:
         return ""
 
     raw = text.strip()
-    norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", raw)
+    norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", raw)
     if norm_orig in SHORT_INTERJECTIONS_ROMAJI:
         return SHORT_INTERJECTIONS_ROMAJI[norm_orig]
 
@@ -4128,7 +4132,7 @@ class OllamaTranslator:
         if orig_text:
             if HALLUCINATION_TRANSLATION_REGEX.search(orig_text):
                 return True
-            clean_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+", "", orig_text)
+            clean_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+", "", orig_text)
             # Защита от залипания ответа «Twitch» (когда модель копирует «Twitch» из контекста или шумового SFX на обычную реплику)
             if norm_val_alpha in ("twitch", "twitches", "twitching", "flinch"):
                 if clean_orig and not any(sfx_k in clean_orig for sfx_k in ("ビク", "ピク", "ぴく", "びく", "ヒク", "ひく", "痙攣", "つる")):
@@ -4414,7 +4418,7 @@ class OllamaTranslator:
         Никогда не возвращает Ромадзи для режимов 'en' и 'ru'!
         """
         t_lang = (target_lang or "en").lower().strip()
-        norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_text or "")
+        norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_text or "")
         interj_dict = (
             SHORT_INTERJECTIONS_RU
             if t_lang == "ru"
@@ -4442,7 +4446,38 @@ class OllamaTranslator:
         return ""
 
     @staticmethod
-    def _clean_translated_text(text: str, target_lang: str = "en") -> str:
+    def _restore_comic_ellipses(text: str, orig_text: str = "") -> str:
+        if not text:
+            return ""
+        s = text.strip()
+        # 1. Одиночная или двойная точка в самом начале фразы перед буквой/кавычкой (.You think so? -> ...You think so?)
+        s = re.sub(r"^\.{1,2}(?=[A-Za-zА-Яа-яЁё\"'«])", "...", s)
+        # 2. Одиночная или двойная точка непосредственно перед ? или ! (Whoa.?! -> Whoa...?!, Ah.! -> Ah...!)
+        s = re.sub(r"(?<!\.)\.{1,2}([?!]+)", r"...\1", s)
+        # 3. Одиночная точка в середине фразы перед строчной буквой (Well. um. -> Well... um.)
+        _abbrev_ignore = {
+            "mr", "mrs", "ms", "dr", "prof", "st", "vs", "etc", "fig", "no", "vol", "ch", "pt",
+            "т", "г", "ул", "др", "пр", "им", "см", "стр", "рис", "кв", "комн", "обл", "руб", "коп",
+        }
+        def _mid_dot_fix(m: re.Match) -> str:
+            prev_w = m.group(1)
+            if prev_w.lower() in _abbrev_ignore or len(prev_w) == 1:
+                return m.group(0)
+            return f"{prev_w}... {m.group(2)}"
+        s = re.sub(r"\b([A-Za-zА-Яа-яЁё]+)\.\s+([a-zа-яё])", _mid_dot_fix, s)
+        # 4. Если оригинал заканчивался многоточием (… / ．．． / ..), а перевод оборвался на одиночной точке "."
+        if orig_text:
+            orig_s = orig_text.strip()
+            if re.search(r"(?:[…‥⋯︙]|\.{2,}|．{2,})[\s」』）\)\"'☆✦♡♥♪]*$", orig_s):
+                if s.endswith(".") and not s.endswith(".."):
+                    s = s[:-1] + "..."
+            if re.match(r"^[\s「『（\(\"']*(?:[…‥⋯︙]|\.{2,}|．{2,})", orig_s):
+                if s.startswith(".") and not s.startswith(".."):
+                    s = "..." + s.lstrip(".")
+        return s
+
+    @classmethod
+    def _clean_translated_text(cls, text: str, target_lang: str = "en", orig_text: str = "") -> str:
         if not text:
             return ""
         t_lang = (target_lang or "en").lower().strip()
@@ -4456,7 +4491,10 @@ class OllamaTranslator:
         normalized = normalize_manga_special_symbols(text).translate(FULLWIDTH_PUNCT_MAP)
         no_cjk = CJK_REGEX.sub("", normalized)
         no_sym = CJK_SYMBOLS_REGEX.sub("", no_cjk)
-        return re.sub(r"\s+", " ", no_sym).strip()
+        cleaned = re.sub(r"\s+", " ", no_sym).strip()
+        if t_lang in ("en", "ru"):
+            cleaned = cls._restore_comic_ellipses(cleaned, orig_text=orig_text)
+        return cleaned
 
     @staticmethod
     def _get_prompts(
@@ -4564,7 +4602,7 @@ class OllamaTranslator:
                 f"Ты — профессиональный переводчик и редактор локализации диалогов {src_ru} на русский язык.\n"
                 "Правила:\n"
                 "1. Имена, фамилии и домашние прозвища передавай фонетически (Поливанов/Хэпбёрн), НЕ переводи их буквально по смыслу иероглифов (七香/ななか -> Нанака, 七ちゃん -> Нана-тян, НЕ «Семь-тян»; 一 -> Ити/Кадзу; 双葉 -> Футаба; 三玖 -> Мику; 四葉 -> Ёцуба; 五月 -> Ицуки). Сохраняй суффиксы (-сан, -тян, -кун, -сэмпай, -сэнсэй).\n"
-                "2. Переводи реплики и междометия связно, живо и лаконично под размер облачков.\n"
+                "2. Переводи реплики и междометия связно, живо и лаконично под размер облачков. Сохраняй многоточия ('...') в начале, середине и конце фраз для передачи пауз и заминок (пиши '...Ты так думаешь?', 'Ого...?!', НИКОГДА не сокращай многоточие до одной точки вроде '.Ты так думаешь?' или '.?!').\n"
                 "3. Запрещено оставлять японские/корейские/китайские символы или пропускать ключи JSON.\n"
                 "4. Не выводи <think>. Верни ТОЛЬКО валидный JSON-объект с теми же ключами.\n"
                 f"{TYPESETTING_AWARE_RULE_RU}"
@@ -4581,7 +4619,7 @@ class OllamaTranslator:
             f"You are a professional {src_en}-to-English localization translator.\n"
             "Rules:\n"
             "1. Translate the MEANING of every dialogue line, exclamation, and interjection into natural, idiomatic English. NEVER transliterate sentences or words into Japanese Romaji (e.g., write 'Stop it!', NEVER 'Yamete!'; write 'Wait!', NEVER 'Chotto matte!'; write 'Feels so good...', NEVER 'Kimochiii').\n"
-            "2. Only personal character names should be romanized phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei).\n"
+            "2. Only personal character names should be romanized phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei). Preserve ellipses ('...') at the start, middle, and end of lines whenever the original has '…' or '．．．' (e.g., write '...You think so?', 'Whoa...?!', 'Well... um...', NEVER collapse '...' into a single dot like '.You think so?' or 'Whoa.?!').\n"
             "3. Output zero Japanese/Korean/Chinese characters, NEVER skip any JSON key, and NEVER output censorship/omission placeholders like '[Explicit content omitted]', '[Sound omitted]', or '[Censored]'.\n"
             "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys.\n"
             f"{TYPESETTING_AWARE_RULE_EN}"
@@ -5541,7 +5579,7 @@ class OllamaTranslator:
                 return False
             if self._is_bubble_refusal_value(cand_str) or self._is_hallucinated_translation(cand_str, orig_val):
                 return False
-            c = self._clean_translated_text(cand_str, target_lang=t_lang)
+            c = self._clean_translated_text(cand_str, target_lang=t_lang, orig_text=orig_val)
             if not c or self._is_bubble_refusal_value(c) or self._is_hallucinated_translation(c, orig_val):
                 return False
             if orig_val and not self._contains_cjk(orig_val):
@@ -5693,7 +5731,7 @@ class OllamaTranslator:
             cur_v = translated_map.get(k, "")
             if not cur_v or not _is_valid_target_translation(cur_v, orig_val):
                 has_q_inner = ("?" in orig_val) or ("？" in orig_val)
-                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_val)
+                norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_val)
                 if norm_orig in interj_dict and len(norm_orig) <= 5:
                     d_val = interj_dict[norm_orig]
                     if has_q_inner and not d_val.endswith("?"):
@@ -5758,7 +5796,7 @@ class OllamaTranslator:
             if bad_keys and not was_refusal and len(bad_keys) <= 2:
                 still_bad: list[str] = []
                 for bk_minor in bad_keys:
-                    cand_minor = self._clean_translated_text(translated_map.get(bk_minor, ""), target_lang=t_lang)
+                    cand_minor = self._clean_translated_text(translated_map.get(bk_minor, ""), target_lang=t_lang, orig_text=source_map.get(bk_minor, ""))
                     orig_minor = source_map[bk_minor]
                     resc_minor = self._rescue_romaji_or_interjection(cand_minor, orig_minor, t_lang)
                     if resc_minor:
@@ -5775,7 +5813,7 @@ class OllamaTranslator:
                         }
                     else:
                         has_q_m = ("?" in orig_minor) or ("？" in orig_minor)
-                        norm_m = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_minor)
+                        norm_m = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪]+", "", orig_minor)
                         if not has_q_m and norm_m in PURE_SIGH_KEYS_JA:
                             # Только чистый вздох из PURE_SIGH_KEYS_JA пропускаем без доперевода; короткие реплики (1-3 кандзи/каны) отправляем в локальный фоллбэк!
                             translated_map[bk_minor] = ""
@@ -5997,7 +6035,7 @@ class OllamaTranslator:
             raw_val = translated_map.get(k, "")
             if self._is_bubble_refusal_value(raw_val) or self._is_hallucinated_translation(raw_val, orig_val):
                 raw_val = ""
-            cleaned_val = self._clean_translated_text(raw_val, target_lang=t_lang)
+            cleaned_val = self._clean_translated_text(raw_val, target_lang=t_lang, orig_text=orig_val)
             if self._is_bubble_refusal_value(cleaned_val) or self._is_hallucinated_translation(cleaned_val, orig_val):
                 cleaned_val = ""
             if t_lang == "ru" and cleaned_val and not re.search(r"[А-Яа-яЁё]", cleaned_val):
@@ -6166,7 +6204,7 @@ class OllamaTranslator:
                         "note": f"Числовой/символьный артефакт без букв «{orig_raw}» пропущен (0 токенов)",
                     }
                 else:
-                    translated_map[k] = self._clean_translated_text(orig_raw, target_lang=t_lang)
+                    translated_map[k] = self._clean_translated_text(orig_raw, target_lang=t_lang, orig_text=orig_raw)
                     cached_hits += 1
                     block_prov[k] = {
                         "source": "cache",
@@ -6178,7 +6216,7 @@ class OllamaTranslator:
             # ВАЖНО: Если в реплике есть вопросительный знак ('?' / '？'), это осмысленный вопрос («ん?» -> «Hm?», «はぁ?» -> «Huh?»),
             # его НИКОГДА нельзя пропускать как беззвучный вздох или превращать в утверждение с '!'
             has_question_mark = ("?" in orig_raw) or ("？" in orig_raw)
-            norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_raw)
+            norm_orig = re.sub(r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\♡\♥\♪\(\）\（\)]+", "", orig_raw)
             if eff_skip_sighs and not has_question_mark and norm_orig in PURE_SIGH_KEYS_JA:
                 translated_map[k] = ""
                 cached_hits += 1
@@ -6737,7 +6775,8 @@ class OllamaTranslator:
             val_s = str(v or "").strip()
             if "=>" in val_s:
                 val_s = val_s.split("=>")[-1].strip()
-            val_s = self._clean_translated_text(val_s, target_lang=t_lang)
+            orig_for_k = (book_map.get(norm_k) or {}).get("orig", "") if isinstance(book_map.get(norm_k), dict) else ""
+            val_s = self._clean_translated_text(val_s, target_lang=t_lang, orig_text=orig_for_k)
             if val_s and not self._is_bubble_refusal_value(val_s):
                 cleaned_out[norm_k] = val_s
         return cleaned_out
@@ -6893,7 +6932,7 @@ class OllamaTranslator:
             if not cand and res_map:
                 first_v = next(iter(res_map.values()), "")
                 cand = str(first_v or "").strip()
-            cand = self._clean_translated_text(cand, target_lang=t_lang)
+            cand = self._clean_translated_text(cand, target_lang=t_lang, orig_text=orig_text)
             if cand and not self._is_bubble_refusal_value(cand):
                 return cand
         except Exception as exc:

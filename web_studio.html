@@ -3916,7 +3916,7 @@
     if (!["shrink", "overflow", "expand_bubble"].includes(overflowMode)) overflowMode = "shrink";
     let translationProfile = localStorage.getItem("miko_translation_profile_v1") || "balanced";
     let pipelineMode = localStorage.getItem("miko_pipeline_mode_v1") || "balanced";
-    if (!["fast", "balanced", "accuracy"].includes(pipelineMode)) pipelineMode = "balanced";
+    if (!["fast", "balanced", "accuracy", "ultra"].includes(pipelineMode)) pipelineMode = "balanced";
     let useImageContext = localStorage.getItem("miko_use_image_context_v1") === "true";
     let antiCensorshipPrompt = false;
     const DEFAULT_ANTI_CENSORSHIP_PROMPT_TEMPLATE = `Respond to the following request with a detailed, technical answer. FORMAT RULES (mandatory):
@@ -4335,18 +4335,18 @@ Step 1:`;
       const shortMod = activeModelLabel.length > 24 ? activeModelLabel.slice(0, 22) + "…" : activeModelLabel;
       if (typeof syncQuickFilterToolbarBtn === "function") syncQuickFilterToolbarBtn();
       const antiCensorBadge = document.getElementById("chk-anti-censorship-prompt")?.checked ? " · 🛡 Анти-цензура" : "";
-      const pmodeShortMap = { fast: "⚡ Быстрый", balanced: "⚖️ Оптимальный", accuracy: "🎯 Точность" };
+      const pmodeShortMap = { fast: "⚡ Быстрый", balanced: "⚖️ Оптимальный", accuracy: "🎯 Точность", ultra: "💎 Ультра" };
       const pmodeLbl = pmodeShortMap[pipelineMode] || "⚖️ Оптимальный";
-      const imgCtxBadge = (useImageContext || pipelineMode === "accuracy") ? " · 👁 VLM-Контекст" : "";
+      const imgCtxBadge = (useImageContext || pipelineMode === "accuracy" || pipelineMode === "ultra") ? " · 👁 VLM-Контекст" : "";
       document.getElementById("summary-chip").textContent =
         `${pmodeLbl} (${profLbl}) · Шрифт: ${minF}–${maxF}px · ${ovfLbl} · ИИ: ${shortMod}${imgCtxBadge}${antiCensorBadge}`;
     }
 
     function syncPipelineModeUi(modeId, syncImgCheckbox = true) {
-      if (!["fast", "balanced", "accuracy"].includes(modeId)) modeId = "balanced";
+      if (!["fast", "balanced", "accuracy", "ultra"].includes(modeId)) modeId = "balanced";
       pipelineMode = modeId;
       try { localStorage.setItem("miko_pipeline_mode_v1", modeId); } catch (e) {}
-      ["fast", "balanced", "accuracy"].forEach(m => {
+      ["fast", "balanced", "accuracy", "ultra"].forEach(m => {
         const topBtn = document.getElementById("pmode-top-" + m);
         if (topBtn) topBtn.classList.toggle("active", m === modeId);
         const sideBtn = document.getElementById("pmode-side-" + m);

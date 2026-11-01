@@ -594,7 +594,7 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     return block
 
 
-_CLEANED_PAGE_CACHE_MAX = 8
+_CLEANED_PAGE_CACHE_MAX = 28
 _cleaned_page_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
 _cleaned_page_cache_lock = threading.Lock()
 
@@ -2023,7 +2023,9 @@ def _generate_and_save_folder_report(
                     try:
                         fs_int = int(r_fs)
                         p_fonts.append(fs_int)
-                        if fs_int <= p_min_fs and len(trans_t) >= 18:
+                        is_ovf_b = bool(b.get("is_overflowing", False))
+                        is_warn_b = bool(b.get("font_too_small_warning", False))
+                        if fs_int <= p_min_fs or is_ovf_b or is_warn_b:
                             cramped_min_font_blocks.append(
                                 {
                                     "page_index": idx_p,
@@ -2031,6 +2033,8 @@ def _generate_and_save_folder_report(
                                     "block_id": bid,
                                     "font_size": fs_int,
                                     "min_font_size": p_min_fs,
+                                    "is_overflowing": is_ovf_b,
+                                    "font_too_small_warning": is_warn_b,
                                     "bbox": b.get("bbox"),
                                     "original_text": orig_t,
                                     "translated_text": trans_t,
@@ -2427,15 +2431,16 @@ def _generate_and_save_folder_report(
             "----------------------------------------------------------------------------------------",
             "  💡 7. КОНТРОЛЬ КАЧЕСТВА ВЕРСТКИ (УЗКИЕ БАББЛЫ) И АВТО-РЕКОМЕНДАЦИИ",
             "----------------------------------------------------------------------------------------",
-            f"  7А. Кружки с минимальным размером шрифта (кегль уперся в {cur_min_fs} px — возможна теснота текста: {len(cramped_min_font_blocks)} шт.):",
+            f"  7А. Кружки с мелким шрифтом / предупреждением тесноты (мин. кегль {cur_min_fs} px или узкий баббл: {len(cramped_min_font_blocks)} шт.):",
         ]
     )
     if not cramped_min_font_blocks:
         lines.append("      ✅ Все реплики комфортно поместились в бабблы без сжатия до минимального предела шрифта.")
     else:
         for cb_item in cramped_min_font_blocks[:25]:
+            tag_cr = "⚠️ ВЫХОД ЗА РАМКУ" if cb_item.get("is_overflowing") else ("🔎 Мин. кегль" if cb_item["font_size"] <= cb_item["min_font_size"] else "💡 Мелкий кегль")
             lines.append(
-                f"      • 🔎 Стр. #{cb_item['page_index']:03d} ({cb_item['rel_path']}), Кружок #{cb_item['block_id']} "
+                f"      • {tag_cr} — Стр. #{cb_item['page_index']:03d} ({cb_item['rel_path']}), Кружок #{cb_item['block_id']} "
                 f"(шрифт {cb_item['font_size']}px): «{cb_item['translated_text'][:55]}»"
             )
 
@@ -3436,6 +3441,57 @@ async def _run_folder_translation_job(
                     else f"☁️ [2/3 ИИ-перевод пачки #{_batch_num}: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
+                # Пока идет ожидание ответа от облачного ИИ (50+ сек простоя GPU), параллельно в фоне
+                # подготавливаем очищенные слои SimpleLama в CleanCache без малейшей потери качества!
+                _preclean_stop_flag = False
+                _bg_preclean_task: asyncio.Task[None] | None = None
+                _is_remote_cloud_llm = (
+                    active_mod.startswith("unsloth::")
+                    and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+                    and cleaner_engine is not None
+                    and cleaner_engine.lama_model is not None
+                )
+                if _is_remote_cloud_llm:
+                    async def _bg_preclean_pages_during_cloud() -> None:
+                        for sp_pre in scanned_pages:
+                            if _preclean_stop_flag or _folder_stop_requested:
+                                break
+                            if not sp_pre.get("ok"):
+                                continue
+                            p_blks_pre = sp_pre.get("blocks") or []
+                            pil_pre = sp_pre.get("pil_img")
+                            src_p_pre = sp_pre.get("img_path")
+                            if not p_blks_pre or pil_pre is None or src_p_pre is None:
+                                continue
+                            try:
+                                pre_clean_list = []
+                                for b_p in p_blks_pre:
+                                    if bool(b_p.get("is_deleted")):
+                                        continue
+                                    orig_p_txt = str(b_p.get("original_text") or "").strip()
+                                    if not orig_p_txt:
+                                        continue
+                                    if eff_skip_sighs and ocr_engine.is_sigh_or_interjection(orig_p_txt):
+                                        continue
+                                    b_p_copy = dict(b_p)
+                                    b_p_copy.pop("translated_text", None)
+                                    _ensure_block_clean_bbox(b_p_copy)
+                                    pre_clean_list.append(b_p_copy)
+                                if not pre_clean_list:
+                                    continue
+                                c_hash = _compute_clean_state_hash(src_p_pre, pre_clean_list)
+                                if _get_cached_cleaned_image(src_p_pre, c_hash) is not None:
+                                    continue
+                                async with gpu_lock(priority=2):
+                                    if _preclean_stop_flag or _folder_stop_requested:
+                                        break
+                                    c_im, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_pre, pre_clean_list)
+                                    _store_cached_cleaned_image(src_p_pre, c_hash, c_im, save_to_disk=True)
+                            except Exception as pre_exc:
+                                logger.debug("Фоновая пред-очистка страницы пропущена: %s", pre_exc)
+
+                    _bg_preclean_task = asyncio.create_task(_bg_preclean_pages_during_cloud())
+
                 try:
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
                     if eff_pmode == "ultra" and len(combined_blocks) >= 4 and target_lang.lower().strip() != "romaji":
@@ -3500,9 +3556,21 @@ async def _run_folder_translation_job(
                                 )
                                 for pk, pv in (polished_map or {}).items():
                                     if pk in translated_by_gid and pv and pv.strip():
-                                        translated_by_gid[pk] = pv.strip()
+                                        clean_pv = pv.strip()
+                                        translated_by_gid[pk] = clean_pv
+                                        orig_for_pk = (book_for_proof.get(pk) or {}).get("orig", "").strip()
+                                        if orig_for_pk:
+                                            phrase_cache[f"{t_lang_norm}||{orig_for_pk}"] = clean_pv
+                                            translator_engine.phrase_cache[f"{t_lang_norm}||{orig_for_pk}"] = clean_pv
                 except Exception as llm_exc:
                     logger.exception("Ошибка пакетного ИИ-перевода пачки страниц: %s", llm_exc)
+                finally:
+                    _preclean_stop_flag = True
+                    if _bg_preclean_task is not None:
+                        try:
+                            await _bg_preclean_task
+                        except Exception:
+                            pass
 
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"

@@ -453,14 +453,24 @@ class HallucinationFreeMangaOCR:
         pil_img = pil_img.convert("L").convert("RGB")
         pixel_values = self.processor(pil_img, return_tensors="pt").pixel_values.to(self.device)
 
-        # Этап 2: Генерация с извлечением логитов и кросс-внимания декодера
-        gen_out = self.model.generate(
-            pixel_values,
-            max_length=max_length,
-            output_scores=True,
-            output_attentions=True,
-            return_dict_in_generate=True,
-        )
+        # Этап 2: Генерация с извлечением логитов и кросс-внимания декодера (с FP16 ускорением на CUDA Tensor Cores)
+        if str(self.device).startswith("cuda"):
+            with torch.autocast(device_type="cuda", dtype=torch.float16):
+                gen_out = self.model.generate(
+                    pixel_values,
+                    max_length=max_length,
+                    output_scores=True,
+                    output_attentions=True,
+                    return_dict_in_generate=True,
+                )
+        else:
+            gen_out = self.model.generate(
+                pixel_values,
+                max_length=max_length,
+                output_scores=True,
+                output_attentions=True,
+                return_dict_in_generate=True,
+            )
 
         seq_ids = gen_out.sequences[0]  # [1 + T], начинается с decoder_start_token_id (2)
         gen_tokens = seq_ids[1:]        # Сгенерированные токены шагов 1..T
@@ -1124,6 +1134,7 @@ def group_text_boxes_by_bubble_cavity(
     neck_ratio_thresh: float = 0.48,
     min_lobe_radius_px: float = 18.0,
     white_thresh: int = 215,
+    is_bubble_roi: bool = False,
 ) -> Tuple[List[Dict[str, Any]], np.ndarray]:
     """
     Топологическая группировка текстовых боксов/колонок через сегментацию внутренней белой полости баббла (~14.77 мс).
@@ -1179,7 +1190,7 @@ def group_text_boxes_by_bubble_cavity(
         l_b = float(np.mean(comp_m_edge[:, 0])) if W > 0 else 0.0
         r_b = float(np.mean(comp_m_edge[:, -1])) if W > 0 else 0.0
         heavy_border_sides = sum([t_b > 0.25, b_b > 0.25, l_b > 0.25, r_b > 0.25])
-        if (
+        if not is_bubble_roi and page_area >= 250_000 and (
             (w0 * h0 > 0.38 * page_area and touches_edges >= 3 and heavy_border_sides >= 2)
             or (touches_edges >= 3 and heavy_border_sides >= 2 and (w0 > 0.72 * W or h0 > 0.72 * H))
             or ((l_b > 0.25 or r_b > 0.25) and (t_b > 0.35 or b_b > 0.35) and w0 > 0.75 * W and h0 > 0.75 * H)
@@ -2393,10 +2404,10 @@ MEANINGFUL_CHAR_REGEX = re.compile(
     r"[\u3040-\u309f\u30a0-\u30ff\u4e00-\u9fff\u3400-\u4dbf\uac00-\ud7afA-Za-zА-Яа-яЁё0-9]"
 )
 PUNCT_ONLY_REGEX = re.compile(
-    r"^[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+$"
+    r"^[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+$"
 )
 STRIP_PUNCT_REGEX = re.compile(
-    r"[\s\.\,\!\?\…\‥\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+"
+    r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\♡\♥\♪\★\☆\・\：\;\"\'\`]+"
 )
 REPEATED_NOISE_REGEX = re.compile(r"^(.)\1{3,}$")
 REDUPLICATED_SFX_REGEX = re.compile(r"^(.{1,3})\1+$")
@@ -2472,6 +2483,8 @@ SFX_EXACT_SET: set[str] = {
     "ぷる", "ぷるぷる", "びく", "びくっ", "びくん", "どき", "どきっ", "どきどき", "ざわ", "ざわざわ",
     "ぴく", "ぴくっ", "ぎゅ", "ぎゅっ", "ちゅ", "ちゅっ", "ぱん", "どん", "ばん", "ずき", "ずきっ",
     "ぞく", "ぞくっ", "ぬる", "ぬるっ", "じゅわ", "じゅわっ", "じゅる", "れろ", "ぺろ", "もみ", "ぐちゅ",
+    "ピッ", "ピロ", "ピロッ", "ピロン", "ポカ", "ポカッ", "ポカポカ", "もぞ", "もぞっ", "もぞもぞ",
+    "モゾ", "モゾモゾ", "ゴク", "ゴクッ", "ゴクリ", "ごくり", "ごくっ", "ぽかぽか", "ぴっ", "ぴろ",
 }
 
 
@@ -2627,6 +2640,10 @@ class MangaOCREngine:
         # иначе она скачается автоматически по первому запросу ko / zh / auto без задержки старта для чистого ja
         if self.use_hayai_ocr and self._is_hayai_cached_locally():
             self._get_hayai_recognizer()
+
+        # Если сегментатор масок YOLO26s-seg уже скачан в models/, подгружаем его сразу при старте
+        if self.use_yolo26_seg and (self.models_dir / LOCAL_YOLO26_SEG_FILENAME).exists():
+            self._get_yolo26_seg_detector(download_if_missing=False)
 
         self.last_detection_stats["ja_ocr_backend"] = self.get_ja_ocr_backend_name()
         self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
@@ -5116,19 +5133,21 @@ class MangaOCREngine:
         return False
 
     @classmethod
-    def is_sfx_or_onomatopoeia(cls, text: str, is_free_text: bool = False) -> bool:
+    def is_sfx_or_onomatopoeia(cls, text: str, is_free_text: bool = False, confidence: float = 1.0) -> bool:
         """
         Определяет, является ли блок фоновым звуковым спецэффектом (SFX / ономатопеей).
-        ВАЖНО: Внутри речевых бабблов (`is_free_text=False`) любые слова, реакции и междометия
-        (включая チュッ, ドキッ, クスッ, ゴクッ, ダメ, ウソ, マジ) являются частью речи/реакции персонажа
-        и НИКОГДА не отбрасываются как фоновый SFX!
+        ВАЖНО: Внутри уверенно распознанных речевых бабблов (`is_free_text=False` и `confidence >= 0.60`)
+        реакции и междометия сохраняются как речь персонажа. Однако если детектор захватил область
+        с низкой уверенностью (`confidence < 0.60`, без четкой рамки баббла) и текст является чистой ономатопеей
+        из словаря SFX (`ドキドキ`, `ポカポカ`, `ピッ`, `ピロ`, `もぞ…`, `ぱん`), блок корректно распознается как SFX!
         """
         if not text:
             return True
         core = STRIP_PUNCT_REGEX.sub("", text.strip())
         if not core:
             return True
-        if not is_free_text:
+        is_low_conf_bubble = (not is_free_text) and (float(confidence) < 0.60)
+        if not is_free_text and not is_low_conf_bubble:
             return False
 
         if core in SFX_EXACT_SET or core.lower() in SFX_EXACT_SET:
@@ -5139,9 +5158,9 @@ class MangaOCREngine:
             return True
 
         if not HANZI_REGEX.search(core):
-            if len(core) <= 8 and REDUPLICATED_SFX_REGEX.match(core):
+            if len(core) <= 8 and REDUPLICATED_SFX_REGEX.match(core) and core not in DIALOGUE_VOWEL_WORDS_JA:
                 return True
-            if KATAKANA_ONLY_REGEX.match(core) and len(core) <= 6:
+            if is_free_text and KATAKANA_ONLY_REGEX.match(core) and len(core) <= 6:
                 return True
 
         return False
@@ -5155,6 +5174,7 @@ class MangaOCREngine:
         skip_sighs: bool = False,
         skip_sfx: bool = True,
         min_text_length: int = 1,
+        confidence: float = 1.0,
     ) -> tuple[str, str] | None:
         """
         Возвращает `(reason_code, reason_label_ru)`, если блок должен быть отсеян фильтром объема текста,
@@ -5188,7 +5208,7 @@ class MangaOCREngine:
         if eff_skip_sighs and cls.is_sigh_or_interjection(text):
             return ("sigh", "Короткий вздох/стон (skip_sighs=True)")
 
-        if eff_skip_sfx and cls.is_sfx_or_onomatopoeia(text, is_free_text=is_free_text):
+        if eff_skip_sfx and cls.is_sfx_or_onomatopoeia(text, is_free_text=is_free_text, confidence=confidence):
             return ("sfx", "Звуковой спецэффект / SFX (skip_sfx=True)")
 
         return None
@@ -5202,6 +5222,7 @@ class MangaOCREngine:
         skip_sighs: bool = False,
         skip_sfx: bool = True,
         min_text_length: int = 1,
+        confidence: float = 1.0,
     ) -> bool:
         """
         Проверяет, нужно ли пропустить (не замазывать и не переводить) данный текстовый блок
@@ -5215,6 +5236,7 @@ class MangaOCREngine:
                 skip_sighs=skip_sighs,
                 skip_sfx=skip_sfx,
                 min_text_length=min_text_length,
+                confidence=confidence,
             )
             is not None
         )
@@ -6011,15 +6033,21 @@ class MangaOCREngine:
 
             gap_s = max(bx1 + 10, min(left_tb[2], int(round((cx1 + cx2) / 2.0)) - 6)) - bx1
             gap_e = min(bx2 - 10, max(right_tb[0], int(round((cx1 + cx2) / 2.0)) + 6)) - bx1
+            min_white_col_ratio = 1.0
             if gap_e > gap_s + 2:
                 white_cols = np.mean(crop_gray >= 225, axis=0)
                 min_rel = int(np.argmin(white_cols[gap_s:gap_e])) + gap_s
+                min_white_col_ratio = float(white_cols[min_rel])
                 split_x = bx1 + min_rel
             else:
                 split_x = int(round((left_tb[2] + right_tb[0]) / 2.0))
 
-            split_x = max(bx1 + 24, min(bx2 - 24, split_x))
-            if (split_x - bx1) >= 24 and (bx2 - split_x) >= 24:
+            # Не разрезаем одиночный баббл между двумя соседними вертикальными колонками (tategaki),
+            # если между ними нет перемычки/стенки (min_white_col_ratio >= 0.88 и x_gap < 14),
+            # и никогда не создаем сверхузкие полоски уже 48 px (вроде 28 px на 002.webp #3)!
+            has_real_separation = (x_gap >= 14) or (min_white_col_ratio < 0.88) or (dy_centers >= bh * 0.25)
+            split_x = max(bx1 + 48, min(bx2 - 48, split_x))
+            if has_real_separation and (split_x - bx1) >= 48 and (bx2 - split_x) >= 48:
                 # Поджимаем вертикальные границы каждой половинки вокруг её собственного текстового бокса,
                 # чтобы при диагональном расположении двух баблов их рамки не наезжали друг на друга по высоте!
                 lh_pad = max(18, int(round((left_tb[3] - left_tb[1]) * 0.42)))
@@ -6064,8 +6092,8 @@ class MangaOCREngine:
             else:
                 split_y = int(round((top_tb[3] + bot_tb[1]) / 2.0))
 
-            split_y = max(by1 + 22, min(by2 - 22, split_y))
-            if (split_y - by1) >= 22 and (by2 - split_y) >= 22:
+            split_y = max(by1 + 36, min(by2 - 36, split_y))
+            if (split_y - by1) >= 36 and (by2 - split_y) >= 36:
                 tw_pad = max(18, int(round((top_tb[2] - top_tb[0]) * 0.42)))
                 bw_pad = max(18, int(round((bot_tb[2] - bot_tb[0]) * 0.42)))
                 tx1_b = max(bx1, top_tb[0] - tw_pad) if dx_centers >= bw * 0.22 else bx1
@@ -6192,7 +6220,10 @@ class MangaOCREngine:
                 #   объединяем их вертикальные колонки (`tategaki`) в единый `text_bbox` без ложного разрезания баббла;
                 # - если баббл является сдвоенной «восьмёркой» и водораздел выделил >= 2 долей (`len(local_groups) >= 2`),
                 #   разрезаем баббл по долям через `_try_split_bubble_by_text_boxes`!
-                roi_bub = img_np[max(0, by1) : min(img_h, by2), max(0, bx1) : min(img_w, bx2)]
+                pad_roi_b = 8
+                rx1_b, ry1_b = max(0, bx1 - pad_roi_b), max(0, by1 - pad_roi_b)
+                rx2_b, ry2_b = min(img_w, bx2 + pad_roi_b), min(img_h, by2 + pad_roi_b)
+                roi_bub = img_np[ry1_b:ry2_b, rx1_b:rx2_b]
 
                 local_tbs_in: list[dict[str, Any]] = []
                 for m in matched:
@@ -6200,15 +6231,15 @@ class MangaOCREngine:
                     local_tbs_in.append(
                         {
                             "bbox": [
-                                max(0, mx1 - bx1),
-                                max(0, my1 - by1),
-                                max(1, mx2 - bx1),
-                                max(1, my2 - by1),
+                                max(0, mx1 - rx1_b),
+                                max(0, my1 - ry1_b),
+                                max(1, mx2 - rx1_b),
+                                max(1, my2 - ry1_b),
                             ],
                             "confidence": float(m.get("confidence", 0.5)),
                         }
                     )
-                local_groups, _ = group_text_boxes_by_bubble_cavity(roi_bub, local_tbs_in)
+                local_groups, _ = group_text_boxes_by_bubble_cavity(roi_bub, local_tbs_in, is_bubble_roi=True)
                 if len(local_groups) >= 2:
                     lobe_matched: list[dict[str, Any]] = []
                     for lg in local_groups:
@@ -6217,24 +6248,28 @@ class MangaOCREngine:
                         l_conf = max((float(s.get("confidence", 0.5)) for s in sub_s), default=0.5)
                         lobe_matched.append(
                             {
-                                "bbox": [bx1 + lx1, by1 + ly1, bx1 + lx2, by1 + ly2],
+                                "bbox": [rx1_b + lx1, ry1_b + ly1, rx1_b + lx2, ry1_b + ly2],
                                 "confidence": l_conf,
                             }
                         )
                     split_parts = self._try_split_bubble_by_text_boxes(img_np, b_det, lobe_matched)
                     if not split_parts and len(lobe_matched) >= 2:
-                        split_parts = []
+                        cand_split_parts = []
+                        all_wide_enough = True
                         for m_tb in lobe_matched:
                             tx1_m, ty1_m, tx2_m, ty2_m = m_tb["bbox"]
                             tw_m, th_m = max(12, tx2_m - tx1_m), max(12, ty2_m - ty1_m)
-                            px_m, py_m = max(10, int(round(tw_m * 0.24))), max(10, int(round(th_m * 0.24)))
+                            px_m, py_m = max(12, int(round(tw_m * 0.28))), max(12, int(round(th_m * 0.28)))
                             sub_b = [
                                 max(bx1, tx1_m - px_m),
                                 max(by1, ty1_m - py_m),
                                 min(bx2, tx2_m + px_m),
                                 min(by2, ty2_m + py_m),
                             ]
-                            split_parts.append(
+                            if (sub_b[2] - sub_b[0]) < 48 or (sub_b[3] - sub_b[1]) < 36:
+                                all_wide_enough = False
+                                break
+                            cand_split_parts.append(
                                 {
                                     "bbox": sub_b,
                                     "text_bbox": self._compute_tight_ink_bbox(img_np, sub_b, [tx1_m, ty1_m, tx2_m, ty2_m], is_free_text=is_free),
@@ -6242,6 +6277,8 @@ class MangaOCREngine:
                                     "is_free_text": is_free,
                                 }
                             )
+                        if all_wide_enough and len(cand_split_parts) >= 2:
+                            split_parts = cand_split_parts
                 else:
                     split_parts = None
 
@@ -7319,11 +7356,24 @@ class MangaOCREngine:
                     # Если manga-ocr-nar-small вернул пустую строку ("") на кропе — значит внутри нет японских букв,
                     # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
                     # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
-                    len_thresh = 18 if is_ultra_ocr else 54
+                    def _has_nar_kana_stutter(s_txt: str) -> bool:
+                        if not s_txt or len(s_txt) < 10:
+                            return False
+                        # Детектор артефактов CTC/NAR-декодера на многоколоночных бабблах (например «使っててさい心ははがが良い»):
+                        # удвоение служебных частиц/окончаний или 3+ одинаковых символа каны подряд
+                        if re.search(r"([ぁ-んァ-ン])\1\1", s_txt):
+                            return True
+                        if re.search(r"(?:ははが|がが|をを|にに|へへ|でで|とと[^っッ]|てて(?:さ|く|ね|よ|も|い)|ますす|ですす)", s_txt):
+                            return True
+                        return False
+
+                    is_acc_or_ultra = is_ultra_ocr or (getattr(self, "pipeline_mode", "balanced") == "accuracy")
+                    len_thresh = 18 if is_ultra_ocr else (26 if is_acc_or_ultra else 34)
                     fallback_indices = [
                         idx
                         for idx, txt in enumerate(nar_texts)
                         if len(txt) >= len_thresh
+                        or _has_nar_kana_stutter(txt)
                         or _looks_like_merged_english_ocr(txt)
                         or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).passed)
                         or (
@@ -7345,8 +7395,13 @@ class MangaOCREngine:
                                 continue
                             cur_core_len = len(STRIP_PUNCT_REGEX.sub("", cur_nar))
                             fb_core_len = len(STRIP_PUNCT_REGEX.sub("", fb_clean))
+                            nar_stuttered = _has_nar_kana_stutter(cur_nar)
+                            fb_stuttered = _has_nar_kana_stutter(fb_clean)
                             if (
                                 not cur_nar
+                                or (nar_stuttered and not fb_stuttered and fb_core_len >= max(4, int(cur_core_len * 0.75)))
+                                or (is_ultra_ocr and len(cur_nar) >= 18 and not fb_stuttered and fb_core_len >= max(6, int(cur_core_len * 0.82)))
+                                or (len(cur_nar) >= 34 and not fb_stuttered and fb_core_len >= cur_core_len - 2)
                                 or (len(cur_nar) >= 54 and len(fb_clean) > len(cur_nar))
                                 or (cur_core_len <= 4 and fb_core_len >= cur_core_len + 2)
                             ):
@@ -7662,6 +7717,7 @@ class MangaOCREngine:
                 skip_sighs=skip_sighs,
                 skip_sfx=skip_sfx,
                 min_text_length=min_text_length,
+                confidence=float(det.get("confidence", 1.0)),
             )
             if filter_reason is not None:
                 r_code, r_label = filter_reason

@@ -322,7 +322,7 @@ OPTICAL_HANGING_PUNCT_FACTORS: dict[str, float] = {
 }
 
 # Анаморфное горизонтальное микро-сжатие строк в узких вертикальных бабблах (tategaki)
-MIN_ANAMORPHIC_CONDENSE_RATIO: float = 0.88
+MIN_ANAMORPHIC_CONDENSE_RATIO: float = 0.86
 
 INVISIBLE_TOFU_CHARS_RE = re.compile(r"[\ufe00-\ufe0f\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff\ufffc\ufffd]")
 
@@ -417,6 +417,7 @@ SPECIAL_SYMBOLS_TRANSLATE_MAP = str.maketrans(
         "）": ")",
         "！": "!",
         "？": "?",
+        "．": ".",
         "　": " ",
     }
 )
@@ -436,7 +437,11 @@ def normalize_manga_special_symbols(text: str) -> str:
         .replace("⁈", "?!")
         .replace("…", "...")
         .replace("⋯", "...")
+        .replace("︙", "...")
         .replace("‥", "..")
+        .replace("︰", "..")
+        .replace("．．．", "...")
+        .replace("．．", "..")
     )
     s = s.translate(SPECIAL_SYMBOLS_TRANSLATE_MAP)
     return s
@@ -1993,13 +1998,14 @@ class MangaRenderer:
         is_latin = bool(re.search(r"[a-zA-Z]", core)) and not is_cyrillic
 
         is_narrow_bubble = (safe_w < 165) or ((safe_w / max(1.0, float(safe_h))) < 0.82)
-        min_req_len = 7 if is_ultra_narrow else (8 if (is_narrow_bubble or word_px_w > max_width * 0.82) else 10)
+        is_extreme_vertical = (safe_w < 85) and (safe_h >= safe_w * 1.45)
+        min_req_len = 6 if (is_extreme_vertical and len(word) >= 7) else (7 if is_ultra_narrow else (8 if (is_narrow_bubble or word_px_w > max_width * 0.82) else 10))
         if (is_latin or is_cyrillic) and len(core) < min_req_len:
             return [word]
 
         split_candidates = self._find_syllable_split_indices(
             core,
-            min_part_len=3,
+            min_part_len=(2 if (is_extreme_vertical and len(core) == 6) else 3),
             is_narrow_bubble=True if is_ultra_narrow else is_narrow_bubble,
             is_ultra_narrow=is_ultra_narrow,
         )
