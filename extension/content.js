@@ -1,5 +1,5 @@
 /**
- * Content Script (v5.3.0) — Локальный и облачный AI-переводчик Манги / Манхвы / Маньхуа
+ * Content Script (v5.3.1) — Локальный и облачный AI-переводчик Манги / Манхвы / Маньхуа
  *
  * Ключевые улучшения v5.3.0:
  * 1. Полностью переработан интерфейс выбора ИИ-моделей:
@@ -25,7 +25,10 @@
   }
 
   const oldPanel = document.getElementById("mt-floating-panel");
+  const wasPanelOpen = Boolean(oldPanel && oldPanel.classList.contains("mt-open"));
   if (oldPanel) oldPanel.remove();
+  const oldFab = document.getElementById("mt-fab-launcher");
+  if (oldFab) oldFab.remove();
 
   const MIN_WIDTH = 280;
   const MIN_HEIGHT = 350;
@@ -35,6 +38,8 @@
     targetLang: "en",
     model: "auto",
     lastLocalModel: "",
+    pipelineMode: "balanced",
+    useImageContext: false,
     uppercase: false,
     minFontSize: 12,
     maxFontSize: 32,
@@ -74,6 +79,8 @@
           "mt_target_lang",
           "mt_model_v8",
           "mt_last_local_model",
+          "mt_pipeline_mode",
+          "mt_use_image_context",
           "mt_uppercase",
           "mt_min_font_size",
           "mt_max_font_size",
@@ -96,6 +103,9 @@
           settings.targetLang = s.mt_target_lang || DEFAULT_SETTINGS.targetLang;
           settings.model = s.mt_model_v8 || DEFAULT_SETTINGS.model;
           settings.lastLocalModel = s.mt_last_local_model || "";
+          settings.pipelineMode = s.mt_pipeline_mode || DEFAULT_SETTINGS.pipelineMode;
+          settings.useImageContext =
+            s.mt_use_image_context !== undefined ? Boolean(s.mt_use_image_context) : false;
           settings.uppercase =
             s.mt_uppercase !== undefined ? Boolean(s.mt_uppercase) : DEFAULT_SETTINGS.uppercase;
           settings.minFontSize =
@@ -132,6 +142,8 @@
           mt_target_lang: settings.targetLang,
           mt_model_v8: settings.model,
           mt_last_local_model: settings.lastLocalModel || "",
+          mt_pipeline_mode: settings.pipelineMode || "balanced",
+          mt_use_image_context: Boolean(settings.useImageContext),
           mt_uppercase: Boolean(settings.uppercase),
           mt_min_font_size: Number(settings.minFontSize) || 12,
           mt_max_font_size: Number(settings.maxFontSize) || 32,
@@ -663,6 +675,35 @@
       opacity: 1 !important;
       pointer-events: auto !important;
     }
+    #mt-fab-launcher {
+      position: fixed !important;
+      bottom: 18px !important;
+      right: 18px !important;
+      z-index: 2147483646 !important;
+      display: flex !important;
+      align-items: center !important;
+      gap: 6px !important;
+      background: linear-gradient(135deg, #4f46e5, #6366f1) !important;
+      color: #ffffff !important;
+      border: 1px solid rgba(255, 255, 255, 0.28) !important;
+      border-radius: 999px !important;
+      padding: 8px 13px !important;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif !important;
+      font-size: 12.5px !important;
+      font-weight: 700 !important;
+      cursor: pointer !important;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.6) !important;
+      opacity: 0.88 !important;
+      transition: opacity 0.15s ease, transform 0.15s ease !important;
+      user-select: none !important;
+    }
+    #mt-fab-launcher:hover {
+      opacity: 1 !important;
+      transform: translateY(-1px) scale(1.03) !important;
+    }
+    #mt-fab-launcher.mt-hidden {
+      display: none !important;
+    }
   `;
   document.head.appendChild(style);
 
@@ -673,7 +714,7 @@
       <div class="mt-title">
         <span id="mt-server-dot" class="mt-server-dot" title="Статус локального сервера"></span>
         <span>Manga Translator</span>
-        <span class="mt-ver-tag">v5.3.0</span>
+        <span class="mt-ver-tag">v5.3.1</span>
       </div>
       <div style="display:flex; gap:4px;">
         <button id="mt-web-ui-btn" class="mt-icon-btn" title="Открыть локальную Веб-Студию (http://127.0.0.1:5000/)">🌐</button>
@@ -698,6 +739,16 @@
           <option value="en">🇬🇧 English</option>
           <option value="ru">🇷🇺 Русский</option>
           <option value="romaji">🔤 Romaji</option>
+        </select>
+      </div>
+
+      <div class="mt-row">
+        <span class="mt-label">Режим:</span>
+        <select id="mt-pipeline-mode" class="mt-select" title="Режим работы пайплайна (скорость / точность / 2-Pass Ультра)">
+          <option value="fast">⚡ Быстрый (Fast)</option>
+          <option value="balanced">⚖️ Оптимальный (Balanced)</option>
+          <option value="accuracy">🎯 Макс. точность (Accuracy)</option>
+          <option value="ultra">💎 Ультра (2-Pass AI & Deep Redraw)</option>
         </select>
       </div>
 
@@ -840,6 +891,12 @@
           </label>
         </div>
         <div class="mt-row">
+          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#60a5fa; font-weight:600;" title="Передавать уменьшенное превью страницы с номерами бабблов #1..#N в мультимодальную модель">
+            <input id="mt-image-context-chk" type="checkbox" />
+            👁 Визуальный контекст страницы (VLM)
+          </label>
+        </div>
+        <div class="mt-row">
           <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#f472b6; font-weight:600;" title="Добавляет в начало системного промпта DeepSeek анти-цензурный блок ('Certainly! Here is...')">
             <input id="mt-anti-censorship-chk" type="checkbox" />
             🛡 Анти-цензурный промпт DeepSeek
@@ -854,7 +911,33 @@
       <div id="mt-status-text" class="mt-status">Нажмите 🔄 для проверки сервера</div>
     </div>
   `;
-  document.body.appendChild(panel);
+  (document.body || document.documentElement).appendChild(panel);
+
+  const fabLauncher = document.createElement("button");
+  fabLauncher.id = "mt-fab-launcher";
+  fabLauncher.type = "button";
+  fabLauncher.title = "Открыть панель Manga Translator v5.3.1 (Alt+T — перевести страницу)";
+  fabLauncher.innerHTML = `<span>🉐</span><span>Переводчик</span>`;
+  (document.body || document.documentElement).appendChild(fabLauncher);
+
+  function setPanelOpenState(openState) {
+    panel.classList.toggle("mt-open", Boolean(openState));
+    fabLauncher.classList.toggle("mt-hidden", Boolean(openState));
+    if (openState) {
+      applySavedPanelPosition();
+      checkServerAndLoadModels(false, false);
+    }
+  }
+
+  if (wasPanelOpen) {
+    setPanelOpenState(true);
+  }
+
+  fabLauncher.addEventListener("click", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setPanelOpenState(true);
+  });
 
   ["mousedown", "mouseup", "click", "dblclick", "keydown"].forEach((evtName) => {
     panel.addEventListener(evtName, (e) => {
@@ -867,6 +950,8 @@
   const minimizeBtn = document.getElementById("mt-minimize-btn");
   const sourceLangSelect = document.getElementById("mt-source-lang");
   const targetLangSelect = document.getElementById("mt-target-lang");
+  const pipelineModeSelect = document.getElementById("mt-pipeline-mode");
+  const imageContextChk = document.getElementById("mt-image-context-chk");
   const activeModelBar = document.getElementById("mt-active-model-bar");
   const providerBadge = document.getElementById("mt-provider-badge");
   const activeModelTitle = document.getElementById("mt-active-model-title");
@@ -1054,6 +1139,12 @@
   function syncUiFromSettings() {
     sourceLangSelect.value = settings.lang;
     targetLangSelect.value = settings.targetLang;
+    if (pipelineModeSelect) {
+      pipelineModeSelect.value = settings.pipelineMode || "balanced";
+    }
+    if (imageContextChk) {
+      imageContextChk.checked = Boolean(settings.useImageContext);
+    }
     unslothUrlInput.value = settings.unslothUrl;
     if (settings.unslothApiKey) {
       unslothKeyInput.value = settings.unslothApiKey;
@@ -1089,7 +1180,7 @@
   migrateAndLoadSettings(syncUiFromSettings);
 
   document.getElementById("mt-close-panel-btn").addEventListener("click", () => {
-    panel.classList.remove("mt-open");
+    setPanelOpenState(false);
   });
 
   document.getElementById("mt-web-ui-btn").addEventListener("click", () => {
@@ -1105,6 +1196,33 @@
     settings.targetLang = targetLangSelect.value;
     saveLocalSettings();
   });
+
+  if (pipelineModeSelect) {
+    pipelineModeSelect.addEventListener("change", () => {
+      settings.pipelineMode = pipelineModeSelect.value || "balanced";
+      if (settings.pipelineMode === "accuracy" || settings.pipelineMode === "ultra") {
+        settings.useImageContext = true;
+        if (imageContextChk) imageContextChk.checked = true;
+      }
+      saveLocalSettings();
+      safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        pipelineMode: settings.pipelineMode,
+        useImageContext: settings.useImageContext,
+      });
+    });
+  }
+
+  if (imageContextChk) {
+    imageContextChk.addEventListener("change", () => {
+      settings.useImageContext = imageContextChk.checked;
+      saveLocalSettings();
+      safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        useImageContext: settings.useImageContext,
+      });
+    });
+  }
 
   function setModelPickerOpen(openState) {
     customModelPicker.style.display = openState ? "flex" : "none";
@@ -1413,6 +1531,8 @@
       action: "SAVE_SERVER_SETTINGS",
       unslothUrl: settings.unslothUrl,
       selectedModel: settings.model,
+      pipelineMode: settings.pipelineMode,
+      useImageContext: Boolean(imageContextChk ? imageContextChk.checked : settings.useImageContext),
       autoSaveWeb: settings.autoSaveWeb,
       webSaveDir: settings.webSaveDir,
       textFilterMode: settings.textFilterMode,
@@ -1630,6 +1750,33 @@
       if (hd.overflow_mode) {
         settings.overflowMode = hd.overflow_mode;
       }
+      if (hd.pipeline_mode) {
+        settings.pipelineMode = hd.pipeline_mode;
+      }
+      if (typeof hd.use_image_context === "boolean") {
+        settings.useImageContext = hd.use_image_context;
+      }
+      if (hd.text_filter_mode) {
+        settings.textFilterMode = hd.text_filter_mode;
+      }
+      if (typeof hd.skip_sighs === "boolean") {
+        settings.skipSighs = hd.skip_sighs;
+      }
+      if (typeof hd.skip_sfx === "boolean") {
+        settings.skipSfx = hd.skip_sfx;
+      }
+      if (typeof hd.detect_free_text === "boolean") {
+        settings.detectFreeText = hd.detect_free_text;
+      }
+      if (typeof hd.min_font_size === "number" && hd.min_font_size >= 6) {
+        settings.minFontSize = hd.min_font_size;
+      }
+      if (typeof hd.max_font_size === "number" && hd.max_font_size >= 8) {
+        settings.maxFontSize = hd.max_font_size;
+      }
+      if (typeof hd.uppercase === "boolean") {
+        settings.uppercase = hd.uppercase;
+      }
       if (typeof hd.anti_censorship_prompt === "boolean") {
         settings.antiCensorshipPrompt = hd.anti_censorship_prompt;
       }
@@ -1698,14 +1845,21 @@
   }
 
   function resolveImageUrl(img) {
-    return (
-      img.dataset.mtOriginalSrc ||
-      img.currentSrc ||
-      img.src ||
-      img.dataset.src ||
-      img.dataset.lazySrc ||
-      ""
-    );
+    const candidates = [
+      img.dataset.mtOriginalSrc,
+      img.currentSrc,
+      img.src,
+      img.dataset.src,
+      img.dataset.lazySrc,
+      img.dataset.original,
+      img.dataset.url,
+    ];
+    for (const c of candidates) {
+      if (typeof c === "string" && c.trim() && !c.startsWith("data:image/gif") && !c.startsWith("data:image/svg")) {
+        return c.trim();
+      }
+    }
+    return "";
   }
 
   function clearPictureSources(img) {
@@ -1796,7 +1950,7 @@
       if (imageB64 && !img.dataset.mtOriginalBase64 && !isRetranslate) {
         img.dataset.mtOriginalBase64 = imageB64;
       }
-      if (!imageB64 && srcUrl.startsWith("blob:")) {
+      if (!imageB64 && srcUrl) {
         imageB64 = await tryFetchInPageContext(srcUrl);
         if (imageB64 && !img.dataset.mtOriginalBase64) {
           img.dataset.mtOriginalBase64 = imageB64;
@@ -1810,6 +1964,8 @@
         lang: settings.lang,
         targetLang: settings.targetLang,
         model: settings.model,
+        pipelineMode: settings.pipelineMode,
+        useImageContext: settings.useImageContext,
         uppercase: settings.uppercase,
         minFontSize: settings.minFontSize,
         maxFontSize: settings.maxFontSize,
@@ -1933,17 +2089,84 @@
     });
   }
 
-  window.addEventListener("scroll", refreshActiveBadgePositions, { passive: true });
+  let scrollScanTimer = null;
+  const onWindowScroll = () => {
+    refreshActiveBadgePositions();
+    if (!scrollScanTimer) {
+      scrollScanTimer = setTimeout(() => {
+        scrollScanTimer = null;
+        scanPageImages();
+      }, 250);
+    }
+  };
+
+  window.addEventListener("scroll", onWindowScroll, { passive: true });
   window.addEventListener("resize", () => {
     refreshActiveBadgePositions();
     applySavedPanelPosition();
   }, { passive: true });
+
+  /* Отслеживание наведения по координатам курсора — работает даже если поверх <img> лежит оверлей читалки */
+  let pointerRafPending = false;
+  let lastPointerX = -1;
+  let lastPointerY = -1;
+  const onGlobalPointerMove = (e) => {
+    lastPointerX = e.clientX;
+    lastPointerY = e.clientY;
+    if (pointerRafPending) return;
+    pointerRafPending = true;
+    requestAnimationFrame(() => {
+      pointerRafPending = false;
+      if (panel.classList.contains("mt-open")) {
+        const pRect = panel.getBoundingClientRect();
+        if (
+          lastPointerX >= pRect.left &&
+          lastPointerX <= pRect.right &&
+          lastPointerY >= pRect.top &&
+          lastPointerY <= pRect.bottom
+        ) {
+          return;
+        }
+      }
+      trackedImages.forEach((img) => {
+        const badge = img.__mtBadge;
+        if (!badge || !img.isConnected) return;
+        const r = img.getBoundingClientRect();
+        const inside =
+          r.width >= MIN_WIDTH &&
+          r.height >= MIN_HEIGHT &&
+          lastPointerX >= r.left &&
+          lastPointerX <= r.right &&
+          lastPointerY >= r.top &&
+          lastPointerY <= r.bottom;
+        if (inside) {
+          if (!badge.classList.contains("mt-visible")) {
+            badge.classList.add("mt-visible");
+          }
+          updateBadgePosition(img, badge);
+        } else if (!badge.matches(":hover") && badge.classList.contains("mt-visible")) {
+          badge.classList.remove("mt-visible");
+          updateBadgePosition(img, badge);
+        }
+      });
+    });
+  };
+  window.addEventListener("mousemove", onGlobalPointerMove, { passive: true });
 
   function attachBadgeToImage(img) {
     if (img.dataset.mtAttached === "true") return;
     if (!isMangaCandidate(img)) return;
 
     img.dataset.mtAttached = "true";
+
+    if (!badgesLayer || !badgesLayer.isConnected) {
+      badgesLayer = document.getElementById("mt-badges-layer");
+      if (!badgesLayer) {
+        badgesLayer = document.createElement("div");
+        badgesLayer.id = "mt-badges-layer";
+        (document.body || document.documentElement).appendChild(badgesLayer);
+      }
+    }
 
     const badge = document.createElement("button");
     badge.type = "button";
@@ -1987,10 +2210,12 @@
 
   function scanPageImages() {
     document.querySelectorAll("img").forEach((img) => {
-      if (img.complete) {
+      if (img.dataset.mtAttached === "true") return;
+      if (isMangaCandidate(img)) {
         attachBadgeToImage(img);
-      } else {
-        img.addEventListener("load", () => attachBadgeToImage(img), { once: true });
+      } else if (img.dataset.mtLoadHooked !== "true") {
+        img.dataset.mtLoadHooked = "true";
+        img.addEventListener("load", () => attachBadgeToImage(img));
       }
     });
   }
@@ -2159,6 +2384,8 @@
       lang: settings.lang,
       targetLang: settings.targetLang,
       model: settings.model,
+      pipelineMode: settings.pipelineMode,
+      useImageContext: settings.useImageContext,
       uppercase: settings.uppercase,
       minFontSize: settings.minFontSize,
       maxFontSize: settings.maxFontSize,
@@ -2190,27 +2417,31 @@
   translateViewportBtn.addEventListener("click", translateViewportImagesOnly);
   toggleOrigBtn.addEventListener("click", toggleOriginalAll);
 
-  const onRuntimeMessage = (msg) => {
-    if (msg.action === "TOGGLE_PANEL") {
+  const onRuntimeMessage = (msg, _sender, sendResponse) => {
+    if (msg && msg.action === "TOGGLE_PANEL") {
       const willOpen = !panel.classList.contains("mt-open");
-      panel.classList.toggle("mt-open", willOpen);
-      if (willOpen) {
-        applySavedPanelPosition();
-        checkServerAndLoadModels(false, false);
-      }
-    } else if (msg.action === "TRIGGER_TRANSLATE_PAGE") {
+      setPanelOpenState(willOpen);
+      if (typeof sendResponse === "function") sendResponse({ ok: true, open: willOpen });
+      return false;
+    }
+    if (msg && msg.action === "TRIGGER_TRANSLATE_PAGE") {
       if (!panel.classList.contains("mt-open")) {
-        panel.classList.add("mt-open");
-        applySavedPanelPosition();
+        setPanelOpenState(true);
       }
       translateAllVisibleImages();
+      if (typeof sendResponse === "function") sendResponse({ ok: true });
+      return false;
     }
+    return false;
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
   const onKeyDown = (e) => {
     if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyT" || e.key === "t" || e.key === "T")) {
       e.preventDefault();
+      if (!panel.classList.contains("mt-open")) {
+        setPanelOpenState(true);
+      }
       translateAllVisibleImages();
     }
   };
@@ -2218,15 +2449,25 @@
 
   scanPageImages();
   const observer = new MutationObserver(() => scanPageImages());
-  observer.observe(document.body, { childList: true, subtree: true });
+  if (document.body) {
+    observer.observe(document.body, {
+      childList: true,
+      subtree: true,
+      attributes: true,
+      attributeFilter: ["src", "srcset", "data-src", "data-lazy-src", "data-original", "class"],
+    });
+  }
 
   window.__mtCleanup = () => {
     observer.disconnect();
     window.removeEventListener("keydown", onKeyDown);
-    window.removeEventListener("scroll", refreshActiveBadgePositions);
+    window.removeEventListener("scroll", onWindowScroll);
+    window.removeEventListener("mousemove", onGlobalPointerMove);
+    if (scrollScanTimer) clearTimeout(scrollScanTimer);
     if (folderPollTimer) clearInterval(folderPollTimer);
     if (pullPollTimer) clearInterval(pullPollTimer);
     if (badgesLayer) badgesLayer.remove();
+    if (fabLauncher) fabLauncher.remove();
     try {
       chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     } catch (_) {}

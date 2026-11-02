@@ -1940,7 +1940,7 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver not in ("5.3.0", "5.3"):
+                if running_ver not in ("5.3.1", "5.3.0", "5.3"):
                     print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v5.3.0...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)

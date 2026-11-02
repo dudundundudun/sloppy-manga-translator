@@ -1,13 +1,14 @@
 /**
- * Background Service Worker (v5.3.0)
+ * Background Service Worker (v5.3.1)
  *
- * Изменения v5.3.0:
- * 1. Выделена команда `SET_ACTIVE_MODEL`, которая переключает только `selected_model` на сервере
- *    без перезаписи/сброса сохраненного `unsloth_api_key` и других настроек `config.json`.
- * 2. В `SAVE_SERVER_SETTINGS` передаются только явно заданные поля (пустой ключ не затирает серверный,
- *    если пользователь явно не попросил очистить его), а также синхронизируются параметры фильтрации и верстки.
- * 3. Добавлены команды `PULL_MODEL` и `GET_PULL_STATUS` для скачивания локальных моделей Ollama в 1 клик прямо из расширения.
- * 4. Во все запросы перевода (`TRANSLATE_IMAGE`, `START_FOLDER_TRANSLATION`) передается `overflow_mode` и полный набор фильтров.
+ * Изменения v5.3.1:
+ * 1. Исправлены запросы к локальному серверу (127.0.0.1:5000): для GET-запросов не передается лишний
+ *    заголовок Content-Type: application/json (избегает лишних CORS/PNA preflight блокировок в Chrome).
+ * 2. Исправлено скачивание защищенных изображений (HTTP 403 Hotlink / Referer): убран некорректный
+ *    cross-origin referrer в Service Worker fetch, а при блокировке скачивания в браузере URL картинки
+ *    и Referer страницы передаются напрямую на сервер (/translate), который скачивает изображение через httpx.
+ * 3. Исправлена гонка повторной инжекции content.js при клике по иконке расширения до завершения document_idle.
+ * 4. Добавлена передача pipeline_mode (fast / balanced / accuracy / ultra) и use_image_context.
  */
 
 const SERVER_URLS = ["http://127.0.0.1:5000", "http://localhost:5000"];
@@ -56,19 +57,25 @@ async function blobToDataUrl(blob) {
 
 async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
   let lastError = null;
+  const method = String(options.method || "GET").toUpperCase();
+  const hasBody = options.body !== undefined && options.body !== null;
 
   for (const baseUrl of [activeServerBase, ...SERVER_URLS.filter((u) => u !== activeServerBase)]) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
     try {
+      const reqHeaders = { ...(options.headers || {}) };
+      if (hasBody && !reqHeaders["Content-Type"]) {
+        reqHeaders["Content-Type"] = "application/json";
+      }
+
       const res = await fetch(`${baseUrl}${endpoint}`, {
         ...options,
+        method,
+        cache: "no-store",
         signal: controller.signal,
-        headers: {
-          "Content-Type": "application/json",
-          ...(options.headers || {}),
-        },
+        headers: reqHeaders,
       });
       clearTimeout(timer);
 
@@ -105,20 +112,23 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
   throw lastError || new Error("Локальный сервер (127.0.0.1:5000) недоступен");
 }
 
-async function fetchImageAsDataUrl(imageUrl, refererUrl = null) {
+async function fetchImageAsDataUrl(imageUrl) {
+  if (!imageUrl) {
+    throw new Error("Пустой URL изображения");
+  }
+  if (imageUrl.startsWith("data:image/")) {
+    return imageUrl;
+  }
+
   let lastErr = null;
 
-  for (const credMode of ["omit", "include"]) {
+  for (const credMode of ["include", "omit"]) {
     try {
-      const fetchOpts = {
+      const res = await fetch(imageUrl, {
         method: "GET",
         credentials: credMode,
         cache: "no-cache",
-      };
-      if (refererUrl) {
-        fetchOpts.referrer = refererUrl;
-      }
-      const res = await fetch(imageUrl, fetchOpts);
+      });
 
       if (!res.ok) {
         lastErr = new Error(`HTTP ${res.status} при скачивании картинки`);
@@ -151,7 +161,7 @@ async function sendMessageToTab(tabId, payload) {
       });
       setTimeout(() => {
         chrome.tabs.sendMessage(tabId, payload).catch(() => {});
-      }, 150);
+      }, 120);
     } catch (injErr) {
       console.warn("[MangaTranslator] Не удалось внедрить скрипт:", injErr);
     }
@@ -217,6 +227,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           }
           if (typeof msg.selectedModel === "string" && msg.selectedModel.trim()) {
             payload.selected_model = msg.selectedModel.trim();
+          }
+          if (typeof msg.pipelineMode === "string" && msg.pipelineMode.trim()) {
+            payload.pipeline_mode = msg.pipelineMode.trim();
+          }
+          if (msg.useImageContext !== undefined) {
+            payload.use_image_context = Boolean(msg.useImageContext);
           }
           if (msg.autoSaveWeb !== undefined) {
             payload.auto_save_web_pages = Boolean(msg.autoSaveWeb);
@@ -309,12 +325,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "TRANSLATE_IMAGE": {
-          let base64Image = msg.imageBase64;
-          if (!base64Image) {
-            if (!msg.imageUrl) {
-              throw new Error("Не найден URL картинки");
+          let base64Image = msg.imageBase64 || null;
+          if (!base64Image && msg.imageUrl) {
+            try {
+              base64Image = await fetchImageAsDataUrl(msg.imageUrl);
+            } catch (dlErr) {
+              console.warn(
+                "[MangaTranslator] Скачивание в браузере не удалось, передаем URL на локальный сервер:",
+                dlErr
+              );
+              base64Image = null;
             }
-            base64Image = await fetchImageAsDataUrl(msg.imageUrl, msg.pageUrl || null);
+          }
+          if (!base64Image && !msg.imageUrl) {
+            throw new Error("Не найден URL или данные картинки");
           }
 
           const cleanModel = msg.model && msg.model !== "auto" ? msg.model : null;
@@ -329,6 +353,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 target_lang: msg.targetLang || "en",
                 ollama_model: cleanModel,
                 model: cleanModel,
+                pipeline_mode: msg.pipelineMode || null,
+                use_image_context:
+                  msg.useImageContext !== undefined ? Boolean(msg.useImageContext) : null,
                 uppercase: Boolean(msg.uppercase),
                 min_font_size: msg.minFontSize || 12,
                 max_font_size: msg.maxFontSize || 32,
@@ -367,6 +394,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 target_lang: msg.targetLang || "en",
                 ollama_model: cleanModel,
                 model: cleanModel,
+                pipeline_mode: msg.pipelineMode || null,
+                use_image_context:
+                  msg.useImageContext !== undefined ? Boolean(msg.useImageContext) : null,
                 uppercase: Boolean(msg.uppercase),
                 min_font_size: msg.minFontSize || 12,
                 max_font_size: msg.maxFontSize || 32,

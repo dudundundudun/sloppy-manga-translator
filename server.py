@@ -63,7 +63,7 @@ import httpx
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, HTMLResponse
 from PIL import Image
@@ -914,17 +914,33 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="5.3.0",
+    version="5.3.1",
     lifespan=lifespan,
 )
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def chrome_private_network_access_middleware(request: Request, call_next):
+    if request.method == "OPTIONS" and request.headers.get("access-control-request-private-network") == "true":
+        resp = Response(status_code=200)
+        resp.headers["Access-Control-Allow-Origin"] = request.headers.get("origin") or "*"
+        resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
+        resp.headers["Access-Control-Allow-Headers"] = request.headers.get("access-control-request-headers") or "*"
+        resp.headers["Access-Control-Allow-Private-Network"] = "true"
+        return resp
+    response = await call_next(request)
+    response.headers["Access-Control-Allow-Private-Network"] = "true"
+    if "Access-Control-Allow-Origin" not in response.headers:
+        response.headers["Access-Control-Allow-Origin"] = "*"
+    return response
 
 
 class TranslateRequest(BaseModel):
@@ -4088,7 +4104,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "5.3.0",
+        "version": "5.3.1",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -4701,11 +4717,6 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
     raw_b64 = payload.image or payload.image_base64
-    if not raw_b64:
-        raise HTTPException(
-            status_code=400, detail="Поле 'image' (или 'image_base64') обязательно."
-        )
-
     req_lang = payload.lang.lower().strip()
     if req_lang not in VALID_SOURCE_LANGS:
         req_lang = "auto"
@@ -4718,7 +4729,29 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
         )
 
     start_ts = time.perf_counter()
-    pil_image = decode_base64_image(raw_b64)
+    if raw_b64:
+        pil_image = decode_base64_image(raw_b64)
+    elif payload.image_url and payload.image_url.strip().startswith(("http://", "https://")):
+        dl_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
+            "Accept": "image/avif,image/webp,image/apng,image/svg+xml,image/*,*/*;q=0.8",
+        }
+        if payload.page_url and payload.page_url.strip().startswith(("http://", "https://")):
+            dl_headers["Referer"] = payload.page_url.strip()
+        try:
+            async with httpx.AsyncClient(trust_env=False, follow_redirects=True, timeout=30.0) as dl_client:
+                dl_resp = await dl_client.get(payload.image_url.strip(), headers=dl_headers)
+                dl_resp.raise_for_status()
+                pil_image = Image.open(io.BytesIO(dl_resp.content)).convert("RGB")
+        except Exception as dl_exc:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Не удалось скачать изображение по URL ({payload.image_url}): {dl_exc}",
+            ) from dl_exc
+    else:
+        raise HTTPException(
+            status_code=400, detail="Поле 'image' (base64) или 'image_url' обязательно."
+        )
 
     try:
         final_image, cleaned_image, mask_image, blocks, active_model, detected_lang = (
@@ -6139,7 +6172,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "5.3.0",
+            "version": "5.3.1",
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -8029,7 +8062,7 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver not in ("5.3.0", "5.3"):
+                if running_ver not in ("5.3.1", "5.3.0", "5.3"):
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
                         f"Останавливаю старый процесс для запуска v5.3.0...",
