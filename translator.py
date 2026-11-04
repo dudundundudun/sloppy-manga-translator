@@ -1,5 +1,15 @@
 """
-Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v5.3.0).
+Модуль перевода и транслитерации текста манги/манхвы/маньхуа через Ollama, HuggingFace GGUF и Облачные OpenAI-совместимые API (v5.4.0).
+
+Изменения v5.4.0:
+1. Стабилизация промпта и JSON-ответов для специализированных локальных моделей (`sugoi-14b-ultra`, `translategemma`, `aya-expanse`):
+   полное исключение инъекции словарей метаданных формы/ролей (`{'shape': ...}`, `{'speaker': ...}`, `[shape: ...]`) в промпт,
+   строгая очистка утечек метаданных и вложенных JSON-словарей на выходе парсера, батчевый плоский режим и оптимизация размера ретраев.
+2. Авто-блокировка холостых запросов в цензурное облако (`deepseek-v4-flash`) на NSFW-главах (`nsfw_mode = True`):
+   при первом же 100%-м цензурном отказе облачного провайдера на пачке или серии сетевых сбоев включается `nsfw_mode = True`
+   на всю текущую главу с прямой маршрутизацией следующих пачек в локальную модель Ollama без простоев.
+3. Фильтрация обрывков слогов и местоимений в пре-пассе глоссария (`extract_chapter_glossary_prepass` и `AutoGlossaryTracker`):
+   проверка `len(ja_name) >= 2` после очистки частиц и стоп-лист японских/корейских/китайских местоимений, частиц и междометий.
 
 Изменения v1.0.6 (Шаг 4):
 1. Глобальный глоссарий в `config.json` (`glossary: list[dict[str, str]]` с полями `src`, `dst`, `note`, `target_lang`)
@@ -410,6 +420,133 @@ class StreamingTranslationParser:
 # ============================================================================
 # БЛОК 3: AUTO-GLOSSARY & CHARACTER STATE TRACKER (<= 150-220 TOKENS)
 # ============================================================================
+# ============================================================================
+# СТОП-ЛИСТ МЕСТОИМЕНИЙ, ЧАСТИЦ И МЕЖДОМЕТИЙ ДЛЯ ГЛОССАРИЯ ИМЕН (v5.4.0)
+# ============================================================================
+GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST: set[str] = {
+    # Обязательный стоп-лист японских местоимений, частиц и междометий (v5.4.0)
+    "キミ", "きみ", "きみさ", "キミさ", "君", "ボク", "ぼく", "僕",
+    "オレ", "おれ", "俺", "ワタシ", "わたし", "私", "アタシ", "あたし",
+    "アンタ", "あんた", "お前", "おまえ", "貴様", "きさま", "キサマ",
+    "てめぇ", "てめえ", "テメェ", "テメエ", "あいつ", "こいつ", "そいつ",
+    "アイツ", "コイツ", "ソイツ", "え", "こ", "あ", "うん", "なに", "何",
+    "エ", "コ", "ア", "ウン", "ナニ",
+    # Дополнительные формы местоимений, указательных слов и частиц (JA / KO / ZH)
+    "あなた", "アナタ", "貴方", "貴女", "きみたち", "キミたち", "君たち", "君達",
+    "ぼくら", "ボクラ", "僕ら", "僕達", "僕たち", "おれら", "オレラ", "俺ら", "俺達", "俺たち",
+    "わたしたち", "ワタシタチ", "私たち", "私達", "あたしたち", "あんたら", "アンタら",
+    "おまえら", "お前ら", "かれ", "カレ", "彼", "かのじょ", "カノジョ", "彼女", "彼ら",
+    "だれ", "ダレ", "誰", "どこ", "ドコ", "ここ", "ココ", "そこ", "ソコ", "あそこ", "アソコ",
+    "これ", "コレ", "それ", "ソレ", "あれ", "アレ", "どれ", "ドレ",
+    "この", "その", "あの", "どの", "こんな", "そんな", "あんな", "どんな",
+    "自分", "じぶん", "ジブン", "みんな", "ミンナ", "皆", "みなさん", "皆様",
+    "ううん", "ウウン", "はい", "ハイ", "いいえ", "イイエ", "ええ", "エエ",
+    "おい", "オイ", "ねえ", "ねぇ", "ネエ", "ネェ", "あのう", "あのー", "えっと", "えーと",
+    "うわ", "きゃ", "あっ", "えっ", "ん", "んっ", "はぁ", "ふぅ", "お", "おっ", "う", "うっ",
+    # Корейские местоимения и междометия (KO)
+    "나", "내", "너", "네", "니", "우리", "저", "제", "그", "그녀", "당신", "자네",
+    "야", "어", "음", "아", "응", "뭐", "누구", "어디", "여기", "거기", "저기",
+    "이것", "그것", "저것", "오빠", "언니", "누나", "형", "선배", "선생님",
+    # Китайские местоимения и междометия (ZH)
+    "我", "你", "您", "他", "她", "它", "我们", "你们", "他们", "她们", "咱们", "自己",
+    "这", "那", "哪", "谁", "什么", "哪里", "这里", "那里", "嗯", "啊", "哦", "呃", "哎", "喂",
+}
+
+GLOSSARY_TARGET_PRONOUN_STOPLIST: set[str] = {
+    "e", "ko", "a", "un", "kimi", "kimsa", "boku", "ore", "watashi", "atashi",
+    "anta", "anata", "omae", "kisama", "temee", "aitsu", "koitsu", "soitsu", "nani",
+    "you", "i", "me", "my", "he", "him", "she", "her", "we", "us", "they", "them",
+    "what", "who", "where", "yes", "yeah", "no", "nope", "uh", "um", "ah", "eh", "oh", "hey",
+    "ты", "вы", "я", "меня", "мне", "он", "она", "мы", "они", "кто", "что", "где",
+    "этот", "эта", "это", "тот", "та", "эй", "ага", "угу", "неа", "да", "нет",
+}
+
+_GLOSSARY_STRIP_PUNCT_RE = re.compile(
+    r"[\s\.\,\!\?\…\‥\⋯\︙\︰\．\ー\〜\~\-\—\！\？\。\、\「\」\『\』\（\）\(\)\[\]\【\】\♡\♥\♪\★\☆\・\：\;\"\'\`]+"
+)
+_GLOSSARY_TRAILING_PARTICLES_RE = re.compile(
+    r"(?:たち|達|ら|って|なんか|なんて|だけ|くらい|ぐらい|から|まで|より|には|では|とは|さ|よ|ね|な|わ|ぞ|ぜ|か|の|は|が|を|に|へ|と|も|や)+$"
+)
+_GLOSSARY_HONORIFIC_SUFFIX_RE = re.compile(
+    r"(?:ちゃん|さん|くん|君|様|さま|先輩|せんぱい|先生|せんせい|氏|殿|どの|たん|っち)+$"
+)
+
+
+def clean_and_validate_glossary_name(
+    raw_src_name: str,
+    raw_dst_name: str = "",
+) -> tuple[str, str]:
+    """
+    Очищает и проверяет кандидата в глоссарий имен собственных (v5.4.0):
+    1. Удаляет пунктуацию и хвостовые частицы (например, きみさ -> きみ, キミは -> キミ).
+    2. Проверяет вхождение в стоп-лист местоимений, частиц и междометий (JA / KO / ZH)
+       включая орфографические варианты Хирагана <-> Катакана.
+    3. Требует минимальную длину `len(ja_name) >= 2` после очистки частиц и суффиксов,
+       отсекая одиночные каны (え -> E, こ -> Ko, あ -> A) и местоимения (キミ -> Kimi, きみさ -> Kimsa).
+    Возвращает `(cleaned_src, cleaned_dst)` или `("", "")`, если запись невалидна.
+    """
+    if not raw_src_name:
+        return "", ""
+    cleaned_src = _GLOSSARY_STRIP_PUNCT_RE.sub("", str(raw_src_name).strip())
+    if not cleaned_src or len(cleaned_src) > 16:
+        return "", ""
+
+    hira_src = unicodedata.normalize("NFKC", cleaned_src).translate(_KATA_TO_HIRA)
+    kata_src = hira_src.translate(_HIRA_TO_KATA)
+    if (
+        cleaned_src in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+        or hira_src in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+        or kata_src in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+    ):
+        return "", ""
+
+    # Очищаем хвостовые разговорные и падежные частицы (きみさ -> きみ, アンタは -> アンタ)
+    stem_no_particles = _GLOSSARY_TRAILING_PARTICLES_RE.sub("", cleaned_src)
+    if not stem_no_particles:
+        return "", ""
+    hira_stem = unicodedata.normalize("NFKC", stem_no_particles).translate(_KATA_TO_HIRA)
+    kata_stem = hira_stem.translate(_HIRA_TO_KATA)
+    if (
+        stem_no_particles in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+        or hira_stem in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+        or kata_stem in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+    ):
+        return "", ""
+
+    # Проверяем длину основы без именных суффиксов (-сан, -тян, -кун) и частиц
+    core_stem = _GLOSSARY_HONORIFIC_SUFFIX_RE.sub("", stem_no_particles)
+    if not core_stem:
+        core_stem = stem_no_particles
+    hira_core = unicodedata.normalize("NFKC", core_stem).translate(_KATA_TO_HIRA)
+    kata_core = hira_core.translate(_HIRA_TO_KATA)
+    if (
+        core_stem in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+        or hira_core in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+        or kata_core in GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST
+    ):
+        return "", ""
+
+    # Строгая проверка минимальной длины: len(ja_name) >= 2 после очистки частиц
+    if len(stem_no_particles) < 2 or len(cleaned_src) < 2:
+        return "", ""
+
+    # Если запись состоит только из 2 символов хираганы без кандзи/катаканы и начинается с местоимения
+    if any(
+        hira_src.startswith(p_prefix)
+        for p_prefix in ("きみ", "ぼく", "おれ", "わた", "あた", "あん", "おま", "きさ", "てめ", "あい", "こい", "そい", "なに")
+    ):
+        return "", ""
+
+    cleaned_dst = str(raw_dst_name or "").strip()
+    if cleaned_dst:
+        dst_no_note = re.sub(r"\s*\([^)]*\)\s*$", "", cleaned_dst).strip()
+        dst_alpha = re.sub(r"[^A-Za-zА-Яа-яЁё]+", "", dst_no_note).lower()
+        if len(dst_alpha) < 2 or dst_alpha in GLOSSARY_TARGET_PRONOUN_STOPLIST:
+            return "", ""
+
+    return cleaned_src, cleaned_dst
+
+
 @dataclass(slots=True)
 class CharacterState:
     source_name: str
@@ -447,17 +584,18 @@ class AutoGlossaryTracker:
                     if not item or "=" not in item:
                         continue
                     src_part, rest = item.split("=", 1)
-                    src_name = src_part.strip()
+                    raw_src_name = src_part.strip()
                     parts = [p.strip() for p in rest.split("|")]
-                    tgt_name = parts[0] if parts else ""
+                    raw_tgt_name = parts[0] if parts else ""
+                    src_name, tgt_name = clean_and_validate_glossary_name(raw_src_name, raw_tgt_name)
+                    if not src_name or not tgt_name:
+                        continue
                     gender = (
                         parts[1].upper()
                         if len(parts) > 1 and parts[1].upper() in ("M", "F", "U")
                         else "U"
                     )
                     tone = parts[2][:25] if len(parts) > 2 and parts[2] else "neutral"
-                    if not src_name or not tgt_name or len(src_name) > 20:
-                        continue
                     if src_name not in self.entries:
                         self.entries[src_name] = CharacterState(
                             source_name=src_name,
@@ -678,8 +816,49 @@ def build_qwen_local_system_prompt(source_lang: str, target_lang: str, header: s
 
 SHAPE_META_TAG_REGEX = re.compile(r"\[\s*shape\s*:[^\]]*\]", flags=re.IGNORECASE)
 SPEAKER_META_TAG_REGEX = re.compile(
-    r"\[\s*(?:Bubble|Box|SFX)\s*:[^\]]*\]", flags=re.IGNORECASE
+    r"\[\s*(?:Bubble|Box|SFX|GLOSSARY_LOCK|SPEAKER_DIARIZATION|PREV_LINES)\s*:?[^\]]*\]",
+    flags=re.IGNORECASE,
 )
+
+# Детекторы утечек словарей метаданных формы/ролей ({'shape': ...}, {'speaker': ...}) и префиксов #ID: (v5.4.0)
+SPECIALIZED_LOCAL_MODEL_KEYWORDS: tuple[str, ...] = (
+    "sugoi",
+    "translategemma",
+    "aya-expanse",
+    "aya_expanse",
+)
+
+DICT_METADATA_LEAK_REGEX = re.compile(
+    r"""\{\s*['"](?:shape|speaker|role|max_chars|aspect_ratio|box_role|id|bbox)['"]\s*:[^}]*\}?""",
+    flags=re.IGNORECASE,
+)
+TRUNCATED_DICT_FRAGMENT_REGEX = re.compile(
+    r"""^\s*\{?\s*['"](?:shape|speaker|role|max_chars|aspect_ratio)['"]\s*:\s*['"]?[a-zA-Z0-9_\s,:'"\-]*$""",
+    flags=re.IGNORECASE,
+)
+DICT_TEXT_FIELD_EXTRACT_REGEX = re.compile(
+    r"""['"](?:text|translation|trans|translated_text|value|content|line)['"]\s*:\s*['"]([^'"]+)['"]""",
+    flags=re.IGNORECASE,
+)
+LEADING_BLOCK_ID_LEAK_REGEX = re.compile(
+    r"""^\s*(?:\[\s*#?(?:P\d+_\d+|\d+)\s*\]|#(?:P\d+_\d+|\d+)|(?:P\d+_\d+))\s*[:\-–—]\s*(?:-\s*)?""",
+    flags=re.IGNORECASE,
+)
+PROMPT_ID_DASH_QUESTION_LEAK_REGEX = re.compile(
+    r"""^\s*#?(?:P\d+_\d+|\d+)\s*:\s*-?\s*\?+\s*$""",
+    flags=re.IGNORECASE,
+)
+
+
+def is_specialized_local_translator_model(model_name: str | None) -> bool:
+    """
+    Возвращает True для специализированных локальных моделей перевода (sugoi-14b-ultra, translategemma, aya-expanse),
+    в которые НЕЛЬЗЯ передавать вложенные метаданные формы ({'shape': ...}, {'speaker': ...}, [shape: ...]).
+    """
+    if not model_name:
+        return False
+    low = str(model_name).lower()
+    return any(kw in low for kw in SPECIALIZED_LOCAL_MODEL_KEYWORDS)
 
 
 def compute_bubble_geometry_budget(block: dict[str, Any]) -> dict[str, Any]:
@@ -2486,6 +2665,11 @@ def normalize_glossary_entries(entries: Any) -> list[dict[str, str]]:
         if not src or not dst:
             continue
         note = str(item.get("note") or item.get("comment") or item.get("info") or "").strip()
+        # Отсекаем ошибочно собранные авто-пре-пассом обрывки слогов и местоимения (え->E, こ->Ko, キミ->Kimi, きみさ->Kimsa)
+        v_src, v_dst = clean_and_validate_glossary_name(src, dst)
+        if not v_src or not v_dst:
+            continue
+        src = v_src
         t_lang = str(item.get("target_lang") or item.get("lang") or "all").strip().lower()
         if t_lang not in ("all", "ru", "en", "romaji"):
             t_lang = "all"
@@ -2764,7 +2948,12 @@ class OllamaTranslator:
         self._last_call_was_refusal: bool = False
         self.last_refusal_message: str = ""
         self.last_local_fallback_model: str = ""
+        self.nsfw_mode: bool = False
+        self.nsfw_mode_reason: str = ""
+        self._consecutive_cloud_failures: int = 0
         self.diagnostics_stats: dict[str, Any] = {
+            "nsfw_mode_active": False,
+            "nsfw_mode_switches_count": 0,
             "session_started_at": int(time.time()),
             "total_llm_requests": 0,
             "total_ollama_requests": 0,
@@ -2791,8 +2980,42 @@ class OllamaTranslator:
         self.recent_translation_incidents: list[dict[str, Any]] = []
         self._load_saved_config()
 
+    def enable_chapter_nsfw_mode(self, reason: str = "100% цензурный отказ облачного провайдера") -> None:
+        """
+        Автоматически включает режим обхода цензурного облака (nsfw_mode = True) на всю текущую папку/главу
+        при первом же 100%-м отказе цензуры или серии сетевых сбоев облачного шлюза (v5.4.0).
+        """
+        self.nsfw_mode_reason = (reason or "NSFW chapter bypass").strip()
+        if not self.nsfw_mode:
+            self.nsfw_mode = True
+            self.diagnostics_stats["nsfw_mode_active"] = True
+            self.diagnostics_stats["nsfw_mode_switches_count"] = (
+                int(self.diagnostics_stats.get("nsfw_mode_switches_count") or 0) + 1
+            )
+            self._record_incident(
+                "CHAPTER_NSFW_MODE_ENABLED",
+                self._resolved_model or "cloud",
+                f"Активирован nsfw_mode=True на всю главу ({self.nsfw_mode_reason}) — следующие пачки идут напрямую в локальную Ollama",
+            )
+            logger.warning(
+                "🔞 [NSFW-РЕЖИМ ГЛАВЫ АКТИВИРОВАН] %s — все следующие пачки текущей папки/главы направляются напрямую в локальную модель Ollama без холостых запросов в облако!",
+                self.nsfw_mode_reason,
+            )
+
+    def reset_chapter_nsfw_mode(self) -> None:
+        """Сбрасывает флаг nsfw_mode при переходе к новой главе/папке."""
+        self.nsfw_mode = False
+        self.nsfw_mode_reason = ""
+        self._consecutive_cloud_failures = 0
+        self.diagnostics_stats["nsfw_mode_active"] = False
+
     def reset_diagnostics(self) -> None:
+        self.nsfw_mode = False
+        self.nsfw_mode_reason = ""
+        self._consecutive_cloud_failures = 0
         self.diagnostics_stats = {
+            "nsfw_mode_active": False,
+            "nsfw_mode_switches_count": 0,
             "session_started_at": int(time.time()),
             "total_llm_requests": 0,
             "total_ollama_requests": 0,
@@ -2907,6 +3130,8 @@ class OllamaTranslator:
             "use_image_context": self.use_image_context,
             "local_fallback_model_multilang": self.local_fallback_model_multilang,
             "anti_censorship_prompt": self.anti_censorship_prompt,
+            "nsfw_mode": self.nsfw_mode,
+            "nsfw_mode_reason": self.nsfw_mode_reason,
             "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
             "cloud_parallel_chunk_size": CLOUD_PARALLEL_CHUNK_SIZE,
             "last_local_fallback_model": self.last_local_fallback_model,
@@ -4291,17 +4516,102 @@ class OllamaTranslator:
         return False
 
     @classmethod
+    def _strip_metadata_and_prompt_leaks(cls, text: str, orig_text: str = "") -> str:
+        """
+        Вычищает случайные утечки метаданных формы/ролей из ответа локальных моделей (v5.4.0):
+        - обрывки словарей `"{'shape': 'narrow_vertic"`, `"{'shape': 'round_oval', "`, `"{'speaker': 'C', 'text': "`
+        - вложенные словари `{"shape": "round_oval", "text": "..."}` (извлекает поле `text`/`translation`)
+        - префиксы вида `#145: - ?`, `#12: Hello`, `[Bubble: ...]`, `[shape: ...]`
+        """
+        if not text:
+            return ""
+        s = str(text).strip()
+        if not s:
+            return ""
+
+        # 1. Если строка представляет собой JSON/Python-словарь или его обрывок с ключами shape/speaker/text
+        if (s.startswith("{") or s.startswith("'{") or s.startswith('"{')) or any(
+            k_leak in s.lower() for k_leak in ("'shape':", '"shape":', "'speaker':", '"speaker":', "'max_chars':", '"max_chars":')
+        ):
+            m_txt = DICT_TEXT_FIELD_EXTRACT_REGEX.search(s)
+            if m_txt:
+                s = m_txt.group(1).strip()
+            elif TRUNCATED_DICT_FRAGMENT_REGEX.match(s) or s.lstrip().startswith("{"):
+                s_removed = DICT_METADATA_LEAK_REGEX.sub("", s).strip(" {}'\",:-")
+                if not s_removed or any(
+                    frag in s_removed.lower()
+                    for frag in ("narrow_vertic", "round_oval", "wide_horizont", "shape", "speaker", "max_chars")
+                ):
+                    return ""
+                s = s_removed
+
+        # 2. Удаляем любые встроенные теги формы и ролей
+        s = DICT_METADATA_LEAK_REGEX.sub("", s).strip()
+        s = SHAPE_META_TAG_REGEX.sub("", s).strip()
+        s = SPEAKER_META_TAG_REGEX.sub("", s).strip()
+
+        # 3. Если модель вернула фантомный шаблон вида "#145: - ?" на полноценную реплику
+        if PROMPT_ID_DASH_QUESTION_LEAK_REGEX.match(s):
+            orig_clean = re.sub(r"[\s\?\？\!\！\.\…\〜\~\ー\-]+", "", orig_text or "")
+            if len(orig_clean) >= 2:
+                return ""
+
+        # 4. Срезаем префикс номера блока в начале строки ("#145: - Hello" -> "Hello")
+        s = LEADING_BLOCK_ID_LEAK_REGEX.sub("", s).strip()
+        if s.startswith("- ?") and orig_text and len(re.sub(r"[\s\?\？]+", "", orig_text)) >= 2:
+            return ""
+        return s
+
+    @classmethod
+    def _extract_str_from_json_value(cls, val: Any, orig_text: str = "") -> str:
+        """
+        Безопасно извлекает строку перевода из JSON-значения (v5.4.0).
+        Если модель вернула вложенный словарь `{"shape": "round_oval", "text": "..."}`,
+        извлекает текстовое поле вместо вызова `str(val)` (который порождал `"{'shape': ...}"`).
+        """
+        if val is None:
+            return ""
+        if isinstance(val, str):
+            return cls._strip_metadata_and_prompt_leaks(val, orig_text=orig_text)
+        if isinstance(val, dict):
+            for text_key in ("text", "translation", "trans", "translated_text", "value", "content", "line", "en", "ru", "romaji"):
+                if text_key in val and isinstance(val[text_key], str) and val[text_key].strip():
+                    return cls._strip_metadata_and_prompt_leaks(val[text_key], orig_text=orig_text)
+            ignored_meta_vals = {
+                "narrow_vertical", "round_oval", "wide_horizontal",
+                "dialogue", "monologue", "narration", "sfx",
+                "a", "b", "c", "d", "m", "f", "u",
+            }
+            for k_sub, v_sub in val.items():
+                if str(k_sub).lower() in ("shape", "speaker", "role", "box_role", "max_chars", "aspect_ratio", "id", "bbox"):
+                    continue
+                if isinstance(v_sub, str) and v_sub.strip() and v_sub.strip().lower() not in ignored_meta_vals:
+                    return cls._strip_metadata_and_prompt_leaks(v_sub, orig_text=orig_text)
+            return ""
+        if isinstance(val, list):
+            parts = [cls._extract_str_from_json_value(item, orig_text=orig_text) for item in val]
+            return " ".join(p for p in parts if p).strip()
+        return str(val).strip()
+
+    @classmethod
     def _is_hallucinated_translation(cls, val_text: str, orig_text: str = "") -> bool:
         """
         Отсекает известные галлюцинации OCR/LLM («taxi driver take me to the best restaurant», ложный «Twitch» и т.п.),
-        утечки мета-комментариев переводчика, зацикливания слов, а также аномальный дисбаланс длины
-        (когда из 1–3 символов генерируется длинное предложение или из длинного монолога остается 1 буква).
+        утечки словарей метаданных («{'shape': 'narrow_vertic», «{'speaker': 'C'», «#145: - ?»),
+        утечки мета-комментариев переводчика, зацикливания слов, а также аномальный дисбаланс длины.
         """
         if not val_text:
             return False
         s = str(val_text).strip()
         if not s:
             return False
+        if (
+            TRUNCATED_DICT_FRAGMENT_REGEX.match(s)
+            or DICT_METADATA_LEAK_REGEX.search(s)
+            or PROMPT_ID_DASH_QUESTION_LEAK_REGEX.match(s)
+            or any(leak_tok in s.lower() for leak_tok in ("'shape':", '"shape":', "'speaker':", '"speaker":', "narrow_vertic", "round_oval"))
+        ):
+            return True
         if HALLUCINATION_TRANSLATION_REGEX.search(s):
             return True
         low_s = s.lower()
@@ -4598,11 +4908,15 @@ class OllamaTranslator:
             try:
                 parsed = json.loads(candidate)
                 if isinstance(parsed, dict):
-                    return {
-                        cls._normalize_key(k): str(v).strip()
-                        for k, v in parsed.items()
-                        if v is not None
-                    }
+                    out_parsed: dict[str, str] = {}
+                    for k, v in parsed.items():
+                        if v is None:
+                            continue
+                        nk = cls._normalize_key(k)
+                        ext_v = cls._extract_str_from_json_value(v)
+                        if nk and ext_v:
+                            out_parsed[nk] = ext_v
+                    return out_parsed
             except json.JSONDecodeError:
                 pass
 
@@ -4611,11 +4925,15 @@ class OllamaTranslator:
             try:
                 parsed = json.loads(match.group(0))
                 if isinstance(parsed, dict):
-                    return {
-                        cls._normalize_key(k): str(v).strip()
-                        for k, v in parsed.items()
-                        if v is not None
-                    }
+                    out_parsed = {}
+                    for k, v in parsed.items():
+                        if v is None:
+                            continue
+                        nk = cls._normalize_key(k)
+                        ext_v = cls._extract_str_from_json_value(v)
+                        if nk and ext_v:
+                            out_parsed[nk] = ext_v
+                    return out_parsed
             except json.JSONDecodeError:
                 pass
 
@@ -4626,7 +4944,9 @@ class OllamaTranslator:
             m_line = re.match(r"""^['"]?#?((?:P\d+_\d+)|(?:\d+))['"]?\s*:\s*['"](.*)['"]$""", line_s, flags=re.IGNORECASE)
             if m_line:
                 norm_k = cls._normalize_key(m_line.group(1))
-                val_s = m_line.group(2).replace('\"', '"').replace("\\n", " ").strip()
+                val_s = cls._strip_metadata_and_prompt_leaks(
+                    m_line.group(2).replace('\"', '"').replace("\\n", " ").strip()
+                )
                 if norm_k and val_s:
                     recovered[norm_k] = val_s
 
@@ -4634,7 +4954,9 @@ class OllamaTranslator:
         for k_match, v_match in KV_PAIR_REGEX.findall(cleaned):
             norm_k = cls._normalize_key(k_match)
             if norm_k not in recovered:
-                unescaped_v = v_match.replace('\"', '"').replace("\\n", " ").strip()
+                unescaped_v = cls._strip_metadata_and_prompt_leaks(
+                    v_match.replace('\"', '"').replace("\\n", " ").strip()
+                )
                 if norm_k and unescaped_v:
                     recovered[norm_k] = unescaped_v
 
@@ -4833,14 +5155,20 @@ class OllamaTranslator:
         if not text:
             return ""
         t_lang = (target_lang or "en").lower().strip()
+        text = cls._strip_metadata_and_prompt_leaks(text, orig_text=orig_text)
+        if not text:
+            return ""
         # ВАЖНО: Конвертируем кану в Ромадзи ТОЛЬКО если целевой язык — 'romaji'!
-        # Раньше здесь было `in ("romaji", "en")`, из-за чего непереведенный японский текст превращался в Ромадзи!
         if t_lang == "romaji" and KANA_ANY_REGEX.search(text):
             text = kana_to_romaji(text)
-        from renderer import normalize_manga_special_symbols
+        try:
+            from renderer import normalize_manga_special_symbols
+            text = normalize_manga_special_symbols(text)
+        except Exception:
+            pass
         text = SHAPE_META_TAG_REGEX.sub("", text).strip()
         text = SPEAKER_META_TAG_REGEX.sub("", text).strip()
-        normalized = normalize_manga_special_symbols(text).translate(FULLWIDTH_PUNCT_MAP)
+        normalized = text.translate(FULLWIDTH_PUNCT_MAP)
         no_cjk = CJK_REGEX.sub("", normalized)
         no_sym = CJK_SYMBOLS_REGEX.sub("", no_cjk)
         cleaned = re.sub(r"\s+", " ", no_sym).strip()
@@ -4859,6 +5187,7 @@ class OllamaTranslator:
         anti_censorship_prompt: bool = False,
         anti_censorship_custom_prompt: str | None = None,
         auto_glossary_header: str = "",
+        is_specialized_local: bool = False,
     ) -> tuple[str, str, str]:
         src_en = SOURCE_LANG_NAMES_EN.get(source_lang, "comic")
         src_ru = SOURCE_LANG_NAMES_RU.get(source_lang, "комикса")
@@ -4899,7 +5228,9 @@ class OllamaTranslator:
                 f"{joined_ctx}"
             )
 
-        if geometry_hints_map:
+        # Для специализированных локальных моделей (sugoi-14b-ultra, translategemma, aya-expanse)
+        # НИКОГДА не передаем словари/теги геометрии формы и ролей говорящего, чтобы исключить утечку {'shape': ...} в перевод!
+        if geometry_hints_map and not is_specialized_local:
             g_hint_lines = [f"- #{k}: {tag}" for k, tag in list(geometry_hints_map.items())[:60]]
             if g_hint_lines:
                 joined_hints = "\n".join(g_hint_lines)
@@ -4928,9 +5259,24 @@ class OllamaTranslator:
         )
         usr_prefix_tag = "TRANSLATE_MANGA_BUBBLES_JSON:\n" if is_small_batch else ""
 
-        if auto_glossary_header:
+        if auto_glossary_header and not is_specialized_local:
             context_block_ru += f"\n{auto_glossary_header}"
             context_block_en += f"\n{auto_glossary_header}"
+
+        typeset_rule_ru = "" if is_specialized_local else TYPESETTING_AWARE_RULE_RU
+        typeset_rule_en = "" if is_specialized_local else TYPESETTING_AWARE_RULE_EN
+
+        if is_specialized_local and t_lang == "en":
+            sys_prompt = (
+                f"You are a professional {src_en}-to-English translator.\n"
+                "Translate each Japanese line in the input JSON object into natural, idiomatic English.\n"
+                "Return ONLY a flat JSON object {\"key\": \"English translation\"} with the exact same keys. "
+                "Every value MUST be a plain string (never a dictionary or nested object)."
+                f"{glossary_block_en}"
+            )
+            usr_prompt = f"Translate all JSON values into English (keep exact keys):\n{source_map_json}"
+            retry_prefix = "Translate all JSON values into English (flat JSON object, exact same keys):\n"
+            return sys_prompt, usr_prompt, retry_prefix
 
         if t_lang == "romaji":
             sys_prompt = (
@@ -4956,8 +5302,8 @@ class OllamaTranslator:
                 "1. Имена, фамилии и домашние прозвища передавай фонетически (Поливанов/Хэпбёрн), НЕ переводи их буквально по смыслу иероглифов (七香/ななか -> Нанака, 七ちゃん -> Нана-тян, НЕ «Семь-тян»; 一 -> Ити/Кадзу; 双葉 -> Футаба; 三玖 -> Мику; 四葉 -> Ёцуба; 五月 -> Ицуки). Сохраняй суффиксы (-сан, -тян, -кун, -сэмпай, -сэнсэй).\n"
                 "2. Переводи реплики и междометия связно, живо и лаконично под размер облачков. Сохраняй многоточия ('...') в начале, середине и конце фраз для передачи пауз и заминок (пиши '...Ты так думаешь?', 'Ого...?!', НИКОГДА не сокращай многоточие до одной точки вроде '.Ты так думаешь?' или '.?!').\n"
                 "3. Запрещено оставлять японские/корейские/китайские символы или пропускать ключи JSON.\n"
-                "4. Не выводи <think>. Верни ТОЛЬКО валидный JSON-объект с теми же ключами.\n"
-                f"{TYPESETTING_AWARE_RULE_RU}"
+                "4. Не выводи <think>. Верни ТОЛЬКО валидный плоский JSON-объект {\"ключ\": \"строка перевода\"} с теми же ключами (значения должны быть обычными строками, без вложенных словарей).\n"
+                f"{typeset_rule_ru}"
                 f"{small_batch_guard}{context_block_ru}"
             )
             if anti_censorship_prompt:
@@ -4973,8 +5319,8 @@ class OllamaTranslator:
             "1. Translate the MEANING of every dialogue line, exclamation, and interjection into natural, idiomatic English. NEVER transliterate sentences or words into Japanese Romaji (e.g., write 'Stop it!', NEVER 'Yamete!'; write 'Wait!', NEVER 'Chotto matte!'; write 'Feels so good...', NEVER 'Kimochiii').\n"
             "2. Only personal character names should be romanized phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei). Preserve ellipses ('...') at the start, middle, and end of lines whenever the original has '…' or '．．．' (e.g., write '...You think so?', 'Whoa...?!', 'Well... um...', NEVER collapse '...' into a single dot like '.You think so?' or 'Whoa.?!').\n"
             "3. Output zero Japanese/Korean/Chinese characters, NEVER skip any JSON key, and NEVER output censorship/omission placeholders like '[Explicit content omitted]', '[Sound omitted]', or '[Censored]'.\n"
-            "4. Do NOT output <think> tags. Return ONLY a valid JSON object with the exact same keys.\n"
-            f"{TYPESETTING_AWARE_RULE_EN}"
+            "4. Do NOT output <think> tags. Return ONLY a valid flat JSON object {\"key\": \"string\"} with the exact same keys (values must be plain strings, never nested objects).\n"
+            f"{typeset_rule_en}"
             f"{small_batch_guard}{context_block_en}"
         )
         if anti_censorship_prompt:
@@ -5232,16 +5578,23 @@ class OllamaTranslator:
 
         combined_res: dict[str, str] = {}
         t_lang = (target_lang or "en").lower().strip()
+        is_spec_loc = is_specialized_local_translator_model(loc_model)
         for sub_idx, sub_map in enumerate(sub_chunks, start=1):
             if self.stop_requested:
                 break
-            sub_json = json.dumps(sub_map, ensure_ascii=False, separators=(",", ":"))
+            clean_sub_map = {
+                str(k): self._strip_metadata_and_prompt_leaks(str(v), orig_text=str(v)) or str(v)
+                for k, v in sub_map.items()
+            }
+            sub_json = json.dumps(clean_sub_map, ensure_ascii=False, separators=(",", ":"))
             sys_p, usr_p, _ = self._get_prompts(
                 source_lang=source_lang,
                 target_lang=t_lang,
                 source_map_json=sub_json,
-                context_lines=context_lines,
+                context_lines=None if is_spec_loc else context_lines,
                 glossary_entries=glossary_entries,
+                geometry_hints_map=None,
+                is_specialized_local=is_spec_loc,
             )
             try:
                 loc_res = await self._call_ollama_direct(
@@ -5281,27 +5634,103 @@ class OllamaTranslator:
         source_dict: dict[str, str],
     ) -> dict[str, str]:
         """
-        Нативный построчный режим перевода специально для `Sugoi-14B-Ultra`:
-        Модель `Sugoi-14B-Ultra` обучена на прямых парах «японская фраза -> английский перевод» без JSON-схемы
-        и без списков контекста в system_prompt (из-за которых при `"format": "json"` она может копировать
-        предыдущее слово из контекста вроде «Twitch»).
+        Нативный плоский режим перевода специально для `Sugoi-14B-Ultra` (v5.4.0):
+        1. Сначала отправляет батч в плоском нумерованном формате `1. <текст>` за 1 запрос (без вложенных JSON-полей
+           и без метаданных формы `{'shape': ...}`), что исключает путаницу ключей и ускоряет перевод в 3–4 раза.
+        2. Если отдельные строки батча не распарсились, точечно допереводит только их.
         """
         out_map: dict[str, str] = {}
+        clean_items: list[tuple[str, str]] = []
+        for k, ja_line in source_dict.items():
+            clean_ja = self._strip_metadata_and_prompt_leaks(str(ja_line or ""), orig_text=str(ja_line or "")).strip()
+            if not clean_ja:
+                clean_ja = str(ja_line or "").strip()
+            if clean_ja:
+                clean_items.append((self._normalize_key(k), clean_ja))
+
+        if not clean_items:
+            return out_map
+
+        # Шаг 1: Если в батче >= 2 реплик, переводим их одним плоским нумерованным списком (1. <ja> / 2. <ja>...)
+        if len(clean_items) >= 2:
+            numbered_prompt_lines = [f"{idx}. {ja_txt}" for idx, (_, ja_txt) in enumerate(clean_items, start=1)]
+            batch_sys = (
+                "You are a professional Japanese-to-English manga translator. "
+                "Translate each numbered Japanese line into natural, idiomatic English. "
+                "Keep the exact same line numbers (1., 2., 3., ...), one line per number. "
+                "Output ONLY the numbered English translations without notes or explanations."
+            )
+            payload_batch: dict[str, Any] = {
+                "model": clean_name,
+                "system": batch_sys,
+                "prompt": "\n".join(numbered_prompt_lines),
+                "stream": False,
+                "think": False,
+                "keep_alive": "30m",
+                "options": {
+                    "temperature": 0.1,
+                    "repeat_penalty": 1.12,
+                    "num_ctx": 2048,
+                    "num_predict": min(1536, 120 * len(clean_items)),
+                },
+            }
+            try:
+                if self.gpu_lock_acquire is not None:
+                    async with self.gpu_lock_acquire(2):
+                        resp_b = await client.post(f"{self.base_url}/api/generate", json=payload_batch)
+                else:
+                    resp_b = await client.post(f"{self.base_url}/api/generate", json=payload_batch)
+                if resp_b.status_code == 200:
+                    raw_b = THINK_REGEX.sub("", str(resp_b.json().get("response") or "")).strip()
+                    by_idx: dict[int, str] = {}
+                    non_empty_lines: list[str] = []
+                    for line in raw_b.splitlines():
+                        ls = line.strip()
+                        if not ls:
+                            continue
+                        non_empty_lines.append(ls)
+                        m_num = re.match(r"^(?:\[|#)?(\d+)(?:\])?[\.\)\:\-\|]\s*(.+)$", ls)
+                        if m_num:
+                            idx_n = int(m_num.group(1))
+                            val_n = self._strip_metadata_and_prompt_leaks(m_num.group(2).strip().strip('"\'«»„“”'))
+                            if val_n:
+                                by_idx[idx_n] = val_n
+                    if len(by_idx) < len(clean_items) and len(non_empty_lines) == len(clean_items):
+                        for idx_n, ls in enumerate(non_empty_lines, start=1):
+                            val_n = re.sub(r"^(?:\[|#)?\d+(?:\])?[\.\)\:\-\|]\s*", "", ls).strip().strip('"\'«»„“”')
+                            val_n = self._strip_metadata_and_prompt_leaks(val_n)
+                            if val_n and idx_n not in by_idx:
+                                by_idx[idx_n] = val_n
+                    for idx_n, (norm_k, ja_txt) in enumerate(clean_items, start=1):
+                        cand_b = by_idx.get(idx_n, "")
+                        if (
+                            cand_b
+                            and not self._contains_cjk(cand_b)
+                            and not self._is_bubble_refusal_value(cand_b)
+                            and not self._is_hallucinated_translation(cand_b, ja_txt)
+                        ):
+                            out_map[norm_k] = cand_b
+            except Exception as b_exc:
+                logger.debug("Ошибка пакетного плоского вызова Sugoi (%d строк): %s", len(clean_items), b_exc)
+
+        # Шаг 2: Построчный доперевод только тех ключей, которые не вернулись из плоского батча
+        missing_items = [(nk, ja_txt) for nk, ja_txt in clean_items if nk not in out_map]
+        if not missing_items:
+            return out_map
+
         sugoi_sys = (
             "You are a professional Japanese-to-English manga translator. "
             "Translate the Japanese dialogue into natural, idiomatic English. "
             "Output ONLY the English translation without quotes, notes, or explanations."
         )
-        for k, ja_line in source_dict.items():
-            clean_ja = str(ja_line or "").strip()
-            if not clean_ja:
-                continue
+        for norm_k, clean_ja in missing_items:
             payload_line: dict[str, Any] = {
                 "model": clean_name,
                 "system": sugoi_sys,
                 "prompt": f"Translate from Japanese to English:\n{clean_ja}",
                 "stream": False,
                 "think": False,
+                "keep_alive": "30m",
                 "options": {
                     "temperature": 0.1,
                     "repeat_penalty": 1.12,
@@ -5310,16 +5739,27 @@ class OllamaTranslator:
                 },
             }
             try:
-                resp = await client.post(f"{self.base_url}/api/generate", json=payload_line)
+                if self.gpu_lock_acquire is not None:
+                    async with self.gpu_lock_acquire(2):
+                        resp = await client.post(f"{self.base_url}/api/generate", json=payload_line)
+                else:
+                    resp = await client.post(f"{self.base_url}/api/generate", json=payload_line)
                 if resp.status_code == 200:
                     raw_ans = str(resp.json().get("response") or "").strip()
                     cleaned_ans = THINK_REGEX.sub("", raw_ans).strip()
                     cleaned_ans = cleaned_ans.splitlines()[0].strip() if cleaned_ans else ""
-                    cleaned_ans = cleaned_ans.strip('"\'«»„“”')
-                    if cleaned_ans and not self._is_bubble_refusal_value(cleaned_ans) and not self._is_hallucinated_translation(cleaned_ans, clean_ja):
-                        out_map[self._normalize_key(k)] = cleaned_ans
+                    cleaned_ans = self._strip_metadata_and_prompt_leaks(
+                        cleaned_ans.strip('"\'«»„“”'), orig_text=clean_ja
+                    )
+                    if (
+                        cleaned_ans
+                        and not self._contains_cjk(cleaned_ans)
+                        and not self._is_bubble_refusal_value(cleaned_ans)
+                        and not self._is_hallucinated_translation(cleaned_ans, clean_ja)
+                    ):
+                        out_map[norm_k] = cleaned_ans
             except Exception as exc:
-                logger.debug("Ошибка построчного вызова Sugoi для ключа %s: %s", k, exc)
+                logger.debug("Ошибка построчного вызова Sugoi для ключа %s: %s", norm_k, exc)
         return out_map
 
     async def _call_ollama_direct(
@@ -5340,13 +5780,18 @@ class OllamaTranslator:
 
         _t0_ol = time.perf_counter()
         is_sugoi = "sugoi" in clean_name.lower()
+        is_spec_local = is_specialized_local_translator_model(clean_name)
         extracted_input_dict: dict[str, str] = {}
         m_json_any = re.search(r"\{.*\}", user_prompt, flags=re.DOTALL)
         if m_json_any:
             try:
                 raw_d = json.loads(m_json_any.group(0))
                 if isinstance(raw_d, dict):
-                    extracted_input_dict = {str(k): str(v) for k, v in raw_d.items() if v is not None}
+                    extracted_input_dict = {
+                        str(k): self._strip_metadata_and_prompt_leaks(self._extract_str_from_json_value(v)) or str(v)
+                        for k, v in raw_d.items()
+                        if v is not None and str(k) not in ("_anchor_1", "_anchor_2")
+                    }
             except Exception:
                 pass
         expected_keys_list = list(extracted_input_dict.keys()) if extracted_input_dict else None
@@ -5368,18 +5813,27 @@ class OllamaTranslator:
                     clean_name,
                 )
                 return {}
-            # Для одиночных бабблов и малых пачек (<= 6 фраз) сразу используем нативный построчный режим Sugoi без JSON-грамматики!
-            if 0 < len(extracted_input_dict) <= 6:
+            # Для пачек Sugoi до 10 блоков включительно сразу используем плоский режим без JSON-схемы и метаданных формы (v5.4.0)!
+            if 0 < len(extracted_input_dict) <= 10:
                 direct_sugoi_map = await self._call_sugoi_plain_lines(client, clean_name, extracted_input_dict)
                 if direct_sugoi_map:
                     _el_s = time.perf_counter() - _t0_ol
                     self._record_api_call("ollama", clean_name, _el_s, len(direct_sugoi_map), "OK")
                     return direct_sugoi_map
 
-        # Для Sugoi в пакетном режиме убираем блок NAME GLOSSARY & CONTEXT со стрелками '=>', чтобы модель не копировала старые реплики
+        # Для специализированных локальных моделей (sugoi, translategemma, aya-expanse) вычищаем все блоки метаданных формы и ролей из system_prompt
         eff_system_prompt = system_prompt
-        if is_sugoi and "NAME GLOSSARY & CONTEXT" in eff_system_prompt:
-            eff_system_prompt = eff_system_prompt.split("NAME GLOSSARY & CONTEXT", 1)[0].strip()
+        if is_spec_local:
+            for meta_section_marker in (
+                "NAME GLOSSARY & CONTEXT",
+                "BUBBLE GEOMETRY & SPEAKER DIARIZATION",
+                "ГЕОМЕТРИЯ И РОЛИ БАБЛОВ",
+                "[SPEAKER_DIARIZATION]",
+                "[PREV_LINES]",
+            ):
+                if meta_section_marker in eff_system_prompt:
+                    eff_system_prompt = eff_system_prompt.split(meta_section_marker, 1)[0].strip()
+            eff_system_prompt = eff_system_prompt.replace(TYPESETTING_AWARE_RULE_EN, "").replace(TYPESETTING_AWARE_RULE_RU, "").strip()
         if "qwen3" in clean_name.lower() and "/no_think" not in eff_system_prompt:
             eff_system_prompt = "/no_think\n" + eff_system_prompt
 
@@ -5604,11 +6058,32 @@ class OllamaTranslator:
                 if not omit_resp_fmt:
                     payload_cloud["response_format"] = {"type": "json_object"}
                 last_cloud_err: Exception | None = None
+                low_sys_hint = (system_prompt + " " + user_prompt).lower()
+                hint_src = "zh" if ("chinese manhua" in low_sys_hint or "китайской маньхуа" in low_sys_hint) else ("ko" if ("korean manhwa" in low_sys_hint or "корейской манхвы" in low_sys_hint) else "ja")
+                hint_tgt = "ru" if "русск" in low_sys_hint else "en"
+
+                # БЛОК 2 (v5.4.0): Если на текущей главе уже сработал флаг nsfw_mode = True,
+                # мгновенно маршрутизируем запрос в локальную модель Ollama без ожидания облака!
+                if self.nsfw_mode:
+                    fb_nsfw = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
+                    if fb_nsfw:
+                        self.last_local_fallback_model = fb_nsfw
+                        logger.info(
+                            "🔞 [NSFW-РЕЖИМ АКТИВЕН] Прямой обход облачного шлюза (%s) -> локальная модель %s",
+                            model_name,
+                            fb_nsfw,
+                        )
+                        return await self._call_ollama_direct(
+                            client,
+                            fb_nsfw,
+                            system_prompt,
+                            user_prompt,
+                            persist_as_default=False,
+                            page_image_b64=page_image_b64,
+                        )
+
                 cloud_cooldown_until = float(getattr(self, "_cloud_down_until_ts", 0.0) or 0.0)
                 if cloud_cooldown_until > time.time():
-                    low_sys = (system_prompt + " " + user_prompt).lower()
-                    hint_src = "zh" if ("chinese manhua" in low_sys or "китайской маньхуа" in low_sys) else ("ko" if ("korean manhwa" in low_sys or "корейской манхвы" in low_sys) else "ja")
-                    hint_tgt = "ru" if "русск" in low_sys else "en"
                     fb_fast = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                     if fb_fast:
                         logger.info("⚡ Circuit Breaker: облачный API в режиме охлаждения (еще %.0fс), мгновенный маршрут в %s", cloud_cooldown_until - time.time(), fb_fast)
@@ -5618,6 +6093,7 @@ class OllamaTranslator:
                             system_prompt,
                             user_prompt,
                             persist_as_default=False,
+                            page_image_b64=page_image_b64,
                         )
                 max_attempts = 2
                 for attempt in range(max_attempts):
@@ -5638,6 +6114,9 @@ class OllamaTranslator:
                                 self._last_call_was_refusal = True
                                 self.last_refusal_message = f"HTTP {response.status_code} Censorship: {err_body[:180]}"
                                 self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
+                                self.enable_chapter_nsfw_mode(
+                                    f"HTTP {response.status_code} цензурный отказ облачного шлюза {model_name}: {err_body[:90]}"
+                                )
                                 return {"__refusal__": self.last_refusal_message}
                             if response.status_code in (400, 422) and (
                                 "response_format" in payload_cloud
@@ -5702,10 +6181,14 @@ class OllamaTranslator:
                             )
                             if not parsed:
                                 self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
+                                self.enable_chapter_nsfw_mode(
+                                    f"100% цензурный отказ облака {model_name} ({items_cnt}/{items_cnt} блоков: {self.last_refusal_message[:90]})"
+                                )
                                 return {"__refusal__": self.last_refusal_message}
                             parsed["__partial_refusal__"] = self.last_refusal_message
                             self._record_api_call("cloud", model_name, _el_cloud, len(parsed) - 1, "PARTIAL_REFUSAL", self.last_refusal_message)
                             return parsed
+                        self._consecutive_cloud_failures = 0
                         self._record_api_call("cloud", model_name, _el_cloud, len(parsed), "OK")
                         return parsed
                     except (
@@ -5746,11 +6229,13 @@ class OllamaTranslator:
                         last_cloud_err = c_exc
                         break
                 if last_cloud_err is not None:
+                    self._consecutive_cloud_failures += 1
                     self._cloud_down_until_ts = time.time() + 60.0
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", str(last_cloud_err))
-                    low_sys = (system_prompt + " " + user_prompt).lower()
-                    hint_src = "zh" if ("chinese manhua" in low_sys or "китайской маньхуа" in low_sys) else ("ko" if ("korean manhwa" in low_sys or "корейской манхвы" in low_sys) else "ja")
-                    hint_tgt = "ru" if "русск" in low_sys else "en"
+                    if self._consecutive_cloud_failures >= 2:
+                        self.enable_chapter_nsfw_mode(
+                            f"Серия сетевых сбоев облачного шлюза {self.unsloth_url} ({type(last_cloud_err).__name__}, {self._consecutive_cloud_failures} пачки подряд)"
+                        )
                     fallback_ollama = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                     if fallback_ollama:
                         self.last_local_fallback_model = fallback_ollama
@@ -5859,14 +6344,19 @@ class OllamaTranslator:
         if self.stop_requested or not chunk_blocks:
             return {}
 
+        is_spec_local_active = is_specialized_local_translator_model(active_model)
         source_map: dict[str, str] = {
-            str(block["id"]): block["original_text"] for block in chunk_blocks
+            str(block["id"]): (
+                self._strip_metadata_and_prompt_leaks(str(block.get("original_text") or ""), orig_text=str(block.get("original_text") or ""))
+                or str(block.get("original_text") or "")
+            )
+            for block in chunk_blocks
         }
         geometry_hints_map: dict[str, str] = {}
         for block in chunk_blocks:
             b_key = str(block["id"])
             g_budget = compute_bubble_geometry_budget(block)
-            if (
+            if not is_spec_local_active and (
                 block.get("speaker_tag")
                 or block.get("speaker_id")
                 or g_budget["shape_hint"] == "narrow_vertical"
@@ -5876,13 +6366,21 @@ class OllamaTranslator:
 
         # БЛОК 1.1 и БЛОК 2: Упреждающая оценка риска триггеров (<4 мс) и синтетические якоря для микро-пачек (1-3 реплики)
         triage_info = preflight_nsfw_triage(source_map, threshold=0.65)
-        is_cloud_active = active_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url)
+        is_cloud_active = (
+            active_model.startswith("unsloth::")
+            and self._is_remote_cloud_url(self.unsloth_url)
+            and not self.nsfw_mode
+        )
         padded_source_map, anchor_keys = (
             apply_micro_batch_anchors(source_map, source_lang)
-            if len(source_map) <= 3
+            if (len(source_map) <= 3 and not is_spec_local_active)
             else (source_map, set())
         )
-        auto_gloss_hdr = await self.auto_glossary.build_compact_prompt_header(source_map)
+        auto_gloss_hdr = (
+            ""
+            if is_spec_local_active
+            else await self.auto_glossary.build_compact_prompt_header(source_map)
+        )
 
         # Компактный JSON без отступов экономит 150-300 входных токенов на каждой пачке
         source_map_json = json.dumps(padded_source_map, ensure_ascii=False, separators=(",", ":"))
@@ -5891,12 +6389,13 @@ class OllamaTranslator:
             source_lang=source_lang,
             target_lang=target_lang,
             source_map_json=source_map_json,
-            context_lines=context_lines,
+            context_lines=None if is_spec_local_active else context_lines,
             glossary_entries=eff_glossary,
-            geometry_hints_map=geometry_hints_map if geometry_hints_map else None,
+            geometry_hints_map=geometry_hints_map if (geometry_hints_map and not is_spec_local_active) else None,
             anti_censorship_prompt=(self.anti_censorship_prompt and is_cloud_active),
             anti_censorship_custom_prompt=self.anti_censorship_custom_prompt,
             auto_glossary_header=auto_gloss_hdr,
+            is_specialized_local=is_spec_local_active,
         )
 
         if use_image_context and page_image_b64:
@@ -5982,6 +6481,14 @@ class OllamaTranslator:
             if not _is_valid_target_translation(translated_map.get(k, ""), orig_v)
         }
         if was_refusal and refused_sub_map and not self.stop_requested:
+            if (
+                active_model.startswith("unsloth::")
+                and self._is_remote_cloud_url(self.unsloth_url)
+                and len(refused_sub_map) >= max(1, int(len(source_map) * 0.85))
+            ):
+                self.enable_chapter_nsfw_mode(
+                    f"100% отказ цензуры облачного API {active_model} на пачке ({len(refused_sub_map)}/{len(source_map)} блоков)"
+                )
             sample_phrases = ", ".join(f"«{v[:18]}»" for v in list(refused_sub_map.values())[:3])
             self._record_incident(
                 "CLOUD_CENSORSHIP_REFUSAL",
@@ -6234,15 +6741,13 @@ class OllamaTranslator:
                     details=sample_bad,
                     affected_count=len(bad_keys),
                 )
-                retry_chunk_size = (
-                    2
-                    if (set(bad_keys) & misaligned_keys_set)
-                    else (
-                        8
-                        if not active_model.startswith("unsloth::")
-                        else (14 if was_refusal else 80)
-                    )
-                )
+                # Оптимизация размера батча доперевода (v5.4.0): исключаем «шторм» из >100 парных микро-запросов по <=2 шт.!
+                if not active_model.startswith("unsloth::") or self.nsfw_mode:
+                    retry_chunk_size = 8 if is_specialized_local_translator_model(active_model) else 12
+                elif (set(bad_keys) & misaligned_keys_set) and len(bad_keys) <= 6:
+                    retry_chunk_size = 4
+                else:
+                    retry_chunk_size = 14 if was_refusal else 80
                 bad_sublists = [
                     bad_keys[i : i + retry_chunk_size]
                     for i in range(0, len(bad_keys), retry_chunk_size)
@@ -6268,7 +6773,7 @@ class OllamaTranslator:
                     # Сразу передаем 1–2 непереведенных блока в локальный фоллбэк (с учетом языка source_lang) или словарь междометий,
                     # не делая новый HTTP-запрос к облачному API и исключая 90-секундные ReadTimeout!
                     skip_cloud_micro_retry = active_model.startswith("unsloth::") and (
-                        was_refusal or (len(b_sub) <= 2 and not (set(b_sub) & misaligned_keys_set))
+                        self.nsfw_mode or was_refusal or (len(b_sub) <= 2 and not (set(b_sub) & misaligned_keys_set))
                     )
                     if skip_cloud_micro_retry:
                         loc_model = await self._resolve_local_fallback_model(
@@ -6529,6 +7034,22 @@ class OllamaTranslator:
         )
         client = self._get_http_client()
         t_lang = target_lang.lower().strip()
+
+        # БЛОК 2 (v5.4.0): Если на главе активирован nsfw_mode = True, сразу переключаем пачку на локальную модель Ollama без ожидания облака!
+        if self.nsfw_mode and active_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url):
+            loc_nsfw_model = await self._resolve_local_fallback_model(
+                target_lang=t_lang,
+                source_lang=source_lang,
+            )
+            if loc_nsfw_model:
+                logger.info(
+                    "🔞 [NSFW-РЕЖИМ ГЛАВЫ] Авто-обход облачного шлюза (%s): пачка (%d блоков) направлена напрямую в локальную модель '%s'.",
+                    active_model,
+                    len(blocks),
+                    loc_nsfw_model,
+                )
+                active_model = loc_nsfw_model
+                self.last_local_fallback_model = loc_nsfw_model
         if t_lang == "ru":
             interj_dict = SHORT_INTERJECTIONS_RU
         elif t_lang == "romaji":
@@ -7098,13 +7619,13 @@ class OllamaTranslator:
 
         sys_p = (
             f"{FICTION_NOVEL_CONTEXT_NOTE}\n"
-            f"You are a manga localization linguist. Scan the following {source_lang.upper()} manga dialogue lines and extract ONLY recurring character proper names, family names, or unique nicknames.\n"
+            f"You are a manga localization linguist. Scan the following {source_lang.upper()} manga dialogue lines and extract ONLY recurring character proper names, family names, or unique nicknames (minimum 2 characters long).\n"
             f"For each character name found, provide its canonical {target_name_lang} spelling and gender/role note (e.g., 'female protagonist', 'male classmate').\n"
-            "Do NOT include common nouns, interjections, or regular verbs.\n"
+            "STRICT EXCLUSIONS: NEVER include personal pronouns (キミ, きみ, きみさ, 君, ボク, ぼく, 僕, オレ, おれ, 俺, ワタシ, わたし, 私, アタシ, あたし, アンタ, あんた, お前, おまえ, 貴様, てめぇ, あいつ, こいつ, そいつ), single kana syllables (え, こ, あ), interjections (うん, なに, 何), common nouns, or regular verbs.\n"
             "Return ONLY a valid JSON object mapping the exact source CJK name to its canonical target name, e.g.:\n"
             '{"美咲": "Misaki (female)", "猫又": "Nekomata (male)"}'
         )
-        usr_p = "Extract character proper names from these dialogue lines into a JSON glossary object:\n" + "\n".join(cjk_lines[:70])
+        usr_p = "Extract character proper names (min 2 chars, NO pronouns or single kana) from these dialogue lines into a JSON glossary object:\n" + "\n".join(cjk_lines[:70])
         try:
             raw_map = await self._call_llm_json(
                 client=client,
@@ -7118,7 +7639,7 @@ class OllamaTranslator:
                     continue
                 src_term = str(k_raw or "").strip()
                 val_str = str(v_raw or "").strip()
-                if not src_term or len(src_term) > 12 or not self._contains_cjk(src_term) or src_term in existing_srcs:
+                if not src_term or len(src_term) > 12 or not self._contains_cjk(src_term):
                     continue
                 if not val_str or self._is_bubble_refusal_value(val_str):
                     continue
@@ -7128,9 +7649,16 @@ class OllamaTranslator:
                 if m_paren:
                     dst_term = m_paren.group(1).strip()
                     note_part = m_paren.group(2).strip()
-                if dst_term:
-                    extracted.append({"src": src_term, "dst": dst_term, "note": note_part or "auto-extracted"})
-                    existing_srcs.add(src_term)
+                valid_src, valid_dst = clean_and_validate_glossary_name(src_term, dst_term)
+                if not valid_src or not valid_dst or valid_src in existing_srcs:
+                    logger.debug(
+                        "Фильтр глоссария v5.4.0 отклонил местоимение/обрывок слога: %s -> %s",
+                        src_term,
+                        val_str,
+                    )
+                    continue
+                extracted.append({"src": valid_src, "dst": valid_dst, "note": note_part or "auto-extracted"})
+                existing_srcs.add(valid_src)
             if extracted:
                 logger.info("💎 [Ultra Pre-Pass Glossary] Автоматически извлечено %d имен персонажей: %s", len(extracted), ", ".join(f"{e['src']}->{e['dst']}" for e in extracted))
             return extracted
@@ -7440,6 +7968,8 @@ class HybridMangaTranslator:
         self.gpu_lock_acquire = gpu_lock_acquire
         self.anti_censorship_prompt = anti_censorship_prompt
         self.anti_censorship_custom_prompt = anti_censorship_custom_prompt
+        self.nsfw_mode: bool = False
+        self._consecutive_cloud_failures: int = 0
 
         self.glossary = AutoGlossaryTracker()
         self.aimd = AIMDConcurrencyLimiter(initial_limit=4, min_limit=1, max_limit=8)
@@ -7467,9 +7997,15 @@ class HybridMangaTranslator:
         if not blocks:
             return {}
 
-        triage = preflight_nsfw_triage(blocks, threshold=0.65)
         compact_header = await self.glossary.build_compact_prompt_header(blocks)
+        if self.nsfw_mode:
+            results = await self._translate_via_local_ollama(
+                blocks, source_lang, target_lang, compact_header
+            )
+            await self.glossary.update_rolling_context(blocks, results)
+            return results
 
+        triage = preflight_nsfw_triage(blocks, threshold=0.65)
         results: dict[str, str] = {}
         tasks: list[Awaitable[dict[str, str]]] = []
         if triage.safe_blocks:
@@ -7511,10 +8047,13 @@ class HybridMangaTranslator:
                 safe_blocks, source_lang, target_lang, header, batch_idx
             )
         except SafetyFilterRejectedError:
-            if len(safe_blocks) <= 20:
-                return await self._translate_via_local_ollama(
-                    safe_blocks, source_lang, target_lang, header
-                )
+            self.nsfw_mode = True
+            logger.warning(
+                "🔞 [HybridMangaTranslator] Облако отклонило пачку по цензуре — активирован nsfw_mode=True на всю главу!"
+            )
+            return await self._translate_via_local_ollama(
+                safe_blocks, source_lang, target_lang, header
+            )
 
             sorted_ids = sorted(
                 safe_blocks.keys(),

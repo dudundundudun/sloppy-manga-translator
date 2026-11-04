@@ -64,6 +64,7 @@ from typing import Dict, Set, Union
 try:
     from ocr_engine import (
         BubbleGeometryContext,
+        BubblePolygonSolver,
         build_bubble_geometry_context,
         decompose_overlapping_bubbles,
         estimate_and_deskew_tilted_text_block,
@@ -74,6 +75,7 @@ try:
     )
 except ImportError:
     BubbleGeometryContext = None  # type: ignore[assignment]
+    BubblePolygonSolver = None  # type: ignore[assignment]
     build_bubble_geometry_context = None  # type: ignore[assignment]
     decompose_overlapping_bubbles = None  # type: ignore[assignment]
     estimate_and_deskew_tilted_text_block = None  # type: ignore[assignment]
@@ -1805,6 +1807,298 @@ class SotaMangaCleaner:
         return out
 
 
+@dataclass
+class CleaningRegionTask:
+    """Задача на очистку одного текстового или бабблового региона (v5.4 Deep Research)."""
+    text_bbox: Tuple[int, int, int, int]      # Бокс детектора (x1, y1, x2, y2)
+    region_class: str                         # 'text_bubble' или 'text_free'
+    bubble_mask: Optional[np.ndarray] = None  # Полигональная маска баббла (uint8, 0/255)
+    ocr_text: Optional[str] = None            # Распознанный текст для фильтрации пустых/шумовых боксов
+    is_vertical: bool = True                  # Ориентация исходного японского текста
+
+
+class HybridMangaCleaner:
+    """
+    Двухрежимный гибридный клинер страниц манги (PanelCleaner + BallonsTranslator + MangaDock architecture):
+    - Режим 1 (Closed Bubble Cavity): Canny-FloodFill выделение 100% внутренней полости с захватом
+      пропущенной фуриганы, безопасным отступом от черной рамки и аналитической заливкой (0 вызовов LaMa).
+    - Режим 2 (Free Text & Complex Backgrounds): Адаптивная маска чернил + захват обводки оригинала,
+      контекстный кроп под FFC-ветвь Big-LaMa (>= 120 * S_proc px), низкочастотная ре-калибровка яркости
+      в LAB (lambda=0.85) и бесшовное сведение через DT-feathering (5 * S_proc px).
+    """
+
+    def __init__(
+        self,
+        off_white_max_threshold: int = 240,
+        mask_max_std_dev: float = 15.0,
+        pure_border_ratio_thresh: float = 0.95,
+        noise_min_std_dev: float = 0.25,
+        min_inpaint_radius: int = 5,
+        max_inpaint_radius: int = 20,
+        inpaint_radius_mult: float = 0.1,
+        isolation_feather_radius: int = 5,
+        base_context_pad: int = 120,
+        ffc_context_ratio: float = 0.75,
+        pad_mod: int = 8,
+    ) -> None:
+        self.off_white_max_threshold = off_white_max_threshold
+        self.mask_max_std_dev = mask_max_std_dev
+        self.pure_border_ratio_thresh = pure_border_ratio_thresh
+        self.noise_min_std_dev = noise_min_std_dev
+        self.min_inpaint_radius = min_inpaint_radius
+        self.max_inpaint_radius = max_inpaint_radius
+        self.inpaint_radius_mult = inpaint_radius_mult
+        self.isolation_feather_radius = isolation_feather_radius
+        self.base_context_pad = base_context_pad
+        self.ffc_context_ratio = ffc_context_ratio
+        self.pad_mod = pad_mod
+
+    @staticmethod
+    def compute_processing_scale(img_h: int, img_w: int) -> float:
+        return float(np.clip(np.sqrt((float(img_h) * float(img_w)) / 1_000_000.0), 0.65, 3.0))
+
+    @staticmethod
+    def expand_box_for_furigana(
+        bbox: Tuple[int, int, int, int],
+        page_shape: Tuple[int, int],
+        scale: float,
+        is_vertical: bool = True,
+    ) -> Tuple[int, int, int, int]:
+        """Асимметричное расширение бокса вправо (+8 * S_proc px) для гарантированного захвата японской фуриганы."""
+        h, w = page_shape[:2]
+        x1, y1, x2, y2 = [int(round(float(v))) for v in bbox[:4]]
+        pad_base = max(2, int(round(3.0 * scale)))
+        pad_right = max(5, int(round(8.0 * scale))) if is_vertical else pad_base
+        return (
+            max(0, x1 - pad_base),
+            max(0, y1 - pad_base),
+            min(w, x2 + pad_right),
+            min(h, y2 + pad_base),
+        )
+
+    def extract_closed_bubble_cavity(
+        self,
+        roi_rgb: np.ndarray,
+        roi_gray: np.ndarray,
+        inner_box_rel: Tuple[int, int, int, int],
+        scale: float = 1.0,
+    ) -> Tuple[Optional[np.ndarray], np.ndarray, float, bool]:
+        """
+        Выделяет 100% внутренней полости замкнутого баббла с поглощением пропущенной фуриганы
+        и безопасным эрозионным отступом r_erode = max(2, round(3.0 * scale)) от черной рамки баббла.
+        Возвращает: (safe_cavity_mask, bg_color_rgb, edge_std, is_pure_cavity).
+        """
+        rh, rw = roi_gray.shape[:2]
+        bx1, by1, bx2, by2 = inner_box_rel
+        bx1 = max(0, min(rw - 2, int(bx1)))
+        by1 = max(0, min(rh - 2, int(by1)))
+        bx2 = max(bx1 + 2, min(rw, int(bx2)))
+        by2 = max(by1 + 2, min(rh, int(by2)))
+
+        text_roi_gray = roi_gray[by1:by2, bx1:bx2]
+        default_bg = np.array([255, 255, 255], dtype=np.uint8)
+        if text_roi_gray.size < 16:
+            return None, default_bg, 999.0, False
+
+        _, otsu = cv2.threshold(text_roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+        light_ratio = float(np.mean(otsu > 0))
+        bg_mask_local = (otsu > 0) if light_ratio >= 0.35 else (otsu == 0)
+        if np.count_nonzero(bg_mask_local) == 0:
+            bg_mask_local = np.ones_like(text_roi_gray, dtype=bool)
+
+        bg_luma = float(np.median(text_roi_gray[bg_mask_local]))
+        bg_rgb = np.median(roi_rgb[by1:by2, bx1:bx2][bg_mask_local], axis=0).astype(np.uint8)
+        if np.all(bg_rgb >= self.off_white_max_threshold):
+            bg_rgb = np.array([255, 255, 255], dtype=np.uint8)
+            bg_luma = 255.0
+
+        edges = cv2.Canny(roi_gray, 70, 140, L2gradient=True)
+        closed_edges = cv2.morphologyEx(
+            edges, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        )
+        color_diff = np.abs(roi_gray.astype(np.float32) - bg_luma)
+        b_mask_crop = np.zeros((rh, rw), dtype=np.uint8)
+        b_mask_crop[by1:by2, bx1:bx2] = 255
+        barrier = (closed_edges > 0) | (b_mask_crop == 0) | (color_diff > 35.0)
+
+        interior_candidates = (~barrier).astype(np.uint8) * 255
+        num_lbl, lbls, _, _ = cv2.connectedComponentsWithStats(interior_candidates, connectivity=4)
+        if num_lbl <= 1:
+            return None, bg_rgb, 999.0, False
+
+        seed_ys, seed_xs = np.where(bg_mask_local)
+        seed_labels = lbls[seed_ys + by1, seed_xs + bx1]
+        valid_labels = seed_labels[seed_labels > 0]
+        if len(valid_labels) == 0:
+            return None, bg_rgb, 999.0, False
+
+        main_lbl = int(np.bincount(valid_labels).argmax())
+        cavity_raw = (lbls == main_lbl).astype(np.uint8) * 255
+
+        cnts, _ = cv2.findContours(cavity_raw, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        cavity_filled = np.zeros_like(cavity_raw)
+        cv2.drawContours(cavity_filled, cnts, -1, 255, -1)
+
+        erode_r = max(2, int(round(3.0 * scale)))
+        erode_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * erode_r + 1, 2 * erode_r + 1)
+        )
+        safe_cavity = cv2.erode(cavity_filled, erode_kernel, iterations=1)
+        if np.count_nonzero(safe_cavity) < 24:
+            return None, bg_rgb, 999.0, False
+
+        ring_kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        perimeter_ring = (cv2.dilate(safe_cavity, ring_kernel) > 0) & (safe_cavity == 0)
+        if np.count_nonzero(perimeter_ring) == 0:
+            return None, bg_rgb, 999.0, False
+
+        border_pixels_gray = roi_gray[perimeter_ring]
+        border_pixels_rgb = roi_rgb[perimeter_ring]
+        edge_std = float(np.std(border_pixels_gray.astype(np.float32)))
+
+        pure_white_ratio = float(np.mean(np.all(border_pixels_rgb >= 248, axis=1)))
+        pure_black_ratio = float(np.mean(np.all(border_pixels_rgb <= 8, axis=1)))
+        is_pure = (
+            (edge_std <= self.mask_max_std_dev)
+            or (pure_white_ratio >= self.pure_border_ratio_thresh)
+            or (pure_black_ratio >= self.pure_border_ratio_thresh)
+        )
+
+        bg_only_pixels = roi_gray[(safe_cavity > 0) & (~barrier)]
+        if bg_only_pixels.size > 20 and float(np.std(bg_only_pixels.astype(np.float32))) > 14.0:
+            is_pure = False
+
+        return safe_cavity, bg_rgb, edge_std, is_pure
+
+    def build_free_text_ink_and_halo_mask(
+        self,
+        roi_rgb: np.ndarray,
+        roi_gray: np.ndarray,
+        scale: float = 1.0,
+        limiting_cavity_mask: Optional[np.ndarray] = None,
+    ) -> Tuple[np.ndarray, float]:
+        """
+        Строит точную маску чернил + контрастной обводки (stroke/halo) оригинального текста
+        на сложном фоне (text_free) с адаптивной морфологической дилатацией 5..20 * S_proc px.
+        """
+        _, otsu_dark = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        edges = cv2.Canny(roi_gray, 80, 180, L2gradient=True)
+        edge_dilated = cv2.dilate(edges, np.ones((3, 3), np.uint8))
+
+        ink_core = cv2.bitwise_and(otsu_dark, edge_dilated)
+        ink_core = cv2.morphologyEx(
+            ink_core, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        )
+        if np.count_nonzero(ink_core) < 15:
+            ink_core = edge_dilated
+
+        halo_r = max(4, int(round(6.0 * scale)))
+        halo_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * halo_r + 1, 2 * halo_r + 1)
+        )
+        ring_mask = (cv2.dilate(ink_core, halo_kernel) > 0) & (ink_core == 0)
+
+        ink_luma = float(np.median(roi_gray[ink_core > 0])) if np.any(ink_core > 0) else 30.0
+        if ink_luma < 128.0:
+            halo_pixels = ring_mask & (roi_gray >= 210)
+        else:
+            halo_pixels = ring_mask & (roi_gray <= 55)
+
+        combined = np.where((ink_core > 0) | halo_pixels, 255, 0).astype(np.uint8)
+
+        perim = (cv2.dilate(combined, np.ones((3, 3), np.uint8)) > 0) & (combined == 0)
+        edge_std = float(np.std(roi_gray[perim].astype(np.float32))) if np.any(perim) else 20.0
+
+        dilate_r = int(
+            np.clip(
+                round((self.min_inpaint_radius + self.inpaint_radius_mult * edge_std) * scale),
+                max(4, int(round(self.min_inpaint_radius * scale))),
+                max(8, int(round(self.max_inpaint_radius * scale))),
+            )
+        )
+        dilate_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * dilate_r + 1, 2 * dilate_r + 1)
+        )
+        dilated_mask = cv2.dilate(combined, dilate_kernel, iterations=1)
+
+        if limiting_cavity_mask is not None:
+            dilated_mask = cv2.bitwise_and(dilated_mask, limiting_cavity_mask)
+
+        return dilated_mask, edge_std
+
+    def inpaint_crop_with_regrounding_and_feather(
+        self,
+        crop_rgb: np.ndarray,
+        crop_mask: np.ndarray,
+        lama_callable: Optional[Callable[[np.ndarray, np.ndarray], np.ndarray]],
+        scale: float = 1.0,
+    ) -> np.ndarray:
+        """
+        Выполняет нейросетевой инпейнтинг свободного текста (text_free) через anime-manga-big-lama.pt
+        с выравниванием по pad_mod=8, низкочастотной ре-калибровку яркости в LAB (lambda=0.85)
+        и бесшовным сведением через евклидово дистанционное поле (DT-feathering).
+        """
+        ch, cw = crop_rgb.shape[:2]
+        if np.count_nonzero(crop_mask) == 0:
+            return crop_rgb.copy()
+
+        pad_h = (self.pad_mod - (ch % self.pad_mod)) % self.pad_mod
+        pad_w = (self.pad_mod - (cw % self.pad_mod)) % self.pad_mod
+        if pad_h > 0 or pad_w > 0:
+            crop_rgb_padded = cv2.copyMakeBorder(
+                crop_rgb, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101
+            )
+            crop_mask_padded = cv2.copyMakeBorder(
+                crop_mask, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0
+            )
+        else:
+            crop_rgb_padded = crop_rgb
+            crop_mask_padded = crop_mask
+
+        if lama_callable is not None:
+            inpainted_padded = lama_callable(crop_rgb_padded, crop_mask_padded)
+            inpainted_rgb = inpainted_padded[:ch, :cw].copy()
+        else:
+            bgr_in = cv2.cvtColor(crop_rgb_padded, cv2.COLOR_RGB2BGR)
+            bgr_out = cv2.inpaint(bgr_in, crop_mask_padded, inpaintRadius=5, flags=cv2.INPAINT_NS)
+            inpainted_rgb = cv2.cvtColor(bgr_out[:ch, :cw], cv2.COLOR_BGR2RGB)
+
+        ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
+        outer_ring = (cv2.dilate(crop_mask, ring_k) > 0) & (crop_mask == 0)
+        if np.count_nonzero(outer_ring) > 20:
+            orig_lab = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+            inp_lab = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+            delta_l_ring = float(
+                np.median(orig_lab[:, :, 0][outer_ring] - inp_lab[:, :, 0][outer_ring])
+            )
+            ys_m, xs_m = np.where(crop_mask > 0)
+            mw = max(8, int(xs_m.max() - xs_m.min() + 1)) if len(xs_m) > 0 else cw
+            mh = max(8, int(ys_m.max() - ys_m.min() + 1)) if len(ys_m) > 0 else ch
+            sigma = max(5.0, 0.25 * min(mw, mh))
+            k_blur = int(round(sigma * 3)) | 1
+            soft_mask = cv2.GaussianBlur(
+                (crop_mask > 0).astype(np.float32), (k_blur, k_blur), sigma
+            )
+            inp_lab[:, :, 0] = np.clip(
+                inp_lab[:, :, 0] + 0.85 * delta_l_ring * soft_mask, 0.0, 255.0
+            )
+            inpainted_rgb = cv2.cvtColor(inp_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+
+        feather_r = max(3, int(round(self.isolation_feather_radius * scale)))
+        iso_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * feather_r + 1, 2 * feather_r + 1)
+        )
+        isolated_mask = cv2.dilate(crop_mask, iso_kernel, iterations=1)
+        dist_inside = cv2.distanceTransform(isolated_mask, cv2.DIST_L2, 3)
+        alpha = np.clip(dist_inside / float(feather_r), 0.0, 1.0)[..., np.newaxis]
+
+        blended = (
+            alpha * inpainted_rgb.astype(np.float32)
+            + (1.0 - alpha) * crop_rgb.astype(np.float32)
+        ).round().astype(np.uint8)
+        return blended
+
+
 def split_conjoined_double_bubble_watershed(
     cavity_mask: np.ndarray,
     target_box_roi: tuple[int, int, int, int],
@@ -2313,6 +2607,17 @@ def analyze_bubble_geometry(
     sx1_roi, sx2_roi = int(np.min(xs_s)), int(np.max(xs_s) + 1)
     sy1_roi, sy2_roi = int(np.min(ys_s)), int(np.max(ys_s) + 1)
 
+    cnts_s, _ = cv2.findContours(safe_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if cnts_s and BubblePolygonSolver is not None:
+        main_cnt_s = max(cnts_s, key=cv2.contourArea)
+        area_s = float(cv2.contourArea(main_cnt_s))
+        hull_s = max(1.0, float(cv2.contourArea(cv2.convexHull(main_cnt_s))))
+        if (area_s / hull_s) < 0.88:
+            lx_r, ly_r, lw_r, lh_r = BubblePolygonSolver.largest_inscribed_rectangle(safe_mask, aspect_weight=0.15)
+            if lw_r >= 16 and lh_r >= 16 and (lw_r * lh_r) >= 0.32 * area_s:
+                sx1_roi, sy1_roi = int(lx_r), int(ly_r)
+                sx2_roi, sy2_roi = int(lx_r + lw_r), int(ly_r + lh_r)
+
     bub_x1_abs = rx1 + bx1_roi
     bub_y1_abs = ry1 + by1_roi
     bub_x2_abs = rx1 + bx2_roi
@@ -2523,6 +2828,10 @@ class BubbleCleaner:
             config=self.cleaner_cfg,
             lama_inpainter=self._invoke_lama_np if self.lama_model is not None else None,
             stroke_segmenter=self.stroke_segmenter,
+        )
+        self.hybrid_cleaner = HybridMangaCleaner(
+            off_white_max_threshold=self.cleaner_cfg.off_white_max_threshold,
+            mask_max_std_dev=self.cleaner_cfg.mask_max_std_dev,
         )
 
     def set_model_stack_backends(
@@ -2827,7 +3136,7 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
-            "clean_ver": "v5.0-zero-stain",
+            "clean_ver": "v5.4-hybrid-lir",
             "base_clean_blocks": [
                 [list(coords), is_free, mdil]
                 for coords, is_free, mdil in active_tuples
@@ -2868,7 +3177,7 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
-            "clean_ver": "v5.0-zero-stain",
+            "clean_ver": "v5.4-hybrid-lir",
             "active_clean_blocks": [
                 [list(coords), is_free, mdil, [list(st) for st in strokes]]
                 for coords, is_free, mdil, strokes in active_tuples
@@ -3285,14 +3594,16 @@ class BubbleCleaner:
                 text_zone_mask = np.full((rh, rw), 255, dtype=np.uint8)
                 hollow_arc_ring = np.zeros((rh, rw), dtype=np.uint8)
                 if has_valid_tb:
-                    pad_tb = max(6, int(round(min(core_w, core_h) * 0.08)))
+                    proc_s_mask = HybridMangaCleaner.compute_processing_scale(img_h, img_w)
+                    pad_tb = max(10, int(round(min(core_w, core_h) * 0.14)))
                     tz_x1 = max(0, tb_box[0] - ix1 - pad_tb)
                     tz_y1 = max(0, tb_box[1] - iy1 - pad_tb)
-                    tz_x2 = min(rw, tb_box[2] - ix1 + pad_tb)
+                    tz_x2 = min(rw, tb_box[2] - ix1 + pad_tb + int(round(8 * proc_s_mask)))
                     tz_y2 = min(rh, tb_box[3] - iy1 + pad_tb)
                     if (tz_x2 - tz_x1) >= 8 and (tz_y2 - tz_y1) >= 8:
                         text_zone_mask.fill(0)
                         text_zone_mask[tz_y1:tz_y2, tz_x1:tz_x2] = 255
+                        text_zone_mask = cv2.bitwise_or(text_zone_mask, interior_mask)
                         # Топологическая защита периферии вокруг text_bbox (Проблемы №1 и №2):
                         # Никогда не сбрасываем text_zone_mask на весь ROI, если внутри ROI есть чиби-арт или соседняя полость!
 
@@ -3649,6 +3960,11 @@ class BubbleCleaner:
                     roi_rgb, clean_roi_mask, np.zeros_like(clean_roi_mask), 4.5
                 )
                 clean_roi_mask = cv2.bitwise_or(clean_roi_mask, free_halo)
+                proc_s_free = HybridMangaCleaner.compute_processing_scale(img_h, img_w)
+                hybrid_free_m, _ = self.hybrid_cleaner.build_free_text_ink_and_halo_mask(
+                    roi_rgb, roi_gray, scale=proc_s_free, limiting_cavity_mask=None
+                )
+                clean_roi_mask = cv2.bitwise_or(clean_roi_mask, hybrid_free_m)
 
             active_kernel = (
                 block_kernel
@@ -3750,6 +4066,21 @@ class BubbleCleaner:
                     wall_mask = cv2.bitwise_or(wall_mask, dash_wall_inpaint)
 
                 mask_inside = cv2.bitwise_and(crop_mask_np, cavity_mask)
+                safe_cav_h, _, _, is_pure_h = self.hybrid_cleaner.extract_closed_bubble_cavity(
+                    roi_rgb=crop_rgb_np,
+                    roi_gray=crop_gray,
+                    inner_box_rel=(bx1_r, by1_r, bx2_r, by2_r),
+                    scale=1.0,
+                )
+                if safe_cav_h is not None and is_pure_h and not is_dashed_inpaint:
+                    safe_cav_clamped = cv2.bitwise_and(safe_cav_h, cv2.bitwise_not(wall_mask))
+                    missed_dark_in_cav = ((crop_gray < 238) & (safe_cav_clamped > 0)).astype(np.uint8) * 255
+                    if np.any(missed_dark_in_cav > 0):
+                        missed_dil = cv2.bitwise_and(
+                            cv2.dilate(missed_dark_in_cav, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))),
+                            safe_cav_clamped,
+                        )
+                        mask_inside = cv2.bitwise_or(mask_inside, missed_dil)
                 mask_outside = cv2.bitwise_and(crop_mask_np, cv2.bitwise_not(cavity_mask))
 
                 out = crop_rgb_np.copy()
@@ -3832,34 +4163,14 @@ class BubbleCleaner:
                     )
                     return het_res["cleaned_roi"]
 
-        # Экранирование темных препятствий (волос, рамок, черной одежды) на границе маски свободного текста (Zero Dark-Bleed Shielding),
-        # чтобы ни LaMa, ни OpenCV INPAINT_NS не размазывали черные волосы вверх на светлый фон под текстом!
-        crop_gray_fb = cv2.cvtColor(crop_rgb_np, cv2.COLOR_RGB2GRAY)
-        ring_fb_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        ring_fb = (cv2.dilate(crop_mask_np, ring_fb_k, iterations=1) > 0) & (crop_mask_np == 0)
-        shielded_rgb = crop_rgb_np.copy()
-        if np.any(ring_fb):
-            ring_g_vals = crop_gray_fb[ring_fb]
-            p75_fb = float(np.percentile(ring_g_vals, 75))
-            if p75_fb >= 185.0:
-                light_ring_px = crop_rgb_np[ring_fb & (crop_gray_fb >= 145)]
-                if len(light_ring_px) >= 8:
-                    bg_fill_fb = np.median(light_ring_px, axis=0).round().astype(np.uint8)
-                    if float(np.min(bg_fill_fb)) >= 238.0:
-                        bg_fill_fb = np.array([255, 255, 255], dtype=np.uint8)
-                    dark_obstacle_zone = (crop_gray_fb < 95) & (crop_mask_np == 0)
-                    shielded_rgb[dark_obstacle_zone] = bg_fill_fb
-
-        het_fb = classify_and_clean_heterogeneous_bubble(
-            roi_img=shielded_rgb,
-            raw_stroke_mask=crop_mask_np,
-            protected_wall_mask=np.zeros_like(crop_mask_np),
-            lama_runner=self._invoke_lama_np if self.lama_model is not None else None,
-            scale_f=1.0,
+        # Режим 2 (v5.4 Deep Research): для свободного текста поверх фона (is_free_text=True)
+        # запрещена заливка белыми прямоугольниками — используем LaMa + CIE LAB Luminance Re-grounding + DT Feathering!
+        return self.hybrid_cleaner.inpaint_crop_with_regrounding_and_feather(
+            crop_rgb=crop_rgb_np,
+            crop_mask=crop_mask_np,
+            lama_callable=self._invoke_lama_np if self.lama_model is not None else None,
+            scale=1.0,
         )
-        out_fb = crop_rgb_np.copy()
-        out_fb[crop_mask_np > 0] = het_fb["cleaned_roi"][crop_mask_np > 0]
-        return out_fb
 
     def _apply_custom_strokes_fast(
         self,
@@ -4034,10 +4345,23 @@ class BubbleCleaner:
                 x1, y1, x2, y2 = self._get_effective_clean_bounds(block, orig_w, orig_h)
                 is_free_text = bool(block.get("is_free_text", False))
                 mdil = int(block.get("mask_dilate") or 0)
-                cx1 = max(0, x1 - pad)
-                cy1 = max(0, y1 - pad)
-                cx2 = min(orig_w, x2 + pad)
-                cy2 = min(orig_h, y2 + pad)
+                if is_free_text:
+                    proc_s_ci = HybridMangaCleaner.compute_processing_scale(orig_h, orig_w)
+                    bw_f, bh_f = max(8, x2 - x1), max(8, y2 - y1)
+                    eff_pad = min(
+                        180,
+                        max(
+                            pad,
+                            int(round(96 * proc_s_ci)),
+                            int(round(0.75 * max(bw_f, bh_f))),
+                        ),
+                    )
+                else:
+                    eff_pad = pad
+                cx1 = max(0, x1 - eff_pad)
+                cy1 = max(0, y1 - eff_pad)
+                cx2 = min(orig_w, x2 + eff_pad)
+                cy2 = min(orig_h, y2 + eff_pad)
                 if (cx2 - cx1) < 8 or (cy2 - cy1) < 8:
                     continue
                 eff_redraw_tag = (

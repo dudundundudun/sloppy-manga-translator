@@ -468,6 +468,138 @@ def _apply_crossbar_i_rule(text: str) -> str:
 
 
 
+@dataclass
+class TypesetBlockSpec:
+    """Входная спецификация блока для адаптивной верстки и рендеринга (v5.4 Deep Research)."""
+    text: str                                         # Переведенный текст
+    safe_bbox: Tuple[int, int, int, int]              # Безопасный бокс (x1, y1, x2, y2) на странице
+    cavity_mask: Optional[np.ndarray] = None          # Полноразмерная маска внутренней полости баббла
+    anchor_center: Optional[Tuple[int, int]] = None   # Полюс недоступности (x_poi, y_poi)
+    panel_bbox: Optional[Tuple[int, int, int, int]] = None  # Границы кадра манги (frame)
+    neighbor_bboxes: List[Tuple[int, int, int, int]] = None
+    source_font_size: Optional[int] = None            # Оценка кегля оригинала для relative cap
+    is_sfx: bool = False                              # Флаг звукового эффекта / display text
+    text_rgb: Tuple[int, int, int] = (15, 15, 15)     # Основной цвет текста (RGB)
+    stroke_rgb: Optional[Tuple[int, int, int]] = None # Если None, выбирается автоматически по контрасту
+
+    def __post_init__(self) -> None:
+        if self.neighbor_bboxes is None:
+            self.neighbor_bboxes = []
+
+
+@dataclass
+class AdaptiveStyleDecision:
+    """Рассчитанные фоново-зависимые параметры обводки и свечения по стандарту WCAG 2.x."""
+    stroke_width_px: int
+    stroke_rgb: Tuple[int, int, int]
+    outer_glow_radius_px: int
+    outer_glow_alpha: float
+    use_backdrop_pill: bool
+    wcag_contrast_p15: float
+    conflict_score: float
+
+
+@dataclass
+class LayoutSolution:
+    """Результат работы бинарного поиска кегля и алгоритма Кнута — Пласса."""
+    font_size: int
+    lines: List[str]
+    line_widths: List[int]
+    line_height: int
+    total_width: int
+    total_height: int
+    render_bbox: Tuple[int, int, int, int]
+    style: AdaptiveStyleDecision
+
+
+def compute_wcag_relative_luminance(rgb_array: np.ndarray) -> np.ndarray:
+    """
+    Вычисляет карту относительной яркости L в диапазоне [0.0, 1.0] по формуле WCAG 2.x
+    для входного RGB-массива (uint8).
+    """
+    srgb = np.asarray(rgb_array, dtype=np.float32) / 255.0
+    lin = np.where(
+        srgb <= 0.04045,
+        srgb / 12.92,
+        np.power((srgb + 0.055) / 1.055, 2.4),
+    )
+    if lin.ndim == 2:
+        return lin
+    return 0.2126 * lin[..., 0] + 0.7152 * lin[..., 1] + 0.0722 * lin[..., 2]
+
+
+def render_edt_supersampled_layer(
+    glyph_alpha_u8: np.ndarray,
+    text_rgb: Tuple[int, int, int] = (15, 15, 15),
+    stroke_rgb: Tuple[int, int, int] = (255, 255, 255),
+    stroke_width_px: float = 4.0,
+    outer_glow_radius_px: float = 0.0,
+    outer_glow_alpha: float = 0.45,
+    supersample_scale: int = 2,
+) -> Image.Image:
+    """
+    Трехслойная дистанционная сборка текстового слоя (Effects (Glow) -> Stroke -> Fill)
+    через евклидово дистанционное поле (cv2.distanceTransform DIST_L2) с суперсэмплингом.
+    Полностью исключает самопересечения контура, шипы на острых углах и субпиксельные «серые границы»
+    между черными буквами и белой обводкой.
+    """
+    h0, w0 = glyph_alpha_u8.shape[:2]
+    if h0 < 2 or w0 < 2:
+        return Image.new("RGBA", (max(1, w0), max(1, h0)), (0, 0, 0, 0))
+
+    ss = max(1, int(supersample_scale))
+    if ss > 1 and max(h0, w0) <= 900:
+        ss_w, ss_h = w0 * ss, h0 * ss
+        alpha_ss = cv2.resize(glyph_alpha_u8, (ss_w, ss_h), interpolation=cv2.INTER_CUBIC)
+    else:
+        ss = 1
+        ss_w, ss_h = w0, h0
+        alpha_ss = glyph_alpha_u8
+
+    fill_alpha_ss = alpha_ss.astype(np.float32) / 255.0
+    inv_binary = (alpha_ss < 115).astype(np.uint8)
+    dist_out_ss = cv2.distanceTransform(inv_binary, cv2.DIST_L2, 5)
+
+    stroke_r_ss = float(max(0.0, stroke_width_px) * ss)
+    glow_r_ss = float(max(0.0, outer_glow_radius_px) * ss)
+
+    rgba_ss = np.zeros((ss_h, ss_w, 4), dtype=np.float32)
+
+    if glow_r_ss > 0.25 and outer_glow_alpha > 0.01:
+        dist_from_stroke = np.maximum(0.0, dist_out_ss - stroke_r_ss)
+        glow_a = float(outer_glow_alpha) * np.exp(
+            -(dist_from_stroke ** 2) / (2.0 * (glow_r_ss ** 2) + 1e-5)
+        )
+        rgba_ss[..., 0] = float(stroke_rgb[0])
+        rgba_ss[..., 1] = float(stroke_rgb[1])
+        rgba_ss[..., 2] = float(stroke_rgb[2])
+        rgba_ss[..., 3] = glow_a
+
+    if stroke_r_ss > 0.25:
+        stroke_alpha = np.clip(stroke_r_ss + 0.5 * ss - dist_out_ss, 0.0, 1.0)
+        combined_alpha = np.maximum(stroke_alpha, fill_alpha_ss)
+        total_alpha = np.maximum(rgba_ss[..., 3], combined_alpha)
+
+        mix = fill_alpha_ss[..., np.newaxis]
+        s_col = np.array([stroke_rgb[0], stroke_rgb[1], stroke_rgb[2]], dtype=np.float32)
+        f_col = np.array([text_rgb[0], text_rgb[1], text_rgb[2]], dtype=np.float32)
+        rgb_blended = mix * f_col + (1.0 - mix) * s_col
+
+        mask_active = combined_alpha > 1e-3
+        rgba_ss[mask_active, :3] = rgb_blended[mask_active]
+        rgba_ss[:, :, 3] = total_alpha
+    else:
+        rgba_ss[..., 0] = float(text_rgb[0])
+        rgba_ss[..., 1] = float(text_rgb[1])
+        rgba_ss[..., 2] = float(text_rgb[2])
+        rgba_ss[..., 3] = np.maximum(rgba_ss[..., 3], fill_alpha_ss)
+
+    rgba_u8 = np.clip(rgba_ss * np.array([1.0, 1.0, 1.0, 255.0], dtype=np.float32), 0.0, 255.0).round().astype(np.uint8)
+    if ss > 1:
+        rgba_u8 = cv2.resize(rgba_u8, (w0, h0), interpolation=cv2.INTER_AREA)
+    return Image.fromarray(rgba_u8, mode="RGBA")
+
+
 def render_adaptive_sdf_comic_halo(
     cleaned_roi: np.ndarray,
     txt_alpha: np.ndarray,
@@ -475,64 +607,309 @@ def render_adaptive_sdf_comic_halo(
     wall_mask: np.ndarray,
     text_color: tuple[int, int, int] | int = 15,
     scale_f: float = 1.0,
+    font_size: int = 18,
+    is_overhanging: bool = False,
+    is_free_text: bool = False,
 ) -> dict[str, np.ndarray | bool | float]:
     """
-    Проблема №5б: Умная адаптивная обводка при тайпсеттинге (renderer.py):
-    - Автоматически определяет попиксельный контакт глифов со стенкой, скринтоном или внешним фоном.
-    - Выключает обводку (stroke_width = 0) внутри чистого белого баббла.
-    - Генерирует двухслойный SDF-ореол (жесткий контур + мягкое свечение) под локальный цвет светлой подложки.
+    Проблема №5б + Deep Research v5.4 (WCAG 2.x Background-Aware Adaptive Stroke & Halo):
+    - Анализирует относительную яркость и контраст по WCAG 2.x прямо под следом глифов, а также плотность границ Canny.
+    - Выключает обводку (stroke_width = 0) только внутри идеально чистого белого баббла (CR >= 12.0, p10_bg >= 238, sigma_bg <= 3.0).
+    - При пересечении черных рамок бабблов (Screenshot 17, 21, 22), перешейков (Screenshot 18) или штриховки фона (Screenshot 19)
+      строит усиленную обводку max(4, round(font_size * 0.22..0.28)) + мягкое внешнее свечение (Gaussian Outer Glow)
+      через 3-слойный EDT-композитинг (Effects -> Stroke -> Fill) без серых границ!
     """
     t0 = time.perf_counter()
     is_color = cleaned_roi.ndim == 3
-    s = max(0.5, float(scale_f))
+    s = max(0.65, float(scale_f))
+    fs = max(12, int(font_size))
 
     gray_bg = cv2.cvtColor(cleaned_roi, cv2.COLOR_RGB2GRAY) if is_color else cleaned_roi
-    k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-    glyph_foot = cv2.dilate((txt_alpha > 16).astype(np.uint8) * 255, k3, iterations=1)
+    r_foot = max(3, int(round(fs * 0.22)))
+    k_foot = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r_foot + 1, 2 * r_foot + 1))
+    glyph_foot = cv2.dilate((txt_alpha > 16).astype(np.uint8) * 255, k_foot, iterations=1)
 
     under_pixels = gray_bg[glyph_foot > 0]
     p10_bg = float(np.percentile(under_pixels, 10)) if len(under_pixels) > 0 else 255.0
+    p15_bg = float(np.percentile(under_pixels, 15)) if len(under_pixels) > 0 else 255.0
     sigma_bg = float(np.std(under_pixels)) if len(under_pixels) > 0 else 0.0
+
+    t_rgb = (
+        (int(text_color[0]), int(text_color[1]), int(text_color[2]))
+        if isinstance(text_color, (tuple, list)) and len(text_color) >= 3
+        else (int(text_color), int(text_color), int(text_color))
+    )
+    text_luma = float(compute_wcag_relative_luminance(np.array([[t_rgb]], dtype=np.uint8))[0, 0])
+    bg_rgb_roi = cleaned_roi if is_color else np.stack([cleaned_roi] * 3, axis=-1)
+    luma_map = compute_wcag_relative_luminance(bg_rgb_roi)
+    foot_luma = luma_map[glyph_foot > 0]
+    if foot_luma.size > 0:
+        worst_bg_luma = float(np.percentile(foot_luma, 15)) if text_luma <= 0.5 else float(np.percentile(foot_luma, 85))
+        luma_std = float(np.std(foot_luma))
+    else:
+        worst_bg_luma = 1.0 if text_luma <= 0.5 else 0.0
+        luma_std = 0.0
+
+    l_max = max(text_luma, worst_bg_luma)
+    l_min = min(text_luma, worst_bg_luma)
+    wcag_cr = (l_max + 0.05) / (l_min + 0.05)
+
+    edges = cv2.Canny(gray_bg, 70, 150)
+    edge_density = float(np.mean(edges[glyph_foot > 0] > 0)) if np.any(glyph_foot > 0) else 0.0
 
     wall_overlap = bool(np.any((glyph_foot > 0) & (wall_mask > 0)))
     outside_overlap = bool(np.any((glyph_foot > 0) & (interior_mask == 0)))
-    need_halo = (p10_bg < 235.0) or (sigma_bg > 3.0) or wall_overlap or outside_overlap
+    need_halo = (
+        is_free_text
+        or is_overhanging
+        or wall_overlap
+        or outside_overlap
+        or (wcag_cr < 11.5)
+        or (p10_bg < 236.0)
+        or (sigma_bg > 3.0)
+    )
 
-    comp = cleaned_roi.astype(np.float32)
-    if need_halo:
-        r_stroke = 3.0 * s
-        inside_pixels = cleaned_roi[interior_mask > 0]
-        if len(inside_pixels) > 0:
-            halo_color = np.percentile(inside_pixels, 85, axis=0).astype(np.float32)
-        else:
-            halo_color = np.float32(252.0)
-
-        dist_out = cv2.distanceTransform((txt_alpha < 128).astype(np.uint8), cv2.DIST_L2, 3)
-        stroke_alpha = np.clip(r_stroke + 0.5 - dist_out, 0.0, 1.0)
-        glow_alpha = 0.25 * np.clip(r_stroke + 2.0 * s - dist_out, 0.0, 1.0)
-        total_halo_alpha = np.maximum(stroke_alpha, glow_alpha)
-
+    if not need_halo:
+        comp = cleaned_roi.astype(np.float32)
+        glyph_a = (txt_alpha.astype(np.float32)) / 255.0
         if is_color:
-            total_halo_alpha = total_halo_alpha[:, :, None]
-        comp = comp * (1.0 - total_halo_alpha) + halo_color * total_halo_alpha
+            glyph_a = glyph_a[:, :, None]
+            t_col = np.array(t_rgb, dtype=np.float32).reshape(1, 1, 3)
+        else:
+            t_col = float(t_rgb[0])
+        comp = comp * (1.0 - glyph_a) + t_col * glyph_a
+        return {
+            "rendered_roi": np.clip(comp, 0, 255).astype(np.uint8),
+            "halo_applied": False,
+            "p10_bg": p10_bg,
+            "sigma_bg": sigma_bg,
+            "wcag_cr": wcag_cr,
+            "elapsed_ms": (time.perf_counter() - t0) * 1000.0,
+        }
 
-    glyph_a = (txt_alpha.astype(np.float32)) / 255.0
-    if is_color:
-        glyph_a = glyph_a[:, :, None]
-        t_col = np.array(text_color, dtype=np.float32).reshape(1, 1, -1)
+    conflict = float(
+        np.clip(
+            (7.5 - wcag_cr) / 5.5 + 1.8 * luma_std + 1.4 * edge_density + (0.35 if (wall_overlap or outside_overlap or is_free_text) else 0.0),
+            0.0,
+            1.0,
+        )
+    )
+
+    inside_pixels = bg_rgb_roi[interior_mask > 0]
+    if text_luma <= 0.45:
+        if len(inside_pixels) >= 16:
+            cand_c = np.percentile(inside_pixels, 88, axis=0)
+            stroke_rgb = (255, 255, 255) if float(np.min(cand_c)) >= 232.0 else tuple(int(round(v)) for v in cand_c)
+        else:
+            stroke_rgb = (255, 255, 255)
     else:
-        t_col = float(text_color[0] if isinstance(text_color, tuple) else text_color)
+        stroke_rgb = (15, 15, 15)
 
-    comp = comp * (1.0 - glyph_a) + t_col * glyph_a
-    rendered = np.clip(comp, 0, 255).astype(np.uint8)
+    # Формула Deep Research: базовая обводка max(4, round(font_size * 0.22)),
+    # а при выходе на черную стенку или лайн-арт (wall_overlap / is_free_text / conflict > 0.5) — до font_size * 0.28 + мягкий Gaussian Glow!
+    base_stroke_px = max(4.0, round(fs * 0.22), 3.2 * s)
+    if wall_overlap or outside_overlap or is_free_text or is_overhanging or conflict >= 0.45:
+        r_stroke = max(base_stroke_px, round(fs * (0.24 + 0.05 * conflict)))
+        r_glow = max(2.0, round(0.65 * r_stroke))
+        glow_alpha = float(np.clip(0.45 + 0.35 * conflict, 0.45, 0.78))
+    else:
+        r_stroke = base_stroke_px
+        r_glow = max(1.5, round(0.45 * r_stroke))
+        glow_alpha = 0.35
+
+    edt_layer_pil = render_edt_supersampled_layer(
+        glyph_alpha_u8=txt_alpha,
+        text_rgb=t_rgb,
+        stroke_rgb=stroke_rgb,
+        stroke_width_px=r_stroke,
+        outer_glow_radius_px=r_glow,
+        outer_glow_alpha=glow_alpha,
+        supersample_scale=2,
+    )
+    edt_rgba = np.array(edt_layer_pil, dtype=np.float32)
+    alpha_f = edt_rgba[..., 3:4] / 255.0
+
+    if is_color:
+        comp_rgb = cleaned_roi.astype(np.float32) * (1.0 - alpha_f) + edt_rgba[..., :3] * alpha_f
+        rendered = np.clip(comp_rgb, 0, 255).round().astype(np.uint8)
+    else:
+        edt_gray = 0.299 * edt_rgba[..., 0] + 0.587 * edt_rgba[..., 1] + 0.114 * edt_rgba[..., 2]
+        comp_g = cleaned_roi.astype(np.float32) * (1.0 - alpha_f[..., 0]) + edt_gray * alpha_f[..., 0]
+        rendered = np.clip(comp_g, 0, 255).round().astype(np.uint8)
 
     return {
         "rendered_roi": rendered,
-        "halo_applied": need_halo,
+        "halo_applied": True,
         "p10_bg": p10_bg,
         "sigma_bg": sigma_bg,
+        "wcag_cr": wcag_cr,
+        "stroke_px": r_stroke,
         "elapsed_ms": (time.perf_counter() - t0) * 1000.0,
     }
+
+
+class AdaptiveTypesetter:
+    """
+    Профессиональный движок верстки и рендеринга текста для перевода манги (Deep Research v5.4):
+    - 4x Supersampling + Евклидово дистанционное поле (EDT) -> трехслойная сборка (Effects -> Stroke -> Fill).
+    - Background-Aware Adaptive Stroke по метрикам относительной яркости и контраста WCAG 2.x.
+    - Бинарный поиск кегля + динамическое программирование Кнута — Пласса под профиль эллипса/маски.
+    - Midpoint-out перенос длинных слов + Overflow Budget (1.35x W, 1.20x H) с защитой от коллизий (squeeze-on-collision x0.90).
+    """
+
+    def __init__(
+        self,
+        font_path: str | None = None,
+        supersample_scale: int = 4,
+        base_min_font_size: int = 14,
+        base_max_font_size: int = 42,
+        relative_cap_ratio: float = 1.25,
+        line_spacing_ratio: float = 0.15,
+        safety_height_margin: float = 0.90,
+        max_width_overflow_ratio: float = 1.35,
+        max_height_overflow_ratio: float = 1.20,
+    ) -> None:
+        self.font_path = font_path
+        self.supersample_scale = supersample_scale
+        self.base_min_font_size = base_min_font_size
+        self.base_max_font_size = base_max_font_size
+        self.relative_cap_ratio = relative_cap_ratio
+        self.line_spacing_ratio = line_spacing_ratio
+        self.safety_height_margin = safety_height_margin
+        self.max_width_overflow_ratio = max_width_overflow_ratio
+        self.max_height_overflow_ratio = max_height_overflow_ratio
+
+    def _load_font(self, size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        if self.font_path and Path(self.font_path).exists():
+            try:
+                return ImageFont.truetype(self.font_path, size=max(6, int(size)))
+            except OSError:
+                pass
+        for cand in DEFAULT_FONT_PATHS:
+            if Path(cand).exists():
+                try:
+                    return ImageFont.truetype(cand, size=max(6, int(size)))
+                except OSError:
+                    continue
+        return ImageFont.load_default()
+
+    @staticmethod
+    def compute_processing_scale(img_h: int, img_w: int) -> float:
+        return float(np.clip(np.sqrt((float(img_h) * float(img_w)) / 1_000_000.0), 0.65, 3.0))
+
+    @staticmethod
+    def compute_wcag_relative_luminance(rgb_array: np.ndarray) -> np.ndarray:
+        return compute_wcag_relative_luminance(rgb_array)
+
+    def analyze_background_and_stroke(
+        self,
+        page_rgb_or_bgr: np.ndarray,
+        bbox: Tuple[int, int, int, int],
+        font_size: int,
+        text_rgb: Tuple[int, int, int] = (15, 15, 15),
+        stroke_rgb_override: Optional[Tuple[int, int, int]] = None,
+        scale: float = 1.0,
+        is_inside_clean_cavity: bool = False,
+        is_RGB: bool = True,
+    ) -> AdaptiveStyleDecision:
+        h, w = page_rgb_or_bgr.shape[:2]
+        x1, y1, x2, y2 = (
+            max(0, int(bbox[0])),
+            max(0, int(bbox[1])),
+            min(w, int(bbox[2])),
+            min(h, int(bbox[3])),
+        )
+        roi = page_rgb_or_bgr[y1:y2, x1:x2]
+        if roi.size == 0:
+            return AdaptiveStyleDecision(0, (255, 255, 255), 0, 0.0, False, 21.0, 0.0)
+
+        roi_rgb = roi if is_RGB else cv2.cvtColor(roi, cv2.COLOR_BGR2RGB)
+        luma_map = compute_wcag_relative_luminance(roi_rgb)
+        text_luma = float(compute_wcag_relative_luminance(np.array([[text_rgb]], dtype=np.uint8))[0, 0])
+
+        if stroke_rgb_override is not None:
+            stroke_rgb = stroke_rgb_override
+        else:
+            stroke_rgb = (255, 255, 255) if text_luma <= 0.35 else (15, 15, 15)
+
+        worst_bg_luma = (
+            float(np.percentile(luma_map, 15))
+            if text_luma <= 0.5
+            else float(np.percentile(luma_map, 85))
+        )
+        l_max = max(text_luma, worst_bg_luma)
+        l_min = min(text_luma, worst_bg_luma)
+        wcag_cr = (l_max + 0.05) / (l_min + 0.05)
+
+        luma_std = float(np.std(luma_map))
+        roi_gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY)
+        edges = cv2.Canny(roi_gray, 70, 150)
+        edge_density = float(np.mean(edges > 0))
+
+        if is_inside_clean_cavity and wcag_cr >= 12.0 and luma_std < 0.03 and edge_density < 0.02:
+            return AdaptiveStyleDecision(
+                stroke_width_px=0,
+                stroke_rgb=stroke_rgb,
+                outer_glow_radius_px=0,
+                outer_glow_alpha=0.0,
+                use_backdrop_pill=False,
+                wcag_contrast_p15=wcag_cr,
+                conflict_score=0.0,
+            )
+
+        conflict = float(
+            np.clip(
+                (7.0 - wcag_cr) / 5.5 + 1.8 * luma_std + 1.2 * edge_density,
+                0.0,
+                1.0,
+            )
+        )
+
+        min_stroke = max(4, int(np.ceil(3.5 * scale)), int(round(font_size * 0.22)))
+        max_stroke = max(min_stroke, int(round(font_size * 0.28)))
+        raw_stroke = int(round(font_size * (0.20 + 0.08 * conflict)))
+        stroke_px = int(np.clip(raw_stroke, min_stroke, max_stroke))
+
+        glow_px = int(round(0.65 * stroke_px)) if conflict > 0.40 else max(1, int(round(0.35 * stroke_px)))
+        glow_alpha = float(np.clip(0.85 * conflict, 0.35, 0.78)) if glow_px > 0 else 0.0
+        use_pill = bool(conflict > 0.85 and luma_std > 0.28 and not is_inside_clean_cavity)
+
+        return AdaptiveStyleDecision(
+            stroke_width_px=stroke_px,
+            stroke_rgb=stroke_rgb,
+            outer_glow_radius_px=glow_px,
+            outer_glow_alpha=glow_alpha,
+            use_backdrop_pill=use_pill,
+            wcag_contrast_p15=wcag_cr,
+            conflict_score=conflict,
+        )
+
+    @staticmethod
+    def hyphenate_long_words_midpoint_out(
+        words: List[str],
+        word_widths: List[float],
+        max_line_capacity: float,
+    ) -> List[str]:
+        vowels = set("aeiouyAEIOUYаеёиоуыэюяАЕЁИОУЫЭЮЯ")
+        result: List[str] = []
+        for w, ww in zip(words, word_widths):
+            if ww <= 0.82 * max_line_capacity or len(w) < 7:
+                result.append(w)
+                continue
+            mid = len(w) // 2
+            best_pos = mid
+            for offset in range(0, len(w) // 2 - 2):
+                for candidate in (mid - offset, mid + offset):
+                    if 2 < candidate < len(w) - 2:
+                        if (w[candidate - 1] in vowels) and (w[candidate] not in vowels):
+                            best_pos = candidate
+                            break
+                else:
+                    continue
+                break
+            result.append(w[:best_pos] + "-")
+            result.append(w[best_pos:])
+        return result
 
 
 class SotaShapeAwareRenderer:
@@ -1614,6 +1991,77 @@ class MangaRenderer:
 
                 cur_x = _flush_run(cur_x, run_buf)
 
+        if stroke_w > 0:
+            # Рендерим чистую альфа-маску глифов (без векторных самопересечений FT_Stroker) и строим
+            # симметричный внешний EDT-контур (Effects -> Stroke -> Fill)
+            glyph_only = Image.new("L", (layer_w, layer_h), 0)
+            g_draw = ImageDraw.Draw(glyph_only)
+            for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
+                if not ln:
+                    continue
+                if align == "left":
+                    cx_g = float(pad)
+                elif align == "right":
+                    cx_g = float(pad) + (max_line_w - lw)
+                else:
+                    cx_g = float(pad) + (max_line_w - lw) / 2.0
+                cy_g = float(pad - min(0, ref_y0) + idx * step_y)
+                rbuf = ""
+                for ch in ln:
+                    if ch in VECTOR_MANGA_SYMBOLS:
+                        if rbuf:
+                            g_draw.text((cx_g, cy_g), rbuf, font=font, fill=255)
+                            cx_g += float(g_draw.textlength(rbuf, font=font))
+                            rbuf = ""
+                        cx_g += sym_advance
+                    elif self._is_glyph_missing(font, ch):
+                        if rbuf:
+                            g_draw.text((cx_g, cy_g), rbuf, font=font, fill=255)
+                            cx_g += float(g_draw.textlength(rbuf, font=font))
+                            rbuf = ""
+                        fb_f = self._get_fallback_font_for_char(ch, fs)
+                        if fb_f is not None:
+                            g_draw.text((cx_g, cy_g), ch, font=fb_f, fill=255)
+                            cx_g += float(g_draw.textlength(ch, font=fb_f))
+                    else:
+                        rbuf += ch
+                if rbuf:
+                    g_draw.text((cx_g, cy_g), rbuf, font=font, fill=255)
+
+            glyph_np = np.array(glyph_only, dtype=np.uint8)
+            if np.any(glyph_np > 0):
+                edt_layer = render_edt_supersampled_layer(
+                    glyph_alpha_u8=glyph_np,
+                    text_rgb=text_fill,
+                    stroke_rgb=stroke_fill,
+                    stroke_width_px=float(stroke_w),
+                    outer_glow_radius_px=float(max(1.5, stroke_w * 0.45)),
+                    outer_glow_alpha=0.40,
+                    supersample_scale=2,
+                )
+                # Поверх EDT-текста накладываем векторные иконки манги (♥, ★, ♪), если они встречались в строке
+                if any(ch in VECTOR_MANGA_SYMBOLS for ch in wrapped_text):
+                    for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
+                        if not ln:
+                            continue
+                        cx_g = float(pad) if align == "left" else (float(pad) + (max_line_w - lw) if align == "right" else float(pad) + (max_line_w - lw) / 2.0)
+                        cy_g = float(pad - min(0, ref_y0) + idx * step_y)
+                        for ch in ln:
+                            if ch in VECTOR_MANGA_SYMBOLS:
+                                icon = self._get_vector_symbol_icon(ch, fs, text_fill, stroke_fill, stroke_w)
+                                iw, ih = icon.size
+                                ix = int(round(cx_g + (sym_advance - iw) / 2.0))
+                                iy = int(round(cy_g + ref_y0 + (glyph_h - ih) / 2.0))
+                                edt_layer.alpha_composite(icon, dest=(max(0, ix), max(0, iy)))
+                                cx_g += sym_advance
+                            elif self._is_glyph_missing(font, ch):
+                                fb_f = self._get_fallback_font_for_char(ch, fs)
+                                if fb_f is not None:
+                                    cx_g += float(g_draw.textlength(ch, font=fb_f))
+                            else:
+                                cx_g += float(g_draw.textlength(ch, font=font))
+                layer = edt_layer
+
         alpha_bbox = layer.getbbox()
         if alpha_bbox is not None:
             return layer.crop(alpha_bbox)
@@ -2617,17 +3065,17 @@ class MangaRenderer:
         stroke_width_override: int | None,
     ) -> int:
         if stroke_width_override is not None:
-            return max(0, min(16, int(stroke_width_override)))
+            return max(0, min(20, int(stroke_width_override)))
         preset = (style_preset or "dialogue").lower().strip()
         if preset == "sfx":
-            return max(4, font_size // 6)
+            return max(5, int(round(font_size * 0.28)))
         if preset == "shout":
-            return max(3, font_size // 7)
+            return max(4, int(round(font_size * 0.25)))
         if preset == "whisper":
-            return max(1, font_size // 12)
+            return max(3, int(round(font_size * 0.18)))
         if is_free_text:
-            return max(3, font_size // 8)
-        return max(2, font_size // 10)
+            return max(4, int(round(font_size * 0.28)))
+        return max(4, int(round(font_size * 0.22)))
 
     def _analyze_bubble_geometry(
         self,
@@ -3056,6 +3504,21 @@ class MangaRenderer:
             opt_cx, opt_cy = geom["optical_center"]
             chord_profile = geom.get("chord_profile")
 
+            # Если для составного/ступенчатого баббла в ocr_engine вычислен максимальный вписанный прямоугольник lir_bbox,
+            # зажимаем safe_bbox и оптический центр внутри lir_bbox (фикс Screenshot 17, 18, 21, 22)
+            raw_lir = block.get("lir_bbox")
+            if not is_modified and not is_free_text and isinstance(raw_lir, (list, tuple)) and len(raw_lir) >= 4:
+                lx1, ly1, lx2, ly2 = [int(round(float(c))) for c in raw_lir[:4]]
+                if (lx2 - lx1) >= 18 and (ly2 - ly1) >= 18:
+                    ix1_l, iy1_l = max(sx1, lx1), max(sy1, ly1)
+                    ix2_l, iy2_l = min(sx2, lx2), min(sy2, ly2)
+                    if (ix2_l - ix1_l) >= 16 and (iy2_l - iy1_l) >= 16:
+                        sx1, sy1, sx2, sy2 = ix1_l, iy1_l, ix2_l, iy2_l
+                        safe_w = max(12, sx2 - sx1)
+                        safe_h = max(12, sy2 - sy1)
+                        opt_cx = int(round(max(sx1 + 4, min(sx2 - 4, (sx1 + sx2) / 2.0))))
+                        opt_cy = int(round(max(sy1 + 4, min(sy2 - 4, (sy1 + sy2) / 2.0))))
+
             # Для наклонных экранов телефонов, мониторов и повернутых табличек (|angle| >= 6°):
             # вычисляем доступную ширину и высоту верстки непосредственно в повернутой системе координат
             # внутренней белой полости (safe_mask_roi, повернутая на -angle), чтобы блок текста при повороте
@@ -3266,7 +3729,10 @@ class MangaRenderer:
                         sw_val = max(sw_val, 4 if it["block_overflow_mode"] == "overflow" else 3)
                         it["stroke_w"] = sw_val
             else:
-                it["use_sdf_halo"] = bool(is_ovf and it["eff_stroke_override"] is None)
+                it["use_sdf_halo"] = bool((is_ovf or it["is_free_text"]) and it["eff_stroke_override"] is None)
+                if is_ovf and it["eff_stroke_override"] is None:
+                    sw_val = max(sw_val, max(4, int(round(it["chosen_fs"] * 0.26))))
+                    it["stroke_w"] = sw_val
 
             needs_rich = self._needs_special_rendering(f_obj, w_txt)
             if needs_anamorphic:
@@ -3818,9 +4284,46 @@ class MangaRenderer:
                             interior_mask=int_m,
                             wall_mask=wall_m,
                             text_color=text_fill,
-                            scale_f=max(0.8, min(2.0, chosen_fs / 18.0)),
+                            scale_f=max(0.8, min(2.2, chosen_fs / 18.0)),
+                            font_size=chosen_fs,
+                            is_overhanging=bool(is_overflowing_box),
+                            is_free_text=bool(is_free_text),
                         )
                         canvas.paste(Image.fromarray(sdf_res["rendered_roi"], mode="RGB"), (px1, py1))
+                        draw = ImageDraw.Draw(canvas)
+                        continue
+
+                if stroke_w > 0:
+                    pad_edt = max(12, stroke_w * 2 + 8)
+                    px1_e = max(0, int(round(draw_x + t_bbox[0])) - pad_edt)
+                    py1_e = max(0, int(round(draw_y + t_bbox[1])) - pad_edt)
+                    px2_e = min(img_w, int(round(draw_x + t_bbox[2])) + pad_edt)
+                    py2_e = min(img_h, int(round(draw_y + t_bbox[3])) + pad_edt)
+                    pw_e, ph_e = px2_e - px1_e, py2_e - py1_e
+                    if pw_e >= 12 and ph_e >= 12:
+                        alpha_im_e = Image.new("L", (pw_e, ph_e), 0)
+                        alpha_draw_e = ImageDraw.Draw(alpha_im_e)
+                        self._draw_multiline_text_clean(
+                            alpha_draw_e,
+                            (draw_x - px1_e, draw_y - py1_e),
+                            wrapped_text,
+                            font=font,
+                            fill=255,
+                            spacing=dyn_spacing,
+                            align=align,
+                            stroke_width=0,
+                            stroke_fill=None,
+                        )
+                        edt_patch = render_edt_supersampled_layer(
+                            glyph_alpha_u8=np.array(alpha_im_e, dtype=np.uint8),
+                            text_rgb=text_fill,
+                            stroke_rgb=stroke_fill,
+                            stroke_width_px=float(stroke_w),
+                            outer_glow_radius_px=float(max(1.5, stroke_w * 0.55)) if (is_overflowing_box or is_free_text) else 0.0,
+                            outer_glow_alpha=0.50 if (is_overflowing_box or is_free_text) else 0.0,
+                            supersample_scale=2,
+                        )
+                        canvas.paste(edt_patch, (px1_e, py1_e), edt_patch)
                         draw = ImageDraw.Draw(canvas)
                         continue
 

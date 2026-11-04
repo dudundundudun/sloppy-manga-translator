@@ -1346,6 +1346,476 @@ def group_text_boxes_by_bubble_cavity(
 
 
 @dataclass
+class SubBubbleRegion:
+    """Геометрический паспорт выделенного субрегиона баббла (v5.4 Deep Research)."""
+    mask: np.ndarray                          # Бинарная маска (uint8, 0/255)
+    bbox: Tuple[int, int, int, int]           # Охватывающий AABB (x1, y1, x2, y2) на странице
+    lir_rect: Tuple[int, int, int, int]       # Максимальный вписанный прямоугольник (x, y, w, h) на странице
+    pole_of_inaccessibility: Tuple[int, int]  # Центр максимальной вписанной окружности (x_poi, y_poi)
+    max_inscribed_radius: float               # Радиус максимальной вписанной окружности (px)
+    matched_text_boxes: List[Tuple[int, int, int, int]] = None
+    text_allocation_ratio: float = 1.0        # Доля текста при режиме MULTI_BOX_FLOW
+
+    def __post_init__(self) -> None:
+        if self.matched_text_boxes is None:
+            self.matched_text_boxes = []
+
+
+@dataclass
+class BubbleDecompositionResult:
+    """Результат декомпозиции полигона баббла."""
+    mode: str                                 # 'SINGLE', 'INDEPENDENT_BLOCKS', 'MULTI_BOX_FLOW'
+    regions: List[SubBubbleRegion]
+    neck_ratio: float = 1.0
+    cut_line: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None
+
+
+class BubblePolygonSolver:
+    """
+    Решатель геометрии составных, ступенчатых и невыпуклых бабблов (Compound & Stepped Bubbles).
+    Реализует разделение по дефектам выпуклости, седловым точкам дистанционного поля и Watershed,
+    а также поиск LIR за O(H*W) на монотонном стеке и построчную трассировку (Scanline / Trapezoidal Layout).
+    """
+
+    def __init__(
+        self,
+        neck_ratio_thresh: float = 0.72,
+        base_min_defect_depth: float = 10.0,
+        max_defect_angle_deg: float = 125.0,
+        min_subregion_area_ratio: float = 0.18,
+        lir_aspect_weight: float = 0.15,
+        inset_ratio: float = 0.06,
+    ) -> None:
+        self.neck_ratio_thresh = neck_ratio_thresh
+        self.base_min_defect_depth = base_min_defect_depth
+        self.max_defect_angle_deg = max_defect_angle_deg
+        self.min_subregion_area_ratio = min_subregion_area_ratio
+        self.lir_aspect_weight = lir_aspect_weight
+        self.inset_ratio = inset_ratio
+
+    @staticmethod
+    def compute_processing_scale(img_h: int, img_w: int) -> float:
+        """Мегапиксельный коэффициент масштабирования пространственных порогов S_proc."""
+        scale = float(np.sqrt((float(img_h) * float(img_w)) / 1_000_000.0))
+        return float(np.clip(scale, 0.65, 3.0))
+
+    @staticmethod
+    def largest_inscribed_rectangle(
+        mask: np.ndarray, aspect_weight: float = 0.15
+    ) -> Tuple[int, int, int, int]:
+        """
+        Поиск максимального вписанного прямоугольника (x, y, w, h) внутри невыпуклой маски
+        методом динамического программирования на монотонном стеке за время O(H * W).
+        """
+        if mask is None or mask.size == 0:
+            return (0, 0, 0, 0)
+        binary = (mask > 0).astype(np.int32)
+        h, w = binary.shape[:2]
+        heights = np.zeros(w, dtype=np.int32)
+        best_score = -1.0
+        best_rect = (0, 0, w, h)
+
+        for r in range(h):
+            row = binary[r]
+            heights = np.where(row > 0, heights + 1, 0)
+            stack: List[Tuple[int, int]] = []
+            for c in range(w + 1):
+                cur_h = int(heights[c]) if c < w else 0
+                start_c = c
+                while stack and stack[-1][1] > cur_h:
+                    idx, rect_h = stack.pop()
+                    rect_w = c - idx
+                    area = rect_w * rect_h
+                    if area > 0:
+                        aspect = float(min(rect_w, rect_h)) / float(max(1, max(rect_w, rect_h)))
+                        score = float(area) * ((aspect ** aspect_weight) if aspect_weight > 0 else 1.0)
+                        if score > best_score:
+                            best_score = score
+                            best_rect = (int(idx), int(r - rect_h + 1), int(rect_w), int(rect_h))
+                    start_c = idx
+                stack.append((start_c, cur_h))
+        return best_rect
+
+    @staticmethod
+    def compute_scanline_chords(
+        safe_mask: np.ndarray,
+        num_lines: int,
+        line_height: int,
+        center_y: Optional[int] = None,
+    ) -> List[Tuple[int, int, int]]:
+        """
+        Построчная трассировка (Scanline / Trapezoidal Layout) внутри невыпуклой маски.
+        Возвращает для каждой из num_lines строк кортеж (x_left, x_right, y_top) в координатах маски.
+        """
+        h, w = safe_mask.shape[:2]
+        total_h = max(1, num_lines * line_height)
+        if center_y is None:
+            ys = np.where(safe_mask > 0)[0]
+            center_y = int(np.mean(ys)) if len(ys) > 0 else h // 2
+
+        start_y = int(np.clip(center_y - total_h // 2, 0, max(0, h - total_h)))
+        chords: List[Tuple[int, int, int]] = []
+
+        for k in range(num_lines):
+            y0 = start_y + k * line_height
+            y1 = min(h, y0 + line_height)
+            if y1 <= y0:
+                chords.append((0, 0, y0))
+                continue
+            band = np.all(safe_mask[y0:y1, :] > 0, axis=0).astype(np.int32)
+            if int(np.sum(band)) < 12:
+                mid_y0 = y0 + (y1 - y0) // 4
+                mid_y1 = max(mid_y0 + 1, y1 - (y1 - y0) // 4)
+                band = np.all(safe_mask[mid_y0:mid_y1, :] > 0, axis=0).astype(np.int32)
+
+            padded = np.concatenate(([0], band, [0]))
+            diffs = np.diff(padded)
+            starts = np.where(diffs == 1)[0]
+            ends = np.where(diffs == -1)[0]
+            if len(starts) == 0:
+                chords.append((0, 0, y0))
+            else:
+                lengths = ends - starts
+                best_idx = int(np.argmax(lengths))
+                chords.append((int(starts[best_idx]), int(ends[best_idx]), int(y0)))
+
+        return chords
+
+    @staticmethod
+    def split_text_across_subregions(
+        translated_text: str, regions: List[SubBubbleRegion]
+    ) -> List[str]:
+        """
+        Делит переведенную строку пропорционально полезным площадям LIR субрегионов
+        с приоритетом разрыва по знакам препинания (для режима MULTI_BOX_FLOW).
+        """
+        words = translated_text.strip().split()
+        if not words or len(regions) <= 1:
+            return [translated_text]
+
+        if len(regions) == 2 and len(words) >= 2:
+            target_ratio = regions[0].text_allocation_ratio
+            char_lengths = [len(w) for w in words]
+            total_chars = max(1, sum(char_lengths))
+            running = 0
+            best_idx = 1
+            best_score = 1e9
+            for i in range(1, len(words)):
+                running += char_lengths[i - 1]
+                frac = running / float(total_chars)
+                punct_bonus = 0.12 if words[i - 1].endswith((",", ";", ".", "!", "?", "—", "-")) else 0.0
+                score = abs(frac - target_ratio) - punct_bonus
+                if score < best_score:
+                    best_score = score
+                    best_idx = i
+            return [" ".join(words[:best_idx]), " ".join(words[best_idx:])]
+
+        chunks: List[str] = []
+        start_idx = 0
+        cum_ratio = 0.0
+        for idx, reg in enumerate(regions):
+            if idx == len(regions) - 1:
+                chunks.append(" ".join(words[start_idx:]))
+            else:
+                cum_ratio += reg.text_allocation_ratio
+                end_idx = max(start_idx + 1, int(round(cum_ratio * len(words))))
+                chunks.append(" ".join(words[start_idx:end_idx]))
+                start_idx = end_idx
+        return chunks
+
+    def _find_distance_peaks(
+        self, dist: np.ndarray, max_dist: float
+    ) -> List[Tuple[float, float, float]]:
+        """Поиск локальных максимумов (центров суббабблов) на карте расстояний."""
+        if max_dist <= 2.0:
+            return []
+        k_size = max(15, int(max_dist * 0.44) | 1)
+        dilated = cv2.dilate(dist, np.ones((k_size, k_size), np.uint8))
+        peaks_mask = (dist >= dilated - 1e-4) & (dist > 0.42 * max_dist)
+        peak_dilated = cv2.dilate(
+            peaks_mask.astype(np.uint8) * 255, np.ones((9, 9), np.uint8)
+        )
+        num_lbl, lbls, _, centroids = cv2.connectedComponentsWithStats(peak_dilated)
+
+        raw_peaks: List[Tuple[float, float, float]] = []
+        for lbl in range(1, num_lbl):
+            pts = np.argwhere(lbls == lbl)
+            val = float(dist[pts[:, 0], pts[:, 1]].max())
+            cx, cy = float(centroids[lbl][0]), float(centroids[lbl][1])
+            raw_peaks.append((cx, cy, val))
+
+        raw_peaks.sort(key=lambda x: x[2], reverse=True)
+        filtered_peaks: List[Tuple[float, float, float]] = []
+        for pk in raw_peaks:
+            if all(
+                np.hypot(pk[0] - fp[0], pk[1] - fp[1]) >= 0.85 * min(pk[2], fp[2])
+                for fp in filtered_peaks
+            ):
+                filtered_peaks.append(pk)
+        return filtered_peaks
+
+    def _find_opposing_defect_cut(
+        self,
+        cnt: np.ndarray,
+        p1: Tuple[float, float, float],
+        p2: Tuple[float, float, float],
+        saddle_pt: Tuple[int, int],
+        saddle_val: float,
+        min_defect_depth: float,
+    ) -> Optional[Tuple[Tuple[int, int], Tuple[int, int]]]:
+        """Ищет пару оппозитных дефектов выпуклости, образующих перешеек между пиками p1 и p2."""
+        cnt_pts = np.asarray(cnt, dtype=np.int32).reshape(-1, 2)
+        if len(cnt_pts) < 6:
+            return None
+        cnt_cv = cnt_pts.reshape(-1, 1, 2)
+        try:
+            hull_idx = cv2.convexHull(cnt_cv, returnPoints=False)
+            if hull_idx is None or hull_idx.size < 4:
+                return None
+            hull_sorted = np.sort(np.asarray(hull_idx, dtype=np.int32).reshape(-1)).reshape(-1, 1)
+            defects = cv2.convexityDefects(cnt_cv, hull_sorted)
+        except Exception:
+            return None
+        if defects is None:
+            return None
+
+        vec_p = np.array([p2[0] - p1[0], p2[1] - p1[1]], dtype=np.float64)
+        norm_p = float(np.linalg.norm(vec_p))
+        if norm_p < 1e-3:
+            return None
+
+        side_pos: List[Tuple[int, int, float]] = []
+        side_neg: List[Tuple[int, int, float]] = []
+        defects_arr = np.asarray(defects, dtype=np.int32).reshape(-1, 4)
+
+        for s, e, f, d in defects_arr:
+            depth = float(d) / 256.0
+            if depth < min_defect_depth:
+                continue
+            ps = cnt_pts[int(s)].astype(np.float64)
+            pe = cnt_pts[int(e)].astype(np.float64)
+            pf = cnt_pts[int(f)].astype(np.float64)
+
+            a = float(np.linalg.norm(ps - pf))
+            b = float(np.linalg.norm(pe - pf))
+            c = float(np.linalg.norm(ps - pe))
+            cos_angle = float(np.clip((a * a + b * b - c * c) / max(2.0 * a * b, 1e-5), -1.0, 1.0))
+            angle_deg = float(np.degrees(np.arccos(cos_angle)))
+            if angle_deg > self.max_defect_angle_deg:
+                continue
+
+            vec_f = pf - np.array([p1[0], p1[1]], dtype=np.float64)
+            proj = float(np.dot(vec_f, vec_p) / (norm_p * norm_p))
+            if not (-0.15 <= proj <= 1.15):
+                continue
+
+            cross_z = float(vec_p[0] * vec_f[1] - vec_p[1] * vec_f[0])
+            dist_to_saddle = float(np.hypot(pf[0] - saddle_pt[0], pf[1] - saddle_pt[1]))
+            if cross_z >= 0.0:
+                side_pos.append((int(pf[0]), int(pf[1]), dist_to_saddle))
+            else:
+                side_neg.append((int(pf[0]), int(pf[1]), dist_to_saddle))
+
+        if side_pos and side_neg:
+            side_pos.sort(key=lambda x: x[2])
+            side_neg.sort(key=lambda x: x[2])
+            pt1 = (side_pos[0][0], side_pos[0][1])
+            pt2 = (side_neg[0][0], side_neg[0][1])
+            cut_len = float(np.hypot(pt1[0] - pt2[0], pt1[1] - pt2[1]))
+            if cut_len <= max(2.5 * saddle_val, 18.0):
+                return (pt1, pt2)
+        return None
+
+    def _build_subregion(
+        self,
+        sub_mask_crop: np.ndarray,
+        crop_offset: Tuple[int, int],
+        page_shape: Tuple[int, int],
+        text_boxes: List[Tuple[int, int, int, int]],
+    ) -> SubBubbleRegion:
+        """Конструирует паспорт SubBubbleRegion с вычислением POI и LIR."""
+        ox, oy = crop_offset
+        ys, xs = np.where(sub_mask_crop > 0)
+        if len(xs) == 0:
+            return SubBubbleRegion(
+                mask=sub_mask_crop,
+                bbox=(ox, oy, ox + 1, oy + 1),
+                lir_rect=(ox, oy, 1, 1),
+                pole_of_inaccessibility=(ox, oy),
+                max_inscribed_radius=1.0,
+            )
+        x1, y1, x2, y2 = int(xs.min()), int(ys.min()), int(xs.max() + 1), int(ys.max() + 1)
+
+        dist = cv2.distanceTransform(sub_mask_crop, cv2.DIST_L2, 5)
+        max_r = float(dist.max())
+        poi_y, poi_x = np.unravel_index(int(np.argmax(dist)), dist.shape)
+
+        inset = max(3, int(round(self.inset_ratio * min(x2 - x1, y2 - y1))))
+        kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * inset + 1, 2 * inset + 1))
+        eroded = cv2.erode(sub_mask_crop, kernel)
+        if np.count_nonzero(eroded) < 50:
+            eroded = sub_mask_crop
+
+        lx, ly, lw, lh = self.largest_inscribed_rectangle(eroded, self.lir_aspect_weight)
+        ch, cw = sub_mask_crop.shape[:2]
+
+        matched: List[Tuple[int, int, int, int]] = []
+        for tb in text_boxes:
+            tx1, ty1, tx2, ty2 = [int(v) for v in tb[:4]]
+            tb_area = max(1, (tx2 - tx1) * (ty2 - ty1))
+            r_tx1 = max(0, min(cw, tx1 - ox))
+            r_ty1 = max(0, min(ch, ty1 - oy))
+            r_tx2 = max(0, min(cw, tx2 - ox))
+            r_ty2 = max(0, min(ch, ty2 - oy))
+            inter_pixels = int(np.count_nonzero(sub_mask_crop[r_ty1:r_ty2, r_tx1:r_tx2])) if (r_tx2 > r_tx1 and r_ty2 > r_ty1) else 0
+            if inter_pixels / float(tb_area) >= 0.45:
+                matched.append((tx1, ty1, tx2, ty2))
+
+        return SubBubbleRegion(
+            mask=sub_mask_crop,
+            bbox=(ox + x1, oy + y1, ox + x2, oy + y2),
+            lir_rect=(ox + lx, oy + ly, max(8, lw), max(8, lh)),
+            pole_of_inaccessibility=(ox + int(poi_x), oy + int(poi_y)),
+            max_inscribed_radius=max_r,
+            matched_text_boxes=matched,
+        )
+
+    def solve(
+        self,
+        bubble_mask_roi: np.ndarray,
+        roi_offset: Tuple[int, int],
+        page_shape: Tuple[int, int],
+        text_bubble_boxes: List[Tuple[int, int, int, int]],
+        page_gray: Optional[np.ndarray] = None,
+    ) -> BubbleDecompositionResult:
+        """
+        Полный цикл анализа маски баббла: детекция перешейка, разрез, классификация режима
+        ('SINGLE', 'INDEPENDENT_BLOCKS', 'MULTI_BOX_FLOW') и сортировка в порядке чтения манги.
+        """
+        page_h, page_w = page_shape[:2]
+        scale = self.compute_processing_scale(page_h, page_w)
+        min_defect = max(8.0, self.base_min_defect_depth * scale)
+
+        crop = (bubble_mask_roi > 0).astype(np.uint8) * 255
+        total_area = float(np.count_nonzero(crop))
+        if total_area < 32:
+            return BubbleDecompositionResult(mode="SINGLE", regions=[])
+
+        ox, oy = roi_offset
+        contours, _ = cv2.findContours(crop, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_NONE)
+        if not contours:
+            return BubbleDecompositionResult(mode="SINGLE", regions=[])
+        cnt = max(contours, key=cv2.contourArea)
+
+        dist = cv2.distanceTransform(crop, cv2.DIST_L2, 5)
+        max_dist = float(dist.max())
+        peaks = self._find_distance_peaks(dist, max_dist)
+
+        neck_ratio = 1.0
+        cut_line_global: Optional[Tuple[Tuple[int, int], Tuple[int, int]]] = None
+        sub_crops: List[np.ndarray] = [crop]
+
+        if len(peaks) >= 2:
+            p1, p2 = peaks[0], peaks[1]
+            num_pts = max(10, int(np.hypot(p2[0] - p1[0], p2[1] - p1[1])))
+            line_x = np.clip(np.linspace(p1[0], p2[0], num_pts).astype(int), 0, crop.shape[1] - 1)
+            line_y = np.clip(np.linspace(p1[1], p2[1], num_pts).astype(int), 0, crop.shape[0] - 1)
+            s_idx = max(1, int(0.15 * num_pts))
+            e_idx = max(s_idx + 1, min(num_pts - 1, int(0.85 * num_pts)))
+            segment_vals = dist[line_y[s_idx:e_idx], line_x[s_idx:e_idx]]
+            min_local_idx = int(np.argmin(segment_vals)) + s_idx
+            saddle_val = float(dist[line_y[min_local_idx], line_x[min_local_idx]])
+            saddle_pt = (int(line_x[min_local_idx]), int(line_y[min_local_idx]))
+            neck_ratio = saddle_val / max(1.0, min(p1[2], p2[2]))
+
+            if neck_ratio < self.neck_ratio_thresh:
+                cut_pts = self._find_opposing_defect_cut(
+                    cnt, p1, p2, saddle_pt, saddle_val, min_defect
+                )
+                split_canvas = crop.copy()
+                if cut_pts is not None:
+                    cv2.line(split_canvas, cut_pts[0], cut_pts[1], 0, thickness=3)
+                    cut_line_global = (
+                        (cut_pts[0][0] + ox, cut_pts[0][1] + oy),
+                        (cut_pts[1][0] + ox, cut_pts[1][1] + oy),
+                    )
+                else:
+                    markers = np.zeros(crop.shape, dtype=np.int32)
+                    markers[crop == 0] = 1
+                    for idx_pk, pk in enumerate(peaks[:2], start=2):
+                        cv2.circle(
+                            markers,
+                            (int(pk[0]), int(pk[1])),
+                            max(3, int(pk[2] * 0.45)),
+                            idx_pk,
+                            -1,
+                        )
+                    inv_dist = cv2.normalize(
+                        max_dist - dist, None, 0, 255, cv2.NORM_MINMAX
+                    ).astype(np.uint8)
+                    inv_dist_3c = cv2.cvtColor(inv_dist, cv2.COLOR_GRAY2BGR)
+                    cv2.watershed(inv_dist_3c, markers)
+                    split_canvas[markers == -1] = 0
+
+                num_cc, cc_labels, cc_stats, _ = cv2.connectedComponentsWithStats(split_canvas)
+                candidate_crops: List[np.ndarray] = []
+                for lbl in range(1, num_cc):
+                    comp_area = float(cc_stats[lbl, cv2.CC_STAT_AREA])
+                    if comp_area >= self.min_subregion_area_ratio * total_area:
+                        candidate_crops.append((cc_labels == lbl).astype(np.uint8) * 255)
+
+                if len(candidate_crops) >= 2:
+                    sub_crops = candidate_crops
+
+        regions = [
+            self._build_subregion(sc, (ox, oy), (page_h, page_w), text_bubble_boxes)
+            for sc in sub_crops
+        ]
+
+        regions.sort(
+            key=lambda r: (
+                -round(r.pole_of_inaccessibility[0] / max(25.0, r.max_inscribed_radius * 0.6)),
+                r.pole_of_inaccessibility[1],
+            )
+        )
+
+        if len(regions) <= 1:
+            return BubbleDecompositionResult(
+                mode="SINGLE", regions=regions, neck_ratio=neck_ratio
+            )
+
+        has_drawn_divider = False
+        if page_gray is not None and cut_line_global is not None:
+            pt_a, pt_b = cut_line_global
+            n_samples = max(8, int(np.hypot(pt_b[0] - pt_a[0], pt_b[1] - pt_a[1])))
+            sx = np.clip(np.linspace(pt_a[0], pt_b[0], n_samples).astype(int), 0, page_w - 1)
+            sy = np.clip(np.linspace(pt_a[1], pt_b[1], n_samples).astype(int), 0, page_h - 1)
+            dark_ratio = float(np.mean(page_gray[sy, sx] < 135))
+            has_drawn_divider = dark_ratio >= 0.35
+
+        regions_with_own_text = sum(1 for r in regions if len(r.matched_text_boxes) > 0)
+        distinct_boxes = set()
+        for r in regions:
+            for b in r.matched_text_boxes:
+                distinct_boxes.add(b)
+
+        if (regions_with_own_text >= 2 and len(distinct_boxes) >= 2) or has_drawn_divider:
+            mode = "INDEPENDENT_BLOCKS"
+        else:
+            mode = "MULTI_BOX_FLOW"
+            total_lir_area = sum(max(1, r.lir_rect[2] * r.lir_rect[3]) for r in regions)
+            for r in regions:
+                r.text_allocation_ratio = float(r.lir_rect[2] * r.lir_rect[3]) / float(total_lir_area)
+
+        return BubbleDecompositionResult(
+            mode=mode,
+            regions=regions,
+            neck_ratio=neck_ratio,
+            cut_line=cut_line_global,
+        )
+
+
+@dataclass
 class BubbleGeometryContext:
     """
     Единый транспортный контракт между ocr_engine.py, cleaner.py и renderer.py.
@@ -5918,13 +6388,29 @@ class MangaOCREngine:
                     iou = inter_area / max(1.0, union_area)
                     iomin = inter_area / max(1.0, min(c_area, e_area))
 
+                    ux1, uy1 = min(cx1, ex1), min(cy1, ey1)
+                    ux2, uy2 = max(cx2, ex2), max(cy2, ey2)
+                    cw_n, ch_n = max(1, cx2 - cx1), max(1, cy2 - cy1)
+                    ew_n, eh_n = max(1, ex2 - ex1), max(1, ey2 - ey1)
+                    ccx_n, ccy_n = 0.5 * (cx1 + cx2), 0.5 * (cy1 + cy2)
+                    ecx_n, ecy_n = 0.5 * (ex1 + ex2), 0.5 * (ey1 + ey2)
+                    aabb_union_area = float((ux2 - ux1) * (uy2 - uy1))
+                    dead_space_ratio = (aabb_union_area - union_area) / max(1.0, aabb_union_area)
+                    stepped_x_shift = abs(ccx_n - ecx_n) > 0.25 * min(cw_n, ew_n)
+                    stepped_y_shift = abs(ccy_n - ecy_n) > 0.22 * min(ch_n, eh_n)
+                    is_stepped_compound = (
+                        iomin < 0.86
+                        and (
+                            dead_space_ratio > 0.16
+                            or (stepped_x_shift and stepped_y_shift)
+                            or (stepped_x_shift and (ux2 - ux1) > 1.32 * max(cw_n, ew_n))
+                        )
+                    )
+                    if is_stepped_compound:
+                        continue
+
                     if iou >= iou_threshold or iomin >= iomin_threshold:
-                        existing["bbox"] = [
-                            min(cx1, ex1),
-                            min(cy1, ey1),
-                            max(cx2, ex2),
-                            max(cy2, ey2),
-                        ]
+                        existing["bbox"] = [ux1, uy1, ux2, uy2]
                         existing["confidence"] = round(max(float(existing["confidence"]), c_conf), 4)
                         existing["is_free_text"] = bool(existing.get("is_free_text", False) and c_free)
                         absorbed = True
@@ -6374,6 +6860,52 @@ class MangaOCREngine:
             matched = bubble_to_tbs.get(b_idx) or []
             bx1, by1, bx2, by2 = b_det["bbox"]
             is_free = bool(b_det.get("is_free_text", False))
+
+            if len(matched) <= 1 and not is_free and (bx2 - bx1) >= 72 and (by2 - by1) >= 72:
+                try:
+                    roi_g_sub = (
+                        cv2.cvtColor(img_np[by1:by2, bx1:bx2], cv2.COLOR_RGB2GRAY)
+                        if img_np.ndim == 3
+                        else img_np[by1:by2, bx1:bx2]
+                    )
+                    p75_sub = float(np.percentile(roi_g_sub, 75))
+                    if p75_sub >= 205.0:
+                        cav_sub = self._extract_bubble_interior_mask(roi_g_sub, p75_sub)
+                        solver = BubblePolygonSolver(neck_ratio_thresh=0.72)
+                        tb_tuples = [tuple(m["bbox"]) for m in matched] if matched else [(bx1, by1, bx2, by2)]
+                        page_g_full = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if img_np.ndim == 3 else img_np
+                        decomp = solver.solve(
+                            bubble_mask_roi=cav_sub,
+                            roi_offset=(bx1, by1),
+                            page_shape=(img_h, img_w),
+                            text_bubble_boxes=tb_tuples,
+                            page_gray=page_g_full,
+                        )
+                        if len(decomp.regions) >= 2:
+                            split_count += 1
+                            for reg in decomp.regions:
+                                rx1_r, ry1_r, rx2_r, ry2_r = reg.bbox
+                                lx, ly, lw, lh = reg.lir_rect
+                                sub_b = [int(rx1_r), int(ry1_r), int(rx2_r), int(ry2_r)]
+                                sub_lir = [int(lx), int(ly), int(lx + lw), int(ly + lh)]
+                                hint_b = list(reg.matched_text_boxes[0]) if reg.matched_text_boxes else sub_lir
+                                final_detections.append(
+                                    {
+                                        "bbox": sub_b,
+                                        "lir_bbox": sub_lir,
+                                        "text_bbox": self._compute_tight_ink_bbox(img_np, sub_b, hint_b, is_free_text=False),
+                                        "confidence": round(float(b_det["confidence"]), 4),
+                                        "is_free_text": False,
+                                        "decomp_mode": decomp.mode,
+                                        "text_allocation_ratio": round(float(reg.text_allocation_ratio), 4),
+                                    }
+                                )
+                            continue
+                        elif len(decomp.regions) == 1:
+                            lx, ly, lw, lh = decomp.regions[0].lir_rect
+                            b_det["lir_bbox"] = [int(lx), int(ly), int(lx + lw), int(ly + lh)]
+                except Exception:
+                    pass
 
             if len(matched) == 0:
                 tight_tb = self._compute_tight_ink_bbox(img_np, [bx1, by1, bx2, by2], None, is_free_text=is_free)
@@ -7962,19 +8494,22 @@ class MangaOCREngine:
             except Exception:
                 detected_angle = 0.0
 
-            output_blocks.append(
-                {
-                    "id": block_id,
-                    "bbox": [x1, y1, x2, y2],
-                    "clean_bbox": [x1, y1, x2, y2],
-                    "text_bbox": ocr_coords,
-                    "confidence": det["confidence"],
-                    "original_text": recognized_text,
-                    "is_free_text": is_free,
-                    "is_deleted": False,
-                    "angle": detected_angle,
-                }
-            )
+            blk_dict: dict[str, Any] = {
+                "id": block_id,
+                "bbox": [x1, y1, x2, y2],
+                "clean_bbox": [x1, y1, x2, y2],
+                "text_bbox": ocr_coords,
+                "confidence": det["confidence"],
+                "original_text": recognized_text,
+                "is_free_text": is_free,
+                "is_deleted": False,
+                "angle": detected_angle,
+            }
+            if det.get("lir_bbox"):
+                blk_dict["lir_bbox"] = list(det["lir_bbox"])
+            if det.get("decomp_mode"):
+                blk_dict["decomp_mode"] = str(det["decomp_mode"])
+            output_blocks.append(blk_dict)
             block_id += 1
 
         # Защита от пустых страниц: срабатывает ТОЛЬКО если пользователь НЕ включал пропуск вздохов (skip_sighs=False),
@@ -8042,8 +8577,23 @@ class MangaOCREngine:
         }
 
         self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
-        self._page_ocr_cache.clear()
+        self.release_transient_vram()
         return output_blocks, resolved_lang
+
+    def release_transient_vram(self) -> None:
+        """
+        Освобождает промежуточные буферы и фрагментированный кэш CUDA после обработки страницы,
+        предотвращая 13-кратную деградацию скорости OCR на длинных сессиях с Ollama.
+        """
+        self._page_ocr_cache.clear()
+        self._last_rtdetr_free_boxes = []
+        if hasattr(self, "_last_cavity_map"):
+            self._last_cavity_map = None
+        if torch is not None and torch.cuda.is_available():
+            try:
+                torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     def recognize_manual_region(
         self,

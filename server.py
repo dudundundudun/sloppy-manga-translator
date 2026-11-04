@@ -1,5 +1,13 @@
 """
-FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v5.3.0).
+FastAPI-сервер для локального переводчика манги, манхвы и маньхуа (v5.4.0).
+
+Изменения v5.4.0:
+- Разгрузка VRAM (`ocr_engine.release_transient_vram()` и `torch.cuda.empty_cache()`) между фазами OCR, Inpainting
+  и локальной LLM в `_run_folder_translation_job`, `MangaPipelineOrchestrator` и `process_single_pil_image`.
+- Синхронизация и авто-активация `nsfw_mode = True` при 100%-м цензурном отказе облачного API (или серии сетевых сбоев),
+  исключающая холостые запросы и конкуренцию фонового LaMa-клининга с локальной моделью Ollama.
+- Поддержка полей `lir_bbox` и `decomp_mode` в `TextBlock` и `_ensure_block_clean_bbox` (совместимость с BubblePolygonSolver).
+- Автоматическая очистка глоссария главы от одиночных кан и местоимений при загрузке манифеста.
 
 Изменения v1.0.6:
 - Расширение схемы `TextBlock` полями профессиональной верстки и локальной ретуши маски:
@@ -78,6 +86,7 @@ import tempfile
 from typing import Awaitable, Callable
 
 from translator import (
+    clean_and_validate_glossary_name,
     enforce_glossary_on_translated_text,
     BUILT_IN_MODEL_STACK_PRESETS,
     CLOUD_API_PRESETS,
@@ -175,6 +184,29 @@ def _get_vram_allocated_mb() -> float:
     except Exception:
         pass
     return 0.0
+
+
+def _release_pipeline_vram(stage_label: str = "") -> None:
+    """
+    БЛОК 4 (v5.4.0): Освобождает промежуточные кэши видеопамяти (`ocr_engine.release_transient_vram()`
+    и `torch.cuda.empty_cache()`) между фазами OCR, Inpainting и локальной LLM в Ollama,
+    устраняя конкуренцию за VRAM и деградацию скорости на длинных дистанциях.
+    """
+    try:
+        if ocr_engine is not None and hasattr(ocr_engine, "release_transient_vram"):
+            ocr_engine.release_transient_vram()
+    except Exception as exc:
+        logger.debug("Ошибка при вызове ocr_engine.release_transient_vram (%s): %s", stage_label, exc)
+    try:
+        if cleaner_engine is not None and hasattr(cleaner_engine, "release_transient_vram"):
+            cleaner_engine.release_transient_vram()
+    except Exception:
+        pass
+    try:
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
 
 
 def _append_diagnostic_event(event_type: str, data: dict[str, Any]) -> None:
@@ -401,6 +433,7 @@ class MangaPipelineOrchestrator:
                         page.block_ids.append(gid)
                         page.ocr_boxes[gid] = page_boxes.get(local_id)
                         job.source_blocks[gid] = text
+                await asyncio.to_thread(_release_pipeline_vram, f"orchestrator_batch_{job.batch_idx}_post_ocr")
                 await q_ocr_to_llm.put(job)
             await q_ocr_to_llm.put(None)
 
@@ -467,6 +500,7 @@ folder_job_state: dict[str, Any] = {
     "translated_in_run": 0,
     "current_file": "",
     "elapsed_sec": 0.0,
+    "nsfw_mode": False,
     "error": None,
 }
 _folder_task: asyncio.Task[None] | None = None
@@ -582,6 +616,8 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     block.setdefault("page_base_font_size", None)
     block.setdefault("safe_bbox", None)
     block.setdefault("bubble_bbox", None)
+    block.setdefault("lir_bbox", None)
+    block.setdefault("decomp_mode", None)
     block.setdefault("optical_center", None)
     block.setdefault("aspect_ratio", None)
     block.setdefault("shape_hint", None)
@@ -891,7 +927,7 @@ async def lifespan(app: FastAPI):
     _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v5.3.0)", flush=True)
+    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v5.4.0)", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -914,7 +950,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="5.3.1",
+    version="5.4.0",
     lifespan=lifespan,
 )
 
@@ -1106,6 +1142,14 @@ class TextBlock(BaseModel):
     bubble_bbox: list[int] | None = Field(
         default=None,
         description="Границы сегментированной полости бабла [bx1, by1, bx2, by2]",
+    )
+    lir_bbox: list[int] | None = Field(
+        default=None,
+        description="Максимальный вписанный прямоугольник LIR [lx1, ly1, lx2, ly2] внутри полигона баббла (v5.4.0)",
+    )
+    decomp_mode: str | None = Field(
+        default=None,
+        description="Режим декомпозиции полигона баббла (single_convex, split_dumbbell, lir_clamped и т.д., v5.4.0)",
     )
     optical_center: list[int] | None = Field(
         default=None,
@@ -1490,6 +1534,22 @@ def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
         for ck, cv in list(pc.items()):
             if not isinstance(cv, str) or OllamaTranslator._is_bubble_refusal_value(cv):
                 pc.pop(ck, None)
+
+    raw_gloss_list = data.get("glossary")
+    if isinstance(raw_gloss_list, list) and raw_gloss_list:
+        cleaned_gloss_list = []
+        for g_it in raw_gloss_list:
+            if not isinstance(g_it, dict):
+                continue
+            v_src, v_dst = clean_and_validate_glossary_name(
+                str(g_it.get("src") or ""),
+                str(g_it.get("dst") or ""),
+            )
+            if v_src and v_dst:
+                g_copy = dict(g_it)
+                g_copy["src"] = v_src
+                cleaned_gloss_list.append(g_copy)
+        data["glossary"] = cleaned_gloss_list
 
     rc = data.get("rolling_context")
     if isinstance(rc, list):
@@ -2262,7 +2322,7 @@ def _generate_and_save_folder_report(
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v5.3.0",
+        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v5.4.0",
         "========================================================================================",
         f"• Исходная папка манги     : {source_dir}",
         f"• Папка готового перевода  : {output_dir}",
@@ -3066,6 +3126,7 @@ async def process_single_pil_image(
             eff_pmode,
         )
     _ocr_sec = round(time.perf_counter() - _t0_ocr, 2)
+    await asyncio.to_thread(_release_pipeline_vram, "single_page_post_ocr")
 
     translator_engine.stop_requested = False
     active_model = await translator_engine.resolve_model(ollama_model)
@@ -3225,6 +3286,10 @@ async def _run_folder_translation_job(
     manifest = _load_folder_manifest(output_dir)
     manifest["source_dir"] = str(source_dir)
     manifest["target_lang"] = target_lang
+    if not force_retranslate and bool(manifest.get("nsfw_mode", False)):
+        translator_engine.enable_chapter_nsfw_mode("Восстановлен nsfw_mode=True из манифеста текущей главы")
+    else:
+        translator_engine.reset_chapter_nsfw_mode()
     if not isinstance(manifest.get("pages"), dict):
         manifest["pages"] = {}
     if not isinstance(manifest.get("phrase_cache"), dict):
@@ -3516,6 +3581,21 @@ async def _run_folder_translation_job(
 
             _batch_ocr_sec = round(time.perf_counter() - _ocr_t0, 2)
 
+            # БЛОК 4 (v5.4.0): Освобождаем промежуточные буферы VRAM после завершения OCR пачки
+            # перед запуском пакетного перевода в Ollama, устраняя конкуренцию за видеопамять!
+            await asyncio.to_thread(_release_pipeline_vram, f"batch_{_batch_num}_before_llm")
+
+            # БЛОК 2 (v5.4.0): Если активирован флаг nsfw_mode = True, сразу переключаем активную модель пачки
+            # на локальную Ollama, чтобы не делать холостых запросов в цензурное облако и не запускать параллельный LaMa!
+            if getattr(translator_engine, "nsfw_mode", False) and active_mod.startswith("unsloth::"):
+                loc_nsfw_mod = await translator_engine._resolve_local_fallback_model(
+                    target_lang=target_lang,
+                    source_lang=batch_detected_lang,
+                )
+                if loc_nsfw_mod:
+                    active_mod = loc_nsfw_mod
+            folder_job_state["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
+
             # Шаг 2: ИИ-перевод пачки (в профиле eco_book — единым сценарием книги P01_01..P25_09 за 1 запрос!)
             _llm_t0 = time.perf_counter()
             translated_by_gid: dict[str, str] = {}
@@ -3531,11 +3611,12 @@ async def _run_folder_translation_job(
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
                 # Пока идет ожидание ответа от облачного ИИ (50+ сек простоя GPU), параллельно в фоне
-                # подготавливаем очищенные слои SimpleLama в CleanCache без малейшей потери качества!
+                # подготавливаем очищенные слои SimpleLama в CleanCache ТОЛЬКО если не включен локальный nsfw_mode!
                 _preclean_stop_flag = False
                 _bg_preclean_task: asyncio.Task[None] | None = None
                 _is_remote_cloud_llm = (
                     active_mod.startswith("unsloth::")
+                    and not getattr(translator_engine, "nsfw_mode", False)
                     and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
                     and cleaner_engine is not None
                     and cleaner_engine.lama_model is not None
@@ -3543,7 +3624,12 @@ async def _run_folder_translation_job(
                 if _is_remote_cloud_llm:
                     async def _bg_preclean_pages_during_cloud() -> None:
                         for sp_pre in scanned_pages:
-                            if _preclean_stop_flag or _folder_stop_requested:
+                            if (
+                                _preclean_stop_flag
+                                or _folder_stop_requested
+                                or getattr(translator_engine, "nsfw_mode", False)
+                                or getattr(translator_engine, "_last_call_was_refusal", False)
+                            ):
                                 break
                             if not sp_pre.get("ok"):
                                 continue
@@ -3885,6 +3971,9 @@ async def _run_folder_translation_job(
             else:
                 await asyncio.gather(*(_render_page_task(sp) for sp in scanned_pages))
 
+            await asyncio.to_thread(_release_pipeline_vram, f"batch_{_batch_num}_after_render")
+            folder_job_state["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
+            manifest["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
             _batch_render_sec = round(time.perf_counter() - _render_t0, 2)
             _batch_total_sec = round(time.perf_counter() - _batch_t0, 2)
             _pages_cnt = max(1, len(page_batch))
@@ -4057,7 +4146,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v5.3.0 Server Running</h1>")
+    return HTMLResponse(content="<h1>Manga Translator v5.4.0 Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -4104,7 +4193,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "5.3.1",
+        "version": "5.4.0",
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -6172,7 +6261,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "5.3.1",
+            "version": "5.4.0",
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -7231,7 +7320,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
     }
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v5.3.0 ===",
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v5.4.0 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -7349,7 +7438,7 @@ async def clear_diagnostics_endpoint() -> dict[str, str]:
 
 
 # ==============================================================================
-#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v5.3.0)
+#  📊 МОДУЛЬ UX-ТЕЛЕМЕТРИИ И АНАЛИТИКИ ИСПОЛЬЗОВАНИЯ ИНТЕРФЕЙСА (v5.4.0)
 # ==============================================================================
 
 _ux_telemetry_lock = threading.Lock()
@@ -7800,7 +7889,7 @@ def _generate_ux_usage_report(store: dict[str, Any] | None = None) -> tuple[str,
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v5.3.0",
+        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v5.4.0",
         "========================================================================================",
         f"• Файл отчета              : {UX_REPORT_TXT_FILE}",
         f"• База накопленной телеметрии: {UX_TELEMETRY_JSON_FILE}",
@@ -8062,10 +8151,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver not in ("5.3.1", "5.3.0", "5.3"):
+                if running_ver not in ("5.4.0", "5.4", "5.3.1", "5.3.0", "5.3"):
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v5.3.0...",
+                        f"Останавливаю старый процесс для запуска v5.4.0...",
                         flush=True,
                     )
                     try:
@@ -8090,5 +8179,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v5.3.0 на 127.0.0.1:5000...", flush=True)
+    print("Запуск локального сервера Manga Translator v5.4.0 на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)
