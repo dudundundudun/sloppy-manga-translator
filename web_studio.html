@@ -6097,12 +6097,26 @@ Step 1:`;
     }
 
     /* ==================== FOLDER & PAGE NAVIGATION ==================== */
+    let isPickingFolderDialog = false;
     async function pickFolderDialog() {
-      const res = await fetch("/pick_folder?target_lang=" + encodeURIComponent(targetLang), { method: "POST" });
-      const data = await res.json();
-      if (data.status === "cancelled") return;
-      currentFolder = data.source_dir;
-      renderFolderData(data);
+      if (isPickingFolderDialog) return;
+      isPickingFolderDialog = true;
+      sayMiko("📂 Открываю окно выбора папки Windows (проверь окно проводника)... 🌸");
+      try {
+        const res = await fetch("/pick_folder?target_lang=" + encodeURIComponent(targetLang), { method: "POST" });
+        if (!res.ok) return;
+        const data = await res.json();
+        if (data.status === "cancelled") {
+          sayMiko("Выбор папки отменен. Нажми «Выбрать папку с мангой», когда будешь готов! 🌸");
+          return;
+        }
+        currentFolder = data.source_dir;
+        renderFolderData(data);
+      } catch (err) {
+        console.error("pickFolderDialog error:", err);
+      } finally {
+        isPickingFolderDialog = false;
+      }
     }
 
     async function inspectCurrentFolder(opts = {}) {

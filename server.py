@@ -2839,44 +2839,144 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
     }
 
 
-def open_native_folder_picker() -> str | None:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
+_native_picker_lock = threading.Lock()
 
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askdirectory(
-            title="Выберите папку с мангой / манхвой / маньхуа для перевода"
-        )
-        root.destroy()
-        return selected if selected else None
-    except Exception as exc:
-        logger.error("Не удалось открыть диалог выбора папки Tkinter: %s", exc)
-        return None
+_SUBPROCESS_PICKER_SCRIPT = r"""
+import ctypes, json, sys, tkinter as tk
+from tkinter import filedialog
+
+mode = sys.argv[1] if len(sys.argv) > 1 else "folder"
+try:
+    ctypes.windll.shcore.SetProcessDpiAwareness(1)
+except Exception:
+    pass
+
+root = tk.Tk()
+root.title("Miko-chan Manga Studio")
+sw = root.winfo_screenwidth()
+sh = root.winfo_screenheight()
+root.geometry(f"1x1+{sw // 2}+{sh // 2}")
+root.attributes("-topmost", True)
+root.attributes("-alpha", 0.01)
+root.deiconify()
+root.update()
+
+try:
+    user32 = ctypes.windll.user32
+    hwnd = root.winfo_id()
+    # Разблокируем ForegroundLockTimeout в Windows 10/11 при вызове из фонового процесса python.exe
+    user32.keybd_event(0x12, 0, 0, 0)
+    user32.SetForegroundWindow(hwnd)
+    user32.keybd_event(0x12, 0, 2, 0)
+except Exception:
+    pass
+
+root.lift()
+root.focus_force()
+root.update()
+
+if mode == "file":
+    selected = filedialog.askopenfilename(
+        parent=root,
+        title="Выберите страницу манги для перевода",
+        filetypes=[
+            ("Изображения манги", "*.jpg *.jpeg *.png *.webp *.bmp"),
+            ("Все файлы", "*.*"),
+        ],
+    )
+else:
+    selected = filedialog.askdirectory(
+        parent=root,
+        mustexist=True,
+        title="Выберите папку с мангой / манхвой / маньхуа для перевода",
+    )
+
+try:
+    root.destroy()
+except Exception:
+    pass
+
+sys.stdout.write(json.dumps({"selected": selected or ""}, ensure_ascii=False))
+sys.stdout.flush()
+"""
+
+
+def _run_native_picker_dialog(mode: str = "folder") -> str | None:
+    """
+    Открывает системное окно выбора папки/файла Windows в изолированном главном потоке дочернего процесса
+    с принудительным выводом поверх окна браузера (--app) через Win32 SetForegroundWindow и parent=root.
+    Исключает зависание Tcl/Tk в фоновых потоках ThreadPoolExecutor и открытие диалога позади окна студии!
+    """
+    with _native_picker_lock:
+        try:
+            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
+            env = dict(os.environ)
+            env["PYTHONUTF8"] = "1"
+            env["PYTHONIOENCODING"] = "utf-8"
+            proc = subprocess.run(
+                [sys.executable, "-c", _SUBPROCESS_PICKER_SCRIPT, mode],
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                env=env,
+                creationflags=creationflags,
+                timeout=600,
+            )
+            if proc.returncode == 0 and proc.stdout.strip():
+                raw_out = proc.stdout.strip().splitlines()[-1]
+                data = json.loads(raw_out)
+                sel = str(data.get("selected") or "").strip()
+                return sel if sel else None
+        except Exception as sub_exc:
+            logger.warning("Фоллбэк на прямой вызов Tkinter (%s): %s", mode, sub_exc)
+
+        try:
+            import ctypes
+            import tkinter as tk
+            from tkinter import filedialog
+
+            root = tk.Tk()
+            root.geometry("1x1+400+300")
+            root.attributes("-topmost", True)
+            root.attributes("-alpha", 0.01)
+            root.deiconify()
+            root.lift()
+            root.focus_force()
+            root.update()
+            if os.name == "nt":
+                try:
+                    ctypes.windll.user32.SetForegroundWindow(root.winfo_id())
+                except Exception:
+                    pass
+            if mode == "file":
+                selected = filedialog.askopenfilename(
+                    parent=root,
+                    title="Выберите страницу манги для перевода",
+                    filetypes=[
+                        ("Изображения манги", "*.jpg *.jpeg *.png *.webp *.bmp"),
+                        ("Все файлы", "*.*"),
+                    ],
+                )
+            else:
+                selected = filedialog.askdirectory(
+                    parent=root,
+                    mustexist=True,
+                    title="Выберите папку с мангой / манхвой / маньхуа для перевода",
+                )
+            root.destroy()
+            return selected if selected else None
+        except Exception as exc:
+            logger.error("Не удалось открыть диалог выбора (%s) Tkinter: %s", mode, exc)
+            return None
+
+
+def open_native_folder_picker() -> str | None:
+    return _run_native_picker_dialog("folder")
 
 
 def open_native_file_picker() -> str | None:
-    try:
-        import tkinter as tk
-        from tkinter import filedialog
-
-        root = tk.Tk()
-        root.withdraw()
-        root.attributes("-topmost", True)
-        selected = filedialog.askopenfilename(
-            title="Выберите страницу манги для перевода",
-            filetypes=[
-                ("Изображения манги", "*.jpg *.jpeg *.png *.webp *.bmp"),
-                ("Все файлы", "*.*"),
-            ],
-        )
-        root.destroy()
-        return selected if selected else None
-    except Exception as exc:
-        logger.error("Не удалось открыть диалог выбора файла Tkinter: %s", exc)
-        return None
+    return _run_native_picker_dialog("file")
 
 
 def _pil_to_rgb_clean(img: Image.Image) -> Image.Image:
