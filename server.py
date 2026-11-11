@@ -896,6 +896,8 @@ def _apply_stack_to_engines(stack: dict[str, Any], save_config: bool = False) ->
         )
     else:
         translator_engine.default_model_stack = merged_stack
+        translator_engine.pipeline_mode = pmode
+        translator_engine.translation_profile = tprof
     return merged_stack
 
 
@@ -3580,6 +3582,8 @@ async def _run_folder_translation_job(
                         det_lang = str(existing_p_meta.get("detected_lang") or scan_lang or "ja")
                         p_ocr_diag = dict(saved_ocr_diag or {})
                     else:
+                        _p_t0 = time.perf_counter()
+                        ocr_engine.stop_requested = False
                         async with gpu_lock(priority=3):
                             p_blocks, det_lang = await asyncio.to_thread(
                                 _run_ocr_compat,
@@ -3594,6 +3598,15 @@ async def _run_folder_translation_job(
                                 eff_pmode,
                             )
                             p_ocr_diag = dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {})
+                        logger.info(
+                            "🔍 [OCR %d/%d] %s — найдено %d блоков за %.2fс (режим=%s)",
+                            p_idx,
+                            len(page_batch),
+                            rel_norm,
+                            len(p_blocks),
+                            time.perf_counter() - _p_t0,
+                            eff_pmode,
+                        )
                     # Фиксируем язык главы как 'ja' или 'ko' только при наличии каны/хангыля,
                     # чтобы обложка без каны (только с кандзи) никогда не переключала всю японскую мангу на китайский ('zh')!
                     has_kana_on_page = any(
@@ -6323,6 +6336,8 @@ async def stop_folder_translation_endpoint() -> dict[str, Any]:
     _folder_stop_requested = True
     if translator_engine is not None:
         translator_engine.stop_requested = True
+    if ocr_engine is not None:
+        ocr_engine.stop_requested = True
     folder_job_state["status"] = "stopping"
     folder_job_state["current_file"] = "Пауза после текущей страницы..."
     return {"status": "stopping", "message": "Запрос на остановку отправлен. Прогресс сохранен."}

@@ -3744,56 +3744,73 @@ class MangaOCREngine:
 
         base_ol_url = (ollama_base_url or self.ollama_base_url or "http://127.0.0.1:11434").rstrip("/")
 
-        # 1. Пробуем локальную Vision-модель в Ollama (с 30-секундным кэшем списка /api/tags)
-        try:
-            now_mono = time.monotonic()
-            cached_ts = getattr(self, "_ollama_vlm_tags_ts", 0.0)
-            installed_names: list[str] = list(getattr(self, "_ollama_vlm_tags_cache", []) or [])
-            with httpx.Client(timeout=httpx.Timeout(25.0, connect=2.0), trust_env=False) as client:
-                if (now_mono - cached_ts) > 300.0 or not hasattr(self, "_ollama_vlm_tags_cache"):
-                    installed_names = []
-                    try:
-                        tags_resp = client.get(f"{base_ol_url}/api/tags")
-                        if tags_resp.status_code == 200:
-                            for item in tags_resp.json().get("models", []):
-                                m_name = str(item.get("name") or "").strip()
-                                if m_name:
-                                    installed_names.append(m_name)
-                        self._ollama_vlm_tags_cache = installed_names
-                        self._ollama_vlm_tags_ts = now_mono
-                    except Exception:
-                        pass
+        # 1. Пробуем локальную Vision-модель в Ollama (с Circuit Breaker при таймауте/нехватке VRAM)
+        now_mono = time.monotonic()
+        vlm_disabled_until = float(getattr(self, "_vlm_ollama_disabled_until", 0.0) or 0.0)
+        if now_mono >= vlm_disabled_until:
+            try:
+                cached_ts = getattr(self, "_ollama_vlm_tags_ts", 0.0)
+                installed_names: list[str] = list(getattr(self, "_ollama_vlm_tags_cache", []) or [])
+                with httpx.Client(timeout=httpx.Timeout(8.0, connect=1.5), trust_env=False) as client:
+                    if (now_mono - cached_ts) > 300.0 or not hasattr(self, "_ollama_vlm_tags_cache"):
+                        installed_names = []
+                        try:
+                            tags_resp = client.get(f"{base_ol_url}/api/tags")
+                            if tags_resp.status_code == 200:
+                                for item in tags_resp.json().get("models", []):
+                                    m_name = str(item.get("name") or "").strip()
+                                    if m_name:
+                                        installed_names.append(m_name)
+                            self._ollama_vlm_tags_cache = installed_names
+                            self._ollama_vlm_tags_ts = now_mono
+                        except Exception:
+                            self._vlm_ollama_disabled_until = now_mono + 120.0
 
-                chosen_ol_vlm = self._pick_best_ollama_vlm_model(installed_names, preferred_model=vlm_model)
-                if chosen_ol_vlm:
-                    payload_ol: dict[str, Any] = {
-                        "model": chosen_ol_vlm,
-                        "prompt": vlm_prompt,
-                        "images": [b64_png],
-                        "stream": False,
-                        "options": {
-                            "temperature": 0.0,
-                            "num_predict": 160,
-                        },
-                    }
-                    gen_resp = client.post(f"{base_ol_url}/api/generate", json=payload_ol)
-                    if gen_resp.status_code == 200:
-                        raw_out = str(gen_resp.json().get("response") or "")
-                        text_out, det_lang = self._clean_vlm_ocr_output(raw_out, fallback_lang=fb_lang)
-                        if text_out and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(text_out):
-                            self._last_vlm_model_used = f"ollama::{chosen_ol_vlm}"
-                            self._vlm_ocr_calls_count += 1
-                            self.last_detection_stats["vlm_ocr_calls"] = self._vlm_ocr_calls_count
-                            self.last_detection_stats["vlm_ocr_backend"] = self.get_vlm_ocr_backend_name()
-                            logger.info(
-                                "🎯 [VLM-OCR Ollama] Модель %s распознала текст: '%s' (lang=%s)",
+                    chosen_ol_vlm = self._pick_best_ollama_vlm_model(installed_names, preferred_model=vlm_model)
+                    if chosen_ol_vlm:
+                        payload_ol: dict[str, Any] = {
+                            "model": chosen_ol_vlm,
+                            "prompt": vlm_prompt,
+                            "images": [b64_png],
+                            "stream": False,
+                            "options": {
+                                "temperature": 0.0,
+                                "num_predict": 120,
+                            },
+                        }
+                        gen_resp = client.post(f"{base_ol_url}/api/generate", json=payload_ol)
+                        if gen_resp.status_code == 200:
+                            raw_out = str(gen_resp.json().get("response") or "")
+                            text_out, det_lang = self._clean_vlm_ocr_output(raw_out, fallback_lang=fb_lang)
+                            if text_out and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(text_out):
+                                self._last_vlm_model_used = f"ollama::{chosen_ol_vlm}"
+                                self._vlm_ocr_calls_count += 1
+                                self.last_detection_stats["vlm_ocr_calls"] = self._vlm_ocr_calls_count
+                                self.last_detection_stats["vlm_ocr_backend"] = self.get_vlm_ocr_backend_name()
+                                logger.info(
+                                    "🎯 [VLM-OCR Ollama] Модель %s распознала текст: '%s' (lang=%s)",
+                                    chosen_ol_vlm,
+                                    text_out,
+                                    det_lang,
+                                )
+                                return text_out, det_lang, self._last_vlm_model_used
+                        else:
+                            self._vlm_ollama_disabled_until = time.monotonic() + 600.0
+                            logger.warning(
+                                "⚠️ Локальный VLM-OCR (%s) вернул HTTP %d — авто-вызовы VLM-OCR отключены на 10 мин.",
                                 chosen_ol_vlm,
-                                text_out,
-                                det_lang,
+                                gen_resp.status_code,
                             )
-                            return text_out, det_lang, self._last_vlm_model_used
-        except Exception as ol_exc:
-            logger.debug("Локальный VLM-OCR через Ollama пропущен: %s", ol_exc)
+                    else:
+                        # В Ollama нет установленных VLM-моделей — не повторяем попытки следующие 5 минут
+                        self._vlm_ollama_disabled_until = time.monotonic() + 300.0
+            except Exception as ol_exc:
+                self._vlm_ollama_disabled_until = time.monotonic() + 600.0
+                logger.warning(
+                    "⚠️ Таймаут/сбой локального VLM-OCR в Ollama (%s: %s) — авто-вызовы VLM-OCR отключены на 10 мин, чтобы не замедлять OCR!",
+                    type(ol_exc).__name__,
+                    ol_exc,
+                )
 
         # 2. Пробуем облачный OpenAI-совместимый Vision API (с ретраями при сетевых таймаутах)
         if cloud_api_url and cloud_api_key:
@@ -6855,6 +6872,8 @@ class MangaOCREngine:
         final_detections: list[dict[str, Any]] = []
         split_count = 0
         rescued_count = 0
+        page_g_full = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if img_np.ndim == 3 else img_np
+        solver = BubblePolygonSolver(neck_ratio_thresh=0.72)
 
         for b_idx, b_det in enumerate(bubbles):
             matched = bubble_to_tbs.get(b_idx) or []
@@ -6863,17 +6882,11 @@ class MangaOCREngine:
 
             if len(matched) <= 1 and not is_free and (bx2 - bx1) >= 72 and (by2 - by1) >= 72:
                 try:
-                    roi_g_sub = (
-                        cv2.cvtColor(img_np[by1:by2, bx1:bx2], cv2.COLOR_RGB2GRAY)
-                        if img_np.ndim == 3
-                        else img_np[by1:by2, bx1:bx2]
-                    )
+                    roi_g_sub = page_g_full[by1:by2, bx1:bx2]
                     p75_sub = float(np.percentile(roi_g_sub, 75))
                     if p75_sub >= 205.0:
                         cav_sub = self._extract_bubble_interior_mask(roi_g_sub, p75_sub)
-                        solver = BubblePolygonSolver(neck_ratio_thresh=0.72)
                         tb_tuples = [tuple(m["bbox"]) for m in matched] if matched else [(bx1, by1, bx2, by2)]
-                        page_g_full = cv2.cvtColor(img_np, cv2.COLOR_RGB2GRAY) if img_np.ndim == 3 else img_np
                         decomp = solver.solve(
                             bubble_mask_roi=cav_sub,
                             roi_offset=(bx1, by1),
@@ -8092,7 +8105,7 @@ class MangaOCREngine:
                         return False
 
                     is_acc_or_ultra = is_ultra_ocr or (getattr(self, "pipeline_mode", "balanced") == "accuracy")
-                    len_thresh = 12 if is_ultra_ocr else (28 if is_acc_or_ultra else 38)
+                    len_thresh = 42 if is_ultra_ocr else (44 if is_acc_or_ultra else 48)
                     fallback_indices = [
                         idx
                         for idx, txt in enumerate(nar_texts)
@@ -8308,7 +8321,10 @@ class MangaOCREngine:
         batch_candidates_raw_np: list[np.ndarray] = []
         batch_candidates_meta: list[tuple[tuple[int, int, int, int, str], int, bool]] = []
         rejected_hallucination_keys: set[tuple[int, int, int, int, str]] = set()
+        vlm_auto_calls_on_page = 0
         for det in sorted_detections:
+            if getattr(self, "stop_requested", False):
+                break
             x1, y1, x2, y2 = det["bbox"]
             is_free = bool(det.get("is_free_text", False))
             cache_key = (x1, y1, x2, y2, resolved_lang)
@@ -8399,23 +8415,20 @@ class MangaOCREngine:
                     recognized_text = retry_full_txt
                     ocr_coords = [x1, y1, x2, y2]
 
-            # В режимах 'accuracy' и 'ultra' автоматически подключаем снайперский VLM-OCR (Qwen3-VL / GLM-OCR),
-            # если в баббле много чернил, но быстрый OCR вернул пустоту, слипшуюся латиницу или подозрительный шум
+            # Авто-дочитка через VLM-OCR вызывается ТОЛЬКО при явно выбранном бэкенде 'ultra_ensemble_vlm',
+            # не более 1 раза на страницу, только для реальных бабблов (не free_text шума и не rejected_hallucination_keys)
+            # и только если локальный VLM в Ollama не отключен Circuit Breaker'ом!
             if (
-                (eff_pmode in ("accuracy", "ultra") or getattr(self, "ocr_backend", "") == "ultra_ensemble_vlm")
+                getattr(self, "ocr_backend", "") == "ultra_ensemble_vlm"
+                and vlm_auto_calls_on_page < 1
+                and time.monotonic() >= float(getattr(self, "_vlm_ollama_disabled_until", 0.0) or 0.0)
+                and not is_free
+                and cache_key not in rejected_hallucination_keys
                 and has_ink
-                and ink_pixels >= (28 if eff_pmode == "ultra" else 36)
-                and (
-                    not recognized_text
-                    or (eff_pmode == "ultra" and _looks_like_merged_english_ocr(recognized_text))
-                    or (
-                        not is_free
-                        and len(recognized_text.strip()) <= (3 if eff_pmode == "ultra" else 2)
-                        and ink_pixels >= (130 if eff_pmode == "ultra" else 165)
-                        and not skip_sfx and self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False)
-                    )
-                )
+                and ink_pixels >= 65
+                and not recognized_text
             ):
+                vlm_auto_calls_on_page += 1
                 try:
                     vlm_resc_txt, _vlm_l, _ = self.recognize_crop_via_vlm(
                         rgb_image,
