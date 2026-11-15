@@ -5233,34 +5233,12 @@ class MangaOCREngine:
         return 0.0, 10.0, 0.0
 
     @staticmethod
-    def _is_true_white_bubble_interior(core_gray: np.ndarray) -> bool:
-        """
-        Отличает истинно белый фон речевого облачка от бинарного растрового скринтона (halftone),
-        у которого >25% пикселей белые (255), из-за чего перцентиль p75 равен 255 даже на серых плашках.
-        """
-        if core_gray.size < 16:
-            return False
-        p75 = float(np.percentile(core_gray, 75))
-        if p75 < 210.0:
-            return False
-        p50 = float(np.percentile(core_gray, 50))
-        if p50 < 205.0:
-            return False
-        smooth = cv2.GaussianBlur(core_gray, (5, 5), 0)
-        if float(np.percentile(smooth, 60)) < 205.0:
-            return False
-        high_freq = np.abs(core_gray.astype(np.float32) - smooth.astype(np.float32))
-        if float(np.mean(high_freq > 26.0)) >= 0.16 and float(np.percentile(smooth, 50)) < 228.0:
-            return False
-        return True
-
-    @staticmethod
     def _extract_bubble_interior_mask(roi_gray: np.ndarray, bg_level: float) -> np.ndarray:
         """
         Выделяет внутреннюю светлую область речевого облачка внутри темного контура баббла,
         отсекая как сам контур баббла, так и 4 внешних угла прямоугольного бокса за пределами овала,
         и морфологически замыкает вмятины от крайних иероглифов, касающихся стенок баббла,
-        с автоматической поддержкой пунктирных (Проблема №1), разомкнутых (Проблема №2) и составных (figure-8) бабблов.
+        с автоматической поддержкой пунктирных (Проблема №1) и разомкнутых (Проблема №2) бабблов.
         """
         rh, rw = roi_gray.shape[:2]
         wall_thresh = max(150, int(bg_level - 52))
@@ -5283,19 +5261,14 @@ class MangaOCREngine:
         best_label = -1
         best_score = -1.0
         best_edge_touches = 0
-        candidate_lobes: list[int] = []
 
         c_x1, c_x2 = int(rw * 0.22), max(int(rw * 0.22) + 1, int(rw * 0.78))
         c_y1, c_y2 = int(rh * 0.18), max(int(rh * 0.18) + 1, int(rh * 0.82))
         center_slice = labels[c_y1:c_y2, c_x1:c_x2]
-        spine_x1, spine_x2 = int(rw * 0.28), max(int(rw * 0.28) + 1, int(rw * 0.72))
-        spine_y1, spine_y2 = int(rh * 0.08), max(int(rh * 0.08) + 1, int(rh * 0.92))
-        spine_slice = labels[spine_y1:spine_y2, spine_x1:spine_x2]
 
         for lbl in range(1, num_labels):
             area = float(stats[lbl, cv2.CC_STAT_AREA])
             center_hits = float(np.count_nonzero(center_slice == lbl))
-            spine_hits = float(np.count_nonzero(spine_slice == lbl))
             if area < (rh * rw * 0.03) and center_hits < (center_slice.size * 0.03):
                 continue
             dist = ((centroids[lbl][0] - cx_mid) ** 2 + ((centroids[lbl][1] - cy_mid) ** 2)) ** 0.5
@@ -5311,17 +5284,11 @@ class MangaOCREngine:
                 best_score = score
                 best_label = lbl
                 best_edge_touches = edge_touches
-
-            if (
-                edge_touches <= 1
-                and area >= (rh * rw * 0.045)
-                and (center_hits >= (center_slice.size * 0.04) or spine_hits >= max(16.0, area * 0.32))
-            ):
-                candidate_lobes.append(lbl)
-
         if best_label == -1:
             return light_pixels
 
+        # Если основная светлая область касается >= 3 границ кропа (пробой через пунктирную или разомкнутую стенку),
+        # пробуем герметизировать чашу через SOTA-модули Проблемы №1 и Проблемы №2:
         if best_edge_touches >= 2 and rh >= 24 and rw >= 24:
             dash_res = segment_dashed_bubble_roi(roi_gray, None)
             if dash_res.get("is_dashed_bubble"):
@@ -5338,9 +5305,6 @@ class MangaOCREngine:
 
         interior = np.zeros_like(light_pixels)
         interior[labels == best_label] = 255
-        if best_edge_touches <= 1 and len(candidate_lobes) > 1:
-            for lobe_lbl in candidate_lobes:
-                interior[labels == lobe_lbl] = 255
 
         inv = cv2.bitwise_not(interior)
         n_inv, lbl_inv, st_inv, _ = cv2.connectedComponentsWithStats(inv, connectivity=8)
@@ -5385,15 +5349,6 @@ class MangaOCREngine:
             closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
 
         closed_int[wall_barrier > 0] = 0
-        # Отсекаем любые внешние карманы за пределами wall_barrier, которые MORPH_CLOSE перекинул наружу:
-        n_ci, lbl_ci, _, _ = cv2.connectedComponentsWithStats(closed_int, connectivity=4)
-        if n_ci > 1:
-            kept_ci = np.zeros_like(closed_int)
-            for idx_ci in range(1, n_ci):
-                if np.any((lbl_ci == idx_ci) & (interior > 0)):
-                    kept_ci[lbl_ci == idx_ci] = 255
-            closed_int = kept_ci
-
         inv2 = cv2.bitwise_not(closed_int)
         n_inv2, lbl_inv2, st_inv2, _ = cv2.connectedComponentsWithStats(inv2, connectivity=8)
         for idx2 in range(1, n_inv2):
@@ -5409,8 +5364,7 @@ class MangaOCREngine:
 
         added = cv2.subtract(closed_int, interior)
         ext_light = cv2.subtract(light_pixels, interior)
-        ext_light_guard = cv2.dilate(ext_light, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-        added = cv2.bitwise_and(added, cv2.bitwise_not(ext_light_guard))
+        added = cv2.bitwise_and(added, cv2.bitwise_not(ext_light))
         n_add, lbl_add, st_add, _ = cv2.connectedComponentsWithStats(added, connectivity=8)
         for idx_a in range(1, n_add):
             aw = st_add[idx_a, cv2.CC_STAT_WIDTH]
@@ -5479,11 +5433,10 @@ class MangaOCREngine:
         roi_gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY)
         p75 = float(np.percentile(roi_gray, 75))
         median_val = float(np.median(roi_gray))
-        is_true_white_interior = cls._is_true_white_bubble_interior(roi_gray)
 
         has_clean_interior = False
         is_dashed_wall_roi = False
-        if is_true_white_interior:
+        if p75 >= 210.0:
             interior_mask = cls._extract_bubble_interior_mask(roi_gray, p75)
             ink_thresh = max(165, int(p75 - 18))
             binary = ((roi_gray < ink_thresh) & (interior_mask > 0)).astype(np.uint8) * 255
@@ -5521,23 +5474,8 @@ class MangaOCREngine:
                         if d_int.shape == binary.shape and np.count_nonzero(d_int) >= 0.08 * rh * rw:
                             binary[d_int == 0] = 0
             has_clean_interior = True
-        elif median_val >= 85.0:
-            # Серый / скринтоновый бокс (включая темный текст с белой обводкой):
-            # подавляем мелкое зерно скринтона GaussianBlur(3x3) и выделяем штрихи букв + белую обводку
-            smooth_g = cv2.GaussianBlur(roi_gray, (3, 3), 0)
-            s_med = float(np.median(smooth_g))
-            dark_ink = (smooth_g < max(45.0, s_med - 24.0)).astype(np.uint8) * 255
-            # Срезаем 1-2px точки растра, оставляя только реальные штрихи текста:
-            dt_ink = cv2.distanceTransform(dark_ink, cv2.DIST_L2, 3)
-            thick_seeds = (dt_ink >= 1.35).astype(np.uint8) * 255
-            if np.count_nonzero(thick_seeds) >= 8:
-                n_dk, lbl_dk, _, _ = cv2.connectedComponentsWithStats(dark_ink, connectivity=8)
-                binary = np.zeros_like(dark_ink)
-                for l_dk in range(1, n_dk):
-                    if np.any((lbl_dk == l_dk) & (thick_seeds > 0)):
-                        binary[lbl_dk == l_dk] = 255
-            else:
-                _, binary = cv2.threshold(smooth_g, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        elif median_val >= 127.0:
+            _, binary = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
         else:
             _, binary = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
 
@@ -5594,16 +5532,13 @@ class MangaOCREngine:
         if (ink_x2 - ink_x1) < 10 or (ink_y2 - ink_y1) < 10:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
 
-        # Защита от фрагментации interior_mask на длинных вертикальных/горизонтальных и составных (figure-8) бабблах
-        # (в том числе когда RT-DETR valid_hint покрыл только одну долю двойного баббла):
-        if has_clean_interior and not is_dashed_wall_roi and (bh >= 70 or bw >= 70):
-            eff_x1 = min(ink_x1, valid_hint[0]) if valid_hint is not None else ink_x1
-            eff_y1 = min(ink_y1, valid_hint[1]) if valid_hint is not None else ink_y1
-            eff_x2 = max(ink_x2, valid_hint[2]) if valid_hint is not None else ink_x2
-            eff_y2 = max(ink_y2, valid_hint[3]) if valid_hint is not None else ink_y2
-            span_h_ratio = float(eff_y2 - eff_y1) / float(max(1, bh))
-            span_w_ratio = float(eff_x2 - eff_x1) / float(max(1, bw))
-            if span_h_ratio < 0.62 or span_w_ratio < 0.62:
+        # Защита от фрагментации interior_mask на длинных вертикальных/горизонтальных плашках без RT-DETR подсказки:
+        # если _extract_bubble_interior_mask отрезал больше 42% высоты/ширины баббла, а в отрезанной внутренней
+        # части баббла осталась значимая доля темных штрихов текста — расширяем text_bbox на все штрихи внутри баббла!
+        if valid_hint is None and has_clean_interior and (bh >= 70 or bw >= 70):
+            span_h_ratio = float(ink_y2 - ink_y1) / float(max(1, bh))
+            span_w_ratio = float(ink_x2 - ink_x1) / float(max(1, bw))
+            if span_h_ratio < 0.58 or span_w_ratio < 0.58:
                 in_pad_x = max(3, int(rw * 0.08))
                 in_pad_y = max(3, int(rh * 0.03))
                 if rh > 2 * in_pad_y + 8 and rw > 2 * in_pad_x + 8:
@@ -5634,7 +5569,7 @@ class MangaOCREngine:
                         c_max_x = max(c_max_x, ccx + ccw)
                         c_max_y = max(c_max_y, ccy + cch)
                         c_kept_px += cca
-                    if c_kept_px > int(kept_ink_px * 1.20) and c_kept_px >= 24 and c_max_x > c_min_x and c_max_y > c_min_y:
+                    if c_kept_px > int(kept_ink_px * 1.25) and c_kept_px >= 24 and c_max_x > c_min_x and c_max_y > c_min_y:
                         ink_x1 = max(bx1, min(ink_x1, ix1 + in_pad_x + c_min_x - 4))
                         ink_y1 = max(by1, min(ink_y1, iy1 + in_pad_y + c_min_y - 4))
                         ink_x2 = min(bx2, max(ink_x2, ix1 + in_pad_x + c_max_x + 4))

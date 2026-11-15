@@ -971,42 +971,17 @@ def classify_and_clean_heterogeneous_bubble(
     valid_raw = (inpaint_mask == 0) & (protected_wall_mask == 0)
     if not np.any(valid_raw):
         valid_raw = (inpaint_mask == 0)
-    gray_f = roi_gray.astype(np.float32)
-    smooth5_all = cv2.GaussianBlur(gray_f, (5, 5), 1.2)
     bg_p75 = float(np.percentile(roi_gray[valid_raw], 75)) if np.any(valid_raw) else 255.0
-    bg_p35_smooth = float(np.percentile(smooth5_all[valid_raw], 35)) if np.any(valid_raw) else 255.0
-    bg_med_smooth = float(np.median(smooth5_all[valid_raw])) if np.any(valid_raw) else 255.0
-    hf_all = np.abs(gray_f - smooth5_all)
-    tone_ripple_ratio = (
-        float(np.mean((smooth5_all[valid_raw] >= 75.0) & (smooth5_all[valid_raw] <= 230.0) & (hf_all[valid_raw] >= 9.5)))
-        if np.any(valid_raw)
-        else 0.0
-    )
-    is_true_bright_flat_bg = (
-        bg_p75 >= 212.0
-        and bg_med_smooth >= 210.0
-        and bg_p35_smooth >= 195.0
-        and tone_ripple_ratio < 0.15
-    )
-    if is_true_bright_flat_bg:
-        # В истинно светлом плоском баббле исключаем случайные черные штрихи/волосы/стенки (< 120) из интерполяции фона
+    if bg_p75 >= 195.0:
+        # В светлом баббле исключаем случайные черные штрихи/волосы/стенки (< 120) из интерполяции фона
         clean_bg_bool = valid_raw & (roi_gray >= 120)
         if np.count_nonzero(clean_bg_bool) >= 16:
             valid_raw = clean_bg_bool
-    elif bg_med_smooth < 212.0 and np.any(valid_raw):
-        # На серой плашке или скринтоне исключаем остаточный белый ореол (halo) вокруг маски из эталона фона,
-        # чтобы решатель Лапласа-Дирихле не затягивал белую краску (255) внутрь серого бокса!
-        near_mask_band = cv2.dilate(inpaint_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))) > 0
-        halo_leak = near_mask_band & (roi_gray >= max(220, int(round(bg_med_smooth + 28.0)))) & (smooth5_all >= bg_med_smooth + 14.0)
-        if np.any(halo_leak):
-            inpaint_mask = cv2.bitwise_or(inpaint_mask, (halo_leak & (protected_wall_mask == 0)).astype(np.uint8) * 255)
-            valid_raw = (inpaint_mask == 0) & (protected_wall_mask == 0)
-            if not np.any(valid_raw):
-                valid_raw = (inpaint_mask == 0)
 
     valid = valid_raw.astype(np.float32)
+    gray_f = roi_gray.astype(np.float32)
     val_img = gray_f * valid
-    fallback_gray = float(np.median(smooth5_all[valid_raw])) if np.any(valid_raw) else 255.0
+    fallback_gray = float(np.median(roi_gray[valid_raw])) if np.any(valid_raw) else 255.0
 
     win_sz = (int(round(15 * s)) | 1, int(round(15 * s)) | 1)
     wide_cls_win = (int(round(45 * s)) | 1, int(round(45 * s)) | 1)
@@ -1025,7 +1000,7 @@ def classify_and_clean_heterogeneous_bubble(
     sq_mean_local = np.where(w_raw > 0.05, sq_15, np.where(w_wide_raw > 0.02, sq_45, fallback_gray * fallback_gray))
     sigma_local = np.sqrt(np.maximum(0.0, sq_mean_local - mean_local * mean_local))
 
-    smooth_bg = smooth5_all
+    smooth_bg = cv2.GaussianBlur(gray_f, (5, 5), 1.2)
     hf_res = np.abs(gray_f - smooth_bg) * valid
     hf_15 = cv2.boxFilter(hf_res, cv2.CV_32F, win_sz) / w_sum
     hf_45 = cv2.boxFilter(hf_res, cv2.CV_32F, wide_cls_win) / w_wide
@@ -1042,7 +1017,7 @@ def classify_and_clean_heterogeneous_bubble(
     # Карта режимов: 0 = Flat (A), 1 = Smooth Gradient (B), 2 = Screentone Amiten (C), 3 = Line Art (D)
     regime_map = np.zeros((H, W), dtype=np.uint8)
     is_grad = (sigma_local > 1.8) & (hf_energy <= 2.8) & (extrema_density < 0.04)
-    is_tone = (hf_energy > 2.2) & (extrema_density >= 0.032)
+    is_tone = (hf_energy > 2.5) & (extrema_density >= 0.04)
     is_line = (sigma_local > 15.0) & (~is_tone) & (~is_grad)
 
     regime_map[is_grad] = 1
@@ -1056,12 +1031,10 @@ def classify_and_clean_heterogeneous_bubble(
 
     img_f = roi_img.astype(np.float32)
     harmonic_out = img_f.copy()
-    # Подменяем только реальные защищенные стенки/препятствия вне маски медианой сглаженного фона,
-    # НЕ затирая точки скринтона вне маски!
+    # Подменяем темные препятствия вне маски в harmonic_out медианой фона, чтобы граничные условия Дирихле не тянули черноту внутрь маски!
     non_mask_obstacles = (~m_bool) & (~valid_raw)
     if is_color:
-        smooth_rgb = cv2.GaussianBlur(img_f, (5, 5), 1.2)
-        fallback_rgb = np.median(smooth_rgb[valid_raw], axis=0).astype(np.float32) if np.any(valid_raw) else np.array([255.0, 255.0, 255.0], dtype=np.float32)
+        fallback_rgb = np.median(roi_img[valid_raw], axis=0).astype(np.float32) if np.any(valid_raw) else np.array([255.0, 255.0, 255.0], dtype=np.float32)
         harmonic_out[non_mask_obstacles] = fallback_rgb
     else:
         harmonic_out[non_mask_obstacles] = fallback_gray
@@ -1103,7 +1076,7 @@ def classify_and_clean_heterogeneous_bubble(
 
     # 3.5. Шаг 3 (v5.0): Спектральный 2D-RFFT синтез периодического скринтона (Amiten) для Режима C
     tone_mask_u8 = ((regime_map == 2) & m_bool).astype(np.uint8) * 255
-    valid_tone_ring = ((regime_map == 2) & (~m_bool) & valid_raw).astype(np.uint8) * 255
+    valid_tone_ring = ((regime_map == 2) & (~m_bool) & (protected_wall_mask == 0)).astype(np.uint8) * 255
     fft_pmr_val = 0.0
     if int(np.count_nonzero(tone_mask_u8)) >= 12:
         synth_res, fft_pmr_val = synthesize_periodic_screentone_rfft2(
@@ -1112,15 +1085,13 @@ def classify_and_clean_heterogeneous_bubble(
             harmonic_base=harmonic_out,
             valid_tone_mask=valid_tone_ring,
         )
-        if fft_pmr_val > 12.0:
+        if fft_pmr_val > 18.0:
             harmonic_out[tone_mask_u8 > 0] = synth_res[tone_mask_u8 > 0].astype(np.float32)
 
     # 4. Гибридное бесшовное слияние с LaMa для зон Режима C (Скринтон) и Режима D (Лайнарт)
     need_lama_mask = ((regime_map >= 2) & m_bool).astype(np.uint8) * 255
     num_cd_pixels = int(np.count_nonzero(need_lama_mask))
     final_out = np.clip(harmonic_out, 0, 255).astype(np.uint8)
-    # Возвращаем нетронутые оригинальные пиксели фона (например, точки скринтона) вне маски инпейнтинга
-    final_out[~m_bool] = roi_img[~m_bool]
 
     if num_cd_pixels >= 15 and lama_runner is not None:
         y_cd, x_cd = np.nonzero(need_lama_mask > 0)
@@ -1128,13 +1099,7 @@ def classify_and_clean_heterogeneous_bubble(
         ly1, ly2 = max(0, int(np.min(y_cd)) - pad_l), min(H, int(np.max(y_cd)) + pad_l)
         lx1, lx2 = max(0, int(np.min(x_cd)) - pad_l), min(W, int(np.max(x_cd)) + pad_l)
 
-        # Подаем в LaMa реальную текстуру скринтона вне маски (экранируя только защищенные стенки),
-        # чтобы FFC-слои LaMa видели оригинальную решетку точек!
-        lama_input_full = roi_img.copy()
-        if np.any(protected_wall_mask > 0):
-            wall_bool = (protected_wall_mask > 0) & (~m_bool)
-            lama_input_full[wall_bool] = np.clip(harmonic_out[wall_bool], 0, 255).astype(np.uint8)
-        sub_img = lama_input_full[ly1:ly2, lx1:lx2]
+        sub_img = harmonic_out[ly1:ly2, lx1:lx2].clip(0, 255).astype(np.uint8)
         sub_mask = inpaint_mask[ly1:ly2, lx1:lx2]
         if is_color:
             lama_patch = lama_runner(sub_img, sub_mask)
@@ -1142,17 +1107,16 @@ def classify_and_clean_heterogeneous_bubble(
             sub_rgb = np.stack([sub_img] * 3, axis=-1)
             lama_rgb = lama_runner(sub_rgb, sub_mask)
             lama_patch = cv2.cvtColor(lama_rgb, cv2.COLOR_RGB2GRAY) if lama_rgb.ndim == 3 else lama_rgb
-        # Anti-Stain Guard применяется ТОЛЬКО на истинно белой плоской подложке (is_true_bright_flat_bg),
-        # чтобы никогда не высветлять серые плашки и скринтоны!
-        if is_true_bright_flat_bg:
+        # Anti-Stain Guard: если подложка светлая (bg_p75 >= 195), запрещаем LaMa генерировать черные пятна внутри маски!
+        if bg_p75 >= 195.0:
             harm_sub = harmonic_out[ly1:ly2, lx1:lx2]
             lama_patch = np.maximum(lama_patch.astype(np.float32), harm_sub - 28.0).clip(0, 255).astype(np.uint8)
 
         raw_cd_weight = (regime_map[ly1:ly2, lx1:lx2] >= 2).astype(np.float32)
-        if fft_pmr_val > 12.0:
-            # На периодическом скринтоне Брэгга удерживаем кристаллическую фазу RFFT-решетки (75% RFFT + 25% LaMa)
+        if fft_pmr_val > 18.0:
+            # На периодическом скринтоне Брэгга удерживаем кристаллическую фазу RFFT-решетки (65% RFFT + 35% LaMa)
             is_sub_tone = regime_map[ly1:ly2, lx1:lx2] == 2
-            raw_cd_weight = np.where(is_sub_tone, 0.25, raw_cd_weight)
+            raw_cd_weight = np.where(is_sub_tone, 0.35, raw_cd_weight)
         alpha_cd = cv2.GaussianBlur(raw_cd_weight, (9, 9), 3.0)
         if is_color:
             alpha_cd = alpha_cd[:, :, None]
@@ -1780,27 +1744,17 @@ class SotaMangaCleaner:
         поверх волос/одежды/фона с гарантией Zero Bleed (Context Shielding).
         """
         out = roi_rgb.copy()
-        r_dil = int(np.clip(round(0.45 * median_sw) + 2, 3, 8))
+        r_dil = int(np.clip(round(0.5 * median_sw) + 3, 4, 10))
         se = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r_dil + 1, 2 * r_dil + 1))
         bubble_total = cv2.bitwise_or(cavity_roi, wall_roi)
 
-        # Захватываем только реальный непрерывный белый ореол (halo) вокруг внешних штрихов,
-        # НЕ захватывая белые промежутки между точками внешнего скринтона!
+        # Дополнительно захватываем примыкающий белый ореол вокруг внешней маски (если он остался на границе)
         gray_out = cv2.cvtColor(out, cv2.COLOR_RGB2GRAY)
-        gray_f = gray_out.astype(np.float32)
-        smooth3 = cv2.GaussianBlur(gray_f, (3, 3), 0.8)
-        smooth15 = cv2.GaussianBlur(gray_f, (15, 15), 3.5)
         halo_ring = cv2.subtract(
-            cv2.dilate(outside_seed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))),
+            cv2.dilate(outside_seed, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))),
             outside_seed,
         )
-        adj_white_halo = (
-            (gray_out >= 212)
-            & (smooth3 >= 198.0)
-            & ((smooth3 - smooth15) >= 12.0)
-            & (halo_ring > 0)
-            & (bubble_total == 0)
-        ).astype(np.uint8) * 255
+        adj_white_halo = ((gray_out >= 200) & (halo_ring > 0) & (bubble_total == 0)).astype(np.uint8) * 255
         expanded_seed = cv2.bitwise_or(outside_seed, adj_white_halo)
 
         mask_outside = cv2.bitwise_and(
@@ -1809,17 +1763,28 @@ class SotaMangaCleaner:
         if not np.any(mask_outside > 0):
             return out
 
-        # Используем гетерогенный решатель (Гармонический Лаплас + 2D-RFFT синтез скринтона + LaMa)
-        # с жестким экранированием внутренней полости и стенки баббла (protected_wall_mask = bubble_total),
-        # чтобы внешний скринтон никогда не закрашивался белыми прямоугольниками!
-        het_ext = classify_and_clean_heterogeneous_bubble(
-            roi_img=out,
-            raw_stroke_mask=mask_outside,
-            protected_wall_mask=bubble_total,
-            lama_runner=self.lama_inpainter,
-            scale_f=1.0,
+        shielded_input = out.copy()
+        ext_ring = cv2.subtract(
+            cv2.dilate(mask_outside, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))),
+            cv2.bitwise_or(mask_outside, bubble_total),
         )
-        inpainted = het_ext["cleaned_roi"]
+        if np.any(ext_ring > 0):
+            bg_med = np.median(out[ext_ring > 0], axis=0).astype(np.uint8)
+        else:
+            bg_med = np.array([60, 60, 60], dtype=np.uint8)
+
+        near_bubble = cv2.bitwise_and(
+            bubble_total,
+            cv2.dilate(mask_outside, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (31, 31))),
+        )
+        shielded_input[near_bubble > 0] = bg_med
+
+        if self.lama_inpainter is not None:
+            inpainted = self.lama_inpainter(shielded_input, mask_outside)
+        else:
+            bgr_in = cv2.cvtColor(shielded_input, cv2.COLOR_RGB2BGR)
+            bgr_out = cv2.inpaint(bgr_in, mask_outside, inpaintRadius=5, flags=cv2.INPAINT_NS)
+            inpainted = cv2.cvtColor(bgr_out, cv2.COLOR_BGR2RGB)
 
         dt_in = cv2.distanceTransform(mask_outside, cv2.DIST_L2, 3)
         alpha = np.clip(dt_in / 2.0, 0.0, 1.0)[..., None]
@@ -3304,39 +3269,13 @@ class BubbleCleaner:
                     logger.debug("Не удалось сохранить кэш очищенного слоя на диск: %s", exc)
 
     @staticmethod
-    def _is_true_white_bubble_interior(core_gray: np.ndarray) -> bool:
-        """
-        Отличает истинный светлый speech bubble от серых и скринтоновых (amiten) рамок/плашек.
-        На бинарном скринтоне (черные точки + белая бумага + белый ореол букв) сырой p75 >= 210,
-        но сглаженная яркость (Gaussian 5x5) проваливается в серый диапазон, а высокочастотная
-        энергия скринтона покрывает значительную площадь бокса.
-        """
-        if core_gray.size < 16:
-            return False
-        p75 = float(np.percentile(core_gray, 75))
-        if p75 < 212.0:
-            return False
-        med_raw = float(np.median(core_gray))
-        if med_raw < 195.0:
-            return False
-        gray_f = core_gray.astype(np.float32)
-        smooth5 = cv2.GaussianBlur(gray_f, (5, 5), 1.2)
-        p38_smooth = float(np.percentile(smooth5, 38))
-        med_smooth = float(np.median(smooth5))
-        if med_smooth < 208.0 or p38_smooth < 192.0:
-            return False
-        hf = np.abs(gray_f - smooth5)
-        tone_zone = (smooth5 >= 80.0) & (smooth5 <= 228.0) & (hf >= 9.5)
-        if float(np.mean(tone_zone)) >= 0.15:
-            return False
-        return True
-
-    @staticmethod
     def _extract_bubble_interior_mask(roi_gray: np.ndarray, bg_level: float) -> np.ndarray:
         """
         Находит внутреннюю светлую область speech bubble (внутри черного контура облачка),
-        поддерживая сдвоенные бабблы-«восьмёрки» (multi-lobe), отсекая внешние углы бокса
-        и вогнутые пазухи колючих бабблов со скринтоном за пределами черной рамки баббла.
+        отсекая внешние углы бокса за пределами рамки баббла, заполняет внутренние отверстия
+        иероглифов ДО морфологического замыкания и замыкает только компактные внутренние вмятины
+        от тёмных иероглифов, касающихся стенок баббла (知, 露, 藤, 没, 要, 東海),
+        НИКОГДА не перешагивая через черную стенку баббла на внешний белый ореол (halo)!
         """
         rh, rw = roi_gray.shape[:2]
         wall_thresh = max(150, int(bg_level - 52))
@@ -3349,7 +3288,7 @@ class BubbleCleaner:
         for ld in range(1, num_d):
             dw = st_d[ld, cv2.CC_STAT_WIDTH]
             dh = st_d[ld, cv2.CC_STAT_HEIGHT]
-            if dw > rw * 0.42 or dh > rh * 0.42:
+            if dw > rw * 0.45 or dh > rh * 0.45:
                 wall_barrier[lbl_d == ld] = 255
 
         num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(light_pixels, connectivity=4)
@@ -3362,10 +3301,10 @@ class BubbleCleaner:
         best_edge_touches = 0
 
         c_x1, c_x2 = int(rw * 0.22), max(int(rw * 0.22) + 1, int(rw * 0.78))
-        c_y1, c_y2 = int(rh * 0.14), max(int(rh * 0.14) + 1, int(rh * 0.86))
+        c_y1, c_y2 = int(rh * 0.18), max(int(rh * 0.18) + 1, int(rh * 0.82))
         center_slice = labels[c_y1:c_y2, c_x1:c_x2]
 
-        candidate_lobes: list[tuple[int, float, int, float, float]] = []
+        selected_labels: list[int] = []
         for lbl in range(1, num_labels):
             area = float(stats[lbl, cv2.CC_STAT_AREA])
             center_hits = float(np.count_nonzero(center_slice == lbl))
@@ -3380,7 +3319,6 @@ class BubbleCleaner:
             corner_penalty = area * 0.85 if (edge_touches >= 2 and center_hits < area * 0.28) else 0.0
 
             score = center_hits * 4.0 + area - dist * 4.0 - corner_penalty
-            candidate_lobes.append((lbl, score, edge_touches, center_hits, area))
             if score > best_score:
                 best_score = score
                 best_label = lbl
@@ -3405,12 +3343,6 @@ class BubbleCleaner:
 
         interior = np.zeros_like(light_pixels)
         interior[labels == best_label] = 255
-        # Поддержка бабблов-«восьмёрок» (figure-8), где иероглиф на перешейке разделил полость на 2 доли:
-        for lbl_c, sc_c, et_c, ch_c, ar_c in candidate_lobes:
-            if lbl_c == best_label:
-                continue
-            if sc_c > 0.0 and et_c <= 1 and ar_c >= (rh * rw * 0.045) and (ch_c >= center_slice.size * 0.045 or ch_c >= ar_c * 0.36):
-                interior[labels == lbl_c] = 255
 
         # 1. Заполняем только компактные внутренние замкнутые отверстия внутри иероглифов ДО морфологического замыкания,
         # НИКОГДА не закрашивая стенки баббла (wall_barrier) или соседний арт!
@@ -3428,8 +3360,8 @@ class BubbleCleaner:
                     interior[lbl_inv == idx] = 255
 
         # 2. Замыкаем только компактные внутренние вмятины от тёмных иероглифов, касающихся стенок баббла,
-        # не перешагивая через черную стенку баббла в вогнутые пазухи колючих бабблов со скринтоном!
-        close_d = max(13, min(23, int(round(min(rw, rh) * 0.22)) | 1))
+        # не присоединяя внешние белые ореолы (light_pixels != best_label) за черной стенкой!
+        close_d = max(15, min(27, int(round(min(rw, rh) * 0.26)) | 1))
         k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (close_d, close_d))
         ys_i, xs_i = np.where(interior > 0)
         if xs_i.size >= 16:
@@ -3437,10 +3369,10 @@ class BubbleCleaner:
             ix1_b, ix2_b = int(np.min(xs_i)), int(np.max(xs_i)) + 1
             sub_int = interior[iy1_b:iy2_b, ix1_b:ix2_b]
             sh_i, sw_i = sub_int.shape[:2]
-            top_flat = float(np.mean(sub_int[0, :] > 0)) >= 0.35 and iy1_b <= 1
-            bot_flat = float(np.mean(sub_int[sh_i - 1, :] > 0)) >= 0.35 and iy2_b >= rh - 1
-            left_flat = float(np.mean(sub_int[:, 0] > 0)) >= 0.35 and ix1_b <= 1
-            right_flat = float(np.mean(sub_int[:, sw_i - 1] > 0)) >= 0.35 and ix2_b >= rw - 1
+            top_flat = float(np.mean(sub_int[0, :] > 0)) >= 0.22
+            bot_flat = float(np.mean(sub_int[sh_i - 1, :] > 0)) >= 0.22
+            left_flat = float(np.mean(sub_int[:, 0] > 0)) >= 0.22
+            right_flat = float(np.mean(sub_int[:, sw_i - 1] > 0)) >= 0.22
             padded = cv2.copyMakeBorder(sub_int, close_d, close_d, close_d, close_d, cv2.BORDER_CONSTANT, value=0)
             if top_flat:
                 padded[:close_d, close_d : close_d + sw_i] = sub_int[0:1, :]
@@ -3459,18 +3391,6 @@ class BubbleCleaner:
             closed_int = closed_pad[close_d : close_d + rh, close_d : close_d + rw]
 
         closed_int[wall_barrier > 0] = 0
-        # Отбрасываем любые внешние карманы closed_int, отрезанные барьерной стенкой от внутренней полости interior
-        n_cl, lbl_cl, _, _ = cv2.connectedComponentsWithStats(closed_int, connectivity=4)
-        if n_cl > 1:
-            valid_closed = np.zeros_like(closed_int)
-            int_core = cv2.erode(interior, np.ones((3, 3), np.uint8), iterations=1)
-            if not np.any(int_core > 0):
-                int_core = interior
-            for l_cl in range(1, n_cl):
-                if np.any((lbl_cl == l_cl) & (int_core > 0)):
-                    valid_closed[lbl_cl == l_cl] = 255
-            closed_int = valid_closed
-
         inv2 = cv2.bitwise_not(closed_int)
         n_inv2, lbl_inv2, st_inv2, _ = cv2.connectedComponentsWithStats(inv2, connectivity=8)
         for idx2 in range(1, n_inv2):
@@ -3485,10 +3405,9 @@ class BubbleCleaner:
                         closed_int[lbl_inv2 == idx2] = 255
 
         added = cv2.subtract(closed_int, interior)
-        # Исключаем внешние светлые компоненты и прилегающий к ним скринтон (дилатацией ext_light на 5x5)
+        # Исключаем внешние светлые компоненты (ореолы вне баббла), которые не входили в interior initially
         ext_light = cv2.subtract(light_pixels, interior)
-        ext_light_guard = cv2.dilate(ext_light, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
-        added = cv2.bitwise_and(added, cv2.bitwise_not(ext_light_guard))
+        added = cv2.bitwise_and(added, cv2.bitwise_not(ext_light))
 
         n_add, lbl_add, st_add, _ = cv2.connectedComponentsWithStats(added, connectivity=8)
         for idx_a in range(1, n_add):
@@ -3496,8 +3415,8 @@ class BubbleCleaner:
             ah = st_add[idx_a, cv2.CC_STAT_HEIGHT]
             a_area = st_add[idx_a, cv2.CC_STAT_AREA]
             fill_r = float(a_area) / max(1.0, float(aw * ah))
-            is_compact_dent = (aw <= rw * 0.42 and ah <= rh * 0.42 and a_area <= rw * rh * 0.14)
-            is_dense_char_dent = (fill_r >= 0.28 and aw <= rw * 0.62 and ah <= rh * 0.52 and a_area <= rw * rh * 0.20)
+            is_compact_dent = (aw <= rw * 0.46 and ah <= rh * 0.46 and a_area <= rw * rh * 0.16)
+            is_dense_char_dent = (fill_r >= 0.26 and aw <= rw * 0.70 and ah <= rh * 0.60 and a_area <= rw * rh * 0.25)
             if is_compact_dent or is_dense_char_dent:
                 interior[lbl_add == idx_a] = 255
 
@@ -3547,138 +3466,6 @@ class BubbleCleaner:
         x2 = max(x1 + 1, min(x2, img_w))
         y2 = max(y1 + 1, min(y2, img_h))
         return x1, y1, x2, y2
-
-    def _extract_toned_or_dark_box_text_mask(
-        self,
-        roi_rgb: np.ndarray,
-        roi_gray: np.ndarray,
-        core_rect: tuple[int, int, int, int],
-        tb_rect: tuple[int, int, int, int] | None,
-        is_free_text: bool,
-    ) -> np.ndarray:
-        """
-        Выделяет штрихи текста и их контрастный ореол (white/black halo) на серых,
-        скринтоновых (amiten) и темных плашках без захвата самого скринтона и без
-        ложного удаления текста фильтром волос/препятствий.
-        """
-        rh, rw = roi_gray.shape[:2]
-        cx1_r, cy1_r, cx2_r, cy2_r = core_rect
-        scale_f = max(1.0, min(2.8, float(min(rw, rh)) / 64.0))
-        gray_f = roi_gray.astype(np.float32)
-
-        # Сглаживание подавляет 1..3px точки периодического скринтона, оставляя реальный локальный контраст букв и ореола
-        smooth3 = cv2.GaussianBlur(gray_f, (3, 3), 0.8)
-        k_med = min(9, max(5, int(round(5 * scale_f)) | 1))
-        bg_med = cv2.medianBlur(roi_gray, k_med).astype(np.float32)
-        k_wide = max(19, int(round(23 * scale_f)) | 1)
-        smooth_wide = cv2.GaussianBlur(bg_med, (k_wide, k_wide), 5.5)
-
-        # 1. Кандидаты яркого белого ореола (halo) вокруг темных букв на сером/скринтоновом фоне
-        bright_halo_cand = (
-            (roi_gray >= 205)
-            & (smooth3 >= 188.0)
-            & ((smooth3 - smooth_wide >= 12.0) | (gray_f - bg_med >= 22.0))
-        ).astype(np.uint8) * 255
-
-        # 2. Кандидаты темных штрихов текста (явно темнее локального сглаженного фона или внутри белого ореола)
-        r_halo_search = max(4, int(round(5.5 * scale_f)))
-        k_hs = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r_halo_search + 1, 2 * r_halo_search + 1))
-        near_bright_halo = cv2.dilate(bright_halo_cand, k_hs, iterations=1) > 0
-
-        dark_stroke_cand = (
-            ((roi_gray < 125) & ((smooth_wide - smooth3 >= 13.0) | (bg_med - gray_f >= 20.0)))
-            | ((roi_gray < 140) & near_bright_halo & (smooth_wide - smooth3 >= 6.0))
-        ).astype(np.uint8) * 255
-
-        # 3. Если фон очень темный (med_smooth < 110) — кандидаты светлых букв с темной обводкой
-        med_smooth = float(np.median(smooth_wide))
-        if med_smooth < 115.0:
-            bright_stroke_cand = (
-                (roi_gray >= 170)
-                & ((smooth3 - smooth_wide >= 15.0) | (gray_f - bg_med >= 22.0))
-            ).astype(np.uint8) * 255
-        else:
-            bright_stroke_cand = np.zeros_like(roi_gray)
-
-        raw_ink = cv2.bitwise_or(dark_stroke_cand, bright_stroke_cand)
-
-        if self.stroke_segmenter is not None:
-            neural_m = self.stroke_segmenter.predict_stroke_mask(roi_rgb, text_bbox_rel=tb_rect)
-            if neural_m.shape == raw_ink.shape and np.any(neural_m >= 85):
-                raw_ink = cv2.bitwise_or(raw_ink, (neural_m >= 85).astype(np.uint8) * 255)
-
-        # Ограничиваем зону поиска областью text_bbox (с запасом под фуригану и ореол), если она известна
-        zone_mask = np.zeros((rh, rw), dtype=np.uint8)
-        if tb_rect is not None:
-            tx1, ty1, tx2, ty2 = tb_rect
-            pad_z = max(8, int(round(10 * scale_f)))
-            zx1 = max(0, tx1 - pad_z)
-            zy1 = max(0, ty1 - pad_z)
-            zx2 = min(rw, tx2 + pad_z + int(round(6 * scale_f)))
-            zy2 = min(rh, ty2 + pad_z)
-            zone_mask[zy1:zy2, zx1:zx2] = 255
-        else:
-            pad_c = max(2, int(round(4 * scale_f)))
-            zone_mask[
-                max(0, cy1_r - pad_c) : min(rh, cy2_r + pad_c),
-                max(0, cx1_r - pad_c) : min(rw, cx2_r + pad_c),
-            ] = 255
-
-        raw_ink = cv2.bitwise_and(raw_ink, zone_mask)
-
-        # Фильтруем связные компоненты штрихов: отсекаем только внешние рамки и гигантские черные пятна лайнарта без ореола
-        num_l, lbls, stats, _ = cv2.connectedComponentsWithStats(raw_ink, connectivity=8)
-        clean_strokes = np.zeros_like(raw_ink)
-        dt_dark = cv2.distanceTransform((roi_gray < 140).astype(np.uint8), cv2.DIST_L2, 3)
-
-        for idx in range(1, num_l):
-            lx = int(stats[idx, cv2.CC_STAT_LEFT])
-            ly = int(stats[idx, cv2.CC_STAT_TOP])
-            lw = int(stats[idx, cv2.CC_STAT_WIDTH])
-            lh = int(stats[idx, cv2.CC_STAT_HEIGHT])
-            la = int(stats[idx, cv2.CC_STAT_AREA])
-            if la < 3:
-                continue
-
-            touches_l = lx <= 1
-            touches_t = ly <= 1
-            touches_r = (lx + lw) >= rw - 1
-            touches_b = (ly + lh) >= rh - 1
-            bt = sum([touches_l, touches_t, touches_r, touches_b])
-
-            if bt >= 3 or (bt >= 2 and (lw > rw * 0.82 or lh > rh * 0.82)):
-                continue
-            if bt == 1 and (lw > rw * 0.90 or lh > rh * 0.90) and la < lw * lh * 0.15:
-                continue
-
-            comp_mask = lbls == idx
-            has_halo_support = bool(np.any(near_bright_halo[comp_mask]))
-            comp_dt_max = float(np.max(dt_dark[comp_mask])) if np.any(comp_mask) else 1.5
-            # Отсекаем только массивные черные куски волос на границе кропа, не имеющие белого ореола
-            if bt >= 1 and not has_halo_support and comp_dt_max >= max(11.0, 6.5 * scale_f) and la >= int(rw * rh * 0.16):
-                continue
-
-            clean_strokes[comp_mask] = 255
-
-        if np.count_nonzero(clean_strokes) == 0:
-            return clean_strokes
-
-        # Присоединяем подтвержденный белый ореол (bright_halo_cand) в радиусе r_halo_attach вокруг подтвержденных штрихов текста
-        r_attach = max(5, int(round(6.5 * scale_f)))
-        k_attach = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * r_attach + 1, 2 * r_attach + 1))
-        attached_halo = cv2.bitwise_and(
-            bright_halo_cand,
-            cv2.dilate(clean_strokes, k_attach, iterations=1),
-        )
-        # Заполняем мелкие внутренние замкнутые петельки внутри букв и между штрихом и его белым ореолом
-        combined = cv2.bitwise_or(clean_strokes, attached_halo)
-        combined = cv2.morphologyEx(
-            combined,
-            cv2.MORPH_CLOSE,
-            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)),
-            iterations=1,
-        )
-        return cv2.bitwise_and(combined, zone_mask)
 
     def build_text_mask(
         self,
@@ -3776,9 +3563,8 @@ class BubbleCleaner:
 
             p75 = float(np.percentile(core_gray, 75))
             median_val = float(np.median(core_gray))
-            is_white_bubble = (not is_free_text) and (p75 >= 210.0) and self._is_true_white_bubble_interior(core_gray)
 
-            if is_white_bubble:
+            if not is_free_text and p75 >= 210.0:
                 core_w = max(8, cx2_r - cx1_r)
                 core_h = max(8, cy2_r - cy1_r)
                 scale_f = max(1.0, min(2.8, float(min(core_w, core_h)) / 64.0))
@@ -3817,19 +3603,6 @@ class BubbleCleaner:
 
                 text_zone_mask = np.full((rh, rw), 255, dtype=np.uint8)
                 hollow_arc_ring = np.zeros((rh, rw), dtype=np.uint8)
-                inner_tb_core = np.zeros((rh, rw), dtype=np.uint8)
-                tb_rx1 = max(0, tb_box[0] - ix1)
-                tb_ry1 = max(0, tb_box[1] - iy1)
-                tb_rx2 = min(rw, tb_box[2] - ix1)
-                tb_ry2 = min(rh, tb_box[3] - iy1)
-                if tb_rx2 > tb_rx1 and tb_ry2 > tb_ry1:
-                    ins_x = min(6, max(1, (tb_rx2 - tb_rx1 - 4) // 5))
-                    ins_y = min(6, max(1, (tb_ry2 - tb_ry1 - 4) // 5))
-                    inner_tb_core[
-                        max(0, tb_ry1 + ins_y) : max(tb_ry1 + ins_y + 1, tb_ry2 - ins_y),
-                        max(0, tb_rx1 + ins_x) : max(tb_rx1 + ins_x + 1, tb_rx2 - ins_x),
-                    ] = 255
-
                 if has_valid_tb:
                     proc_s_mask = HybridMangaCleaner.compute_processing_scale(img_h, img_w)
                     pad_tb = max(10, int(round(min(core_w, core_h) * 0.14)))
@@ -3841,8 +3614,11 @@ class BubbleCleaner:
                         text_zone_mask.fill(0)
                         text_zone_mask[tz_y1:tz_y2, tz_x1:tz_x2] = 255
                         text_zone_mask = cv2.bitwise_or(text_zone_mask, interior_mask)
+                        # Топологическая защита периферии вокруг text_bbox (Проблемы №1 и №2):
+                        # Никогда не сбрасываем text_zone_mask на весь ROI, если внутри ROI есть чиби-арт или соседняя полость!
 
                     strict_dark = (roi_gray < 155).astype(np.uint8) * 255
+                    # Отсоединяем прямые внешние линии рамок панелей вдоль границ кропа, чтобы краевые иероглифы на экранах/плашках не попадали в hollow_arc_mask
                     k_hl = cv2.getStructuringElement(cv2.MORPH_RECT, (max(24, rw // 3), 1))
                     k_vl = cv2.getStructuringElement(cv2.MORPH_RECT, (1, max(24, rh // 3)))
                     frame_lines = cv2.bitwise_or(
@@ -3859,13 +3635,17 @@ class BubbleCleaner:
                         if (sw_s > core_w * 0.48 or sh_s > core_h * 0.48) and fill_r <= 0.18:
                             hollow_arc_mask[lbl_s == l_s] = 255
                     if np.count_nonzero(hollow_arc_mask) > 0:
+                        inner_tb_core = np.zeros_like(strict_dark)
+                        ic_x1 = max(0, tb_box[0] - ix1 + 8)
+                        ic_y1 = max(0, tb_box[1] - iy1 + 8)
+                        ic_x2 = min(rw, tb_box[2] - ix1 - 8)
+                        ic_y2 = min(rh, tb_box[3] - iy1 - 8)
+                        if ic_x2 > ic_x1 and ic_y2 > ic_y1:
+                            inner_tb_core[ic_y1:ic_y2, ic_x1:ic_x2] = 255
                         hollow_arc_ring = cv2.bitwise_and(hollow_arc_mask, cv2.bitwise_not(inner_tb_core))
                         if np.count_nonzero(hollow_arc_ring) > 0:
-                            arc_dil = cv2.bitwise_and(
-                                cv2.dilate(
-                                    hollow_arc_ring, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                                ),
-                                cv2.bitwise_not(inner_tb_core),
+                            arc_dil = cv2.dilate(
+                                hollow_arc_ring, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
                             )
                             interior_mask[arc_dil > 0] = 0
                             text_zone_mask[arc_dil > 0] = 0
@@ -3891,7 +3671,12 @@ class BubbleCleaner:
                 sharp_core_ink = (roi_gray < min(145, int(p75 - 45))).astype(np.uint8) * 255
                 if self.stroke_segmenter is not None:
                     tb_rel = (
-                        (tb_rx1, tb_ry1, tb_rx2, tb_ry2)
+                        (
+                            max(0, tb_box[0] - ix1),
+                            max(0, tb_box[1] - iy1),
+                            min(rw, tb_box[2] - ix1),
+                            min(rh, tb_box[3] - iy1),
+                        )
                         if has_valid_tb
                         else (cx1_r, cy1_r, cx2_r, cy2_r)
                     )
@@ -3923,8 +3708,7 @@ class BubbleCleaner:
                     if comp_area < 2:
                         continue
 
-                    comp_mask = labels == label_idx
-                    comp_dt = dt_dark[comp_mask]
+                    comp_dt = dt_dark[labels == label_idx]
                     max_dt_val = float(np.max(comp_dt)) if comp_dt.size > 0 else 1.5
 
                     touches_any_border = (
@@ -3933,24 +3717,15 @@ class BubbleCleaner:
                         or (comp_x + comp_w) >= cx2_r - 2
                         or (comp_y + comp_h) >= cy2_r - 2
                     )
-                    # Жирные восклицательные/кричащие шрифты (например «うっせ！») внутри ядра text_bbox НИКОГДА не считаем чиби-артом!
-                    in_tb_ratio = float(np.mean(inner_tb_core[comp_mask] > 0)) if np.any(inner_tb_core > 0) else 0.0
-                    is_inside_text_spine = (has_valid_tb and in_tb_ratio >= 0.35) or (
-                        not touches_any_border
-                        and comp_x >= cx1_r + int(core_w * 0.14)
-                        and (comp_x + comp_w) <= cx2_r - int(core_w * 0.14)
-                        and comp_y >= cy1_r + int(core_h * 0.10)
-                        and (comp_y + comp_h) <= cy2_r - int(core_h * 0.10)
-                    )
-                    if not is_inside_text_spine and comp_area >= int(220 * scale_area):
+                    if comp_area >= int(150 * scale_area):
                         if (
                             comp_dt.size > 0
                             and (
-                                (max_dt_val >= max(13.5, 7.2 * scale_f) and float(np.percentile(comp_dt, 90)) >= max(7.5, 4.0 * scale_f))
-                                or (touches_any_border and max_dt_val >= max(9.5, 5.2 * scale_f) and float(np.percentile(comp_dt, 85)) >= max(5.5, 3.2 * scale_f))
+                                (max_dt_val >= max(9.5, 5.2 * scale_f) and float(np.percentile(comp_dt, 90)) >= max(5.2, 2.8 * scale_f))
+                                or (touches_any_border and max_dt_val >= max(6.0, 3.6 * scale_f) and float(np.percentile(comp_dt, 85)) >= max(4.0, 2.2 * scale_f))
                             )
                         ):
-                            chibi_art_mask[comp_mask] = 255
+                            chibi_art_mask[labels == label_idx] = 255
                             continue
 
                     if not has_valid_tb:
@@ -3965,20 +3740,17 @@ class BubbleCleaner:
                         if border_touches == 1 and (comp_w > core_w * 0.85 or comp_h > core_h * 0.85):
                             continue
 
-                    clean_roi_mask[comp_mask] = 255
-                    if 1.0 <= max_dt_val * 2.0 <= 22.0:
+                    clean_roi_mask[labels == label_idx] = 255
+                    if 1.0 <= max_dt_val * 2.0 <= 16.0:
                         stroke_widths_est.append(max_dt_val * 2.0)
 
                 median_sw = float(np.median(stroke_widths_est)) if stroke_widths_est else (4.2 * scale_f)
 
                 if np.count_nonzero(chibi_art_mask) > 0:
-                    chibi_d = max(7, int(round(9 * scale_f)) | 1)
-                    chibi_dil = cv2.bitwise_and(
-                        cv2.dilate(
-                            chibi_art_mask,
-                            cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (chibi_d, chibi_d)),
-                        ),
-                        cv2.bitwise_not(inner_tb_core),
+                    chibi_d = max(9, int(round(12 * scale_f)) | 1)
+                    chibi_dil = cv2.dilate(
+                        chibi_art_mask,
+                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (chibi_d, chibi_d)),
                     )
                     clean_roi_mask[chibi_dil > 0] = 0
                     text_zone_mask[chibi_dil > 0] = 0
@@ -4017,19 +3789,8 @@ class BubbleCleaner:
                     cv2.bitwise_and(cv2.dilate(pw_gap_h, k_near), cv2.dilate(pw_gap_v, k_near)),
                 )
 
-                # Подавляем ложное срабатывание char_seeds на периодическом скринтоне (amiten) СНАРУЖИ колючих/обычных бабблов!
-                gray_f_roi = roi_gray.astype(np.float32)
-                smooth5_roi = cv2.GaussianBlur(gray_f_roi, (5, 5), 1.2)
-                hf_roi = (np.abs(gray_f_roi - smooth5_roi) >= 9.0).astype(np.float32)
-                hf_density_roi = cv2.boxFilter(hf_roi, cv2.CV_32F, (11, 11))
-                ext_screentone_zone = (
-                    (interior_mask == 0)
-                    & ((smooth5_roi < 218.0) | (hf_density_roi >= 0.14))
-                )
-                char_seeds[ext_screentone_zone] = 0
-
                 dist_from_int = cv2.distanceTransform(cv2.bitwise_not(interior_mask), cv2.DIST_L2, 3)
-                char_seeds = cv2.bitwise_and(char_seeds, (dist_from_int <= 18.0 * scale_f).astype(np.uint8) * 255)
+                char_seeds = cv2.bitwise_and(char_seeds, (dist_from_int <= 22.0 * scale_f).astype(np.uint8) * 255)
                 char_seeds = cv2.bitwise_and(char_seeds, text_zone_mask)
 
                 cl_d = max(11, int(round(11 * scale_f)) | 1)
@@ -4045,7 +3806,10 @@ class BubbleCleaner:
                     scnt = int(np.count_nonzero(char_seeds[lbl_c == idx_c]))
                     in_int = int(np.count_nonzero(interior_mask[lbl_c == idx_c]))
                     out_int = area_c - in_int
-                    if in_int >= int(22 * scale_area) and out_int >= int(14 * scale_area) and scnt >= int(20 * scale_area):
+                    if (
+                        (in_int >= int(22 * scale_area) and out_int >= int(14 * scale_area) and scnt >= int(20 * scale_area))
+                        or (has_valid_tb and out_int >= int(12 * scale_area) and scnt >= int(10 * scale_area))
+                    ):
                         ext_only = ((lbl_c == idx_c) & (interior_mask == 0)).astype(np.uint8) * 255
                         ne, lbl_e, st_e, _ = cv2.connectedComponentsWithStats(ext_only, connectivity=8)
                         for idx_e in range(1, ne):
@@ -4081,7 +3845,7 @@ class BubbleCleaner:
                     halo_ext = cv2.bitwise_and(halo_ext, text_zone_mask)
                     border_char_ink = cv2.bitwise_or(border_char_ink, halo_ext)
 
-                min_valid_ink_px = max(12, int(core_w * core_h * 0.005))
+                min_valid_ink_px = max(14, int(core_w * core_h * 0.008))
                 if np.count_nonzero(clean_roi_mask) + np.count_nonzero(border_char_ink) >= min_valid_ink_px:
                     scaled_bub_d = max(bubble_dilate, int(round(9 * scale_f)) | 1)
                     eff_bub_kernel = (
@@ -4112,84 +3876,91 @@ class BubbleCleaner:
                     full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
                     continue
 
-            # Ветвь для серых плашек, скринтоновых (amiten) рамок, темных боксов и свободного текста (is_free_text):
-            tb_rel_toned = (
-                (
-                    max(0, tb_box[0] - ix1),
-                    max(0, tb_box[1] - iy1),
-                    min(rw, tb_box[2] - ix1),
-                    min(rh, tb_box[3] - iy1),
+            if median_val >= 127.0:
+                _, binary = cv2.threshold(
+                    roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
                 )
-                if has_valid_tb
-                else None
-            )
-            clean_roi_mask = self._extract_toned_or_dark_box_text_mask(
-                roi_rgb=roi_rgb,
-                roi_gray=roi_gray,
-                core_rect=(cx1_r, cy1_r, cx2_r, cy2_r),
-                tb_rect=tb_rel_toned,
-                is_free_text=is_free_text,
-            )
-
-            if np.count_nonzero(clean_roi_mask) < 10:
-                if median_val >= 127.0:
-                    _, binary = cv2.threshold(
-                        roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU
-                    )
-                else:
-                    _, binary = cv2.threshold(
-                        roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
-                    )
-                if self.stroke_segmenter is not None:
-                    neural_free = self.stroke_segmenter.predict_stroke_mask(roi_rgb)
-                    if neural_free.shape == binary.shape and np.any(neural_free >= 95):
-                        binary = fuse_neural_stroke_and_pcleaner_mask(
-                            roi_gray=roi_gray,
-                            morph_mask=binary,
-                            neural_stroke_mask=neural_free,
-                        )
-
-                scale_f_free = max(1.0, min(2.8, float(min(rw, rh)) / 64.0))
-                dt_dark_free = cv2.distanceTransform((roi_gray < 175).astype(np.uint8), cv2.DIST_L2, 3)
-                pw_free = (roi_gray >= 215).astype(np.uint8) * 255
-                dist_to_pw_free = cv2.distanceTransform(cv2.bitwise_not(pw_free), cv2.DIST_L2, 3)
-
-                hair_obs_mask = (
-                    (roi_gray < 75)
-                    & (dt_dark_free >= max(10.5, 6.2 * scale_f_free))
-                    & (dist_to_pw_free > 6.5 * scale_f_free)
-                ).astype(np.uint8) * 255
-                if np.any(hair_obs_mask > 0):
-                    hair_obs_dil = cv2.dilate(
-                        hair_obs_mask,
-                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
-                        iterations=1,
-                    )
-                    binary = cv2.bitwise_and(binary, cv2.bitwise_not(hair_obs_dil))
-                else:
-                    hair_obs_dil = np.zeros_like(binary)
-
-                num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
-                for label_idx in range(1, num_labels):
-                    comp_x = stats[label_idx, cv2.CC_STAT_LEFT]
-                    comp_y = stats[label_idx, cv2.CC_STAT_TOP]
-                    comp_w = stats[label_idx, cv2.CC_STAT_WIDTH]
-                    comp_h = stats[label_idx, cv2.CC_STAT_HEIGHT]
-                    comp_area = stats[label_idx, cv2.CC_STAT_AREA]
-                    if comp_area < 3:
-                        continue
-                    touches_left = comp_x <= 1
-                    touches_top = comp_y <= 1
-                    touches_right = (comp_x + comp_w) >= rw - 1
-                    touches_bottom = (comp_y + comp_h) >= rh - 1
-                    border_touches = sum([touches_left, touches_top, touches_right, touches_bottom])
-                    if border_touches >= 3 or (border_touches >= 2 and (comp_w > rw * 0.82 or comp_h > rh * 0.82)):
-                        continue
-                    if not is_free_text and border_touches == 1 and (comp_w > rw * 0.82 or comp_h > rh * 0.82):
-                        continue
-                    clean_roi_mask[labels == label_idx] = 255
             else:
-                hair_obs_dil = np.zeros_like(clean_roi_mask)
+                _, binary = cv2.threshold(
+                    roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
+                )
+            if self.stroke_segmenter is not None:
+                neural_free = self.stroke_segmenter.predict_stroke_mask(roi_rgb)
+                if neural_free.shape == binary.shape and np.any(neural_free >= 95):
+                    binary = fuse_neural_stroke_and_pcleaner_mask(
+                        roi_gray=roi_gray,
+                        morph_mask=binary,
+                        neural_stroke_mask=neural_free,
+                    )
+
+            scale_f_free = max(1.0, min(2.8, float(min(rw, rh)) / 64.0))
+            scale_area_free = scale_f_free * scale_f_free
+            dt_dark_free = cv2.distanceTransform((roi_gray < 175).astype(np.uint8), cv2.DIST_L2, 3)
+            pw_free = (roi_gray >= 215).astype(np.uint8) * 255
+            dist_to_pw_free = cv2.distanceTransform(cv2.bitwise_not(pw_free), cv2.DIST_L2, 3)
+
+            # Отсекаем массивные черные области волос/одежды (толщина > 2 * 3.8 * scale_f), чтобы они не попадали в маску текста
+            hair_obs_mask = (
+                (roi_gray < 85)
+                & (dt_dark_free >= max(5.5, 3.6 * scale_f_free))
+                & (dist_to_pw_free > 4.5 * scale_f_free)
+            ).astype(np.uint8) * 255
+            if np.any(hair_obs_mask > 0):
+                hair_obs_dil = cv2.dilate(
+                    hair_obs_mask,
+                    cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)),
+                    iterations=1,
+                )
+                binary = cv2.bitwise_and(binary, cv2.bitwise_not(hair_obs_dil))
+            else:
+                hair_obs_dil = np.zeros_like(binary)
+
+            num_labels, labels, stats, _ = cv2.connectedComponentsWithStats(binary, connectivity=8)
+            clean_roi_mask = np.zeros_like(binary)
+
+            for label_idx in range(1, num_labels):
+                comp_x = stats[label_idx, cv2.CC_STAT_LEFT]
+                comp_y = stats[label_idx, cv2.CC_STAT_TOP]
+                comp_w = stats[label_idx, cv2.CC_STAT_WIDTH]
+                comp_h = stats[label_idx, cv2.CC_STAT_HEIGHT]
+                comp_area = stats[label_idx, cv2.CC_STAT_AREA]
+
+                if comp_area < 3:
+                    continue
+
+                comp_dt = dt_dark_free[labels == label_idx]
+                max_dt_val = float(np.max(comp_dt)) if comp_dt.size > 0 else 1.5
+                if comp_area >= int(130 * scale_area_free) and max_dt_val >= max(6.0, 3.6 * scale_f_free):
+                    hair_obs_dil[labels == label_idx] = 255
+                    continue
+
+                touches_left = comp_x <= 1
+                touches_top = comp_y <= 1
+                touches_right = (comp_x + comp_w) >= rw - 1
+                touches_bottom = (comp_y + comp_h) >= rh - 1
+                border_touches = sum([touches_left, touches_top, touches_right, touches_bottom])
+
+                if is_free_text:
+                    if border_touches >= 3 or (
+                        border_touches >= 2 and (comp_w > rw * 0.85 or comp_h > rh * 0.85)
+                    ):
+                        continue
+                else:
+                    if border_touches >= 2 or (
+                        border_touches == 1 and (comp_w > rw * 0.78 or comp_h > rh * 0.78)
+                    ):
+                        continue
+
+                clean_roi_mask[labels == label_idx] = 255
+
+            if np.count_nonzero(clean_roi_mask) == 0:
+                margin_ratio = 0.08 if is_free_text else 0.14
+                inner_px = max(1, int(rw * margin_ratio))
+                inner_py = max(1, int(rh * margin_ratio))
+                if rh > 2 * inner_py and rw > 2 * inner_px:
+                    clean_roi_mask[inner_py : rh - inner_py, inner_px : rw - inner_px] = binary[
+                        inner_py : rh - inner_py, inner_px : rw - inner_px
+                    ]
 
             if np.count_nonzero(clean_roi_mask) == 0:
                 continue
@@ -4215,28 +3986,15 @@ class BubbleCleaner:
                 dilated_roi = cv2.bitwise_and(dilated_roi, cv2.bitwise_not(hair_obs_dil))
             full_mask[iy1:iy2, ix1:ix2] = np.maximum(full_mask[iy1:iy2, ix1:ix2], dilated_roi)
 
-        # Защищаем активные блоки от затирания при удалении дублирующихся/пустых соседних боксов
-        active_keep_mask = np.zeros((img_h, img_w), dtype=np.uint8)
         for block in blocks:
-            if self._is_block_skipped(block):
-                continue
-            ax1, ay1, ax2, ay2 = self._get_clean_bbox(block)
-            ax1 = max(0, min(ax1, img_w - 1))
-            ay1 = max(0, min(ay1, img_h - 1))
-            ax2 = max(ax1 + 1, min(ax2, img_w))
-            ay2 = max(ay1 + 1, min(ay2, img_h))
-            active_keep_mask[ay1:ay2, ax1:ax2] = 255
-
-        for block in blocks:
-            if not bool(block.get("is_deleted", False)):
+            if not self._is_block_skipped(block):
                 continue
             dx1, dy1, dx2, dy2 = self._get_clean_bbox(block)
             dx1 = max(0, min(dx1, img_w - 1))
             dy1 = max(0, min(dy1, img_h - 1))
             dx2 = max(dx1 + 1, min(dx2, img_w))
             dy2 = max(dy1 + 1, min(dy2, img_h))
-            sub_keep = active_keep_mask[dy1:dy2, dx1:dx2]
-            full_mask[dy1:dy2, dx1:dx2][sub_keep == 0] = 0
+            full_mask[dy1:dy2, dx1:dx2] = 0
 
         if include_custom_strokes:
             for block in blocks:
@@ -4264,8 +4022,10 @@ class BubbleCleaner:
         Двухзонный SOTA инпейнтинг кропа блока (Zero Bleed Guarantee + Smart Inpaint Router):
         - Разделяет `crop_mask_np` на `mask_inside` (внутри светлой полости баббла) и `mask_outside`
           (выступающие за контур баббла иероглифы с белым ореолом поверх волос/стен/скринтона).
-        - Для серых и скринтоновых (amiten) боксов использует 2D-RFFT синтез решетки Брэгга +
-          гармонический решатель Лапласа-Дирихле + LaMa с LAB-реграундингом (без слепой заливки белым!).
+        - `mask_inside` очищается через трёхуровневый маршрутизатор (чистая заливка при sigma <= 0.25,
+          заливка + 5px пояс `fastNlMeansDenoisingColored` при 0.25 < sigma <= 15.0, LaMa/NS при sigma > 15.0).
+        - `mask_outside` очищается отдельно с барьерным экранированием (`Context Shielding`) белой полости баббла,
+          чтобы белый цвет баббла НИКОГДА не вытекал наружу на волосы, одежду или стены!
         """
         ch, cw = crop_rgb_np.shape[:2]
         if np.count_nonzero(crop_mask_np) == 0:
@@ -4285,7 +4045,7 @@ class BubbleCleaner:
                 core_sub = crop_gray
 
             p75_core = float(np.percentile(core_sub, 75)) if core_sub.size > 0 else 0.0
-            if p75_core >= 210.0 and self._is_true_white_bubble_interior(core_sub):
+            if p75_core >= 210.0:
                 cavity_sub = self._extract_bubble_interior_mask(core_sub, p75_core)
                 dash_wall_inpaint = np.zeros((ch, cw), dtype=np.uint8)
                 is_dashed_inpaint = False
@@ -4311,14 +4071,7 @@ class BubbleCleaner:
                     dw_guard = cv2.dilate(dash_wall_inpaint, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
                     cavity_mask[dw_guard > 0] = 0
                     crop_mask_np = cv2.bitwise_and(crop_mask_np, cavity_mask)
-
-                # Формируем wall_mask ТОЛЬКО по реальному темному ободу вокруг полости баббла (11x11),
-                # НЕ помечая внешний серый скринтон за пределами баббла как черную стенку!
-                wall_ring_band = cv2.subtract(
-                    cv2.dilate(cavity_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11)), iterations=1),
-                    cavity_mask,
-                )
-                wall_mask = ((crop_gray < max(155, int(p75_core - 50))) & (wall_ring_band > 0)).astype(np.uint8) * 255
+                wall_mask = ((crop_gray < max(150, int(p75_core - 55))) & (cavity_mask == 0)).astype(np.uint8) * 255
                 if is_dashed_inpaint and np.any(dash_wall_inpaint > 0):
                     wall_mask = cv2.bitwise_or(wall_mask, dash_wall_inpaint)
 
@@ -4330,16 +4083,8 @@ class BubbleCleaner:
                     scale=1.0,
                 )
                 if safe_cav_h is not None and is_pure_h and not is_dashed_inpaint:
-                    # Ограничиваем дозахват пропущенной фуриганы строго подтвержденной белой полостью cavity_mask
-                    # в радиусе 14px от маски текста, чтобы никогда не захватывать внешние углы!
-                    near_crop_mask = cv2.dilate(
-                        crop_mask_np, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (29, 29)), iterations=1
-                    )
-                    safe_cav_clamped = cv2.bitwise_and(
-                        safe_cav_h,
-                        cv2.bitwise_and(cavity_mask, cv2.bitwise_and(near_crop_mask, cv2.bitwise_not(wall_mask))),
-                    )
-                    missed_dark_in_cav = ((crop_gray < 235) & (safe_cav_clamped > 0)).astype(np.uint8) * 255
+                    safe_cav_clamped = cv2.bitwise_and(safe_cav_h, cv2.bitwise_not(wall_mask))
+                    missed_dark_in_cav = ((crop_gray < 238) & (safe_cav_clamped > 0)).astype(np.uint8) * 255
                     if np.any(missed_dark_in_cav > 0):
                         missed_dil = cv2.bitwise_and(
                             cv2.dilate(missed_dark_in_cav, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))),
@@ -4369,22 +4114,23 @@ class BubbleCleaner:
                         sigma_edge = float(np.std(ring_gray_norm))
 
                         raw_ring_gray = np.mean(ring_pixels, axis=1)
-                        p25 = float(np.percentile(raw_ring_gray, 25))
                         p50 = float(np.percentile(raw_ring_gray, 50))
                         p80 = float(np.percentile(raw_ring_gray, 80))
                         bright_px = ring_pixels[raw_ring_gray >= max(225.0, p50)]
-                        if len(bright_px) >= 4 and p25 >= 210.0:
+                        if len(bright_px) >= 4:
                             fill_color = np.median(bright_px, axis=0).round().astype(np.uint8)
                         else:
                             fill_color = np.median(ring_pixels, axis=0).round().astype(np.uint8)
-                        if float(np.min(fill_color)) >= self.cleaner_cfg.off_white_max_threshold and p25 >= 215.0:
+                        if float(np.min(fill_color)) >= self.cleaner_cfg.off_white_max_threshold:
                             fill_color = np.array([255, 255, 255], dtype=np.uint8)
 
-                        if (sigma_edge <= self.cleaner_cfg.mask_max_std_dev and p50 >= 232.0 and p25 >= 212.0) or (p25 >= 225.0 and p50 >= 242.0 and p80 >= 250.0):
+                        if (sigma_edge <= self.cleaner_cfg.mask_max_std_dev and p50 >= 232.0) or (p50 >= 242.0 and p80 >= 250.0):
                             out = self.sota_cleaner._route_inside_inpaint(
                                 out, mask_inside, cavity_mask, min(sigma_edge, 6.0), fill_color
                             )
                         else:
+                            # Проблема №4: Гетерогенный фон баббла (плавный градиент Режима B, скринтон Режима C или лайнарт Режима D)
+                            # Отказываемся от «слепой белой замазки» и решаем краевую задачу Лапласа-Дирихле (Delta I = 0) + LaMa
                             het_res = classify_and_clean_heterogeneous_bubble(
                                 roi_img=out,
                                 raw_stroke_mask=mask_inside,
@@ -4400,28 +4146,35 @@ class BubbleCleaner:
                     )
                 return out
 
-            # Для серых плашек, скринтоновых (amiten) рамок и темных боксов (где _is_true_white_bubble_interior == False):
-            # используем 2D-RFFT синтез периодического скринтона + гармонический решатель Лапласа + LaMa!
-            het_toned = classify_and_clean_heterogeneous_bubble(
-                roi_img=crop_rgb_np,
-                raw_stroke_mask=crop_mask_np,
-                protected_wall_mask=np.zeros_like(crop_mask_np),
-                lama_runner=self._invoke_lama_np if self.lama_model is not None else None,
-                scale_f=1.0,
-            )
-            return het_toned["cleaned_roi"]
+            ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+            ring_mask = cv2.dilate(crop_mask_np, ring_k, iterations=1) - crop_mask_np
+            ring_pixels = crop_rgb_np[ring_mask > 0]
+            if len(ring_pixels) >= 16:
+                ring_gray = np.mean(ring_pixels, axis=1)
+                p15 = float(np.percentile(ring_gray, 15))
+                p50 = float(np.percentile(ring_gray, 50))
+                ring_std = float(np.std(ring_gray))
+                if p15 >= 240.0 and p50 >= 248.0 and ring_std <= 2.2:
+                    bright_pixels = ring_pixels[ring_gray >= p15]
+                    if len(bright_pixels) >= 8:
+                        fill_color = np.median(bright_pixels, axis=0).round().astype(np.uint8)
+                        if float(np.min(fill_color)) >= 240.0:
+                            fill_color = np.array([255, 255, 255], dtype=np.uint8)
+                        out = crop_rgb_np.copy()
+                        out[crop_mask_np > 0] = fill_color
+                        return out
+                elif ring_std <= 8.5 and self.lama_model is None:
+                    het_res = classify_and_clean_heterogeneous_bubble(
+                        roi_img=crop_rgb_np,
+                        raw_stroke_mask=crop_mask_np,
+                        protected_wall_mask=np.zeros_like(crop_mask_np),
+                        lama_runner=None,
+                        scale_f=1.0,
+                    )
+                    return het_res["cleaned_roi"]
 
         # Режим 2 (v5.4 Deep Research): для свободного текста поверх фона (is_free_text=True)
-        # комбинируем 2D-RFFT/Harmonic и LaMa + CIE LAB Luminance Re-grounding + DT Feathering!
-        het_free = classify_and_clean_heterogeneous_bubble(
-            roi_img=crop_rgb_np,
-            raw_stroke_mask=crop_mask_np,
-            protected_wall_mask=np.zeros_like(crop_mask_np),
-            lama_runner=self._invoke_lama_np if self.lama_model is not None else None,
-            scale_f=1.0,
-        )
-        if float(het_free["regime_stats"].get("screentone_pct", 0.0)) >= 0.25:
-            return het_free["cleaned_roi"]
+        # запрещена заливка белыми прямоугольниками — используем LaMa + CIE LAB Luminance Re-grounding + DT Feathering!
         return self.hybrid_cleaner.inpaint_crop_with_regrounding_and_feather(
             crop_rgb=crop_rgb_np,
             crop_mask=crop_mask_np,
