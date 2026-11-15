@@ -186,11 +186,10 @@ def _get_vram_allocated_mb() -> float:
     return 0.0
 
 
-def _release_pipeline_vram(stage_label: str = "") -> None:
+def _release_pipeline_vram(stage_label: str = "", force_driver_flush: bool = False) -> None:
     """
-    БЛОК 4 (v5.4.0): Освобождает промежуточные кэши видеопамяти (`ocr_engine.release_transient_vram()`
-    и `torch.cuda.empty_cache()`) между фазами OCR, Inpainting и локальной LLM в Ollama,
-    устраняя конкуренцию за VRAM и деградацию скорости на длинных дистанциях.
+    БЛОК 4 (v5.4.0+): Освобождает промежуточные тензоры движков и сбрасывает кэш драйвера CUDA
+    только при падении свободной VRAM ниже 22% или при принудительном переключении на тяжелую LLM.
     """
     try:
         if ocr_engine is not None and hasattr(ocr_engine, "release_transient_vram"):
@@ -204,6 +203,10 @@ def _release_pipeline_vram(stage_label: str = "") -> None:
         pass
     try:
         if torch.cuda.is_available():
+            if not force_driver_flush and hasattr(torch.cuda, "mem_get_info"):
+                free_b, total_b = torch.cuda.mem_get_info(0)
+                if total_b > 0 and (free_b / float(total_b)) > 0.22:
+                    return
             torch.cuda.empty_cache()
     except Exception:
         pass
@@ -257,12 +260,17 @@ class PriorityGPULock:
         fut: asyncio.Future[bool] = loop.create_future()
         self._counter += 1
         heapq.heappush(self._waiters, (priority, self._counter, fut))
-        await fut
+        try:
+            await fut
+        except asyncio.CancelledError:
+            if fut.done() and not fut.cancelled():
+                self.release()
+            raise
 
     def release(self) -> None:
         while self._waiters:
             _, _, fut = heapq.heappop(self._waiters)
-            if not fut.done():
+            if not fut.done() and not fut.cancelled():
                 fut.set_result(True)
                 return
         self._locked = False
@@ -956,6 +964,35 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+_TRUSTED_LOCAL_ORIGIN_PREFIXES = (
+    "http://127.0.0.1",
+    "http://localhost",
+    "https://127.0.0.1",
+    "https://localhost",
+    "chrome-extension://",
+    "moz-extension://",
+)
+
+_PRIVILEGED_ENDPOINTS = {
+    "/local_image",
+    "/settings",
+    "/delete_model",
+    "/shutdown",
+    "/open_folder",
+    "/open_web_save_folder",
+    "/pick_folder",
+    "/pick_file",
+    "/pick_web_save_folder",
+}
+
+
+def _is_trusted_local_origin(origin: str | None) -> bool:
+    if not origin or origin == "null":
+        return True
+    orig_l = origin.strip().lower()
+    return any(orig_l.startswith(p) for p in _TRUSTED_LOCAL_ORIGIN_PREFIXES)
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -967,9 +1004,17 @@ app.add_middleware(
 
 @app.middleware("http")
 async def chrome_private_network_access_middleware(request: Request, call_next):
+    origin = request.headers.get("origin")
+    req_path = request.url.path.rstrip("/") or "/"
+    if req_path in _PRIVILEGED_ENDPOINTS and not _is_trusted_local_origin(origin):
+        return Response(
+            status_code=403,
+            content=json.dumps({"detail": "Blocked cross-origin access to privileged local endpoint."}),
+            media_type="application/json",
+        )
     if request.method == "OPTIONS" and request.headers.get("access-control-request-private-network") == "true":
         resp = Response(status_code=200)
-        resp.headers["Access-Control-Allow-Origin"] = request.headers.get("origin") or "*"
+        resp.headers["Access-Control-Allow-Origin"] = origin or "*"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
         resp.headers["Access-Control-Allow-Headers"] = request.headers.get("access-control-request-headers") or "*"
         resp.headers["Access-Control-Allow-Private-Network"] = "true"
@@ -977,7 +1022,7 @@ async def chrome_private_network_access_middleware(request: Request, call_next):
     response = await call_next(request)
     response.headers["Access-Control-Allow-Private-Network"] = "true"
     if "Access-Control-Allow-Origin" not in response.headers:
-        response.headers["Access-Control-Allow-Origin"] = "*"
+        response.headers["Access-Control-Allow-Origin"] = origin or "*"
     return response
 
 
@@ -4773,6 +4818,32 @@ async def folder_inspect_endpoint(payload: FolderInspectRequest) -> dict[str, An
     return inspect_folder_pages(source_dir, target_lang=payload.target_lang)
 
 
+def _is_path_within_allowed_roots(img_path: Path) -> bool:
+    allowed_roots: list[Path] = [BASE_DIR.resolve(), TEMP_DIR.resolve()]
+    if translator_engine is not None and getattr(translator_engine, "web_save_dir", None):
+        try:
+            allowed_roots.append(Path(translator_engine.web_save_dir).resolve())
+        except Exception:
+            pass
+    for state_key in ("source_dir", "output_dir"):
+        raw_p = folder_job_state.get(state_key)
+        if raw_p:
+            try:
+                allowed_roots.append(Path(str(raw_p)).resolve())
+            except Exception:
+                pass
+    for root in allowed_roots:
+        try:
+            if img_path.is_relative_to(root):
+                return True
+        except Exception:
+            continue
+    # Allow user-inspected manga directories that contain a .translation_state.json or parent output folder
+    return True if img_path.suffix.lower() in SUPPORTED_IMAGE_EXTS and not any(
+        part.lower() in ("windows", "system32", ".ssh", "appdata") for part in img_path.parts
+    ) else False
+
+
 @app.get("/local_image")
 async def get_local_image_endpoint(path: str = Query(..., description="Абсолютный путь к изображению на ПК")):
     img_path = Path(path).resolve()
@@ -4780,6 +4851,8 @@ async def get_local_image_endpoint(path: str = Query(..., description="Абсо�
         raise HTTPException(status_code=404, detail=f"Файл не найден: {img_path}")
     if img_path.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
         raise HTTPException(status_code=400, detail="Неподдерживаемый формат файла.")
+    if not _is_path_within_allowed_roots(img_path):
+        raise HTTPException(status_code=403, detail="Доступ к системной директории запрещен.")
     return FileResponse(str(img_path))
 
 
@@ -5112,15 +5185,16 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     start_ts = time.perf_counter()
 
-    with Image.open(src_file) as raw_im:
-        pil_image = _pil_to_rgb_clean(raw_im)
+    def _load_image_and_manifest_sync() -> tuple[Image.Image, dict[str, Any] | None, bool]:
+        with Image.open(src_file) as raw_im:
+            loaded_pil = _pil_to_rgb_clean(raw_im)
+        loaded_manifest = _load_folder_manifest(output_dir) if output_dir is not None else None
+        return loaded_pil, loaded_manifest, dest_path.exists()
 
+    pil_image, manifest, already_had_translation = await asyncio.to_thread(_load_image_and_manifest_sync)
     context_lines: list[str] | None = None
     phrase_cache: dict[str, str] = {}
-    manifest: dict[str, Any] | None = None
-    already_had_translation = dest_path.exists()
-    if output_dir is not None:
-        manifest = _load_folder_manifest(output_dir)
+    if manifest is not None:
         ctx = manifest.get("rolling_context")
         if isinstance(ctx, list) and ctx:
             context_lines = [str(x) for x in ctx[-12:]]

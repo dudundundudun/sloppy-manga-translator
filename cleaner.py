@@ -687,13 +687,23 @@ class ComicTextStrokeSegmenter:
             unet_path = ensure_comic_text_detector_weights(self.models_dir, allow_download=allow_download)
             if load_safetensors is not None and unet_path.is_file():
                 self.model = ComicTextUNetHead(in_channels=3, base_ch=32).to(self.device)
-                sd = load_safetensors(str(unet_path), device=str(self.device))
-                missing, _ = self.model.load_state_dict(sd, strict=False)
-                # Активируем нейросетевую ветку только если выходная голова out_conv и основные блоки загружены из весов
+                raw_sd = load_safetensors(str(unet_path), device=str(self.device))
+                target_sd = self.model.state_dict()
+                remapped_sd: Dict[str, Any] = {}
+                for k, v in raw_sd.items():
+                    clean_k = re.sub(r"^(?:unet\.|seg_net\.|line_model\.|model\.)", "", k)
+                    if clean_k in target_sd and tuple(v.shape) == tuple(target_sd[clean_k].shape):
+                        remapped_sd[clean_k] = v
+                missing, _ = self.model.load_state_dict(remapped_sd or raw_sd, strict=False)
                 if "out_conv.weight" not in missing and len(missing) <= 4:
                     self._has_pretrained_weights = True
                     self.model.eval()
                 else:
+                    logger.debug(
+                        "U-Net Stroke Segmenter: несовпадение ключей весов (%d missing из %d), используется морфологический режим.",
+                        len(missing),
+                        len(target_sd),
+                    )
                     self.model = None
         except Exception as exc:
             logger.debug("Инициализация U-Net Stroke Segmenter переключена в гибридный режим: %s", exc)

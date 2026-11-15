@@ -196,22 +196,32 @@ EXPANDED_NSFW_DICT: dict[str, float] = _load_trigger_dictionary()
 
 
 def _compile_prefix_trie_regex(words: list[str]) -> re.Pattern[str]:
-    """Компилирует словарь триггеров в префиксное дерево (Trie Regex) для C-движка SRE."""
+    """Компилирует словарь триггеров в префиксное дерево (Trie Regex) с приоритетом самых длинных совпадений."""
     trie: dict[str, Any] = {}
-    for word in words:
+    for word in sorted(words, key=len, reverse=True):
+        if not word:
+            continue
         curr = trie
         for ch in word:
             curr = curr.setdefault(ch, {})
         curr[""] = ""
+
+    def _max_depth(n: dict[str, Any]) -> int:
+        if not n or ("" in n and len(n) == 1):
+            return 0
+        return 1 + max((_max_depth(c) for k, c in n.items() if k != ""), default=0)
 
     def _node_to_pattern(node: dict[str, Any]) -> str:
         if "" in node and len(node) == 1:
             return ""
         alt: list[str] = []
         char_class: list[str] = []
-        for ch, child in sorted(node.items()):
-            if ch == "":
-                continue
+        # Сортируем ветви по убыванию глубины поддерева, чтобы длинные триггеры матчились раньше коротких префиксов
+        children_sorted = sorted(
+            ((ch, child) for ch, child in node.items() if ch != ""),
+            key=lambda kv: (-_max_depth(kv[1]), kv[0]),
+        )
+        for ch, child in children_sorted:
             sub = _node_to_pattern(child)
             if sub:
                 alt.append(re.escape(ch) + sub)

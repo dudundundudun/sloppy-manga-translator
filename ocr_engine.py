@@ -758,6 +758,51 @@ def sort_panels_dag(
     return ordered
 
 
+def _detect_two_column_yonkoma_split(
+    blocks: List[Dict[str, Any]],
+    page_bgr: Optional[np.ndarray],
+) -> Optional[float]:
+    """
+    Определяет, является ли страница двухколоночным 4-koma (ёнкома) стрипом с вертикальным центральным
+    пробором около X ≈ W/2 (минимум по 3 блока слева и справа и ни один блок не пересекает полосу [0.46W..0.54W]).
+    """
+    if len(blocks) < 6:
+        return None
+    if page_bgr is not None and page_bgr.size > 0:
+        page_w = float(page_bgr.shape[1])
+        page_h = float(page_bgr.shape[0])
+    else:
+        page_w = float(max((int(b["bbox"][2]) for b in blocks if "bbox" in b and len(b["bbox"]) >= 4), default=0))
+        page_h = float(max((int(b["bbox"][3]) for b in blocks if "bbox" in b and len(b["bbox"]) >= 4), default=0))
+    if page_w < 320 or page_h < 400:
+        return None
+    mid_x = 0.5 * page_w
+    band_half = 0.045 * page_w
+    left_cnt = 0
+    right_cnt = 0
+    left_ys: List[float] = []
+    right_ys: List[float] = []
+    for blk in blocks:
+        bx1, by1, bx2, by2 = [float(v) for v in blk["bbox"][:4]]
+        # Если хотя бы один блок пересекает центральный вертикальный пробор — это не 2-колоночная ёнкома
+        if bx1 < (mid_x + band_half) and bx2 > (mid_x - band_half):
+            return None
+        bcx = 0.5 * (bx1 + bx2)
+        bcy = 0.5 * (by1 + by2)
+        if bcx >= mid_x:
+            right_cnt += 1
+            right_ys.append(bcy)
+        else:
+            left_cnt += 1
+            left_ys.append(bcy)
+    if right_cnt >= 3 and left_cnt >= 3:
+        r_span = (max(right_ys) - min(right_ys)) / max(1.0, page_h)
+        l_span = (max(left_ys) - min(left_ys)) / max(1.0, page_h)
+        if r_span >= 0.45 and l_span >= 0.45:
+            return mid_x
+    return None
+
+
 def sort_page_blocks_reading_order_dag(
     blocks: List[Dict[str, Any]],
     page_bgr: Optional[np.ndarray] = None,
@@ -765,15 +810,25 @@ def sort_page_blocks_reading_order_dag(
 ) -> List[Dict[str, Any]]:
     """
     Прямая замена для `_sort_page_blocks_reading_order`:
-    1. Сегментирует страницу на фреймы (панели) и упорядочивает их через межпанельный DAG.
-    2. Привязывает каждый текстовый блок/баббл к своей панели (с обработкой бабблов на границе двух фреймов).
-    3. Упорядочивает бабблы внутри каждой панели через внутрипанельный DAG.
+    1. Проверяет двухколоночную структуру 4-koma (ёнкома) с центральным вертикальным пробором.
+    2. Сегментирует страницу на фреймы (панели) и упорядочивает их через межпанельный DAG.
+    3. Привязывает каждый текстовый блок/баббл к своей панели (с обработкой бабблов на границе двух фреймов).
+    4. Упорядочивает бабблы внутри каждой панели через внутрипанельный DAG.
     Ожидается, что каждый элемент в `blocks` имеет ключ `bbox: (x1, y1, x2, y2)`.
     """
     if len(blocks) <= 1:
         return blocks
 
     reading_mode = "rtl" if lang == "ja" else ("webtoon" if lang == "ko" else "ltr")
+    if reading_mode == "rtl":
+        yonkoma_mid_x = _detect_two_column_yonkoma_split(blocks, page_bgr)
+        if yonkoma_mid_x is not None:
+            right_col = [b for b in blocks if 0.5 * (b["bbox"][0] + b["bbox"][2]) >= yonkoma_mid_x]
+            left_col = [b for b in blocks if 0.5 * (b["bbox"][0] + b["bbox"][2]) < yonkoma_mid_x]
+            return (
+                sort_page_blocks_reading_order_dag(right_col, page_bgr=None, lang=lang)
+                + sort_page_blocks_reading_order_dag(left_col, page_bgr=None, lang=lang)
+            )
     ordered_panels: Optional[List[Dict[str, Any]]] = None
     if page_bgr is not None and page_bgr.size > 0:
         try:

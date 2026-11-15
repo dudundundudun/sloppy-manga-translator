@@ -14,6 +14,13 @@ if errorlevel 1 (
     exit /b 1
 )
 
+if exist "EN" del /f /q "EN"
+git check-ignore -q config.json
+if errorlevel 1 (
+    echo [ERROR] config.json is NOT ignored by .gitignore! Aborting.
+    pause
+    exit /b 1
+)
 git status
 echo.
 git add .
