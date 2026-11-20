@@ -112,7 +112,9 @@ from collections import OrderedDict, deque
 import hashlib
 from logging.handlers import RotatingFileHandler
 import platform
-from urllib.parse import quote
+import ipaddress
+import socket
+from urllib.parse import quote, urljoin, urlparse
 
 BASE_DIR = Path(__file__).resolve().parent
 TEMP_DIR = BASE_DIR / "temp_debug"
@@ -2844,8 +2846,11 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
     if t_lang not in VALID_TARGET_LANGS:
         t_lang = "en"
 
+    _register_allowed_root(source_dir)
     source_dir = _unwrap_output_folder_if_needed(source_dir)
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
+    _register_allowed_root(source_dir)
+    _register_allowed_root(output_dir)
     images = collect_images_in_folder(source_dir)
     manifest = _load_folder_manifest(output_dir)
     pages_meta = manifest.get("pages", {}) if isinstance(manifest.get("pages"), dict) else {}
@@ -4832,6 +4837,7 @@ async def pick_file_endpoint() -> dict[str, Any]:
     file_path = Path(file_str).resolve()
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=400, detail=f"Файл не найден: {file_path}")
+    _register_allowed_root(file_path.parent)
     return {
         "status": "ok",
         "file_path": str(file_path),
@@ -4840,16 +4846,150 @@ async def pick_file_endpoint() -> dict[str, Any]:
     }
 
 
+_SESSION_ALLOWED_ROOTS_LOCK = threading.Lock()
+_SESSION_ALLOWED_ROOTS: set[Path] = set()
+_MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024  # 25 MB limit for remote image_url downloads
+_MAX_REMOTE_IMAGE_REDIRECTS = 5
+_CGNAT_NETWORK = ipaddress.ip_network("100.64.0.0/10")
+
+
+def _register_allowed_root(path_val: Path | str | None) -> None:
+    if not path_val:
+        return
+    try:
+        resolved = Path(str(path_val)).resolve()
+        root_dir = resolved.parent if resolved.is_file() else resolved
+        with _SESSION_ALLOWED_ROOTS_LOCK:
+            _SESSION_ALLOWED_ROOTS.add(root_dir)
+    except Exception:
+        pass
+
+
+def _is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
+    if isinstance(ip_obj, ipaddress.IPv6Address) and ip_obj.ipv4_mapped is not None:
+        if _is_blocked_ip(ip_obj.ipv4_mapped):
+            return True
+    if isinstance(ip_obj, ipaddress.IPv4Address) and ip_obj in _CGNAT_NETWORK:
+        return True
+    return bool(
+        ip_obj.is_private
+        or ip_obj.is_loopback
+        or ip_obj.is_link_local
+        or ip_obj.is_multicast
+        or ip_obj.is_reserved
+        or ip_obj.is_unspecified
+    )
+
+
+def _validate_remote_image_url(raw_url: str) -> str:
+    url_str = (raw_url or "").strip()
+    parsed = urlparse(url_str)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("Разрешены только HTTP и HTTPS ссылки на изображения.")
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname:
+        raise ValueError("URL изображения не содержит корректного домена.")
+    if hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
+        raise ValueError("Доступ к локальным адресам запрещен.")
+
+    # Check if hostname is already an IP literal
+    try:
+        literal_ip = ipaddress.ip_address(hostname.split("%", 1)[0])
+    except ValueError:
+        literal_ip = None
+
+    if literal_ip is not None:
+        if _is_blocked_ip(literal_ip):
+            raise ValueError("Доступ к локальным и приватным IP-адресам запрещен.")
+        return url_str
+
+    port = parsed.port or (443 if scheme == "https" else 80)
+    try:
+        addr_infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
+    except OSError as exc:
+        raise ValueError(f"Не удалось разрешить домен '{hostname}': {exc}") from exc
+
+    if not addr_infos:
+        raise ValueError(f"Домен '{hostname}' не вернул IP-адресов.")
+
+    for info in addr_infos:
+        sockaddr = info[4]
+        if not sockaddr:
+            continue
+        ip_str = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            resolved_ip = ipaddress.ip_address(ip_str)
+        except ValueError as exc:
+            raise ValueError(f"Некорректный IP-адрес '{ip_str}' для '{hostname}'.") from exc
+        if _is_blocked_ip(resolved_ip):
+            raise ValueError("Доступ к локальным и приватным IP-адресам запрещен.")
+    return url_str
+
+
+async def _download_remote_image_bytes(
+    image_url: str,
+    headers: dict[str, str],
+    max_bytes: int = _MAX_REMOTE_IMAGE_BYTES,
+    max_redirects: int = _MAX_REMOTE_IMAGE_REDIRECTS,
+) -> bytes:
+    current_url = await asyncio.to_thread(_validate_remote_image_url, image_url)
+    async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=30.0) as dl_client:
+        for _hop in range(max_redirects + 1):
+            async with dl_client.stream("GET", current_url, headers=headers) as dl_resp:
+                if dl_resp.status_code in (301, 302, 303, 307, 308):
+                    location = dl_resp.headers.get("location")
+                    if not location:
+                        raise ValueError("Сервер вернул редирект без заголовка Location.")
+                    if _hop >= max_redirects:
+                        raise ValueError("Превышено максимальное количество редиректов.")
+                    next_url = urljoin(current_url, location)
+                    current_url = await asyncio.to_thread(_validate_remote_image_url, next_url)
+                    continue
+
+                dl_resp.raise_for_status()
+                content_len_hdr = dl_resp.headers.get("content-length")
+                if content_len_hdr is not None:
+                    try:
+                        if int(content_len_hdr) > max_bytes:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"Размер изображения по URL превышает лимит {max_bytes // (1024 * 1024)} МБ.",
+                            )
+                    except ValueError:
+                        pass
+
+                buf = bytearray()
+                async for chunk in dl_resp.aiter_bytes(chunk_size=65536):
+                    if not chunk:
+                        continue
+                    buf.extend(chunk)
+                    if len(buf) > max_bytes:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Размер изображения по URL превышает лимит {max_bytes // (1024 * 1024)} МБ.",
+                        )
+                return bytes(buf)
+    raise ValueError("Превышено максимальное количество редиректов.")
+
+
 @app.post("/open_folder")
 async def open_folder_in_explorer_endpoint(path: str = Query(...)) -> dict[str, str]:
-    target = Path(path).resolve()
-    if target.exists() and os.name == "nt" and hasattr(os, "startfile"):
+    raw_path = (path or "").strip()
+    if not raw_path:
+        raise HTTPException(status_code=400, detail="Путь к папке не указан")
+    target = Path(raw_path).resolve()
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Папка еще не создана")
+    if not target.is_dir():
+        raise HTTPException(status_code=400, detail="Разрешено открывать только папки, а не файлы")
+    if os.name == "nt" and hasattr(os, "startfile"):
         try:
             os.startfile(str(target))
             return {"status": "ok"}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
-    raise HTTPException(status_code=404, detail="Папка еще не создана")
+    return {"status": "ok"}
 
 
 @app.post("/folder_inspect")
@@ -4857,10 +4997,16 @@ async def folder_inspect_endpoint(payload: FolderInspectRequest) -> dict[str, An
     source_dir = Path(payload.folder_path).resolve()
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+    _register_allowed_root(source_dir)
     return inspect_folder_pages(source_dir, target_lang=payload.target_lang)
 
 
 def _is_path_within_allowed_roots(img_path: Path) -> bool:
+    try:
+        resolved_img = Path(img_path).resolve()
+    except Exception:
+        return False
+
     allowed_roots: list[Path] = [BASE_DIR.resolve(), TEMP_DIR.resolve()]
     if translator_engine is not None and getattr(translator_engine, "web_save_dir", None):
         try:
@@ -4874,16 +5020,16 @@ def _is_path_within_allowed_roots(img_path: Path) -> bool:
                 allowed_roots.append(Path(str(raw_p)).resolve())
             except Exception:
                 pass
+    with _SESSION_ALLOWED_ROOTS_LOCK:
+        allowed_roots.extend(_SESSION_ALLOWED_ROOTS)
+
     for root in allowed_roots:
         try:
-            if img_path.is_relative_to(root):
+            if resolved_img.is_relative_to(root):
                 return True
         except Exception:
             continue
-    # Allow user-inspected manga directories that contain a .translation_state.json or parent output folder
-    return True if img_path.suffix.lower() in SUPPORTED_IMAGE_EXTS and not any(
-        part.lower() in ("windows", "system32", ".ssh", "appdata") for part in img_path.parts
-    ) else False
+    return False
 
 
 @app.get("/local_image")
@@ -5056,10 +5202,15 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
         if payload.page_url and payload.page_url.strip().startswith(("http://", "https://")):
             dl_headers["Referer"] = payload.page_url.strip()
         try:
-            async with httpx.AsyncClient(trust_env=False, follow_redirects=True, timeout=30.0) as dl_client:
-                dl_resp = await dl_client.get(payload.image_url.strip(), headers=dl_headers)
-                dl_resp.raise_for_status()
-                pil_image = Image.open(io.BytesIO(dl_resp.content)).convert("RGB")
+            raw_img_bytes = await _download_remote_image_bytes(
+                payload.image_url.strip(),
+                headers=dl_headers,
+                max_bytes=_MAX_REMOTE_IMAGE_BYTES,
+                max_redirects=_MAX_REMOTE_IMAGE_REDIRECTS,
+            )
+            pil_image = Image.open(io.BytesIO(raw_img_bytes)).convert("RGB")
+        except HTTPException:
+            raise
         except Exception as dl_exc:
             raise HTTPException(
                 status_code=400,
