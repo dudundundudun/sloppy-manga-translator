@@ -596,22 +596,6 @@ def hermite_wall_bridge(
     return np.round(pts).astype(np.int32)
 
 
-class _DoubleConvBlock(nn.Module if nn is not None else object):
-    def __init__(self, in_ch: int, out_ch: int) -> None:
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.SiLU(inplace=True),
-            nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(out_ch),
-            nn.SiLU(inplace=True),
-        )
-
-    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
-        return self.net(x)
-
-
 HF_SAM_TS_L_REPO = "mayocream/koharu-text-sam-ts-l"
 HF_SAM_TS_L_SUBDIR = "koharu-text-sam-ts-l"
 HF_CTD_ONNX_REPO = "mayocream/comic-text-detector"
@@ -1861,16 +1845,6 @@ class SotaMangaCleaner:
         except Exception:
             pass
         return out
-
-
-@dataclass
-class CleaningRegionTask:
-    """Задача на очистку одного текстового или бабблового региона (v5.4 Deep Research)."""
-    text_bbox: Tuple[int, int, int, int]      # Бокс детектора (x1, y1, x2, y2)
-    region_class: str                         # 'text_bubble' или 'text_free'
-    bubble_mask: Optional[np.ndarray] = None  # Полигональная маска баббла (uint8, 0/255)
-    ocr_text: Optional[str] = None            # Распознанный текст для фильтрации пустых/шумовых боксов
-    is_vertical: bool = True                  # Ориентация исходного японского текста
 
 
 class HybridMangaCleaner:

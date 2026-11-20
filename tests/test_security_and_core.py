@@ -67,6 +67,8 @@ def _load_server_module():
                 setattr(m, attr, {} if attr.isupper() else type(attr, (), {}))
             sys.modules[mod_name] = m
 
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
     spec = importlib.util.spec_from_file_location("server_tested_mod", REPO_ROOT / "server.py")
     mod = importlib.util.module_from_spec(spec)
     sys.modules["server_tested_mod"] = mod
@@ -323,6 +325,25 @@ def test_no_silent_except_exception_pass_after_logger():
                     leftovers.append(node.lineno)
     assert leftovers == [], f"Found silent except:pass blocks after logger init: {leftovers}"
 
+
+
+def test_api_modules_extracted_and_dead_classes_removed():
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from api import schemas, security
+
+    assert hasattr(security, "_mask_api_key")
+    assert hasattr(security, "_validate_remote_image_url")
+    assert hasattr(security, "is_path_within_allowed_roots")
+    assert hasattr(schemas, "TranslateRequest")
+    assert hasattr(schemas, "ServerSettingsRequest")
+
+    cleaner_src = (REPO_ROOT / "cleaner.py").read_text(encoding="utf-8")
+    renderer_src = (REPO_ROOT / "renderer.py").read_text(encoding="utf-8")
+    for dead in ("class _DoubleConvBlock", "class CleaningRegionTask"):
+        assert dead not in cleaner_src, f"Dead class still in cleaner.py: {dead}"
+    for dead in ("class TypesetBlockSpec", "class LayoutSolution", "class AdaptiveTypesetter"):
+        assert dead not in renderer_src, f"Dead class still in renderer.py: {dead}"
 
 if __name__ == "__main__":
     test_funcs = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
