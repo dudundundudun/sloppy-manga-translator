@@ -5491,8 +5491,13 @@ Step 1:`;
         activeModelLabel = act;
         document.getElementById("gpu-badge").textContent = data.gpu?.device_name || "CPU";
         document.getElementById("inp-unsloth-url").value = data.unsloth_url || "https://moduleapi.pro/v1";
-        if (data.unsloth_api_key) {
-          document.getElementById("inp-api-key").value = data.unsloth_api_key;
+        window._serverHasApiKey = Boolean(data.has_unsloth_key);
+        window._serverMaskedApiKey = data.masked_api_key || "";
+        const apiKeyInp = document.getElementById("inp-api-key");
+        if (apiKeyInp) {
+          apiKeyInp.placeholder = window._serverHasApiKey
+            ? `Ключ сохранен (${window._serverMaskedApiKey || "sk-***"}). Введите новый, чтобы заменить`
+            : "sk-...";
         }
         if (typeof data.auto_save_web_pages === "boolean") {
           document.getElementById("chk-autosave-web").checked = data.auto_save_web_pages;
@@ -5989,17 +5994,20 @@ Step 1:`;
       const apiKey = document.getElementById("inp-api-key").value.trim();
       if (customMod && !customMod.includes("::")) {
         const isRemote = !uUrl.includes("127.0.0.1") && !uUrl.includes("localhost");
-        customMod = (isRemote || apiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
+        customMod = (isRemote || apiKey || window._serverHasApiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
       }
       const mod = customMod || document.getElementById("sel-model").value;
       const banner = document.getElementById("api-status-banner");
       if (banner) banner.textContent = "⏳ Проверка соединения с API и обновление списка моделей...";
 
+      const testPayload = { selected_model: mod, unsloth_url: uUrl };
+      if (apiKey) testPayload.unsloth_api_key = apiKey;
       await fetch("/settings", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({ selected_model: mod, unsloth_url: uUrl, unsloth_api_key: apiKey })
+        body: JSON.stringify(testPayload)
       });
+      if (apiKey) document.getElementById("inp-api-key").value = "";
       const mRes = await fetch("/models?refresh=true");
       const data = await mRes.json();
       await loadHealth(false);
@@ -6038,7 +6046,7 @@ Step 1:`;
 
         if (customMod && !customMod.includes("::")) {
           const isRemote = !uUrl.includes("127.0.0.1") && !uUrl.includes("localhost");
-          customMod = (isRemote || apiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
+          customMod = (isRemote || apiKey || window._serverHasApiKey) ? `unsloth::${customMod}` : `ollama::${customMod}`;
         }
         const mod = customMod || document.getElementById("sel-model").value;
         const profVal = document.getElementById("sel-settings-translation-profile")?.value || translationProfile || "balanced";
@@ -6068,7 +6076,7 @@ Step 1:`;
             pipeline_mode: pipelineMode,
             use_image_context: Boolean(document.getElementById("chk-use-image-context")?.checked),
             unsloth_url: uUrl,
-            unsloth_api_key: apiKey,
+            ...(apiKey ? { unsloth_api_key: apiKey } : {}),
             auto_save_web_pages: autoSaveWeb,
             web_save_dir: webSaveDir || null,
             text_filter_mode: textFilterMode,

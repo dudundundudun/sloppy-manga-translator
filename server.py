@@ -964,14 +964,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-_TRUSTED_LOCAL_ORIGIN_PREFIXES = (
-    "http://127.0.0.1",
-    "http://localhost",
-    "https://127.0.0.1",
-    "https://localhost",
-    "chrome-extension://",
-    "moz-extension://",
-)
+_TRUSTED_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_TRUSTED_EXTENSION_SCHEMES = frozenset({"chrome-extension", "moz-extension"})
 
 _PRIVILEGED_ENDPOINTS = {
     "/local_image",
@@ -983,14 +977,53 @@ _PRIVILEGED_ENDPOINTS = {
     "/pick_folder",
     "/pick_file",
     "/pick_web_save_folder",
+    "/folder_inspect",
+    "/translate_folder",
+    "/folder_stop",
+    "/save_edited_page",
+    "/glossary",
+    "/pull_model",
+    "/model_stack",
+    "/folder_find_replace",
+    "/folder_clean_noise",
+    "/open_folder_report",
+    "/chapter_book",
+    "/chapter_book/import",
+    "/chapter_book/proofread",
+    "/diagnostics",
+    "/diagnostics/report",
+    "/diagnostics/download_log",
+    "/diagnostics/open_logs",
+    "/diagnostics/clear",
+    "/ux_telemetry/open_report",
+    "/ux_telemetry/clear",
 }
 
 
+def _mask_api_key(raw_key: str | None) -> str:
+    k = (raw_key or "").strip()
+    if not k:
+        return ""
+    return f"{k[:5]}...{k[-4:]}" if len(k) > 10 else "***"
+
+
 def _is_trusted_local_origin(origin: str | None) -> bool:
-    if not origin or origin == "null":
+    if not origin:
         return True
-    orig_l = origin.strip().lower()
-    return any(orig_l.startswith(p) for p in _TRUSTED_LOCAL_ORIGIN_PREFIXES)
+    orig_s = origin.strip()
+    if not orig_s or orig_s.lower() == "null":
+        return False
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(orig_s)
+    except Exception:
+        return False
+    scheme = (parsed.scheme or "").lower()
+    if scheme in _TRUSTED_EXTENSION_SCHEMES:
+        return bool(parsed.netloc)
+    if scheme in ("http", "https"):
+        return (parsed.hostname or "").lower() in _TRUSTED_LOCAL_HOSTS
+    return False
 
 
 app.add_middleware(
@@ -1372,6 +1405,7 @@ class ServerSettingsRequest(BaseModel):
     unsloth_url: str | None = Field(default=None)
     default_model_stack: dict[str, str] | None = Field(default=None)
     unsloth_api_key: str | None = Field(default=None)
+    clear_api_key: bool = Field(default=False)
     selected_model: str | None = Field(default=None)
     translation_profile: str | None = Field(default=None)
     pipeline_mode: str | None = Field(default=None)
@@ -4360,7 +4394,8 @@ async def health_check() -> dict[str, Any]:
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
         "cloud_presets": CLOUD_API_PRESETS,
         "unsloth_url": translator_engine.unsloth_url if translator_engine else "http://127.0.0.1:8888",
-        "unsloth_api_key": translator_engine.unsloth_api_key if translator_engine else "",
+        "unsloth_api_key": "",
+        "masked_api_key": _mask_api_key(translator_engine.unsloth_api_key if translator_engine else ""),
         "unsloth_status": translator_engine.last_unsloth_status if translator_engine else {},
         "has_unsloth_key": bool(translator_engine and translator_engine.unsloth_api_key),
         "auto_save_web_pages": translator_engine.auto_save_web_pages if translator_engine else True,
@@ -4429,7 +4464,8 @@ async def list_models_endpoint(
         "active_model": active,
         "selected_model": translator_engine._resolved_model or "auto",
         "unsloth_url": translator_engine.unsloth_url,
-        "unsloth_api_key": translator_engine.unsloth_api_key,
+        "unsloth_api_key": "",
+        "masked_api_key": _mask_api_key(translator_engine.unsloth_api_key),
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(translator_engine.unsloth_api_key),
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
@@ -4657,13 +4693,18 @@ async def update_model_stack_endpoint(payload: ModelStackActionRequest) -> dict[
 async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, Any]:
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    effective_api_key: str | None = None
+    if payload.clear_api_key:
+        effective_api_key = ""
+    elif payload.unsloth_api_key is not None and payload.unsloth_api_key.strip():
+        effective_api_key = payload.unsloth_api_key.strip()
     url_or_key_changed = (
         (payload.unsloth_url is not None and translator_engine._normalize_api_base_url(payload.unsloth_url) != translator_engine.unsloth_url)
-        or (payload.unsloth_api_key is not None and payload.unsloth_api_key.strip() != translator_engine.unsloth_api_key)
+        or (effective_api_key is not None and effective_api_key != translator_engine.unsloth_api_key)
     )
     saved = translator_engine.save_config(
         unsloth_url=payload.unsloth_url,
-        unsloth_api_key=payload.unsloth_api_key,
+        unsloth_api_key=effective_api_key,
         selected_model=payload.selected_model,
         translation_profile=payload.translation_profile,
         pipeline_mode=payload.pipeline_mode,
@@ -4712,7 +4753,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "anti_censorship_prompt": bool(saved.get("anti_censorship_prompt", False)),
         "anti_censorship_custom_prompt": saved.get("anti_censorship_custom_prompt", ""),
         "unsloth_url": saved["unsloth_url"],
-        "unsloth_api_key": saved["unsloth_api_key"],
+        "unsloth_api_key": "",
+        "masked_api_key": _mask_api_key(saved["unsloth_api_key"]),
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(saved["unsloth_api_key"]),
         "auto_save_web_pages": saved["auto_save_web_pages"],
