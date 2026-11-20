@@ -1,5 +1,5 @@
 @echo off
-title Miko-chan Manga Studio v5.3.0 - Download Shisa and Top Models (with VPN 198.18.x.x Bypass)
+title Miko-chan Manga Studio v6.1.0 - Download Shisa and Top Models (with VPN 198.18.x.x Bypass)
 cd /d "%~dp0"
 
 set PYTHONUTF8=1
@@ -8,14 +8,14 @@ set NO_PROXY=127.0.0.1,localhost
 set no_proxy=127.0.0.1,localhost
 
 echo ==========================================================================
-echo   Download Best Manga Translation and VLM-OCR Models (v5.3.0 VPN Bypass)
+echo   Download Best Manga Translation and VLM-OCR Models (v6.1.0 VPN Bypass)
 echo ==========================================================================
 echo   [1]  Shisa V2.1 14B (Phi-4, Top-1 for Japanese Manga, ~8.3 GB) [DEFAULT]
 echo   [2]  Shisa V2.1 8B  (Qwen3, Fast Japanese/Russian, ~5.0 GB)
 echo   [3]  Shisa V2 12B Uncensored (Mistral-Nemo 18+ NSFW, ~7.0 GB)
-echo   [4]  Sugoi 14B Ultra (Specialized JA->EN Uncensored, ~8.5 GB)
-echo   [5]  TranslateGemma 12B (Google Specialized JA/KO/ZH->RU/EN, ~7.3 GB)
-echo   [6]  Aya Expanse 8B (Fast Multilingual JA/KO/ZH->RU/EN, ~5.1 GB)
+echo   [4]  Sugoi 14B Ultra (Specialized JA to EN Uncensored, ~8.5 GB)
+echo   [5]  TranslateGemma 12B (Google Specialized JA/KO/ZH to RU/EN, ~7.3 GB)
+echo   [6]  Aya Expanse 8B (Fast Multilingual JA/KO/ZH to RU/EN, ~5.1 GB)
 echo   [7]  Google Gemma 3 12B (Literary Russian/English, ~7.3 GB)
 echo   [8]  Alibaba Qwen 3 14B (2026 Top All-rounder JA/KO/ZH + Romaji, ~9.0 GB)
 echo   [9]  GLM-OCR 0.9B Vision (Sniper VLM-OCR for SFX and Covers, ~1.9 GB)

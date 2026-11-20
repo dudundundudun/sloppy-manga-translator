@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Local Manga / Manhwa / Manhua Translator",
-  "version": "5.3.1",
+  "version": "6.1.0",
   "description": "Локальный и облачный AI-переводчик манги, манхвы и маньхуа v5.3.1 (YOLOv8m + RT-DETR-v2 + MangaOCR + DeepSeek/Ollama + LaMa)",
   "permissions": [
     "activeTab",

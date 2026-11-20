@@ -120,6 +120,7 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMP_DIR = BASE_DIR / "temp_debug"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR = BASE_DIR / "logs"
+APP_VERSION = "6.1.0"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 MAIN_LOG_FILE = LOGS_DIR / "miko_studio.log"
 DIAG_EVENTS_FILE = LOGS_DIR / "diagnostics_events.jsonl"
@@ -939,7 +940,7 @@ async def lifespan(app: FastAPI):
     _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
     resolved_model = await translator_engine.resolve_model()
 
-    print("  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v5.4.0)", flush=True)
+    print(f"  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v{APP_VERSION})", flush=True)
     print(f"        Активная модель перевода : {resolved_model}", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
@@ -962,7 +963,7 @@ async def lifespan(app: FastAPI):
 app = FastAPI(
     title="Local Manga/Manhwa/Manhua Translator API",
     description="Локальный пайплайн перевода манги (JA), манхвы (KO) и маньхуа (ZH) с поддержкой Shisa V2.1, Ромадзи и облачных API",
-    version="5.4.0",
+    version=APP_VERSION,
     lifespan=lifespan,
 )
 
@@ -4343,7 +4344,7 @@ async def studio_web_ui() -> HTMLResponse:
     html_path = BASE_DIR / "web_studio.html"
     if html_path.exists():
         return HTMLResponse(content=html_path.read_text(encoding="utf-8"))
-    return HTMLResponse(content="<h1>Manga Translator v5.4.0 Server Running</h1>")
+    return HTMLResponse(content=f"<h1>Manga Translator v{APP_VERSION} Server Running</h1>")
 
 
 @app.get("/mascot.png")
@@ -4390,7 +4391,7 @@ async def health_check() -> dict[str, Any]:
 
     return {
         "status": "ready" if ocr_engine is not None else "initializing",
-        "version": "5.4.0",
+        "version": APP_VERSION,
         "gpu": gpu_info,
         "ollama_model": active_model,
         "active_model": active_model,
@@ -6643,7 +6644,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
     return {
         "status": "ok",
         "server": {
-            "version": "5.4.0",
+            "version": APP_VERSION,
             "pid": os.getpid(),
             "uptime_sec": round(time.time() - SERVER_STARTED_AT, 1),
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(SERVER_STARTED_AT)),
@@ -8533,10 +8534,10 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
             if r.status_code == 200:
                 data = r.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver not in ("5.4.0", "5.4", "5.3.1", "5.3.0", "5.3"):
+                if running_ver != APP_VERSION:
                     print(
                         f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
-                        f"Останавливаю старый процесс для запуска v5.4.0...",
+                        f"Останавливаю старый процесс для запуска v{APP_VERSION}...",
                         flush=True,
                     )
                     try:
@@ -8561,5 +8562,5 @@ if __name__ == "__main__":
             launch_studio_window("http://127.0.0.1:5000/")
         sys.exit(0)
 
-    print("Запуск локального сервера Manga Translator v5.4.0 на 127.0.0.1:5000...", flush=True)
+    print(f"Запуск локального сервера Manga Translator v{APP_VERSION} на 127.0.0.1:5000...", flush=True)
     uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)

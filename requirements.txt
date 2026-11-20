@@ -1,4 +1,6 @@
-# Miko-chan Manga Studio (sloppy-manga-translator) — Pinned Production Dependencies
+# Miko-chan Manga Studio (sloppy-manga-translator v6.1.0) - Production Dependencies
+# Note for Python 3.14 on Windows: install optional packages with `pip install --no-deps`
+# to avoid overwriting pinned numpy and opencv-python wheels.
 fastapi>=0.115.0,<1.0.0
 uvicorn[standard]>=0.32.0,<1.0.0
 httpx>=0.27.2,<1.0.0
@@ -7,6 +9,7 @@ numpy>=1.26.4,<2.2.0
 opencv-python>=4.10.0.84
 Pillow>=10.4.0
 scipy>=1.14.0
+onnxruntime>=1.19.2
 torch>=2.4.0
 torchvision>=0.19.0
 safetensors>=0.4.5

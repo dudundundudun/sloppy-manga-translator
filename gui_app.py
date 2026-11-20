@@ -104,9 +104,9 @@ class MikoMangaStudioGUI:
     """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v5.3.0)."""
 
     def __init__(self, root: tk.Tk) -> None:
-        print("[GUI] Инициализация окна Miko-chan Manga Studio v5.3.0...", flush=True)
+        print("[GUI] Инициализация окна Miko-chan Manga Studio v6.1.0...", flush=True)
         self.root = root
-        self.root.title("🌸 Miko-chan Manga Studio v5.3.0")
+        self.root.title("🌸 Miko-chan Manga Studio v6.1.0")
         self.root.geometry("1460x880")
         self.root.minsize(920, 600)
         self.root.configure(bg=BG_DEEP)
@@ -971,7 +971,7 @@ class MikoMangaStudioGUI:
 
     def _open_diagnostics_modal(self) -> None:
         win = tk.Toplevel(self.root)
-        win.title("🩺 Диагностика, Тайминги и Логи (v5.3.0)")
+        win.title("🩺 Диагностика, Тайминги и Логи (v6.1.0)")
         win.geometry("880x640")
         win.configure(bg=BG_BENTO)
         win.transient(self.root)
@@ -1940,8 +1940,8 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver not in ("5.3.1", "5.3.0", "5.3"):
-                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v5.3.0...", flush=True)
+                if running_ver not in ("6.1.0", "6.1"):
+                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v6.1.0...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)
                     except Exception:
