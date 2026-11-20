@@ -3358,6 +3358,40 @@ class MangaRenderer:
                 return int(round(val))
         return int(round(sorted_vw[-1][0]))
 
+    @staticmethod
+    def _is_empty_or_failed_translation(text: Any) -> bool:
+        s = str(text or "").strip()
+        if not s:
+            return True
+        return s.lower() in {"[ocr failed]", "[translation failed]", "[empty]", "ocr failed"}
+
+    @staticmethod
+    def _restore_original_patch(
+        canvas: Image.Image,
+        original_image: Image.Image | None,
+        block: dict[str, Any],
+    ) -> None:
+        """
+        Восстанавливает исходные пиксели страницы в области `clean_bbox` / `bbox`,
+        если перевод блока пустой, равен `[OCR FAILED]` или не может быть отрендерен шрифтом
+        (защита от пустых белых облачков по образцу meangrinch/MangaTranslator).
+        """
+        if original_image is None:
+            return
+        raw = block.get("clean_bbox") or block.get("original_bbox") or block.get("bbox")
+        if not isinstance(raw, (list, tuple)) or len(raw) < 4:
+            return
+        img_w, img_h = canvas.size
+        orig_rgb = original_image.convert("RGB")
+        if orig_rgb.size != (img_w, img_h):
+            orig_rgb = orig_rgb.resize((img_w, img_h), Image.Resampling.LANCZOS)
+        x1 = max(0, min(img_w - 1, int(round(float(raw[0])))))
+        y1 = max(0, min(img_h - 1, int(round(float(raw[1])))))
+        x2 = max(x1 + 1, min(img_w, int(round(float(raw[2])))))
+        y2 = max(y1 + 1, min(img_h, int(round(float(raw[3])))))
+        patch = orig_rgb.crop((x1, y1, x2, y2))
+        canvas.paste(patch, (x1, y1))
+
     def render_blocks(
         self,
         cleaned_image: Image.Image,
@@ -3367,6 +3401,7 @@ class MangaRenderer:
         min_font_size: int | None = None,
         stroke_width_override: int | None = None,
         overflow_mode: str | None = None,
+        original_image: Image.Image | None = None,
     ) -> Image.Image:
         """
         Двухпроходный SOTA конвейер тайпсеттинга страницы манги (v5.3.0 Ultra Edition):
@@ -3405,9 +3440,15 @@ class MangaRenderer:
         for blk_idx, block in enumerate(blocks):
             block["font_too_small_warning"] = False
             if bool(block.get("is_deleted", False)):
+                self._restore_original_patch(canvas, original_image, block)
                 continue
-            raw_text = normalize_manga_special_symbols((block.get("translated_text") or "").strip())
+            raw_val = block.get("translated_text")
+            if self._is_empty_or_failed_translation(raw_val):
+                self._restore_original_patch(canvas, original_image, block)
+                continue
+            raw_text = normalize_manga_special_symbols(str(raw_val or "").strip())
             if not raw_text:
+                self._restore_original_patch(canvas, original_image, block)
                 continue
 
             style_preset = str(block.get("style_preset") or "dialogue").lower().strip()

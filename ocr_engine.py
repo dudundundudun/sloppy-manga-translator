@@ -3020,6 +3020,19 @@ HF_HAYAI_PROCESSOR_ALLOW_PATTERNS = (
     "*.model",
 )
 
+HF_BABERU_REPO = "genshiai-daichi/baberu-ocr"
+HF_BABERU_SUBDIR = "baberu-ocr"
+HF_BABERU_ALLOW_PATTERNS = (
+    "*.json",
+    "*.safetensors",
+    "*.py",
+    "*.txt",
+    "*.model",
+)
+
+LOCAL_SAM2_SEG_FILENAME = "sam2.1_b.pt"
+LOCAL_SAM2_FALLBACK_FILENAME = "sam2.1_s.pt"
+
 # Приоритет локальных Vision-моделей в Ollama для снайперского чтения сложных SFX и рукописных шрифтов (Шаг 4)
 VLM_OCR_MODEL_PRIORITIES: tuple[str, ...] = (
     "glm-ocr",
@@ -3199,6 +3212,8 @@ class MangaOCREngine:
         use_rtdetr: bool = True,
         use_ja_nar: bool = True,
         use_hayai_ocr: bool = True,
+        use_baberu_ocr: bool = True,
+        use_sam2_seg: bool = True,
         ollama_base_url: str = "http://127.0.0.1:11434",
     ) -> None:
         self.models_dir = Path(models_dir)
@@ -3219,6 +3234,8 @@ class MangaOCREngine:
         self.use_rtdetr = bool(use_rtdetr)
         self.use_ja_nar = bool(use_ja_nar)
         self.use_hayai_ocr = bool(use_hayai_ocr)
+        self.use_baberu_ocr = bool(use_baberu_ocr)
+        self.use_sam2_seg = bool(use_sam2_seg)
         self.use_yolo26_seg = True
         self.pipeline_mode: str = "balanced"
         self.ocr_backend: str = "hybrid_nar_mangaocr"
@@ -3245,6 +3262,13 @@ class MangaOCREngine:
 
         self._yolo26_seg_model: Any | None = None
         self._yolo26_seg_available: bool | None = None
+
+        self._sam2_model: Any | None = None
+        self._sam2_available: bool | None = None if self.use_sam2_seg else False
+
+        self._baberu_model: Any | None = None
+        self._baberu_processor: Any | None = None
+        self._baberu_available: bool | None = None if self.use_baberu_ocr else False
 
         self._rapidocr_reader: Any | None = None
         self._rapidocr_available: bool | None = None
@@ -3315,6 +3339,7 @@ class MangaOCREngine:
             "ultra_ensemble_vlm",
             "mangaocr_fp16_only",
             "hayai_siglip2",
+            "baberu_ocr",
         ):
             self.ocr_backend = str(ocr_backend).strip()
         if detector_backend and str(detector_backend).strip() in (
@@ -3344,6 +3369,8 @@ class MangaOCREngine:
             return "MangaOCR FP16 Full Autoregressive + SmartPreprocess"
         if self.ocr_backend == "hayai_siglip2":
             return "HayaiOCR v2.5 Nova (SigLIP2 NaFlex JA/KO/ZH/EN)"
+        if self.ocr_backend == "baberu_ocr":
+            return "Baberu-OCR (genshiai-daichi/baberu-ocr JA/KO/ZH/EN)"
         if self._ja_nar_available and self._ja_nar_recognizer is not None:
             return "Hybrid manga-ocr-nar-small (v2026, CER 1.73%) + MangaOCR FP16 (long-bubble fallback)"
         return "MangaOCR FP16 + SmartPreprocess (Auto-Invert & AspectGuard)"
@@ -4227,7 +4254,9 @@ class MangaOCREngine:
             xyxy_arr = r0.boxes.xyxy.cpu().numpy().tolist()
             conf_arr = r0.boxes.conf.cpu().numpy().tolist()
             cls_arr = r0.boxes.cls.cpu().numpy().tolist() if r0.boxes.cls is not None else [0] * len(xyxy_arr)
-            for bbox, conf, cls_id in zip(xyxy_arr, conf_arr, cls_arr):
+            masks_obj = getattr(r0, "masks", None)
+            polys_xy = getattr(masks_obj, "xy", None) if masks_obj is not None else None
+            for idx, (bbox, conf, cls_id) in enumerate(zip(xyxy_arr, conf_arr, cls_arr)):
                 x1, y1, x2, y2 = [int(round(c)) for c in bbox]
                 y1 += y_start
                 y2 += y_start
@@ -4237,6 +4266,16 @@ class MangaOCREngine:
                 y2 = max(y1 + 1, min(y2, img_h))
                 if (x2 - x1) < min_box_size or (y2 - y1) < min_box_size:
                     continue
+                poly_pts: list[list[int]] | None = None
+                if polys_xy is not None and idx < len(polys_xy) and len(polys_xy[idx]) >= 3:
+                    raw_pts = polys_xy[idx]
+                    poly_pts = [
+                        [
+                            max(0, min(img_w - 1, int(round(float(pt[0]))))),
+                            max(0, min(img_h - 1, int(round(float(pt[1]) + y_start)))),
+                        ]
+                        for pt in raw_pts
+                    ]
                 cls_name = str(names_map.get(int(cls_id), "")).lower()
                 if "balloon" in cls_name or "bubble" in cls_name or int(cls_id) == 2:
                     seg_bubbles.append(
@@ -4244,6 +4283,7 @@ class MangaOCREngine:
                             "bbox": [x1, y1, x2, y2],
                             "confidence": round(float(conf), 4),
                             "is_free_text": False,
+                            "bubble_polygon": poly_pts,
                             "_source": "yolo26_seg_balloon",
                         }
                     )
@@ -4253,12 +4293,248 @@ class MangaOCREngine:
                             "bbox": [x1, y1, x2, y2],
                             "confidence": round(float(conf), 4),
                             "is_free_text": False,
+                            "bubble_polygon": poly_pts,
                             "_source": "yolo26_seg_text",
                         }
                     )
         except Exception as exc:
             logger.debug("Ошибка YOLO26s-seg на слайсе: %s", exc)
         return seg_bubbles, seg_texts
+
+    def _get_sam2_segmenter(self, download_if_missing: bool = False) -> Any | None:
+        """
+        Ленивая загрузка SAM 2.1 (`sam2.1_b.pt` / `sam2.1_s.pt` через `ultralytics.models.sam.SAM`)
+        для точной полигональной сегментации бабблов от RT-DETR-v2 и YOLOv8m (архитектура meangrinch/MangaTranslator).
+        """
+        if not self.use_sam2_seg or self._sam2_available is False:
+            return None
+        if self._sam2_model is not None:
+            return self._sam2_model
+
+        try:
+            from ultralytics import SAM  # type: ignore
+        except Exception as exc:
+            logger.debug("ultralytics.SAM недоступен для полигональной сегментации: %s", exc)
+            self._sam2_available = False
+            return None
+
+        local_candidates = [
+            self.models_dir / LOCAL_SAM2_SEG_FILENAME,
+            self.models_dir / LOCAL_SAM2_FALLBACK_FILENAME,
+        ]
+        chosen_path: Path | None = None
+        for p in local_candidates:
+            if p.exists() and p.stat().st_size > 10_000_000:
+                chosen_path = p
+                break
+
+        if chosen_path is None:
+            if not download_if_missing:
+                return None
+            chosen_path = self.models_dir / LOCAL_SAM2_SEG_FILENAME
+
+        try:
+            sam_model = SAM(str(chosen_path))
+            self._sam2_model = sam_model
+            self._sam2_available = True
+            logger.info("SAM 2.1 загружен для полигональной сегментации бабблов: %s", chosen_path.name)
+            return self._sam2_model
+        except Exception as exc:
+            logger.warning("Не удалось загрузить SAM 2.1 (%s): %s", chosen_path.name, exc)
+            self._sam2_available = False
+            return None
+
+    def _extract_contour_polygon_fallback(
+        self,
+        img_np: np.ndarray,
+        bbox: list[int],
+    ) -> list[list[int]] | None:
+        """
+        Облегченный фоллбэк извлечения полигона контура баббла, если веса YOLO26s-seg / SAM 2.1
+        еще не скачаны: строит полигон внутренней чаши баббла (исключая внешние углы bbox).
+        """
+        img_h, img_w = img_np.shape[:2]
+        x1, y1, x2, y2 = [int(v) for v in bbox[:4]]
+        x1 = max(0, min(x1, img_w - 1))
+        y1 = max(0, min(y1, img_h - 1))
+        x2 = max(x1 + 1, min(x2, img_w))
+        y2 = max(y1 + 1, min(y2, img_h))
+        bw, bh = x2 - x1, y2 - y1
+        if bw < 16 or bh < 16:
+            return None
+        try:
+            roi = img_np[y1:y2, x1:x2]
+            roi_gray = cv2.cvtColor(roi, cv2.COLOR_RGB2GRAY) if roi.ndim == 3 else roi
+            bg_p = float(np.percentile(roi_gray, 75))
+            cav_mask = self._extract_bubble_interior_mask(roi_gray, bg_p)
+            if cav_mask is not None and np.count_nonzero(cav_mask) >= int(0.18 * bw * bh):
+                contours, _ = cv2.findContours(cav_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if contours:
+                    largest = max(contours, key=cv2.contourArea)
+                    if cv2.contourArea(largest) >= int(0.15 * bw * bh):
+                        eps = max(1.5, 0.012 * cv2.arcLength(largest, True))
+                        approx = cv2.approxPolyDP(largest, eps, True)
+                        if len(approx) >= 3:
+                            return [
+                                [
+                                    max(0, min(img_w - 1, x1 + int(pt[0][0]))),
+                                    max(0, min(img_h - 1, y1 + int(pt[0][1]))),
+                                ]
+                                for pt in approx
+                            ]
+        except Exception:
+            pass
+
+        # Эллиптическая аппроксимация баббла (отсекает 4 внешних угла прямоугольника bbox)
+        cx = 0.5 * (x1 + x2)
+        cy = 0.5 * (y1 + y2)
+        rx = max(4.0, 0.48 * bw)
+        ry = max(4.0, 0.48 * bh)
+        pts: list[list[int]] = []
+        for k in range(24):
+            ang = 2.0 * math.pi * k / 24.0
+            px = max(0, min(img_w - 1, int(round(cx + rx * math.cos(ang)))))
+            py = max(0, min(img_h - 1, int(round(cy + ry * math.sin(ang)))))
+            pts.append([px, py])
+        return pts
+
+    def _attach_bubble_polygons(
+        self,
+        img_np: np.ndarray,
+        detections: list[dict[str, Any]],
+        download_sam_if_missing: bool = False,
+    ) -> list[dict[str, Any]]:
+        """
+        Обеспечивает единый контракт `det["bubble_polygon"]` (list[list[int]] | None):
+        - Для `is_free_text=True` явно ставит `None`.
+        - Для бабблов без полигона от YOLO26s-seg выполняет один батч-прогон SAM 2.1 (`sam_model.predict`).
+        - Если веса SAM 2.1 не загружены, строит полигон внутренней чаши через `_extract_contour_polygon_fallback`.
+        """
+        if not detections:
+            return detections
+        img_h, img_w = img_np.shape[:2]
+
+        need_sam_indices: list[int] = []
+        need_sam_bboxes: list[list[float]] = []
+
+        for idx, det in enumerate(detections):
+            if bool(det.get("is_free_text", False)):
+                det["bubble_polygon"] = None
+                continue
+            existing_poly = det.get("bubble_polygon")
+            if isinstance(existing_poly, list) and len(existing_poly) >= 3:
+                continue
+            bx1, by1, bx2, by2 = [int(v) for v in det["bbox"][:4]]
+            need_sam_indices.append(idx)
+            need_sam_bboxes.append([float(bx1), float(by1), float(bx2), float(by2)])
+
+        if need_sam_indices:
+            sam_model = self._get_sam2_segmenter(download_if_missing=download_sam_if_missing)
+            if sam_model is not None:
+                try:
+                    sam_res = sam_model.predict(
+                        source=img_np,
+                        bboxes=need_sam_bboxes,
+                        device=self.device,
+                        verbose=False,
+                    )
+                    if sam_res:
+                        r0 = sam_res[0]
+                        masks_obj = getattr(r0, "masks", None)
+                        polys_xy = getattr(masks_obj, "xy", None) if masks_obj is not None else None
+                        if polys_xy is not None:
+                            for local_i, det_idx in enumerate(need_sam_indices):
+                                if local_i < len(polys_xy) and len(polys_xy[local_i]) >= 3:
+                                    raw_pts = polys_xy[local_i]
+                                    detections[det_idx]["bubble_polygon"] = [
+                                        [
+                                            max(0, min(img_w - 1, int(round(float(pt[0]))))),
+                                            max(0, min(img_h - 1, int(round(float(pt[1]))))),
+                                        ]
+                                        for pt in raw_pts
+                                    ]
+                except Exception as exc:
+                    logger.debug("SAM 2.1 батч-сегментация не удалась, использую контурный фоллбэк: %s", exc)
+
+            # Гарантируем валидный полигон для каждого речевого баббла
+            for det_idx in need_sam_indices:
+                det = detections[det_idx]
+                poly_now = det.get("bubble_polygon")
+                if not (isinstance(poly_now, list) and len(poly_now) >= 3):
+                    det["bubble_polygon"] = self._extract_contour_polygon_fallback(img_np, det["bbox"])
+
+        return detections
+
+    def _get_baberu_recognizer(self, allow_download: bool = True) -> tuple[Any, Any] | None:
+        """
+        Ленивая загрузка локального OCR-распознавателя `genshiai-daichi/baberu-ocr`
+        (в паре с `hayai-ocr-v2.5-nova`, по архитектуре meangrinch/MangaTranslator).
+        """
+        if not self.use_baberu_ocr or self._baberu_available is False:
+            return None
+        if self._baberu_model is not None and self._baberu_processor is not None:
+            return self._baberu_model, self._baberu_processor
+
+        local_dir = self.models_dir / HF_BABERU_SUBDIR
+        try:
+            from transformers import AutoModelForImageTextToText, AutoProcessor  # type: ignore
+
+            if not (local_dir.exists() and any(local_dir.glob("*.safetensors"))):
+                if not allow_download:
+                    return None
+                from huggingface_hub import snapshot_download  # type: ignore
+                local_dir.mkdir(parents=True, exist_ok=True)
+                snapshot_download(
+                    repo_id=HF_BABERU_REPO,
+                    local_dir=str(local_dir),
+                    allow_patterns=list(HF_BABERU_ALLOW_PATTERNS),
+                )
+
+            processor = AutoProcessor.from_pretrained(str(local_dir), trust_remote_code=True)
+            dtype = torch.bfloat16 if self.device.startswith("cuda") else torch.float32
+            model = AutoModelForImageTextToText.from_pretrained(
+                str(local_dir),
+                torch_dtype=dtype,
+                trust_remote_code=True,
+            ).to(self.device)
+            model.eval()
+            self._baberu_model = model
+            self._baberu_processor = processor
+            self._baberu_available = True
+            logger.info("Baberu-OCR успешно загружен из %s", local_dir)
+            return self._baberu_model, self._baberu_processor
+        except Exception as exc:
+            logger.warning("Не удалось загрузить Baberu-OCR (%s): %s", HF_BABERU_REPO, exc)
+            self._baberu_available = False
+            return None
+
+    def _recognize_crops_batch_baberu(
+        self,
+        crops_pil: list[Image.Image],
+        lang: str = "ja",
+        max_new_tokens: int = 128,
+    ) -> list[str]:
+        """Пакетное распознавание кропов через локальный `genshiai-daichi/baberu-ocr`."""
+        if not crops_pil:
+            return []
+        loaded = self._get_baberu_recognizer(allow_download=True)
+        if loaded is None:
+            return [""] * len(crops_pil)
+        model, processor = loaded
+        results: list[str] = []
+        try:
+            rgb_crops = [c.convert("RGB") for c in crops_pil]
+            with torch.inference_mode():
+                for crop_img in rgb_crops:
+                    inputs = processor(images=crop_img, return_tensors="pt")
+                    inputs = {k: v.to(self.device) if hasattr(v, "to") else v for k, v in inputs.items()}
+                    out_ids = model.generate(**inputs, max_new_tokens=max_new_tokens)
+                    txt = processor.batch_decode(out_ids, skip_special_tokens=True)[0]
+                    results.append(str(txt or "").strip())
+            return results
+        except Exception as exc:
+            logger.warning("Ошибка инференса Baberu-OCR: %s", exc)
+            return [""] * len(crops_pil)
 
     def _get_rtdetr_detector(self) -> tuple[Any, Any] | None:
         """
@@ -6485,6 +6761,8 @@ class MangaOCREngine:
                         existing["bbox"] = [ux1, uy1, ux2, uy2]
                         existing["confidence"] = round(max(float(existing["confidence"]), c_conf), 4)
                         existing["is_free_text"] = bool(existing.get("is_free_text", False) and c_free)
+                        if not existing.get("bubble_polygon") and cand.get("bubble_polygon"):
+                            existing["bubble_polygon"] = [list(pt) for pt in cand["bubble_polygon"]]
                         absorbed = True
                         break
 
@@ -6496,6 +6774,8 @@ class MangaOCREngine:
                 }
                 if cand.get("text_bbox"):
                     merged_item["text_bbox"] = list(cand["text_bbox"])
+                if cand.get("bubble_polygon"):
+                    merged_item["bubble_polygon"] = [list(pt) for pt in cand["bubble_polygon"]]
                 merged.append(merged_item)
 
         return merged
@@ -7385,6 +7665,11 @@ class MangaOCREngine:
             if screen_added:
                 raw_detections.extend(screen_added)
 
+        raw_detections = self._attach_bubble_polygons(
+            img_np,
+            raw_detections,
+            download_sam_if_missing=(eff_pmode == "ultra"),
+        )
         return raw_detections
 
     def _detect_missed_screen_and_tilted_text_containers(
@@ -8113,6 +8398,10 @@ class MangaOCREngine:
             h_res = self._recognize_crops_batch_hayai(crops_pil, lang="ja")
             if h_res and len(h_res) == len(crops_pil) and any(h_res):
                 return [_restore_english_word_spaces(t) if _looks_like_merged_english_ocr(t) else t for t in h_res]
+        if active_ocr_b == "baberu_ocr" and self.use_baberu_ocr:
+            b_res = self._recognize_crops_batch_baberu(crops_pil, lang="ja")
+            if b_res and len(b_res) == len(crops_pil) and any(b_res):
+                return [_restore_english_word_spaces(t) if _looks_like_merged_english_ocr(t) else t for t in b_res]
 
         nar_model = self._get_ja_nar_recognizer()
         if nar_model is not None:
@@ -8244,6 +8533,11 @@ class MangaOCREngine:
         """
         if not crops_pil:
             return []
+
+        if getattr(self, "ocr_backend", "") == "baberu_ocr" and self.use_baberu_ocr and self._baberu_available is not False:
+            baberu_outs = self._recognize_crops_batch_baberu(crops_pil, lang=lang)
+            if baberu_outs and len(baberu_outs) == len(crops_pil) and any(baberu_outs):
+                return baberu_outs
 
         hayai_batch_texts: list[str | None] = [None] * len(crops_pil)
         if self.use_hayai_ocr and self._hayai_available is not False:
@@ -8562,11 +8856,13 @@ class MangaOCREngine:
             except Exception:
                 detected_angle = 0.0
 
+            raw_poly = None if is_free else det.get("bubble_polygon")
             blk_dict: dict[str, Any] = {
                 "id": block_id,
                 "bbox": [x1, y1, x2, y2],
                 "clean_bbox": [x1, y1, x2, y2],
                 "text_bbox": ocr_coords,
+                "bubble_polygon": ([list(pt) for pt in raw_poly] if isinstance(raw_poly, list) and len(raw_poly) >= 3 else None),
                 "confidence": det["confidence"],
                 "original_text": recognized_text,
                 "is_free_text": is_free,

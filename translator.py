@@ -7800,14 +7800,156 @@ class OllamaTranslator:
             **kwargs,
         )
 
+    @staticmethod
+    def load_chapter_glossary(chapter_dir: str | Path | None) -> list[dict[str, Any]]:
+        """Загружает файл глоссария главы `.glossary.json` (если существует)."""
+        if not chapter_dir:
+            return []
+        g_path = Path(chapter_dir) / ".glossary.json"
+        if not g_path.is_file():
+            return []
+        try:
+            data = json.loads(g_path.read_text(encoding="utf-8"))
+            if isinstance(data, list):
+                return [item for item in data if isinstance(item, dict)]
+            if isinstance(data, dict):
+                return [{"source": str(k), "target": str(v)} for k, v in data.items() if str(k).strip()]
+        except Exception as exc:
+            logger.debug("Не удалось прочитать .glossary.json (%s): %s", g_path, exc)
+        return []
+
+    @staticmethod
+    def save_chapter_glossary(chapter_dir: str | Path | None, entries: list[dict[str, Any]]) -> Path | None:
+        """Сохраняет/обновляет глоссарий имён и терминов главы в `.glossary.json`."""
+        if not chapter_dir:
+            return None
+        c_dir = Path(chapter_dir)
+        c_dir.mkdir(parents=True, exist_ok=True)
+        g_path = c_dir / ".glossary.json"
+        merged: dict[str, dict[str, Any]] = {}
+        for existing in OllamaTranslator.load_chapter_glossary(c_dir):
+            src_k = str(existing.get("source") or existing.get("src") or "").strip()
+            if src_k:
+                merged[src_k] = existing
+        for item in entries or []:
+            if not isinstance(item, dict):
+                continue
+            src_k = str(item.get("source") or item.get("src") or "").strip()
+            if src_k:
+                merged[src_k] = item
+        g_path.write_text(json.dumps(list(merged.values()), ensure_ascii=False, indent=2), encoding="utf-8")
+        return g_path
+
+    @staticmethod
+    def encode_full_page_for_vlm(page_image: Any, max_side: int = 1280, quality: int = 82) -> str | None:
+        """
+        Сжимает обзорное изображение всей страницы (`Send Full Page to LLM`) в base64 JPEG data-URI
+        для передачи визуального контекста сцены (пол персонажей, эмоции, SFX) в мультимодальную LLM.
+        """
+        if page_image is None:
+            return None
+        try:
+            import base64
+            import io
+            from PIL import Image as _PilImage
+
+            if isinstance(page_image, (str, Path)):
+                im = _PilImage.open(page_image).convert("RGB")
+            elif isinstance(page_image, _PilImage.Image):
+                im = page_image.convert("RGB")
+            else:
+                import numpy as _np
+                if isinstance(page_image, _np.ndarray):
+                    im = _PilImage.fromarray(page_image).convert("RGB")
+                else:
+                    return None
+            w, h = im.size
+            if max(w, h) > max_side:
+                scale = float(max_side) / float(max(w, h))
+                im = im.resize((max(1, int(round(w * scale))), max(1, int(round(h * scale)))), _PilImage.Resampling.LANCZOS)
+            buf = io.BytesIO()
+            im.save(buf, format="JPEG", quality=quality, optimize=True)
+            b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+            return f"data:image/jpeg;base64,{b64}"
+        except Exception as exc:
+            logger.debug("Не удалось закодировать обзор страницы для VLM: %s", exc)
+            return None
+
+    @staticmethod
+    def build_page_batch_prompt(
+        blocks: list[dict[str, Any]],
+        glossary_entries: list[dict[str, Any]] | None = None,
+        ocr_correction: bool = True,
+        target_lang: str = "ru",
+    ) -> tuple[str, str]:
+        """
+        Формирует системный и пользовательский промпт для единого батч-перевода страницы `1..N`
+        с инструкцией `OCR Correction` и подгруженным глоссарием (по архитектуре meangrinch/MangaTranslator).
+        """
+        sys_lines = [
+            f"You are an expert manga translator translating numbered dialogue lines (1..N) into {target_lang}.",
+            "Maintain consistent character voice, pronouns, and scene continuity across the entire page.",
+            "Preserve exact numbering 1..N and return one translated line per input item.",
+        ]
+        if ocr_correction:
+            sys_lines.append(
+                "OCR Correction: Input lines come from local manga OCR and may contain garbled or misread characters. "
+                "Silently reconstruct obvious OCR typos using surrounding dialogue and visual context before translating."
+            )
+        if glossary_entries:
+            g_lines = []
+            for entry in glossary_entries[:80]:
+                if isinstance(entry, dict):
+                    s_term = str(entry.get("source") or entry.get("src") or "").strip()
+                    t_term = str(entry.get("target") or entry.get("dst") or "").strip()
+                    if s_term and t_term:
+                        g_lines.append(f"- {s_term} => {t_term}")
+            if g_lines:
+                sys_lines.append("Chapter Glossary (follow strictly):\n" + "\n".join(g_lines))
+
+        numbered = []
+        for idx, blk in enumerate(blocks, start=1):
+            txt = str(blk.get("original_text") or "").strip()
+            numbered.append(f"{idx}: {txt}")
+        return "\n".join(sys_lines), "\n".join(numbered)
+
     async def translate_page(
         self,
         blocks: list[dict[str, Any]],
         source_lang: str = "ja",
         target_lang: str = "en",
+        full_page_image: Any = None,
+        chapter_dir: str | Path | None = None,
+        ocr_correction: bool = True,
         **kwargs: Any,
     ) -> list[dict[str, Any]]:
-        """Алиас перевода страницы с расчетом геометрического бюджета баблов (Блок 5)."""
+        """
+        Пакетный контекстный перевод страницы `1..N` (Этап 5 рефакторинга):
+        - Автоматически подгружает `.glossary.json` из `chapter_dir` (если задан).
+        - При наличии `full_page_image` кодирует обзор всей страницы (`Send Full Page to LLM`).
+        - Передает флаг `ocr_correction` и объединенный глоссарий в `translate_blocks`.
+        """
+        if chapter_dir:
+            file_glossary = self.load_chapter_glossary(chapter_dir)
+            if file_glossary:
+                existing_g = list(kwargs.get("glossary_entries") or [])
+                kwargs["glossary_entries"] = file_glossary + existing_g
+
+        if full_page_image is not None and "page_image_data_uri" not in kwargs:
+            data_uri = self.encode_full_page_for_vlm(full_page_image)
+            if data_uri:
+                kwargs["page_image_data_uri"] = data_uri
+
+        # Сохраняем диагностический батч-промпт 1..N с OCR Correction для отладки/VLM-маршрутов
+        self._last_page_batch_prompt = self.build_page_batch_prompt(
+            blocks=blocks,
+            glossary_entries=kwargs.get("glossary_entries"),
+            ocr_correction=ocr_correction,
+            target_lang=target_lang,
+        )
+
+        # Фильтруем дополнительные мета-аргументы, чтобы сохранить 100% совместимость с translate_blocks
+        kwargs.pop("page_image_data_uri", None)
         return await self.translate_blocks(
             blocks=blocks,
             source_lang=source_lang,

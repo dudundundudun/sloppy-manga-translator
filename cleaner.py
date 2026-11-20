@@ -612,57 +612,33 @@ class _DoubleConvBlock(nn.Module if nn is not None else object):
         return self.net(x)
 
 
-class ComicTextUNetHead(nn.Module if nn is not None else object):
-    """
-    Легковесная U-Net / SegNet голова попиксельной сегментации штрихов текста
-    по архитектуре dmMaze/comic-text-detector (mayocream/comic-text-detector)
-    на чистом PyTorch + safetensors (без сторонних C++ зависимостей для Python 3.14).
-    """
+HF_SAM_TS_L_REPO = "mayocream/koharu-text-sam-ts-l"
+HF_SAM_TS_L_SUBDIR = "koharu-text-sam-ts-l"
+HF_CTD_ONNX_REPO = "mayocream/comic-text-detector"
+HF_CTD_ONNX_FILENAME = "comictextdetector.pt.onnx"
 
-    def __init__(self, in_channels: int = 3, base_ch: int = 32) -> None:
-        super().__init__()
-        self.enc1 = _DoubleConvBlock(in_channels, base_ch)
-        self.enc2 = _DoubleConvBlock(base_ch, base_ch * 2)
-        self.enc3 = _DoubleConvBlock(base_ch * 2, base_ch * 4)
-        self.bottleneck = _DoubleConvBlock(base_ch * 4, base_ch * 8)
+_INVALID_TRANSLATION_MARKERS = frozenset({
+    "[ocr failed]",
+    "[translation failed]",
+    "[empty]",
+    "ocr failed",
+})
 
-        self.up3 = nn.ConvTranspose2d(base_ch * 8, base_ch * 4, kernel_size=2, stride=2)
-        self.dec3 = _DoubleConvBlock(base_ch * 8, base_ch * 4)
-        self.up2 = nn.ConvTranspose2d(base_ch * 4, base_ch * 2, kernel_size=2, stride=2)
-        self.dec2 = _DoubleConvBlock(base_ch * 4, base_ch * 2)
-        self.up1 = nn.ConvTranspose2d(base_ch * 2, base_ch, kernel_size=2, stride=2)
-        self.dec1 = _DoubleConvBlock(base_ch * 2, base_ch)
-        self.out_conv = nn.Conv2d(base_ch, 1, kernel_size=1)
 
-    def forward(self, x: "torch.Tensor") -> "torch.Tensor":
-        e1 = self.enc1(x)
-        e2 = self.enc2(F.max_pool2d(e1, 2))
-        e3 = self.enc3(F.max_pool2d(e2, 2))
-        b = self.bottleneck(F.max_pool2d(e3, 2))
-
-        d3 = self.up3(b)
-        if d3.shape[-2:] != e3.shape[-2:]:
-            d3 = F.interpolate(d3, size=e3.shape[-2:], mode="bilinear", align_corners=False)
-        d3 = self.dec3(torch.cat([d3, e3], dim=1))
-
-        d2 = self.up2(d3)
-        if d2.shape[-2:] != e2.shape[-2:]:
-            d2 = F.interpolate(d2, size=e2.shape[-2:], mode="bilinear", align_corners=False)
-        d2 = self.dec2(torch.cat([d2, e2], dim=1))
-
-        d1 = self.up1(d2)
-        if d1.shape[-2:] != e1.shape[-2:]:
-            d1 = F.interpolate(d1, size=e1.shape[-2:], mode="bilinear", align_corners=False)
-        d1 = self.dec1(torch.cat([d1, e1], dim=1))
-        return torch.sigmoid(self.out_conv(d1))
+def _is_invalid_translation_text(text: Any) -> bool:
+    s = str(text or "").strip()
+    if not s:
+        return True
+    return s.lower() in _INVALID_TRANSLATION_MARKERS
 
 
 class ComicTextStrokeSegmenter:
     """
-    Попиксельный нейросетевой и мультимасштабный сегментатор штрихов текста (Шаг 1 Roadmap v5.0).
-    Подгружает веса `models/comic-text-detector/unet.safetensors` на чистом PyTorch + safetensors
-    и комбинирует отклик U-Net с многомасштабным тензорным фильтром BlackHat / TopHat и подавлением
-    длинных линий лайнарта (волосы, ресницы, стенки баббла) с защитой касающихся стенок глифов.
+    Нейросетевой попиксельный сегментатор штрихов текста и их обводки (Этап 2 рефакторинга
+    по архитектуре meangrinch/MangaTranslator):
+    1. Основной бэкенд: `mayocream/koharu-text-sam-ts-l` (Koharu Text SAM-TS-L, ONNX/PyTorch).
+    2. Легковесный фоллбэк: оригинальный ONNX `comictextdetector.pt.onnx` через `onnxruntime.InferenceSession`.
+    3. Офлайн-фоллбэк: мультимасштабный BlackHat/TopHat с подавлением длинных линий лайнарта.
     """
 
     def __init__(
@@ -673,41 +649,129 @@ class ComicTextStrokeSegmenter:
         self.models_dir = Path(models_dir)
         has_cuda = bool(torch is not None and torch.cuda.is_available())
         self.device = torch.device(device or ("cuda" if has_cuda else "cpu")) if torch is not None else None
-        self.model: Optional[ComicTextUNetHead] = None
+        self.model: Optional[Any] = None
+        self.backend_name: str = "uninitialized"
+        self._input_name: str = ""
+        self._input_size: Tuple[int, int] = (512, 512)
         self._has_pretrained_weights: bool = False
         self._init_done: bool = False
 
-    def _lazy_init(self, allow_download: bool = False) -> None:
+    def _create_onnx_session(self, onnx_path: Path) -> Optional[Any]:
+        try:
+            import onnxruntime as ort  # type: ignore
+        except Exception:
+            return None
+        providers: List[str] = []
+        avail = set(ort.get_available_providers())
+        if self.device is not None and getattr(self.device, "type", "cpu") == "cuda" and "CUDAExecutionProvider" in avail:
+            providers.append("CUDAExecutionProvider")
+        providers.append("CPUExecutionProvider")
+        sess = ort.InferenceSession(str(onnx_path), providers=providers)
+        inp = sess.get_inputs()[0]
+        self._input_name = inp.name
+        shape = getattr(inp, "shape", None) or []
+        if len(shape) == 4 and isinstance(shape[2], int) and isinstance(shape[3], int) and shape[2] > 0 and shape[3] > 0:
+            self._input_size = (int(shape[2]), int(shape[3]))
+        else:
+            self._input_size = (1024, 1024) if "comictextdetector" in onnx_path.name.lower() else (512, 512)
+        return sess
+
+    def _find_or_download_onnx(self, allow_download: bool) -> Tuple[Optional[Path], str]:
+        sam_dir = self.models_dir / HF_SAM_TS_L_SUBDIR
+        ctd_dir = self.models_dir / "comic-text-detector"
+        for cand_dir, bname in ((sam_dir, "sam_ts_l"), (ctd_dir, "onnx_ctd")):
+            if cand_dir.is_dir():
+                for p in sorted(cand_dir.glob("*.onnx")):
+                    if p.is_file() and p.stat().st_size > 1024:
+                        return p, bname
+
+        if not allow_download:
+            return None, "morph_fallback"
+
+        try:
+            from huggingface_hub import hf_hub_download, list_repo_files  # type: ignore
+
+            # 1. Пробуем скачать ONNX-версию Koharu Text SAM-TS-L
+            try:
+                repo_files = list_repo_files(HF_SAM_TS_L_REPO)
+                onnx_files = [f for f in repo_files if f.lower().endswith(".onnx")]
+                if onnx_files:
+                    sam_dir.mkdir(parents=True, exist_ok=True)
+                    dl = hf_hub_download(
+                        repo_id=HF_SAM_TS_L_REPO,
+                        filename=onnx_files[0],
+                        local_dir=str(sam_dir),
+                    )
+                    dl_p = Path(dl)
+                    if dl_p.is_file() and dl_p.stat().st_size > 1024:
+                        return dl_p, "sam_ts_l"
+            except Exception as sam_exc:
+                logger.debug("SAM-TS-L ONNX недоступен напрямую (%s), пробую ONNX comic-text-detector.", sam_exc)
+
+            # 2. Фоллбэк на оригинальный comictextdetector.pt.onnx
+            try:
+                ctd_dir.mkdir(parents=True, exist_ok=True)
+                dl_ctd = hf_hub_download(
+                    repo_id=HF_CTD_ONNX_REPO,
+                    filename=HF_CTD_ONNX_FILENAME,
+                    local_dir=str(ctd_dir),
+                )
+                dl_cp = Path(dl_ctd)
+                if dl_cp.is_file() and dl_cp.stat().st_size > 1024:
+                    return dl_cp, "onnx_ctd"
+            except Exception as ctd_exc:
+                logger.debug("ONNX comic-text-detector недоступен (%s).", ctd_exc)
+        except Exception:
+            pass
+
+        return None, "morph_fallback"
+
+    def _lazy_init(self, allow_download: bool = True) -> None:
         if self._init_done and not (allow_download and self.model is None):
             return
         self._init_done = True
-        if torch is None or nn is None:
-            return
         try:
-            unet_path = ensure_comic_text_detector_weights(self.models_dir, allow_download=allow_download)
-            if load_safetensors is not None and unet_path.is_file():
-                self.model = ComicTextUNetHead(in_channels=3, base_ch=32).to(self.device)
-                raw_sd = load_safetensors(str(unet_path), device=str(self.device))
-                target_sd = self.model.state_dict()
-                remapped_sd: Dict[str, Any] = {}
-                for k, v in raw_sd.items():
-                    clean_k = re.sub(r"^(?:unet\.|seg_net\.|line_model\.|model\.)", "", k)
-                    if clean_k in target_sd and tuple(v.shape) == tuple(target_sd[clean_k].shape):
-                        remapped_sd[clean_k] = v
-                missing, _ = self.model.load_state_dict(remapped_sd or raw_sd, strict=False)
-                if "out_conv.weight" not in missing and len(missing) <= 4:
+            onnx_path, bname = self._find_or_download_onnx(allow_download=allow_download)
+            if onnx_path is not None:
+                sess = self._create_onnx_session(onnx_path)
+                if sess is not None:
+                    self.model = sess
+                    self.backend_name = bname
                     self._has_pretrained_weights = True
-                    self.model.eval()
-                else:
-                    logger.debug(
-                        "U-Net Stroke Segmenter: несовпадение ключей весов (%d missing из %d), используется морфологический режим.",
-                        len(missing),
-                        len(target_sd),
-                    )
-                    self.model = None
+                    logger.info("ComicTextStrokeSegmenter инициализирован (%s): %s", bname, onnx_path.name)
+                    return
         except Exception as exc:
-            logger.debug("Инициализация U-Net Stroke Segmenter переключена в гибридный режим: %s", exc)
-            self.model = None
+            logger.debug("Инициализация нейросетевого сегментатора глифов переключена в морфологический фоллбэк: %s", exc)
+        self.model = None
+        self.backend_name = "morph_fallback"
+        self._has_pretrained_weights = False
+
+    def _run_onnx_mask(self, roi_rgb: np.ndarray) -> Optional[np.ndarray]:
+        if self.model is None or not self._has_pretrained_weights:
+            return None
+        H, W = roi_rgb.shape[:2]
+        in_h, in_w = self._input_size
+        rgb_in = roi_rgb if roi_rgb.ndim == 3 else np.stack([roi_rgb] * 3, axis=-1)
+        resized = cv2.resize(rgb_in, (in_w, in_h), interpolation=cv2.INTER_LINEAR)
+        blob = (resized.astype(np.float32) / 255.0).transpose(2, 0, 1)[None, ...]
+        outs = self.model.run(None, {self._input_name: blob})
+        if not outs:
+            return None
+        # Выбираем тензор карты сегментации (обычно 4D (1,1,h,w) или 3D (1,h,w))
+        mask_arr = None
+        for out in outs:
+            arr = np.asarray(out, dtype=np.float32)
+            if arr.ndim == 4 and arr.shape[1] == 1:
+                mask_arr = arr[0, 0]
+                break
+            if arr.ndim == 3 and arr.shape[0] == 1 and arr.shape[1] >= 16 and arr.shape[2] >= 16:
+                mask_arr = arr[0]
+                break
+        if mask_arr is None:
+            return None
+        if float(np.max(mask_arr)) > 1.0 or float(np.min(mask_arr)) < 0.0:
+            mask_arr = 1.0 / (1.0 + np.exp(-np.clip(mask_arr, -20.0, 20.0)))
+        return cv2.resize(mask_arr, (W, H), interpolation=cv2.INTER_LINEAR)
 
     @_torch_inference_mode()
     def predict_stroke_mask(
@@ -720,12 +784,11 @@ class ComicTextStrokeSegmenter:
         """
         if roi_rgb is None or roi_rgb.size == 0:
             return np.zeros((1, 1), dtype=np.uint8)
-        self._lazy_init()
+        self._lazy_init(allow_download=True)
 
         H, W = roi_rgb.shape[:2]
         gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY) if roi_rgb.ndim == 3 else roi_rgb
 
-        # 1. Мультимасштабное морфологическое выделение штрихов (устойчивое к градиентам и цветным подложкам)
         if text_bbox_rel is not None:
             tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox_rel]
             ty1_c, ty2_c = max(0, min(H - 1, ty1)), max(1, min(H, ty2))
@@ -753,34 +816,18 @@ class ComicTextStrokeSegmenter:
         p90_t = float(np.percentile(sub_t if sub_t.size > 0 else that, 90))
         stroke_energy = bhat.astype(np.float32) if p90_b >= p90_t else that.astype(np.float32)
 
-        # Нормализация энергетической карты штрихов по текстовому ядру в диапазон [0..1]
         ref_energy = stroke_energy[tb_slice]
         p98 = max(25.0, float(np.percentile(ref_energy if ref_energy.size > 0 else stroke_energy, 98)))
         prob_morph = np.clip((stroke_energy - 10.0) / (p98 - 10.0 + 1e-5), 0.0, 1.0)
 
-        # 2. Если доступны тензорные веса U-Net на PyTorch — смешиваем с предсказанием нейросети
-        if self.model is not None and self._has_pretrained_weights and torch is not None:
+        if self.model is not None and self._has_pretrained_weights:
             try:
-                rgb_in = roi_rgb if roi_rgb.ndim == 3 else np.stack([roi_rgb] * 3, axis=-1)
-                pad_h = _ceil_modulo(H, 8)
-                pad_w = _ceil_modulo(W, 8)
-                padded = cv2.copyMakeBorder(rgb_in, 0, pad_h - H, 0, pad_w - W, cv2.BORDER_REFLECT_101)
-                t_in = torch.from_numpy(padded.transpose(2, 0, 1)).float().div_(255.0).unsqueeze(0).to(self.device)
-                if (
-                    self.device.type == "cuda"
-                    and hasattr(torch.cuda, "is_bf16_supported")
-                    and torch.cuda.is_bf16_supported()
-                ):
-                    with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                        unet_prob = self.model(t_in)[0, 0, :H, :W].float().cpu().numpy()
-                else:
-                    unet_prob = self.model(t_in)[0, 0, :H, :W].float().cpu().numpy()
-                prob_morph = 0.60 * unet_prob + 0.40 * prob_morph
-            except Exception:
-                pass
+                nn_prob = self._run_onnx_mask(roi_rgb)
+                if nn_prob is not None:
+                    prob_morph = np.clip(0.75 * nn_prob + 0.25 * prob_morph, 0.0, 1.0)
+            except Exception as exc:
+                logger.debug("Ошибка инференса %s, откат на морфологию: %s", self.backend_name, exc)
 
-        # 3. Подавление протяжённых внешних линий лайнарта (ресницы, пряди волос, рамки),
-        # с защитой глифов внутри текстового ядра (отсекаем перемычки на границе text_bbox_rel)
         raw_bin = (prob_morph >= 0.36).astype(np.uint8) * 255
         if text_bbox_rel is not None:
             tx1, ty1, tx2, ty2 = [int(v) for v in text_bbox_rel]
@@ -798,10 +845,9 @@ class ComicTextStrokeSegmenter:
             ca = int(stats[lbl, cv2.CC_STAT_AREA])
             fill_r = float(ca) / float(max(1, cw * ch))
             if (cw > 0.68 * W or ch > 0.68 * H) and fill_r <= 0.15:
-                prob_morph[labels == lbl] *= 0.20
+                prob_morph[labels == lbl] *= 0.15
 
         return np.clip(prob_morph * 255.0, 0.0, 255.0).round().astype(np.uint8)
-
 
 def fuse_neural_stroke_and_pcleaner_mask(
     roi_gray: np.ndarray,
@@ -3428,9 +3474,49 @@ class BubbleCleaner:
     def _is_block_skipped(block: dict[str, Any]) -> bool:
         if bool(block.get("is_deleted", False)):
             return True
-        if "translated_text" in block and not str(block.get("translated_text") or "").strip():
+        if "translated_text" in block and _is_invalid_translation_text(block.get("translated_text")):
             return True
         return False
+
+    @staticmethod
+    def _restore_original_patch(
+        composited_rgb: np.ndarray,
+        raw_img_rgb: np.ndarray,
+        block: dict[str, Any],
+    ) -> None:
+        """
+        Возвращает исходные неочищенные пиксели страницы для пропущенного/невалидного блока
+        (защита от пустых белых бабблов по образцу core/pipeline.py из meangrinch/MangaTranslator).
+        """
+        h, w = composited_rgb.shape[:2]
+        raw = block.get("clean_bbox") or block.get("original_bbox") or block.get("bbox")
+        if not isinstance(raw, (list, tuple)) or len(raw) < 4:
+            return
+        x1 = max(0, min(w - 1, int(round(float(raw[0])))))
+        y1 = max(0, min(h - 1, int(round(float(raw[1])))))
+        x2 = max(x1 + 1, min(w, int(round(float(raw[2])))))
+        y2 = max(y1 + 1, min(h, int(round(float(raw[3])))))
+        composited_rgb[y1:y2, x1:x2] = raw_img_rgb[y1:y2, x1:x2]
+
+    def _inpaint_with_flux_klein_4b(
+        self,
+        crop_rgb: np.ndarray,
+        crop_mask: np.ndarray,
+    ) -> Optional[np.ndarray]:
+        """
+        Опциональный интерфейс подключения диффузионного бэкенда `FLUX.2 Klein 4B`
+        (через `sd.cpp` / `SDNQ`) для режима `ultra_deep_redraw` на RTX 5070 Ti 16 ГБ.
+        Если бэкенд не подключен, возвращает None (автоматический откат на LaMa Manga).
+        """
+        backend_fn = getattr(self, "flux_klein_inpaint_fn", None)
+        if callable(backend_fn):
+            try:
+                out = backend_fn(crop_rgb, crop_mask)
+                if isinstance(out, np.ndarray) and out.shape == crop_rgb.shape:
+                    return out.astype(np.uint8)
+            except Exception as exc:
+                logger.debug("FLUX.2 Klein 4B бэкенд вернул ошибку, откат на LaMa Manga: %s", exc)
+        return None
 
     @staticmethod
     def _get_clean_bbox(block: dict[str, Any]) -> list[int]:
@@ -3563,6 +3649,65 @@ class BubbleCleaner:
 
             p75 = float(np.percentile(core_gray, 75))
             median_val = float(np.median(core_gray))
+
+            # ТРАКТ А (meangrinch/MangaTranslator): если есть полигональная маска баббла (`bubble_polygon`),
+            # растеризуем её через cv2.fillPoly, сжимаем внутрь на shrink_threshold_roi (2-6 px)
+            # для 100% защиты чёрного контура баббла, и выделяем текст внутри без агрессивного MORPH_CLOSE!
+            raw_poly = block.get("bubble_polygon")
+            if (
+                not is_free_text
+                and isinstance(raw_poly, (list, tuple))
+                and len(raw_poly) >= 3
+            ):
+                try:
+                    poly_rel = np.array(
+                        [[int(round(float(pt[0]))) - ix1, int(round(float(pt[1]))) - iy1] for pt in raw_poly],
+                        dtype=np.int32,
+                    )
+                    poly_mask = np.zeros((rh, rw), dtype=np.uint8)
+                    cv2.fillPoly(poly_mask, [poly_rel], 255)
+                    if np.count_nonzero(poly_mask) >= 64:
+                        scale_p = max(1.0, min(2.2, float(min(bw, bh)) / 96.0))
+                        shrink_px = max(3, min(6, int(round(3.0 * scale_p))))
+                        erode_k = cv2.getStructuringElement(
+                            cv2.MORPH_ELLIPSE, (2 * shrink_px + 1, 2 * shrink_px + 1)
+                        )
+                        shrunk_poly = cv2.erode(poly_mask, erode_k, iterations=1)
+                        if np.count_nonzero(shrunk_poly) < 32:
+                            shrunk_poly = poly_mask
+
+                        # Выделяем текст внутри сжатого полигона (Fixed Threshold 210 / Otsu + сегментатор глифов)
+                        inside_vals = roi_gray[shrunk_poly > 0]
+                        is_dark_bubble = float(np.percentile(inside_vals, 50)) < 110.0
+                        if is_dark_bubble:
+                            _, bin_txt = cv2.threshold(roi_gray, 130, 255, cv2.THRESH_BINARY)
+                        else:
+                            otsu_thr, _ = cv2.threshold(inside_vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+                            eff_thr = int(max(185, min(225, max(210.0, float(otsu_thr)))))
+                            bin_txt = (roi_gray < eff_thr).astype(np.uint8) * 255
+
+                        stroke_prob = self.stroke_segmenter.predict_stroke_mask(
+                            roi_rgb,
+                            text_bbox_rel=(cx1_r, cy1_r, cx2_r, cy2_r),
+                        )
+                        nn_txt = (stroke_prob >= 110).astype(np.uint8) * 255
+                        text_in_poly = cv2.bitwise_and(cv2.bitwise_or(bin_txt, nn_txt), shrunk_poly)
+                        if np.count_nonzero(text_in_poly) > 0:
+                            dil_px = max(4, min(6, int(round(4.0 * scale_p))))
+                            dil_k = cv2.getStructuringElement(
+                                cv2.MORPH_ELLIPSE, (2 * dil_px + 1, 2 * dil_px + 1)
+                            )
+                            poly_clean_mask = cv2.bitwise_and(
+                                cv2.dilate(text_in_poly, dil_k, iterations=1),
+                                shrunk_poly,
+                            )
+                            full_mask[iy1:iy2, ix1:ix2] = np.maximum(
+                                full_mask[iy1:iy2, ix1:ix2],
+                                poly_clean_mask,
+                            )
+                            continue
+                except Exception as poly_exc:
+                    logger.debug("Полигональная маска баббла откатилась на стандартный путь: %s", poly_exc)
 
             if not is_free_text and p75 >= 210.0:
                 core_w = max(8, cx2_r - cx1_r)
@@ -4425,6 +4570,7 @@ class BubbleCleaner:
                 # блоков (`textured_rois`), требующих нейросетевого инпейнтинга LaMa вне однородной белой чаши,
                 # прогоняем их за один батчевый вызов GPU `StandaloneLaMaInpainter.inpaint_rois_batch`.
                 pre_batched_lama_rgb: np.ndarray | None = None
+                textured_rois_set: set[tuple[int, int, int, int]] = set()
                 if (
                     len(uncached_blocks) >= 2
                     and self.lama_model is not None
@@ -4469,6 +4615,7 @@ class BubbleCleaner:
                             if outside_ink > 0.15 * np.count_nonzero(sub_m):
                                 textured_rois.append((int(x1_s), int(y1_s), int(x2_s), int(y2_s)))
 
+                    textured_rois_set: set[tuple[int, int, int, int]] = set()
                     if len(textured_rois) >= 2:
                         try:
                             lama_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
@@ -4481,9 +4628,11 @@ class BubbleCleaner:
                                 context_pad=24,
                             )
                             pre_batched_lama_rgb = cv2.cvtColor(batch_bgr_out, cv2.COLOR_BGR2RGB)
+                            textured_rois_set = set(textured_rois)
                         except Exception as b_exc:
                             logger.debug("Пропуск пред-батчирования ROI LaMa (%s).", b_exc)
                             pre_batched_lama_rgb = None
+                            textured_rois_set = set()
 
                 for (
                     block,
@@ -4519,15 +4668,39 @@ class BubbleCleaner:
                         if np.count_nonzero(crop_mask) == 0:
                             continue
 
-                        if False and is_free_text and pre_batched_lama_rgb is not None:
+                        roi_key_t = (int(x1), int(y1), int(x2), int(y2))
+                        if pre_batched_lama_rgb is not None and (is_free_text or roi_key_t in textured_rois_set):
                             inpainted_crop = pre_batched_lama_rgb[cy1:cy2, cx1:cx2].copy()
                         else:
-                            inpainted_crop = self._inpaint_crop(
-                                crop_rgb,
-                                crop_mask,
-                                is_free_text=is_free_text,
-                                inner_box_rel=(x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1),
-                            )
+                            inpainted_crop = None
+                            # Тракт А: если есть bubble_polygon и фон внутри однородный (std <= 10.0) — мгновенная заливка
+                            raw_poly_b = None if is_free_text else block.get("bubble_polygon")
+                            if isinstance(raw_poly_b, (list, tuple)) and len(raw_poly_b) >= 3:
+                                try:
+                                    poly_c = np.array(
+                                        [[int(round(float(pt[0]))) - cx1, int(round(float(pt[1]))) - cy1] for pt in raw_poly_b],
+                                        dtype=np.int32,
+                                    )
+                                    pmask_c = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
+                                    cv2.fillPoly(pmask_c, [poly_c], 255)
+                                    bg_ring = (pmask_c > 0) & (crop_mask == 0)
+                                    if np.count_nonzero(bg_ring) >= 32:
+                                        bg_pixels = crop_rgb[bg_ring]
+                                        if float(np.std(bg_pixels)) <= 10.0:
+                                            med_col = np.median(bg_pixels, axis=0).round().astype(np.uint8)
+                                            inpainted_crop = crop_rgb.copy()
+                                            inpainted_crop[crop_mask > 0] = med_col
+                                except Exception:
+                                    inpainted_crop = None
+                            if inpainted_crop is None and getattr(self, "ultra_deep_redraw", False):
+                                inpainted_crop = self._inpaint_with_flux_klein_4b(crop_rgb, crop_mask)
+                            if inpainted_crop is None:
+                                inpainted_crop = self._inpaint_crop(
+                                    crop_rgb,
+                                    crop_mask,
+                                    is_free_text=is_free_text,
+                                    inner_box_rel=(x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1),
+                                )
                         with self._cache_lock:
                             self._block_crop_cache[block_crop_key] = (
                                 inpainted_crop.copy(),
@@ -4536,14 +4709,38 @@ class BubbleCleaner:
                             while len(self._block_crop_cache) > self._block_crop_cache_max:
                                 self._block_crop_cache.popitem(last=False)
 
-                    core_f = (crop_mask > 0).astype(np.float32)
-                    dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-                    dil_f = cv2.dilate(crop_mask, dil_k, iterations=1).astype(np.float32) / 255.0
-                    blur_f = cv2.GaussianBlur(dil_f, (5, 5), 0)
-                    alpha = np.maximum(core_f, blur_f)[..., None]
-                    blended_crop = (
-                        inpainted_crop * alpha + crop_rgb * (1.0 - alpha)
-                    ).round().astype(np.uint8)
+                    if is_free_text:
+                        # Preserve Surrounding Art: вставка строго внутри маски глифов с 2px DT-feathering
+                        # и коррекцией яркости в пространстве CIE LAB, чтобы окружающий арт остался на 100% оригинальным
+                        bin_m = (crop_mask > 0).astype(np.uint8)
+                        dist_in = cv2.distanceTransform(bin_m, cv2.DIST_L2, 3)
+                        alpha_2d = np.clip(dist_in / 2.0, 0.0, 1.0).astype(np.float32)
+                        adj_crop = inpainted_crop
+                        try:
+                            ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
+                            outer_ring = (cv2.dilate(bin_m, ring_k, iterations=1) > 0) & (bin_m == 0)
+                            if np.count_nonzero(outer_ring) >= 24 and np.count_nonzero(bin_m) >= 16:
+                                src_lab = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
+                                inp_lab = cv2.cvtColor(inpainted_crop, cv2.COLOR_RGB2LAB).astype(np.float32)
+                                delta_l = float(np.median(src_lab[outer_ring, 0]) - np.median(inp_lab[bin_m > 0, 0]))
+                                if abs(delta_l) <= 18.0:
+                                    inp_lab[..., 0] = np.clip(inp_lab[..., 0] + delta_l * 0.65, 0.0, 255.0)
+                                    adj_crop = cv2.cvtColor(inp_lab.round().astype(np.uint8), cv2.COLOR_LAB2RGB)
+                        except Exception:
+                            adj_crop = inpainted_crop
+                        alpha = alpha_2d[..., None]
+                        blended_crop = (
+                            adj_crop * alpha + crop_rgb * (1.0 - alpha)
+                        ).round().astype(np.uint8)
+                    else:
+                        core_f = (crop_mask > 0).astype(np.float32)
+                        dil_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                        dil_f = cv2.dilate(crop_mask, dil_k, iterations=1).astype(np.float32) / 255.0
+                        blur_f = cv2.GaussianBlur(dil_f, (5, 5), 0)
+                        alpha = np.maximum(core_f, blur_f)[..., None]
+                        blended_crop = (
+                            inpainted_crop * alpha + crop_rgb * (1.0 - alpha)
+                        ).round().astype(np.uint8)
                     base_composited_np[cy1:cy2, cx1:cx2] = blended_crop
 
             with self._cache_lock:
@@ -4560,4 +4757,8 @@ class BubbleCleaner:
             base_mask_np,
             blocks,
         )
+        # Этап 4: гарантированный возврат исходных пикселей для любых пропущенных/пустых/[OCR FAILED] блоков
+        for blk in blocks:
+            if self._is_block_skipped(blk):
+                self._restore_original_patch(final_composited_np, img_np, blk)
         return Image.fromarray(final_composited_np, mode="RGB"), Image.fromarray(final_mask_np, mode="L")
