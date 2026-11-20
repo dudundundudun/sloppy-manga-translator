@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Miko-chan Manga Studio v5.3.0</title>
+  <title>Miko-chan Manga Studio v6.1.0</title>
   <style>
     :root {
       --bg-deep: #0f0d18;
@@ -2633,7 +2633,7 @@
       <div class="brand">
         <span class="brand-sparkle">🌸</span>
         <span>Miko-chan Manga Studio</span>
-        <span style="font-size:11px; color:var(--mint); font-weight:700;">v5.3.0 UX</span>
+        <span style="font-size:11px; color:var(--mint); font-weight:700;">v6.1.0 UX</span>
       </div>
     </div>
 
@@ -3594,7 +3594,7 @@
         <!-- TAB 4: FONT & SAVING -->
         <div class="settings-tab-pane" id="tab-font">
           <div class="scanlation-font-hint-banner" id="settings-font-hint-banner" style="margin:0 0 10px 0; display:flex;">
-            <span>💡 <b>Рекомендуемые сканлейт-шрифты (v5.3.0 Ultra Edition):</b> положите <code>.ttf</code> файлы <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b> в папку <code>fonts/</code>. При пустой папке <code>fonts/</code> программа по умолчанию использует системный комиксный шрифт <b>Comic Sans MS Bold</b> (также доступны Segoe UI Semibold и Trebuchet MS в списке шрифтов кружка).</span>
+            <span>💡 <b>Рекомендуемые сканлейт-шрифты (v6.1.0 Ultra Edition):</b> положите <code>.ttf</code> файлы <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b> в папку <code>fonts/</code>. При пустой папке <code>fonts/</code> программа по умолчанию использует системный комиксный шрифт <b>Comic Sans MS Bold</b> (также доступны Segoe UI Semibold и Trebuchet MS в списке шрифтов кружка).</span>
           </div>
           <div class="section-box">
             <div class="section-title">🔤 Размер шрифта и стиль верстки</div>
@@ -3835,7 +3835,7 @@
         <div class="settings-tab-pane" id="tab-diag">
           <div class="section-box">
             <div class="section-title">
-              <span>🩺 Панель живой диагностики, профилирования и логов (v5.3.0)</span>
+              <span>🩺 Панель живой диагностики, профилирования и логов (v6.1.0)</span>
               <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер обмена!</span>
             </div>
             <div class="section-desc">
@@ -4546,12 +4546,12 @@ Step 1:`;
           cardsEl.innerHTML =
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--sakura);">🖥 Сервер и процесс:</b><br>` +
-              `Версия: <b>v${escapeHtml(srv.version || "5.3.0")}</b> · PID: <b>${srv.pid || "?"}</b> · Uptime: ${srv.uptime_sec || 0}с<br>` +
-              `Лог: <b>${srv.log_file_size_kb || 0} КБ</b> (logs/miko_studio.log)` +
+              `Версия: <b>v${escapeHtml(srv.version || "6.1.0")}</b> · PID: <b>${escapeHtml(srv.pid ?? "?")}</b> · Uptime: ${Number(srv.uptime_sec) || 0}с<br>` +
+              `Лог: <b>${Number(srv.log_file_size_kb) || 0} КБ</b> (logs/miko_studio.log)` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--mint);">🎮 GPU, Детекция и Очистка:</b><br>` +
-              `${escapeHtml(gpu.device_name || "CPU")} · VRAM: <b>${gpu.vram_allocated_mb || 0} / ${gpu.vram_total_mb || 0} МБ</b><br>` +
+              `${escapeHtml(gpu.device_name || "CPU")} · VRAM: <b>${Number(gpu.vram_allocated_mb) || 0} / ${Number(gpu.vram_total_mb) || 0} МБ</b><br>` +
               `Детектор: <b>${escapeHtml(gpu.detector_backend || "YOLOv8m")}</b><br>` +
               `OCR (JA): <b>${escapeHtml(gpu.ja_ocr_backend || "MangaOCR FP16")}</b><br>` +
               `OCR (KO/ZH): <b>${escapeHtml(gpu.ko_zh_ocr_backend || "HayaiOCR v2.5 Nova + SmartLineSplit")}</b><br>` +
@@ -4560,13 +4560,13 @@ Step 1:`;
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--indigo);">☁️ Запросы к ИИ:</b><br>` +
-              `Всего запросов: <b>${tr.total_llm_requests || 0}</b> (параллельных пачек: <b>${tr.parallel_batches_count || 0}</b>)<br>` +
-              `Средний ответ ИИ: <b>${tr.avg_llm_latency_sec || 0}с</b> · Модель: <b>${escapeHtml(tr.selected_model || "auto")}</b>` +
+              `Всего запросов: <b>${Number(tr.total_llm_requests) || 0}</b> (параллельных пачек: <b>${Number(tr.parallel_batches_count) || 0}</b>)<br>` +
+              `Средний ответ ИИ: <b>${Number(tr.avg_llm_latency_sec) || 0}с</b> · Модель: <b>${escapeHtml(tr.selected_model || "auto")}</b>` +
             `</div>` +
             `<div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">` +
               `<b style="color:var(--amber);">🛡 Кэш и Защита от цензуры:</b><br>` +
-              `Из кэша: <b>${tr.phrases_saved_by_cache || 0} / ${tr.phrases_requested_total || 0} фраз (${tr.cache_hit_rate_pct || 0}%)</b><br>` +
-              `Отказов цензуры API: <b>${tr.refusals_count || 0}</b> · Локальный обход: <b>${tr.local_censorship_fallbacks_count || 0}</b>` +
+              `Из кэша: <b>${Number(tr.phrases_saved_by_cache) || 0} / ${Number(tr.phrases_requested_total) || 0} фраз (${Number(tr.cache_hit_rate_pct) || 0}%)</b><br>` +
+              `Отказов цензуры API: <b>${Number(tr.refusals_count) || 0}</b> · Локальный обход: <b>${Number(tr.local_censorship_fallbacks_count) || 0}</b>` +
             `</div>`;
         }
 
@@ -4921,7 +4921,7 @@ Step 1:`;
             `<td style="color:var(--text-muted); font-size:11px;">${eNote}</td>` +
             `<td style="font-size:11px;">${scopeBadge}</td>` +
             `<td style="text-align:right;">` +
-              `<button type="button" class="btn-delete-block" style="padding:2px 7px;" onclick="removeGlossaryEntryByKey('${escapeHtml(key)}', event)" title="Удалить запись из глоссария">🗑</button>` +
+              `<button type="button" class="btn-delete-block" style="padding:2px 7px;" onclick="removeGlossaryEntryByKey('${escapeJsAttr(key)}', event)" title="Удалить запись из глоссария">🗑</button>` +
             `</td>` +
           `</tr>`
         );
@@ -5173,9 +5173,9 @@ Step 1:`;
             ? `<span style="color:var(--rose); text-decoration:line-through;">${eBefore}</span> ➔ <b style="color:var(--mint);">${eAfter}</b>`
             : `<b style="color:var(--text-primary);">${eBefore}</b>`;
           return (
-            `<div class="find-result-row" onclick="jumpToFindMatch('${eRel}', ${Number(m.block_id) || 1})" title="Кликните, чтобы открыть страницу ${eRel} и перейти к кружку #${m.block_id}">` +
+            `<div class="find-result-row" onclick="jumpToFindMatch('${escapeJsAttr(m.page_rel_path || "")}', ${Number(m.block_id) || 1})" title="Кликните, чтобы открыть страницу ${eRel} и перейти к кружку #${Number(m.block_id) || 0}">` +
               `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">` +
-                `<span style="font-weight:700; color:var(--sakura);">📄 Стр. #${m.page_index || "?"} (${eRel}) · Кружок #${m.block_id}</span>` +
+                `<span style="font-weight:700; color:var(--sakura);">📄 Стр. #${escapeHtml(m.page_index ?? "?")} (${eRel}) · Кружок #${Number(m.block_id) || 0}</span>` +
                 `<span style="font-size:11px; color:var(--indigo);">🇯🇵 ${eOrig}</span>` +
               `</div>` +
               `<div style="line-height:1.35;">${diffHtml}</div>` +
@@ -5339,7 +5339,7 @@ Step 1:`;
       const banner = document.getElementById("api-status-banner");
       if (banner) {
         banner.style.color = "var(--mint)";
-        banner.innerHTML = `✅ Выбрана модель <b>${modelName}</b>. Нажмите «Сохранить настройки» внизу окна!`;
+        banner.innerHTML = `✅ Выбрана модель <b>${escapeHtml(modelName)}</b>. Нажмите «Сохранить настройки» внизу окна!`;
       }
     }
 
@@ -5720,9 +5720,9 @@ Step 1:`;
           st.pipeline_mode === activeDefaultStack.pipeline_mode;
         const delBtnHtml = p.builtin
           ? ""
-          : `<button type="button" class="btn-danger-mini" style="padding:2px 6px; font-size:10px;" onclick="event.stopPropagation(); deleteUserStackPreset('${escapeHtml(p.id)}')" title="Удалить этот пользовательский пресет">✕</button>`;
+          : `<button type="button" class="btn-danger-mini" style="padding:2px 6px; font-size:10px;" onclick="event.stopPropagation(); deleteUserStackPreset('${escapeJsAttr(p.id)}')" title="Удалить этот пользовательский пресет">✕</button>`;
         return (
-          `<div class="choice-card ${isCurrent ? 'selected' : ''}" onclick="activateStackPreset('${escapeHtml(p.id)}')">` +
+          `<div class="choice-card ${isCurrent ? 'selected' : ''}" onclick="activateStackPreset('${escapeJsAttr(p.id)}')">` +
             `<div style="display:flex; justify-content:space-between; align-items:center; gap:6px;">` +
               `<div class="choice-card-title">${escapeHtml(p.name || p.id)}</div>` +
               `${delBtnHtml}` +
@@ -5859,8 +5859,8 @@ Step 1:`;
         const sumBar = document.getElementById("model-storage-summary-bar");
         if (sumBar) {
           sumBar.innerHTML =
-            `📊 <b>Занято моделями на диске:</b> Ollama (${(data.ollama_models || []).length} шт.) — <b style="color:var(--mint);">${data.total_ollama_gb || 0} ГБ</b> · ` +
-            `Локальные веса в <code>models/</code> — <b style="color:var(--sakura);">${data.total_local_mb || 0} МБ</b>`;
+            `📊 <b>Занято моделями на диске:</b> Ollama (${(data.ollama_models || []).length} шт.) — <b style="color:var(--mint);">${Number(data.total_ollama_gb) || 0} ГБ</b> · ` +
+            `Локальные веса в <code>models/</code> — <b style="color:var(--sakura);">${Number(data.total_local_mb) || 0} МБ</b>`;
         }
         const olBox = document.getElementById("storage-ollama-list");
         if (olBox) {
@@ -5869,19 +5869,19 @@ Step 1:`;
             olBox.innerHTML = `<div style="font-size:11.5px; color:var(--text-muted); padding:6px;">В локальном Ollama сейчас нет скачанных моделей.</div>`;
           } else {
             olBox.innerHTML = olList.map(m => {
-              const ggufNote = m.gguf_cache_gb > 0 ? ` <span style="color:var(--amber);">(+ кэш .gguf: ${m.gguf_cache_gb} ГБ)</span>` : "";
+              const ggufNote = Number(m.gguf_cache_gb) > 0 ? ` <span style="color:var(--amber);">(+ кэш .gguf: ${Number(m.gguf_cache_gb) || 0} ГБ)</span>` : "";
               const actBadge = m.is_active ? `<span style="background:rgba(52,211,153,0.2); color:var(--mint); border:1px solid rgba(52,211,153,0.45); border-radius:6px; padding:1px 6px; font-size:10px; font-weight:700;">Активна ✅</span>` : "";
               return (
                 `<div class="model-storage-row">` +
                   `<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">` +
                     `<span style="font-weight:700; color:var(--text-primary);">${escapeHtml(m.title || m.name)}</span>` +
-                    `<span style="color:var(--mint); font-weight:700;">${m.size_gb || 0} ГБ</span>` +
+                    `<span style="color:var(--mint); font-weight:700;">${Number(m.size_gb) || 0} ГБ</span>` +
                     `${ggufNote}` +
                     `${actBadge}` +
                   `</div>` +
                   `<div style="display:flex; gap:6px; align-items:center;">` +
-                    `<button type="button" class="romaji-copy-btn" onclick="setQuickDefaultTranslationModel('${escapeHtml(m.id)}')" title="Сделать эту модель активной моделью перевода">⭐ Выбрать для перевода</button>` +
-                    `<button type="button" class="btn-danger-mini" onclick="deleteModelFromStudio('${escapeHtml(m.name)}', 'ollama', '${escapeHtml(m.title || m.name)}')">🗑️ Удалить модель</button>` +
+                    `<button type="button" class="romaji-copy-btn" onclick="setQuickDefaultTranslationModel('${escapeJsAttr(m.id)}')" title="Сделать эту модель активной моделью перевода">⭐ Выбрать для перевода</button>` +
+                    `<button type="button" class="btn-danger-mini" onclick="deleteModelFromStudio('${escapeJsAttr(m.name)}', 'ollama', '${escapeJsAttr(m.title || m.name)}')">🗑️ Удалить модель</button>` +
                   `</div>` +
                 `</div>`
               );
@@ -5896,11 +5896,12 @@ Step 1:`;
             const vramBadge = w.loaded_in_vram
               ? `<span style="color:var(--mint); font-size:10.5px; font-weight:700;">🟢 В VRAM</span>`
               : `<span style="color:var(--text-muted); font-size:10.5px;">⚪ На диске</span>`;
+            const wSizeMb = Number(w.size_mb) || 0;
             const statusHtml = w.installed
-              ? `<span style="color:var(--amber); font-weight:700;">${w.size_mb} МБ</span> · ${vramBadge}`
+              ? `<span style="color:var(--amber); font-weight:700;">${wSizeMb} МБ</span> · ${vramBadge}`
               : `<span style="color:var(--text-muted);">Не скачана (0 МБ — скачается автоматически при необходимости)</span>`;
             const delBtn = w.installed
-              ? `<button type="button" class="btn-danger-mini" onclick="deleteModelFromStudio('${escapeHtml(w.id)}', 'local_weights', '${escapeHtml(w.title)}')">🗑️ Выгрузить и удалить (${w.size_mb} МБ)</button>`
+              ? `<button type="button" class="btn-danger-mini" onclick="deleteModelFromStudio('${escapeJsAttr(w.id)}', 'local_weights', '${escapeJsAttr(w.title)}')">🗑️ Выгрузить и удалить (${wSizeMb} МБ)</button>`
               : "";
             return (
               `<div class="model-storage-row">` +
@@ -6170,7 +6171,7 @@ Step 1:`;
         const badge = p.is_translated
           ? `<span class="page-badge-done">✅ Готово</span>`
           : `<span class="page-badge-wait">⏳ Ждет</span>`;
-        item.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">#${p.index} &nbsp;${escapeHtml(p.rel_path)}</span>${badge}`;
+        item.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">#${Number(p.index) || 0} &nbsp;${escapeHtml(p.rel_path)}</span>${badge}`;
         item.onclick = () => selectPage(p);
         listEl.appendChild(item);
       });
@@ -6274,11 +6275,31 @@ Step 1:`;
 
     /* ==================== EDITOR DRAWER & INLINE POPUP ==================== */
     function escapeHtml(str) {
-      return String(str || "")
+      return String(str ?? "")
         .replace(/&/g, "&amp;")
         .replace(/</g, "&lt;")
         .replace(/>/g, "&gt;")
-        .replace(/"/g, "&quot;");
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;")
+        .replace(/`/g, "&#96;");
+    }
+
+    function escapeJsAttr(str) {
+      return escapeHtml(
+        String(str ?? "")
+          .replace(/\\/g, "\\\\")
+          .replace(/'/g, "\\'")
+          .replace(/\r/g, "\\r")
+          .replace(/\n/g, "\\n")
+      );
+    }
+
+    function safeCssColor(val, fallback = "") {
+      const s = String(val ?? "").trim();
+      if (/^#[0-9a-fA-F]{3,8}$/.test(s)) return s;
+      if (/^(?:rgb|rgba|hsl|hsla)\([0-9.,\s%]+\)$/.test(s)) return s;
+      if (/^[a-zA-Z]{3,24}$/.test(s)) return s;
+      return fallback;
     }
 
     function toggleTextDrawer(forceState) {
@@ -8447,8 +8468,10 @@ Step 1:`;
           qh += `<span class="qa-badge-small-font" title="Мелкий кегль (<72% от нормы страницы)">🔍 Мелкий кегль</span>`;
         }
         if (blk.speaker_id && blk.speaker_id !== "SFX_Free") {
-          const spkLbl = blk.speaker_id === "Monologue_Box" ? "📖 Монолог" : `🗣️ ${blk.speaker_id.replace("Speaker_", "Говорящий ")}`;
-          qh += `<span class="romaji-copy-btn" style="cursor:default; pointer-events:none; opacity:0.9;" title="${blk.speaker_tag || blk.speaker_id}">${spkLbl}</span>`;
+          const spkLbl = blk.speaker_id === "Monologue_Box"
+            ? "📖 Монолог"
+            : `🗣️ ${escapeHtml(String(blk.speaker_id).replace("Speaker_", "Говорящий "))}`;
+          qh += `<span class="romaji-copy-btn" style="cursor:default; pointer-events:none; opacity:0.9;" title="${escapeHtml(blk.speaker_tag || blk.speaker_id)}">${spkLbl}</span>`;
         }
         if (!isDel && blk.condense_ratio && blk.condense_ratio < 0.995) {
           const cPct = Math.round(Number(blk.condense_ratio) * 100);
@@ -8927,7 +8950,7 @@ Step 1:`;
           baseSizes.push(Number(b.font_size));
           baseSizes.sort((a, c) => a - c);
         }
-        const autoHint = b.rendered_font_size ? `Авто (${b.rendered_font_size}px)` : "Шрифт: Авто";
+        const autoHint = b.rendered_font_size ? `Авто (${Number(b.rendered_font_size) || 0}px)` : "Шрифт: Авто";
         const isModBox = isBlockBboxModified(b);
         const resetBoxBtnHtml = (isModBox || b.font_size)
           ? `<button type="button" class="romaji-copy-btn" onclick="resetSingleBlockBbox(${b.id}, event)" title="Сбросить положение/размер рамки и кегль к исходному бабблу">↺ Сбросить рамку</button>`
@@ -9075,7 +9098,7 @@ Step 1:`;
           spkBadgeHtml +
           condBadgeHtml +
           (isOvf ? `<span class="qa-badge-overflow" title="Текст не помещается в безопасную зону бабла — нажмите «✂️ Сократить под бабл (AI)» или выберите режим Вариант Б/В">⚠️ Выход за границы</span>` : "") +
-          (isSmallFs ? `<span class="qa-badge-small-font" title="Кегль этого бабла (${b.rendered_font_size || "?"}px) меньше 72% от базового кегля страницы (${b.page_base_font_size || "?"}px) — рекомендуется сократить фразу">🔍 Мелкий кегль (&lt;72% от нормы страницы)</span>` : "");
+          (isSmallFs ? `<span class="qa-badge-small-font" title="Кегль этого бабла (${escapeHtml(b.rendered_font_size ?? "?")}px) меньше 72% от базового кегля страницы (${escapeHtml(b.page_base_font_size ?? "?")}px) — рекомендуется сократить фразу">🔍 Мелкий кегль (&lt;72% от нормы страницы)</span>` : "");
         return (
           `<div class="block-edit-card ${activeBlockId === b.id ? "active-block" : ""} ${isMultiSel ? "multi-selected-card" : ""} ${isDel ? "deleted-block" : ""} ${isOvf ? "qa-overflow-card" : (isSmallFs ? "qa-small-font-card" : "")}" id="block-card-${b.id}" data-block-id="${b.id}" onclick="onBlockCardClick(${b.id}, event)">` +
             `<div class="block-meta-col">` +
@@ -9931,20 +9954,22 @@ Step 1:`;
         ? `/local_image?path=${encodeURIComponent(selectedPage.dest_path)}&t=${ts}`
         : null);
 
+      const safeOrigUrl = escapeHtml(origUrl);
+      const safeTransUrl = escapeHtml(transUrl || origUrl);
       if (viewMode === "original" || (!transUrl && viewMode === "split")) {
         stage.innerHTML =
           `<div class="img-pin-wrap" id="pin-wrap-orig">` +
-          `<img src="${origUrl}" alt="Оригинал" onload="renderBboxPinsOnStage()" />` +
+          `<img src="${safeOrigUrl}" alt="Оригинал" onload="renderBboxPinsOnStage()" />` +
           `</div>`;
       } else if (viewMode === "translated") {
         stage.innerHTML =
           `<div class="img-pin-wrap" id="pin-wrap-trans">` +
-          `<img src="${transUrl || origUrl}" alt="Перевод" onload="renderBboxPinsOnStage()" />` +
+          `<img src="${safeTransUrl}" alt="Перевод" onload="renderBboxPinsOnStage()" />` +
           `</div>`;
       } else {
         stage.innerHTML =
-          `<div class="img-pin-wrap" id="pin-wrap-orig"><img src="${origUrl}" title="Оригинал" onload="renderBboxPinsOnStage()" /></div>` +
-          `<div class="img-pin-wrap" id="pin-wrap-trans"><img src="${transUrl}" title="Перевод" onload="renderBboxPinsOnStage()" /></div>`;
+          `<div class="img-pin-wrap" id="pin-wrap-orig"><img src="${safeOrigUrl}" title="Оригинал" onload="renderBboxPinsOnStage()" /></div>` +
+          `<div class="img-pin-wrap" id="pin-wrap-trans"><img src="${safeTransUrl}" title="Перевод" onload="renderBboxPinsOnStage()" /></div>`;
       }
       applyZoomToStage();
       attachManualDrawHandlers();
@@ -10179,7 +10204,7 @@ Step 1:`;
           ghost = document.createElement("div");
           ghost.className = "clean-bbox-ghost";
           ghost.dataset.blockId = String(blk.id);
-          ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${blk.id}</span>`;
+          ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${Number(blk.id) || 0}</span>`;
           wrap.appendChild(ghost);
           target.ghost = ghost;
         }
@@ -10287,7 +10312,7 @@ Step 1:`;
             ghost.style.top = ((cy1 / nh) * 100) + "%";
             ghost.style.width = (((cx2 - cx1) / nw) * 100) + "%";
             ghost.style.height = (((cy2 - cy1) / nh) * 100) + "%";
-            ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${b.id}</span>`;
+            ghost.innerHTML = `<span class="clean-bbox-ghost-lbl">Замазка #${Number(b.id) || 0}</span>`;
             frag.appendChild(ghost);
           }
 
@@ -10323,18 +10348,20 @@ Step 1:`;
             : (bgMode === "full_box"
               ? `background:${bgCol}; border-radius:6px; inset:0px;`
               : (bgMode === "text_box"
-                ? `background:${bgCol}; border-radius:8px; inset:10% 6%;`
+                ? `background:${safeCssColor(bgCol, "#ffffff")}; border-radius:8px; inset:10% 6%;`
                 : ""));
+          const safePinId = Number(b.id) || 0;
+          const safeTextCol = safeCssColor(b.text_color, "");
           pin.innerHTML =
-            `<span class="bbox-pin-badge">${formatPinBadgeText(b)}</span>` +
+            `<span class="bbox-pin-badge">${escapeHtml(formatPinBadgeText(b))}</span>` +
             `<div class="bbox-pin-actions">` +
-              `<button type="button" class="bbox-pin-btn save-btn bbox-pin-save" style="display:${showSaveBtn ? "inline-block" : "none"};" title="Сохранить изменения рамки #${b.id} в картинку (Ctrl+S)">💾</button>` +
-              `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${b.id} к оригиналу">↺</button>` +
-              `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Полностью удалить рамку #${b.id} с картинки">🗑</button>` +
+              `<button type="button" class="bbox-pin-btn save-btn bbox-pin-save" style="display:${showSaveBtn ? "inline-block" : "none"};" title="Сохранить изменения рамки #${safePinId} в картинку (Ctrl+S)">💾</button>` +
+              `<button type="button" class="bbox-pin-btn bbox-pin-reset" style="display:${(isMod || b.font_size) ? "inline-block" : "none"};" title="Сбросить положение и размер рамки #${safePinId} к оригиналу">↺</button>` +
+              `<button type="button" class="bbox-pin-btn del-btn bbox-pin-del" title="Полностью удалить рамку #${safePinId} с картинки">🗑</button>` +
             `</div>` +
             `<div class="bubble-safe-zone-guide" style="${computeSafeGuideInlineCss(b)}"></div>` +
             `<div class="bubble-optical-center-mark" style="${computeOpticalCenterInlineCss(b)}" title="Оптический центр бабла (Pole of Inaccessibility + оптическое смещение -2.2%)"></div>` +
-            `<div class="bbox-live-text" style="font-size:${cssFs}px; ${liveBgCss} ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${-Number(b.angle)}deg);` : ""} ${b.text_color ? `color:${escapeHtml(b.text_color)};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
+            `<div class="bbox-live-text" style="font-size:${Number(cssFs) || 14}px; ${liveBgCss} ${Math.abs(Number(b.angle || 0)) >= 0.5 ? `transform:rotate(${-Number(b.angle)}deg);` : ""} ${safeTextCol ? `color:${safeTextCol};` : ""} text-align:${escapeHtml(b.align || "center")};">${escapeHtml(dispText)}</div>` +
             handlesHtml;
 
           const saveBtn = pin.querySelector(".bbox-pin-save");
