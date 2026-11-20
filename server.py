@@ -184,8 +184,8 @@ def _get_vram_allocated_mb() -> float:
     try:
         if torch.cuda.is_available():
             return round(torch.cuda.memory_allocated(0) / (1024**2), 1)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:187: %s", _exc)
     return 0.0
 
 
@@ -202,8 +202,8 @@ def _release_pipeline_vram(stage_label: str = "", force_driver_flush: bool = Fal
     try:
         if cleaner_engine is not None and hasattr(cleaner_engine, "release_transient_vram"):
             cleaner_engine.release_transient_vram()
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:205: %s", _exc)
     try:
         if torch.cuda.is_available():
             if not force_driver_flush and hasattr(torch.cuda, "mem_get_info"):
@@ -211,8 +211,8 @@ def _release_pipeline_vram(stage_label: str = "", force_driver_flush: bool = Fal
                 if total_b > 0 and (free_b / float(total_b)) > 0.22:
                     return
             torch.cuda.empty_cache()
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:214: %s", _exc)
 
 
 def _append_diagnostic_event(event_type: str, data: dict[str, Any]) -> None:
@@ -227,8 +227,8 @@ def _append_diagnostic_event(event_type: str, data: dict[str, Any]) -> None:
     try:
         with open(DIAG_EVENTS_FILE, "a", encoding="utf-8") as f_ev:
             f_ev.write(json.dumps(record, ensure_ascii=False) + "\n")
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:230: %s", _exc)
 
 SUPPORTED_IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".bmp"}
 VALID_SOURCE_LANGS = {"auto", "ja", "ko", "zh"}
@@ -318,8 +318,8 @@ class AtomicStateCheckpoint:
                 loaded = json.loads(raw)
                 if isinstance(loaded, dict):
                     self.state.update(loaded)
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored Exception at server.py:321: %s", _exc)
 
     def is_page_completed(self, page_name: str) -> bool:
         return page_name in self.state.get("completed_pages", {})
@@ -360,8 +360,8 @@ class AtomicStateCheckpoint:
             if os.path.exists(tmp_path):
                 try:
                     os.remove(tmp_path)
-                except OSError:
-                    pass
+                except OSError as _exc:
+                    logger.debug("Ignored OSError at server.py:363: %s", _exc)
             raise
 
 
@@ -1786,8 +1786,8 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
                 if os.path.exists(tmp_path):
                     try:
                         os.remove(tmp_path)
-                    except OSError:
-                        pass
+                    except OSError as _exc:
+                        logger.debug("Ignored OSError at server.py:1789: %s", _exc)
                 raise
     except Exception as exc:
         logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
@@ -1874,8 +1874,8 @@ def _generate_and_save_chapter_book_files(
     try:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:1877: %s", _exc)
 
     if manifest is None:
         manifest = _load_folder_manifest(output_dir)
@@ -2020,8 +2020,8 @@ def _generate_and_save_folder_report(
     try:
         output_dir = Path(output_dir).resolve()
         output_dir.mkdir(parents=True, exist_ok=True)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:2023: %s", _exc)
 
     if manifest is None:
         manifest = _load_folder_manifest(output_dir)
@@ -2777,8 +2777,8 @@ def is_page_already_translated(
             state_f2 = dest_path.parent.parent / ".translation_state.json"
             if state_f1.exists() or state_f2.exists():
                 return False
-        except OSError:
-            pass
+        except OSError as _exc:
+            logger.debug("Ignored OSError at server.py:2780: %s", _exc)
 
     if isinstance(page_meta, dict):
         if (
@@ -3034,8 +3034,8 @@ def _run_native_picker_dialog(mode: str = "folder") -> str | None:
             if os.name == "nt":
                 try:
                     ctypes.windll.user32.SetForegroundWindow(root.winfo_id())
-                except Exception:
-                    pass
+                except Exception as _exc:
+                    logger.debug("Ignored Exception at server.py:3037: %s", _exc)
             if mode == "file":
                 selected = filedialog.askopenfilename(
                     parent=root,
@@ -3945,8 +3945,8 @@ async def _run_folder_translation_job(
                     if _bg_preclean_task is not None:
                         try:
                             await _bg_preclean_task
-                        except Exception:
-                            pass
+                        except Exception as _exc:
+                            logger.debug("Ignored Exception at server.py:3948: %s", _exc)
 
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
@@ -4319,8 +4319,8 @@ async def _run_folder_translation_job(
         if open_when_done and os.name == "nt" and output_dir.exists():
             try:
                 os.startfile(str(output_dir))
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored Exception at server.py:4322: %s", _exc)
 
     except asyncio.CancelledError:
         folder_job_state["status"] = "stopped"
@@ -4862,8 +4862,8 @@ def _register_allowed_root(path_val: Path | str | None) -> None:
         root_dir = resolved.parent if resolved.is_file() else resolved
         with _SESSION_ALLOWED_ROOTS_LOCK:
             _SESSION_ALLOWED_ROOTS.add(root_dir)
-    except Exception:
-        pass
+    except Exception as _exc:
+        logger.debug("Ignored Exception at server.py:4865: %s", _exc)
 
 
 def _is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
@@ -5012,15 +5012,15 @@ def _is_path_within_allowed_roots(img_path: Path) -> bool:
     if translator_engine is not None and getattr(translator_engine, "web_save_dir", None):
         try:
             allowed_roots.append(Path(translator_engine.web_save_dir).resolve())
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored Exception at server.py:5015: %s", _exc)
     for state_key in ("source_dir", "output_dir"):
         raw_p = folder_job_state.get(state_key)
         if raw_p:
             try:
                 allowed_roots.append(Path(str(raw_p)).resolve())
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored Exception at server.py:5022: %s", _exc)
     with _SESSION_ALLOWED_ROOTS_LOCK:
         allowed_roots.extend(_SESSION_ALLOWED_ROOTS)
 
@@ -5127,8 +5127,8 @@ def _save_web_translated_page(
         try:
             c_hash = _compute_clean_state_hash(orig_file_path, blocks)
             _store_cached_cleaned_image(orig_file_path, c_hash, cleaned_image, save_to_disk=True)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored Exception at server.py:5130: %s", _exc)
 
     manifest = _load_folder_manifest(output_chapter_dir)
     if not isinstance(manifest.get("pages"), dict):
@@ -6628,8 +6628,8 @@ def _build_diagnostics_payload() -> dict[str, Any]:
             gpu_data["vram_allocated_mb"] = round(torch.cuda.memory_allocated(0) / (1024**2), 1)
             gpu_data["vram_reserved_mb"] = round(torch.cuda.memory_reserved(0) / (1024**2), 1)
             gpu_data["vram_total_mb"] = round(torch.cuda.get_device_properties(0).total_memory / (1024**2), 1)
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored Exception at server.py:6631: %s", _exc)
 
     inpaint_backend = (
         "SimpleLama (LaMa GPU)"
@@ -7357,8 +7357,8 @@ def _parse_imported_book_text(raw_text: str) -> dict[str, str]:
                     for k, v in data.items()
                     if re.match(r"^P\d+_\d+$", str(k).strip(), flags=re.IGNORECASE)
                 }
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored Exception at server.py:7360: %s", _exc)
 
     updates: dict[str, str] = {}
     current_page_idx = 0
@@ -8139,8 +8139,8 @@ def _ingest_ux_events_batch(payload: UxEventsBatchRequest) -> dict[str, Any]:
             try:
                 with open(UX_EVENTS_JSONL_FILE, "a", encoding="utf-8") as f_jl:
                     f_jl.write("\n".join(jsonl_lines) + "\n")
-            except Exception:
-                pass
+            except Exception as _exc:
+                logger.debug("Ignored Exception at server.py:8142: %s", _exc)
 
         return store
 
@@ -8520,8 +8520,8 @@ async def clear_ux_telemetry_endpoint() -> dict[str, str]:
         try:
             if UX_EVENTS_JSONL_FILE.exists():
                 UX_EVENTS_JSONL_FILE.unlink()
-        except Exception:
-            pass
+        except Exception as _exc:
+            logger.debug("Ignored Exception at server.py:8523: %s", _exc)
     await asyncio.to_thread(_generate_ux_usage_report, fresh)
     logger.info("Статистика UX-телеметрии кликов и действий сброшена пользователем.")
     return {"status": "ok"}
@@ -8542,8 +8542,8 @@ def _is_server_already_running(url: str = "http://127.0.0.1:5000/health") -> boo
                     )
                     try:
                         client.post("http://127.0.0.1:5000/shutdown", timeout=2.0)
-                    except Exception:
-                        pass
+                    except Exception as _exc:
+                        logger.debug("Ignored Exception at server.py:8545: %s", _exc)
                     time.sleep(1.5)
                     return False
                 return True
