@@ -6108,21 +6108,48 @@ Step 1:`;
     /* ==================== FOLDER & PAGE NAVIGATION ==================== */
     let isPickingFolderDialog = false;
     async function pickFolderDialog() {
-      if (isPickingFolderDialog) return;
+      if (isPickingFolderDialog) {
+        sayMiko("⚠️ Окно выбора папки уже открыто — проверь панель задач Windows! 🌸");
+        return;
+      }
       isPickingFolderDialog = true;
       sayMiko("📂 Открываю окно выбора папки Windows (проверь окно проводника)... 🌸");
       try {
         const res = await fetch("/pick_folder?target_lang=" + encodeURIComponent(targetLang), { method: "POST" });
-        if (!res.ok) return;
+        if (!res.ok) {
+          let errMsg = `Ошибка сервера (HTTP ${res.status})`;
+          try {
+            const errData = await res.json();
+            if (errData && (errData.detail || errData.message)) {
+              errMsg = errData.detail || errData.message;
+            }
+          } catch (_) {
+            try {
+              const errText = (await res.text() || "").trim();
+              if (errText) errMsg = errText.slice(0, 180);
+            } catch (_2) {}
+          }
+          sayMiko(`⚠️ Не удалось открыть выбор папки: ${errMsg}`);
+          return;
+        }
         const data = await res.json();
+        if (data.status === "busy") {
+          sayMiko(`⚠️ ${data.message || "Окно выбора папки уже открыто — проверь панель задач Windows!"} 🌸`);
+          return;
+        }
         if (data.status === "cancelled") {
           sayMiko("Выбор папки отменен. Нажми «Выбрать папку с мангой», когда будешь готов! 🌸");
+          return;
+        }
+        if (!data.source_dir) {
+          sayMiko("⚠️ Сервер вернул пустой путь к папке. Попробуй выбрать папку еще раз! 🌸");
           return;
         }
         currentFolder = data.source_dir;
         renderFolderData(data);
       } catch (err) {
         console.error("pickFolderDialog error:", err);
+        sayMiko(`⚠️ Ошибка при открытии окна выбора папки: ${err?.message || "нет связи с сервером"}. Попробуй еще раз!`);
       } finally {
         isPickingFolderDialog = false;
       }

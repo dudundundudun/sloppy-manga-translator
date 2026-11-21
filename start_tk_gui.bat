@@ -1,5 +1,5 @@
 @echo off
-title Miko-chan Manga Studio v5.3.0 - Tkinter Desktop Window
+title Miko-chan Manga Studio v6.1.0 - Tkinter Desktop Window
 cd /d "%~dp0"
 
 set PYTHONUTF8=1
@@ -8,7 +8,7 @@ set NO_PROXY=127.0.0.1,localhost
 set no_proxy=127.0.0.1,localhost
 
 echo ==================================================================
-echo   Starting Miko-chan Tkinter Desktop GUI v5.3.0...
+echo   Starting Miko-chan Tkinter Desktop GUI v6.1.0...
 echo ==================================================================
 echo.
 

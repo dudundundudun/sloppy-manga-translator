@@ -3243,7 +3243,7 @@ class MangaOCREngine:
         self.preferred_vlm_model: str = "auto"
         self.ollama_base_url = ollama_base_url.rstrip("/")
 
-        logger.info("Инициализация MangaOCREngine (v5.3.0 Step 1+2+3+4) на устройстве: %s", self.device)
+        logger.info("Инициализация MangaOCREngine (v6.1.0) на устройстве: %s", self.device)
         self.detector = self._load_detector()
         self.ja_recognizer = self._load_manga_ocr()
 
@@ -3307,10 +3307,8 @@ class MangaOCREngine:
         if self.use_ja_nar:
             self._get_ja_nar_recognizer()
 
-        # Если мультиязычная модель HayaiOCR v2.5 Nova уже скачана на диск, подгружаем её сразу,
-        # иначе она скачается автоматически по первому запросу ko / zh / auto без задержки старта для чистого ja
-        if self.use_hayai_ocr and self._is_hayai_cached_locally():
-            self._get_hayai_recognizer()
+        # HayaiOCR v2.5 Nova оставляем строго ленивой (lazy-load при первом вызове для ko / zh / auto
+        # или явном выборе бэкенда hayai_siglip2), чтобы не тормозить холодный запуск на ~13.5 сек.
 
         # Если сегментатор масок YOLO26s-seg уже скачан в models/, подгружаем его сразу при старте
         if self.use_yolo26_seg and (self.models_dir / LOCAL_YOLO26_SEG_FILENAME).exists():

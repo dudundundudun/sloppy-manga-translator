@@ -66,6 +66,73 @@ for _stream in (sys.stdout, sys.stderr):
         except Exception:
             pass
 
+APP_VERSION = "6.1.0"
+
+
+def _launch_studio_window_fast(url: str = "http://127.0.0.1:5000/") -> None:
+    print(f"\n>>> Открываю окно интерфейса Miko-chan Manga Studio ({url})...", flush=True)
+    if os.name == "nt":
+        candidates = [
+            shutil.which("msedge"),
+            r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
+            r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
+            shutil.which("chrome"),
+            r"C:\Program Files\Google\Chrome\Application\chrome.exe",
+            r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+        ]
+        for exe in candidates:
+            if exe and os.path.exists(exe):
+                try:
+                    subprocess.Popen([exe, f"--app={url}", "--window-size=1480,900"])
+                    return
+                except Exception:
+                    continue
+    try:
+        webbrowser.open(url)
+    except Exception:
+        pass
+
+
+def _is_server_already_running_fast(url: str = "http://127.0.0.1:5000/health") -> bool:
+    """Быстрая stdlib-проверка запущенного сервера до импорта torch/cv2/OCR."""
+    import urllib.request
+
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    try:
+        with opener.open(url, timeout=1.5) as resp:
+            if getattr(resp, "status", 200) == 200:
+                data = json.loads(resp.read().decode("utf-8", errors="replace"))
+                running_ver = str(data.get("version") or "")
+                if running_ver != APP_VERSION:
+                    print(
+                        f"[UPDATE] На порту 5000 запущена старая версия сервера (v{running_ver}). "
+                        f"Останавливаю старый процесс для запуска v{APP_VERSION}...",
+                        flush=True,
+                    )
+                    try:
+                        req = urllib.request.Request(
+                            "http://127.0.0.1:5000/shutdown",
+                            method="POST",
+                            data=b"",
+                        )
+                        with opener.open(req, timeout=2.0):
+                            pass
+                    except Exception:
+                        pass
+                    time.sleep(1.5)
+                    return False
+                return True
+    except Exception:
+        return False
+    return False
+
+
+if __name__ == "__main__" and _is_server_already_running_fast():
+    print("[OK] Локальный сервер (127.0.0.1:5000) уже запущен!", flush=True)
+    if "--open-gui" in sys.argv:
+        _launch_studio_window_fast("http://127.0.0.1:5000/")
+    sys.exit(0)
+
 import cv2
 import httpx
 import numpy as np
@@ -77,6 +144,14 @@ from fastapi.responses import FileResponse, HTMLResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
+from api.native_dialogs import (
+    NativePickerBusyError,
+    _SUBPROCESS_PICKER_SCRIPT,
+    _native_picker_lock,
+    _run_native_picker_dialog,
+    open_native_file_picker,
+    open_native_folder_picker,
+)
 from api.schemas import (
     ChapterBookImportRequest,
     ChapterBookProofreadRequest,
@@ -164,7 +239,6 @@ BASE_DIR = Path(__file__).resolve().parent
 TEMP_DIR = BASE_DIR / "temp_debug"
 TEMP_DIR.mkdir(parents=True, exist_ok=True)
 LOGS_DIR = BASE_DIR / "logs"
-APP_VERSION = "6.1.0"
 LOGS_DIR.mkdir(parents=True, exist_ok=True)
 MAIN_LOG_FILE = LOGS_DIR / "miko_studio.log"
 DIAG_EVENTS_FILE = LOGS_DIR / "diagnostics_events.jsonl"
@@ -285,6 +359,9 @@ ocr_engine: MangaOCREngine | None = None
 translator_engine: OllamaTranslator | None = None
 cleaner_engine: BubbleCleaner | None = None
 renderer_engine: MangaRenderer | None = None
+_engines_ready_event: asyncio.Event | None = None
+_engines_init_task: asyncio.Task[Any] | None = None
+_engines_init_error: str | None = None
 
 class PriorityGPULock:
     """
@@ -752,8 +829,8 @@ def _compute_clean_state_hash(
                             max(1, int(round(float(st.get("r", 8))))),
                             "erase" if str(st.get("mode") or "add").lower() == "erase" else "add",
                         ))
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as exc:
+                        logger.debug("Пропущен некорректный custom_mask_stroke: %s", exc)
         active_tuples.append((clean_tuple, is_free, mask_dilate_val, tuple(st_list)))
 
     active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3]))
@@ -956,23 +1033,83 @@ def _apply_stack_to_engines(stack: dict[str, Any], save_config: bool = False) ->
     return merged_stack
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    global ocr_engine, translator_engine, cleaner_engine, renderer_engine
-    print("\n==================================================================", flush=True)
-    print("  [1/4] Инициализация детектора YOLOv8 и MangaOCR (GPU/CPU)...", flush=True)
-    ocr_engine = MangaOCREngine(models_dir=BASE_DIR / "models")
-
-    print("  [2/4] Инициализация нейросетевой очистки LaMa (big-lama.pt)...", flush=True)
-    cleaner_engine = BubbleCleaner(
+def _init_heavy_engines_sync() -> tuple[MangaOCREngine, BubbleCleaner]:
+    """Синхронно загружает тяжелые веса OCR и LaMa в рабочем потоке по первому требованию."""
+    t0 = time.perf_counter()
+    print("  [ON-DEMAND 1/2] Загрузка детектора YOLOv8/RT-DETR и MangaOCR (GPU/CPU)...", flush=True)
+    loaded_ocr = MangaOCREngine(models_dir=BASE_DIR / "models")
+    print("  [ON-DEMAND 2/2] Загрузка нейросетевой очистки LaMa (big-lama.pt)...", flush=True)
+    loaded_cleaner = BubbleCleaner(
         use_lama=True,
         dilate_size=11,
         cache_max_pages=8,
         disk_cache_dir=TEMP_DIR / "clean_cache",
         models_dir=BASE_DIR / "models",
     )
+    elapsed = time.perf_counter() - t0
+    logger.info("Инициализация OCR и LaMa по требованию завершена за %.2f сек.", elapsed)
+    return loaded_ocr, loaded_cleaner
 
-    print("  [3/4] Инициализация шрифтового движка и клиента Ollama/Cloud API...", flush=True)
+
+async def _background_init_engines() -> None:
+    global ocr_engine, cleaner_engine, _engines_init_error
+    try:
+        loaded_ocr, loaded_cleaner = await asyncio.to_thread(_init_heavy_engines_sync)
+        ocr_engine = loaded_ocr
+        cleaner_engine = loaded_cleaner
+        _engines_init_error = None
+        if translator_engine is not None:
+            _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
+            try:
+                resolved_model = await translator_engine.resolve_model()
+                print(f"  [READY] Нейросети OCR и LaMa готовы! Активная модель: {resolved_model}", flush=True)
+            except Exception as _res_exc:
+                logger.debug("resolve_model после загрузки движков завершился с предупреждением: %s", _res_exc)
+                print("  [READY] Нейросети OCR и LaMa готовы к работе!", flush=True)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        _engines_init_error = str(exc)
+        logger.exception("Ошибка инициализации OCR/LaMa: %s", exc)
+    finally:
+        if _engines_ready_event is not None:
+            _engines_ready_event.set()
+
+
+async def _ensure_engines_ready(timeout: float = 180.0) -> None:
+    """Лениво (по требованию) загружает MangaOCREngine и BubbleCleaner при первом переводе/клининге."""
+    global _engines_ready_event, _engines_init_task, _engines_init_error
+    if ocr_engine is not None and cleaner_engine is not None:
+        return
+    if _engines_init_task is None or _engines_init_task.done():
+        _engines_init_error = None
+        _engines_ready_event = asyncio.Event()
+        print("\n>>> [ON-DEMAND] Первый запрос на перевод/клининг — загружаю нейросети OCR и LaMa...", flush=True)
+        _engines_init_task = asyncio.create_task(_background_init_engines())
+    if _engines_ready_event is not None and not _engines_ready_event.is_set():
+        try:
+            await asyncio.wait_for(_engines_ready_event.wait(), timeout=timeout)
+        except asyncio.TimeoutError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Превышено время ожидания загрузки нейросетей OCR/LaMa.",
+            ) from exc
+    if _engines_init_error:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Ошибка инициализации нейросетей: {_engines_init_error}",
+        )
+    if ocr_engine is None or cleaner_engine is None:
+        raise HTTPException(status_code=503, detail="Нейросети OCR/LaMa еще инициализируются.")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    global ocr_engine, translator_engine, cleaner_engine, renderer_engine
+    global _engines_ready_event, _engines_init_task, _engines_init_error
+    t_start = time.perf_counter()
+    print("\n==================================================================", flush=True)
+    print("  [1/2] Быстрая инициализация config.json, шрифтов и клиента Ollama/Cloud API...", flush=True)
     translator_engine = OllamaTranslator(config_path=BASE_DIR / "config.json")
     translator_engine.gpu_lock_acquire = gpu_lock
     renderer_engine = MangaRenderer(
@@ -980,20 +1117,34 @@ async def lifespan(app: FastAPI):
         uppercase_comic_style=bool(getattr(translator_engine, "uppercase", False)),
         overflow_mode=getattr(translator_engine, "overflow_mode", "shrink"),
     )
-    # Применяем дефолтную связку моделей (default_model_stack) из config.json ко всем движкам при старте
+    # Применяем дефолтную связку моделей (default_model_stack) из config.json к переводчику сразу
     _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
-    resolved_model = await translator_engine.resolve_model()
 
-    print(f"  [4/4] СЕРВЕР ГОТОВ К РАБОТЕ! (v{APP_VERSION})", flush=True)
-    print(f"        Активная модель перевода : {resolved_model}", flush=True)
+    # Строго ленивая загрузка: тяжелые нейросети OCR и LaMa не загружаются при старте
+    # и не занимают VRAM, пока пользователь не запустит первый перевод/клининг.
+    _engines_init_error = None
+    _engines_ready_event = None
+    _engines_init_task = None
+
+    init_elapsed = time.perf_counter() - t_start
+    print(f"  [2/2] ИНТЕРФЕЙС ГОТОВ ЗА {init_elapsed:.2f} сек! (v{APP_VERSION})", flush=True)
+    print("        Нейросети OCR и LaMa НЕ загружаются при старте (загрузятся по требованию при первом переводе).", flush=True)
     print("        Адрес локальной студии   : http://127.0.0.1:5000/", flush=True)
     print("==================================================================\n", flush=True)
 
     if _AUTO_OPEN_GUI:
-        threading.Timer(0.8, launch_studio_window, args=("http://127.0.0.1:5000/",)).start()
+        threading.Timer(0.25, launch_studio_window, args=("http://127.0.0.1:5000/",)).start()
 
     yield
     logger.info("Остановка сервера и очистка ресурсов...")
+    if _engines_init_task is not None and not _engines_init_task.done():
+        _engines_init_task.cancel()
+        try:
+            await _engines_init_task
+        except asyncio.CancelledError:
+            logger.debug("Фоновая инициализация движков отменена при остановке сервера.")
+    _engines_init_task = None
+    _engines_ready_event = None
     if translator_engine is not None:
         await translator_engine.aclose()
     ocr_engine = None
@@ -1722,8 +1873,8 @@ def _generate_and_save_folder_report(
                                     "translated_text": trans_t,
                                 }
                             )
-                    except (ValueError, TypeError):
-                        pass
+                    except (ValueError, TypeError) as exc:
+                        logger.debug("Пропущен некорректный font_size при сборе статистики отчета: %s", exc)
             else:
                 if is_del and tsrc not in ("skipped_sigh_orig", "skipped_sigh_trans"):
                     tsrc = tsrc if tsrc in ("skipped_sigh_orig", "skipped_sigh_trans") else "deleted_by_user"
@@ -1884,7 +2035,7 @@ def _generate_and_save_folder_report(
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v5.4.0",
+        "  📑 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ И ЖУРНАЛ ПЕРЕВОДА ГЛАВЫ — MIKO-CHAN MANGA STUDIO v6.1.0",
         "========================================================================================",
         f"• Исходная папка манги     : {source_dir}",
         f"• Папка готового перевода  : {output_dir}",
@@ -2402,146 +2553,6 @@ def inspect_folder_pages(source_dir: Path, target_lang: str = "en") -> dict[str,
         "folder_glossary": folder_glossary,
         "pages": pages_info,
     }
-
-
-_native_picker_lock = threading.Lock()
-
-_SUBPROCESS_PICKER_SCRIPT = r"""
-import ctypes, json, sys, tkinter as tk
-from tkinter import filedialog
-
-mode = sys.argv[1] if len(sys.argv) > 1 else "folder"
-try:
-    ctypes.windll.shcore.SetProcessDpiAwareness(1)
-except Exception:
-    pass
-
-root = tk.Tk()
-root.title("Miko-chan Manga Studio")
-sw = root.winfo_screenwidth()
-sh = root.winfo_screenheight()
-root.geometry(f"1x1+{sw // 2}+{sh // 2}")
-root.attributes("-topmost", True)
-root.attributes("-alpha", 0.01)
-root.deiconify()
-root.update()
-
-try:
-    user32 = ctypes.windll.user32
-    hwnd = root.winfo_id()
-    # Разблокируем ForegroundLockTimeout в Windows 10/11 при вызове из фонового процесса python.exe
-    user32.keybd_event(0x12, 0, 0, 0)
-    user32.SetForegroundWindow(hwnd)
-    user32.keybd_event(0x12, 0, 2, 0)
-except Exception:
-    pass
-
-root.lift()
-root.focus_force()
-root.update()
-
-if mode == "file":
-    selected = filedialog.askopenfilename(
-        parent=root,
-        title="Выберите страницу манги для перевода",
-        filetypes=[
-            ("Изображения манги", "*.jpg *.jpeg *.png *.webp *.bmp"),
-            ("Все файлы", "*.*"),
-        ],
-    )
-else:
-    selected = filedialog.askdirectory(
-        parent=root,
-        mustexist=True,
-        title="Выберите папку с мангой / манхвой / маньхуа для перевода",
-    )
-
-try:
-    root.destroy()
-except Exception:
-    pass
-
-sys.stdout.write(json.dumps({"selected": selected or ""}, ensure_ascii=False))
-sys.stdout.flush()
-"""
-
-
-def _run_native_picker_dialog(mode: str = "folder") -> str | None:
-    """
-    Открывает системное окно выбора папки/файла Windows в изолированном главном потоке дочернего процесса
-    с принудительным выводом поверх окна браузера (--app) через Win32 SetForegroundWindow и parent=root.
-    Исключает зависание Tcl/Tk в фоновых потоках ThreadPoolExecutor и открытие диалога позади окна студии!
-    """
-    with _native_picker_lock:
-        try:
-            creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0) if os.name == "nt" else 0
-            env = dict(os.environ)
-            env["PYTHONUTF8"] = "1"
-            env["PYTHONIOENCODING"] = "utf-8"
-            proc = subprocess.run(
-                [sys.executable, "-c", _SUBPROCESS_PICKER_SCRIPT, mode],
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                env=env,
-                creationflags=creationflags,
-                timeout=600,
-            )
-            if proc.returncode == 0 and proc.stdout.strip():
-                raw_out = proc.stdout.strip().splitlines()[-1]
-                data = json.loads(raw_out)
-                sel = str(data.get("selected") or "").strip()
-                return sel if sel else None
-        except Exception as sub_exc:
-            logger.warning("Фоллбэк на прямой вызов Tkinter (%s): %s", mode, sub_exc)
-
-        try:
-            import ctypes
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.geometry("1x1+400+300")
-            root.attributes("-topmost", True)
-            root.attributes("-alpha", 0.01)
-            root.deiconify()
-            root.lift()
-            root.focus_force()
-            root.update()
-            if os.name == "nt":
-                try:
-                    ctypes.windll.user32.SetForegroundWindow(root.winfo_id())
-                except Exception as _exc:
-                    logger.debug("Ignored Exception at server.py:3037: %s", _exc)
-            if mode == "file":
-                selected = filedialog.askopenfilename(
-                    parent=root,
-                    title="Выберите страницу манги для перевода",
-                    filetypes=[
-                        ("Изображения манги", "*.jpg *.jpeg *.png *.webp *.bmp"),
-                        ("Все файлы", "*.*"),
-                    ],
-                )
-            else:
-                selected = filedialog.askdirectory(
-                    parent=root,
-                    mustexist=True,
-                    title="Выберите папку с мангой / манхвой / маньхуа для перевода",
-                )
-            root.destroy()
-            return selected if selected else None
-        except Exception as exc:
-            logger.error("Не удалось открыть диалог выбора (%s) Tkinter: %s", mode, exc)
-            return None
-
-
-def open_native_folder_picker() -> str | None:
-    return _run_native_picker_dialog("folder")
-
-
-def open_native_file_picker() -> str | None:
-    return _run_native_picker_dialog("file")
 
 
 def _pil_to_rgb_clean(img: Image.Image) -> Image.Image:
@@ -3867,8 +3878,15 @@ async def health_check() -> dict[str, Any]:
         else (ocr_engine._check_easyocr() if (ocr_engine and hasattr(ocr_engine, "_check_easyocr")) else False)
     )
 
+    engines_ready = (
+        ocr_engine is not None
+        and cleaner_engine is not None
+        and (_engines_ready_event is None or _engines_ready_event.is_set())
+    )
+
     return {
-        "status": "ready" if ocr_engine is not None else "initializing",
+        "status": "ready" if engines_ready else "initializing",
+        "engines_ready": engines_ready,
         "version": APP_VERSION,
         "gpu": gpu_info,
         "ollama_model": active_model,
@@ -4263,7 +4281,10 @@ async def pick_web_save_folder_endpoint() -> dict[str, Any]:
     """Открывает диалог выбора папки Windows для автосохранения манги из расширения Chrome."""
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
-    folder_str = await asyncio.to_thread(open_native_folder_picker)
+    try:
+        folder_str = await asyncio.to_thread(open_native_folder_picker)
+    except NativePickerBusyError as exc:
+        return {"status": "busy", "message": str(exc), "web_save_dir": translator_engine.web_save_dir}
     if not folder_str:
         return {"status": "cancelled", "web_save_dir": translator_engine.web_save_dir}
     chosen_dir = Path(folder_str).resolve()
@@ -4299,7 +4320,10 @@ async def shutdown_server() -> dict[str, str]:
 
 @app.post("/pick_folder")
 async def pick_folder_endpoint(target_lang: str = Query(default="en")) -> dict[str, Any]:
-    folder_str = await asyncio.to_thread(open_native_folder_picker)
+    try:
+        folder_str = await asyncio.to_thread(open_native_folder_picker)
+    except NativePickerBusyError as exc:
+        return {"status": "busy", "message": str(exc)}
     if not folder_str:
         return {"status": "cancelled"}
     source_dir = Path(folder_str).resolve()
@@ -4310,7 +4334,13 @@ async def pick_folder_endpoint(target_lang: str = Query(default="en")) -> dict[s
 
 @app.post("/pick_file")
 async def pick_file_endpoint() -> dict[str, Any]:
-    file_str = await asyncio.to_thread(open_native_file_picker)
+    try:
+        file_str = await asyncio.to_thread(open_native_file_picker)
+    except NativePickerBusyError:
+        return {
+            "status": "busy",
+            "message": "Окно выбора файла уже открыто — проверьте панель задач Windows",
+        }
     if not file_str:
         return {"status": "cancelled"}
     file_path = Path(file_str).resolve()
@@ -4503,6 +4533,7 @@ def _save_web_translated_page(
 
 @app.post("/translate", response_model=TranslateResponse)
 async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
+    await _ensure_engines_ready()
     if (
         ocr_engine is None
         or translator_engine is None
@@ -4666,6 +4697,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
 
 @app.post("/translate_page_file", response_model=TranslateResponse)
 async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> TranslateResponse:
+    await _ensure_engines_ready()
     if (
         ocr_engine is None
         or translator_engine is None
@@ -4873,6 +4905,7 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
     - Если страница переводилась старой версией или еще не сканировалась, выполняет быстрый OCR исходника,
       подтягивает готовые переводы из `phrase_cache` (0 токенов!) и генерирует Ромадзи.
     """
+    await _ensure_engines_ready()
     if ocr_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -5144,6 +5177,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     верстает новый текст и сохраняет обновленную картинку в папку перевода и в `.translation_state.json`.
     Не требует повторного вызова OCR или LLM (0 токенов API!).
     """
+    await _ensure_engines_ready()
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -5293,6 +5327,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
     которую пользователь обвел мышкой на странице в редакторе, добавляет новый блок к существующим,
     перерисовывает страницу и сохраняет результат.
     """
+    await _ensure_engines_ready()
     if (
         ocr_engine is None
         or translator_engine is None
@@ -5504,6 +5539,7 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     Принудительно переводит один конкретный блок `#block_id` через активную ИИ-модель
     (с отключенным пропуском вздохов и сбросом кэша для этой фразы) и сразу перерисовывает страницу.
     """
+    await _ensure_engines_ready()
     t_lang = (payload.target_lang or "en").lower().strip()
     if (
         ocr_engine is None
@@ -5769,6 +5805,7 @@ async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[
     Отправляет конкретную фразу в ИИ с задачей сократить длину русского/английского текста на 25–35%
     с сохранением смысла и тона персонажа, обновляет блок и сразу перерисовывает страницу.
     """
+    await _ensure_engines_ready()
     if translator_engine is None or renderer_engine is None or cleaner_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -5844,7 +5881,10 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
 
     folder_str = payload.folder_path
     if not folder_str:
-        folder_str = await asyncio.to_thread(open_native_folder_picker)
+        try:
+            folder_str = await asyncio.to_thread(open_native_folder_picker)
+        except NativePickerBusyError as exc:
+            return {"status": "busy", "message": str(exc)}
         if not folder_str:
             return {"status": "cancelled", "message": "Выбор папки отменен."}
 
@@ -5887,6 +5927,8 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
 
     if payload.anti_censorship_prompt is not None and translator_engine is not None:
         translator_engine.save_config(anti_censorship_prompt=payload.anti_censorship_prompt)
+
+    await _ensure_engines_ready()
 
     _folder_task = asyncio.create_task(
         _run_folder_translation_job(
@@ -6145,6 +6187,7 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
     - При `dry_run=False` заменяет текст во всех совпавших блоках, обновляет `phrase_cache` и перерисовывает
       только затронутые страницы через кэш очищенного слоя `cleaned_image` (0 мс на SimpleLama) и `renderer_engine.render_blocks`.
     """
+    await _ensure_engines_ready()
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -6325,6 +6368,7 @@ async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[
     Пакетно очищает все уже переведенные страницы папки от лишних рамок (надписей на фоне вне бабблов,
     коротких вздохов, SFX и пустых блоков) и мгновенно перерисовывает затронутые страницы (0 токенов ИИ!).
     """
+    await _ensure_engines_ready()
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -6703,6 +6747,7 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
     БЛОК 2.3: Импортирует отредактированный пользователем текст «Книги главы» (`_chapter_book.md` или двуязычный скрипт),
     обновляет переводы в бабблах и мгновенно перерисовывает только затронутые страницы из кэша очистки (0 запросов к OCR и API!).
     """
+    await _ensure_engines_ready()
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -6817,6 +6862,7 @@ async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) 
     Отправляет весь сценарий главы одним JSON-пакетом в ИИ для согласования стиля, пола персонажей и местоимений,
     обновляет переводы в бабблах и мгновенно перерисовывает затронутые страницы из кэша очистки без повторного OCR.
     """
+    await _ensure_engines_ready()
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
@@ -6957,7 +7003,7 @@ async def get_diagnostics_report_endpoint() -> dict[str, str]:
         "expand_bubble": "Вариант В — Авто-перерисовка (расширение) баббла под текст",
     }
     lines: list[str] = [
-        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v5.4.0 ===",
+        "=== 🩺 ДИАГНОСТИЧЕСКИЙ ОТЧЕТ MIKO-CHAN MANGA STUDIO v6.1.0 ===",
         f"• Время отчета: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"• Сервер: v{srv.get('version')} | PID={srv.get('pid')} | Uptime={srv.get('uptime_sec')}с | Старт={srv.get('started_at')}",
         f"• Окружение: Python {srv.get('python_version')} | PyTorch {gpu.get('torch_version')} | {srv.get('platform')}",
@@ -7505,7 +7551,7 @@ def _generate_ux_usage_report(store: dict[str, Any] | None = None) -> tuple[str,
     }
     lines: list[str] = [
         "========================================================================================",
-        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v5.4.0",
+        "  📊 ОТЧЕТ UX-АНАЛИТИКИ И ТЕЛЕМЕТРИИ ИНТЕРФЕЙСА — MIKO-CHAN MANGA STUDIO v6.1.0",
         "========================================================================================",
         f"• Файл отчета              : {UX_REPORT_TXT_FILE}",
         f"• База накопленной телеметрии: {UX_TELEMETRY_JSON_FILE}",

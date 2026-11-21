@@ -345,6 +345,43 @@ def test_api_modules_extracted_and_dead_classes_removed():
     for dead in ("class TypesetBlockSpec", "class LayoutSolution", "class AdaptiveTypesetter"):
         assert dead not in renderer_src, f"Dead class still in renderer.py: {dead}"
 
+def test_pick_folder_returns_busy_when_lock_held():
+    srv = _load_server_module()
+
+    async def _run():
+        assert srv._native_picker_lock.acquire(blocking=False)
+        try:
+            res = await asyncio.wait_for(
+                srv.pick_folder_endpoint(target_lang="ru"),
+                timeout=2.0,
+            )
+            assert res["status"] == "busy"
+            assert "message" in res and res["message"]
+        finally:
+            srv._native_picker_lock.release()
+
+    asyncio.run(_run())
+
+
+def test_health_reports_initializing_before_engines_ready():
+    srv = _load_server_module()
+
+    class _FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    async def _run():
+        pending_event = asyncio.Event()
+        with patch.object(srv, "ocr_engine", None),              patch.object(srv, "cleaner_engine", None),              patch.object(srv, "translator_engine", None),              patch.object(srv, "renderer_engine", None),              patch.object(srv, "_engines_ready_event", pending_event),              patch.object(srv.torch, "cuda", _FakeCuda, create=True):
+            res = await srv.health_check()
+            assert res["status"] == "initializing"
+            assert res["engines_ready"] is False
+            assert res["version"] == srv.APP_VERSION
+
+    asyncio.run(_run())
+
+
 if __name__ == "__main__":
     test_funcs = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in test_funcs:
