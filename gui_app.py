@@ -13,6 +13,7 @@ from __future__ import annotations
 import base64
 import io
 import json
+import logging
 import os
 import shutil
 import subprocess
@@ -22,6 +23,8 @@ import time
 import webbrowser
 from pathlib import Path
 from typing import Any
+
+logger = logging.getLogger("miko_gui")
 
 os.environ["PYTHONUTF8"] = "1"
 os.environ["PYTHONIOENCODING"] = "utf-8"
@@ -146,6 +149,8 @@ class MikoMangaStudioGUI:
         self.show_canvas_pins: tk.BooleanVar = tk.BooleanVar(value=True)
         self._bbox_drag_state: dict[str, Any] | None = None
         self._idle_autosave_job: str | None = None
+        self._closing: bool = False
+        self._poll_after_id: str | None = None
 
         self.var_source_lang = tk.StringVar(value="✨ Авто (JA/KO/ZH)")
         self.target_lang: str = "en"
@@ -157,6 +162,8 @@ class MikoMangaStudioGUI:
         self.var_custom_model = tk.StringVar(value="")
         self.var_unsloth_url = tk.StringVar(value="https://moduleapi.pro/v1")
         self.var_api_key = tk.StringVar(value="")
+        self.server_has_api_key: bool = False
+        self.server_masked_api_key: str = ""
         self.var_min_font = tk.IntVar(value=12)
         self.var_max_font = tk.IntVar(value=32)
         self.var_uppercase = tk.BooleanVar(value=False)
@@ -181,7 +188,7 @@ class MikoMangaStudioGUI:
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
         self.root.after(200, self._initial_server_check)
-        self.root.after(1200, self._poll_folder_status_loop)
+        self._poll_after_id = self.root.after(1200, self._poll_folder_status_loop)
         print("[GUI] Окно интерфейса открыто! Проверка связи с локальным сервером...", flush=True)
 
     def _load_gui_settings(self) -> None:
@@ -197,8 +204,8 @@ class MikoMangaStudioGUI:
                 if self.target_lang not in ("en", "ru", "romaji"):
                     self.target_lang = "en"
                 pm = str(data.get("pipeline_mode", "balanced")).strip().lower()
-                self.pipeline_mode = pm if pm in ("fast", "balanced", "accuracy", "ultra") else "balanced"
-                self.use_image_context = bool(data.get("use_image_context", self.pipeline_mode in ("accuracy", "ultra")))
+                self.pipeline_mode = "ultra" if pm in ("ultra", "accuracy", "hq", "max", "high") else "balanced"
+                self.use_image_context = bool(data.get("use_image_context", self.pipeline_mode == "ultra"))
                 self.var_min_font.set(int(data.get("min_font_size", 12)))
                 self.var_max_font.set(int(data.get("max_font_size", 32)))
                 self.var_uppercase.set(bool(data.get("uppercase", False)))
@@ -227,14 +234,12 @@ class MikoMangaStudioGUI:
                     self.var_auto_save_sec.set(2.5)
                 if data.get("unsloth_url"):
                     self.var_unsloth_url.set(str(data["unsloth_url"]))
-                if data.get("unsloth_api_key"):
-                    self.var_api_key.set(str(data["unsloth_api_key"]))
                 if "anti_censorship_prompt" in data:
                     self.var_anti_censorship_prompt.set(bool(data.get("anti_censorship_prompt", False)))
                 if data.get("last_folder") and Path(data["last_folder"]).is_dir():
                     self.current_folder = Path(data["last_folder"])
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Не удалось загрузить %s: %s", GUI_SETTINGS_FILE, exc)
 
     def _save_gui_settings(self) -> None:
         data = {
@@ -255,14 +260,13 @@ class MikoMangaStudioGUI:
             "auto_save_boxes": bool(self.var_auto_save_boxes.get()),
             "auto_save_sec": float(self.var_auto_save_sec.get() or 2.5),
             "unsloth_url": self.var_unsloth_url.get().strip(),
-            "unsloth_api_key": self.var_api_key.get().strip(),
             "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
             "last_folder": str(self.current_folder) if self.current_folder else None,
         }
         try:
             GUI_SETTINGS_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.warning("Не удалось сохранить %s: %s", GUI_SETTINGS_FILE, exc)
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.root)
@@ -304,7 +308,8 @@ class MikoMangaStudioGUI:
         if not MASCOT_PATH.exists():
             return None
         try:
-            img = Image.open(MASCOT_PATH).convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+            with Image.open(MASCOT_PATH) as mascot_im:
+                img = mascot_im.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
             mask = Image.new("L", (size, size), 0)
             draw = ImageDraw.Draw(mask)
             draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=18, fill=255)
@@ -379,10 +384,8 @@ class MikoMangaStudioGUI:
         mode_bar.pack(side=tk.LEFT, padx=8)
         self.pipeline_mode_btns: dict[str, tk.Button] = {}
         for m_code, m_label in (
-            ("fast", "⚡ Быстрый"),
-            ("balanced", "⚖️ Оптимальный"),
-            ("accuracy", "🎯 Точность"),
-            ("ultra", "💎 Ультра"),
+            ("balanced", "⚖️ Стандарт"),
+            ("ultra", "💎 Максимум"),
         ):
             m_btn = tk.Button(
                 mode_bar,
@@ -887,14 +890,12 @@ class MikoMangaStudioGUI:
         self.lbl_summary_chip.config(text=f"Шрифт: {mn}–{mx}px · {mode_short} · ИИ: {short_mod}")
 
     def _set_pipeline_mode(self, mode_code: str, notify: bool = True) -> None:
-        if mode_code not in ("fast", "balanced", "accuracy", "ultra"):
-            mode_code = "balanced"
+        raw_pm = str(mode_code or "balanced").strip().lower()
+        mode_code = "ultra" if raw_pm in ("ultra", "accuracy", "hq", "max", "high") else "balanced"
         self.pipeline_mode = mode_code
-        self.use_image_context = mode_code in ("accuracy", "ultra")
+        self.use_image_context = (mode_code == "ultra")
         active_colors = {
-            "fast": "#d97706",
             "balanced": "#059669",
-            "accuracy": ACCENT_SAKURA,
             "ultra": "#7c3aed",
         }
         for code, btn in getattr(self, "pipeline_mode_btns", {}).items():
@@ -905,10 +906,8 @@ class MikoMangaStudioGUI:
         if notify:
             self._save_gui_settings()
             mode_msgs = {
-                "fast": "Включен ⚡ Быстрый режим (Турбо): ускоренный OCR и параллельный перевод! 🚀",
-                "balanced": "Включен ⚖️ Оптимальный режим: двухконтурный RT-DETR-v2 и чистый клининг Zero-Stain! 🌸",
-                "accuracy": "Включен 🎯 Режим максимальной точности: авто VLM-OCR (Qwen3-VL) + визуальный контекст страницы! ✨",
-                "ultra": "Включен 💎 Режим Ультра-качества (Deep Redraw & 2-Pass AI): авто-глоссарий, вычитка и 1.5x Super-Sampled редро! 👑",
+                "balanced": "Включен ⚖️ Стандартный режим: быстрый RT-DETR-v2 + YOLOv8m и чистая ретушь Anime-LaMa! 🌸",
+                "ultra": "Включен 💎 Режим Максимум (HQ): YOLO26s-seg, VLM-OCR, выборочный 1.5x редро и умный 2-Pass AI! 👑",
             }
             self.lbl_miko_speech.config(text=mode_msgs.get(mode_code, ""))
 
@@ -955,16 +954,18 @@ class MikoMangaStudioGUI:
     def _launch_standalone_web_app(self) -> None:
         url = f"{SERVER_URL}/"
         if os.name == "nt":
+            pf = os.environ.get("ProgramFiles") or r"C:\Program Files"
+            pf86 = os.environ.get("ProgramFiles(x86)") or r"C:\Program Files (x86)"
             candidates = [
                 shutil.which("msedge"),
-                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
                 shutil.which("chrome"),
-                r"C:\Program Files\Google\Chrome\Application\chrome.exe",
-                r"C:\Program Files (x86)\Google\Chrome\Application\chrome.exe",
+                os.path.join(pf86, "Microsoft", "Edge", "Application", "msedge.exe"),
+                os.path.join(pf, "Microsoft", "Edge", "Application", "msedge.exe"),
+                os.path.join(pf, "Google", "Chrome", "Application", "chrome.exe"),
+                os.path.join(pf86, "Google", "Chrome", "Application", "chrome.exe"),
             ]
             for exe in candidates:
-                if exe and os.path.exists(exe):
+                if exe and os.path.isfile(exe):
                     subprocess.Popen([exe, f"--app={url}", "--window-size=1480,900"])
                     return
         webbrowser.open(url)
@@ -1022,14 +1023,14 @@ class MikoMangaStudioGUI:
 
                     self.root.after(0, _apply)
                 except Exception as exc:
-                    if win.winfo_exists():
-                        self.root.after(
-                            0,
-                            lambda: (
-                                txt_report.delete("1.0", tk.END),
-                                txt_report.insert("1.0", f"Ошибка получения отчета диагностики: {exc}"),
-                            ),
-                        )
+                    err_msg = str(exc)
+
+                    def _on_err(msg: str = err_msg) -> None:
+                        if win.winfo_exists():
+                            txt_report.delete("1.0", tk.END)
+                            txt_report.insert("1.0", f"Ошибка получения отчета диагностики: {msg}")
+
+                    self.root.after(0, _on_err)
 
             threading.Thread(target=_worker, daemon=True).start()
 
@@ -1141,13 +1142,18 @@ class MikoMangaStudioGUI:
                         msg = st.get("message", "Скачивание...")
                         status_code = st.get("status", "idle")
                         self.root.after(0, lambda m=msg: self._say_miko(f"📥 {m}"))
-                        if win.winfo_exists():
-                            self.root.after(0, lambda m=msg: lbl_pull_status.config(text=f"📥 {m}"))
+
+                        def _upd_pull(m: str = msg) -> None:
+                            if win.winfo_exists():
+                                lbl_pull_status.config(text=f"📥 {m}")
+
+                        self.root.after(0, _upd_pull)
                         if status_code in ("completed", "error", "idle"):
                             self._ping_server(force_models=True)
                             break
                 except Exception as exc:
-                    self.root.after(0, lambda: self._say_miko(f"Ошибка скачивания: {exc}"))
+                    err_msg = str(exc)
+                    self.root.after(0, lambda m=err_msg: self._say_miko(f"Ошибка скачивания: {m}"))
 
             threading.Thread(target=_pull_worker, daemon=True).start()
 
@@ -1206,7 +1212,12 @@ class MikoMangaStudioGUI:
             fill=tk.X, ipady=4, pady=(2, 6)
         )
 
-        tk.Label(pad, text="API Ключ (sk-...):", bg=BG_BENTO, fg=FG_SECONDARY).pack(anchor="w")
+        key_status_txt = (
+            f"API Ключ (sk-...): [✅ сохранён {self.server_masked_api_key or 'sk-***'}]"
+            if self.server_has_api_key
+            else "API Ключ (sk-...): [⚪ не задан]"
+        )
+        tk.Label(pad, text=key_status_txt, bg=BG_BENTO, fg=ACCENT_MINT if self.server_has_api_key else FG_SECONDARY).pack(anchor="w")
         tk.Entry(pad, textvariable=self.var_api_key, show="*", bg=BG_INNER, fg="#ffffff", insertbackground="#ffffff", bd=0).pack(
             fill=tk.X, ipady=4, pady=(2, 4)
         )
@@ -1721,8 +1732,13 @@ class MikoMangaStudioGUI:
 
                     self.root.after(0, _apply)
                 except Exception as exc:
-                    if win.winfo_exists():
-                        self.root.after(0, lambda: status_var.set(f"Ошибка чтения блоков: {exc}"))
+                    err_msg = str(exc)
+
+                    def _on_err(msg: str = err_msg) -> None:
+                        if win.winfo_exists():
+                            status_var.set(f"Ошибка чтения блоков: {msg}")
+
+                    self.root.after(0, _on_err)
 
             threading.Thread(target=_work, daemon=True).start()
 
@@ -1762,8 +1778,13 @@ class MikoMangaStudioGUI:
 
                     self.root.after(0, _apply)
                 except Exception as exc:
-                    if win.winfo_exists():
-                        self.root.after(0, lambda: status_var.set(f"Не удалось уточнить через ИИ ({exc}), показан локальный Ромадзи."))
+                    err_msg = str(exc)
+
+                    def _on_err(msg: str = err_msg) -> None:
+                        if win.winfo_exists():
+                            status_var.set(f"Не удалось уточнить через ИИ ({msg}), показан локальный Ромадзи.")
+
+                    self.root.after(0, _on_err)
 
             threading.Thread(target=_work, daemon=True).start()
 
@@ -1805,7 +1826,8 @@ class MikoMangaStudioGUI:
                     trans_pil: Image.Image | None = None
                     if b64_img:
                         raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
-                        trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                        with Image.open(io.BytesIO(base64.b64decode(raw))) as dec_im:
+                            trans_pil = dec_im.convert("RGB")
                     elif data.get("saved_output_path") and os.path.exists(data["saved_output_path"]):
                         with Image.open(data["saved_output_path"]) as saved_im:
                             trans_pil = saved_im.convert("RGB")
@@ -1832,9 +1854,14 @@ class MikoMangaStudioGUI:
 
                     self.root.after(0, _done)
                 except Exception as exc:
-                    if win.winfo_exists():
-                        self.root.after(0, lambda: status_var.set(f"Ошибка сохранения: {exc}"))
-                        self.root.after(0, lambda: btn_save.config(state=tk.NORMAL))
+                    err_msg = str(exc)
+
+                    def _on_err(msg: str = err_msg) -> None:
+                        if win.winfo_exists():
+                            status_var.set(f"Ошибка сохранения: {msg}")
+                            btn_save.config(state=tk.NORMAL)
+
+                    self.root.after(0, _on_err)
 
             threading.Thread(target=_work, daemon=True).start()
 
@@ -1903,7 +1930,11 @@ class MikoMangaStudioGUI:
                 self.root.after(0, lambda: self._say_miko("Запускаю локальный ИИ-сервер... Подожди 5–10 секунд~ 🚀"))
                 self._spawn_server_process()
                 for attempt in range(1, 25):
+                    if self._closing:
+                        return
                     time.sleep(1.5)
+                    if self._closing:
+                        return
                     if self._ping_server(force_models=True):
                         print("[GUI] Сервер успешно запущен и отвечает!", flush=True)
                         break
@@ -1931,9 +1962,12 @@ class MikoMangaStudioGUI:
                 env=env,
             )
         except Exception as exc:
-            self.root.after(0, lambda: self._say_miko(f"Не удалось запустить server.py: {exc}"))
+            err_msg = str(exc)
+            self.root.after(0, lambda m=err_msg: self._say_miko(f"Не удалось запустить server.py: {m}"))
 
     def _ping_server(self, force_models: bool = False) -> bool:
+        if self._closing:
+            return False
         try:
             with httpx.Client(trust_env=False, timeout=8.0) as client:
                 resp = client.get(f"{SERVER_URL}/health")
@@ -1949,11 +1983,13 @@ class MikoMangaStudioGUI:
                     time.sleep(1.5)
                     return False
                 self.server_online = True
-                self.root.after(0, lambda: self._on_server_healthy(data))
+                if not self._closing:
+                    self.root.after(0, lambda d=data: self._on_server_healthy(d))
                 return True
         except Exception:
             self.server_online = False
-            self.root.after(0, lambda: self.lbl_server_dot.config(text="🔴 Оффлайн", fg=ACCENT_ROSE))
+            if not self._closing:
+                self.root.after(0, lambda: self.lbl_server_dot.config(text="🔴 Оффлайн", fg=ACCENT_ROSE))
             return False
 
     def _on_server_healthy(self, data: dict[str, Any]) -> None:
@@ -1962,10 +1998,10 @@ class MikoMangaStudioGUI:
         self.active_model_short = act
         self.lbl_server_dot.config(text=f"🟢 {gpu_name}", fg=ACCENT_MINT)
         self.available_models = data.get("models", [])
+        self.server_has_api_key = bool(data.get("has_unsloth_key"))
+        self.server_masked_api_key = str(data.get("masked_api_key") or "")
         if data.get("unsloth_url"):
             self.var_unsloth_url.set(str(data["unsloth_url"]))
-        if data.get("unsloth_api_key"):
-            self.var_api_key.set(str(data["unsloth_api_key"]))
         if "anti_censorship_prompt" in data:
             self.var_anti_censorship_prompt.set(bool(data.get("anti_censorship_prompt", False)))
         self._update_summary_chip()
@@ -1978,7 +2014,7 @@ class MikoMangaStudioGUI:
             if "::" not in custom:
                 u_url = self.var_unsloth_url.get().strip()
                 is_rem = not ("127.0.0.1" in u_url or "localhost" in u_url)
-                return f"unsloth::{custom}" if (is_rem or self.var_api_key.get().strip()) else f"ollama::{custom}"
+                return f"unsloth::{custom}" if (is_rem or self.var_api_key.get().strip() or self.server_has_api_key) else f"ollama::{custom}"
             return custom
         disp = self.var_model_display.get()
         if disp.startswith("✨"):
@@ -1989,32 +2025,33 @@ class MikoMangaStudioGUI:
         return "auto"
 
     def _apply_model_async(self) -> None:
-        mod_id = self._get_selected_model_id()
+        settings_payload: dict[str, Any] = {
+            "selected_model": self._get_selected_model_id(),
+            "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
+            "auto_save_web_pages": bool(self.var_auto_save_web.get()),
+            "web_save_dir": self.var_web_save_dir.get().strip(),
+            "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
+            "skip_sighs": bool(self.var_skip_sighs.get()),
+            "skip_sfx": bool(self.var_skip_sfx.get()),
+            "detect_free_text": bool(self.var_detect_free_text.get()),
+            "min_text_length": int(self.var_min_text_len.get()),
+        }
         u_url = self.var_unsloth_url.get().strip()
+        if u_url:
+            settings_payload["unsloth_url"] = u_url
         api_key = self.var_api_key.get().strip()
+        if api_key:
+            settings_payload["unsloth_api_key"] = api_key
 
         def _worker() -> None:
             try:
                 with httpx.Client(trust_env=False, timeout=12.0) as client:
-                    client.post(
-                        f"{SERVER_URL}/settings",
-                        json={
-                            "selected_model": mod_id,
-                            "unsloth_url": u_url,
-                            "unsloth_api_key": api_key,
-                            "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
-                            "auto_save_web_pages": bool(self.var_auto_save_web.get()),
-                            "web_save_dir": self.var_web_save_dir.get().strip(),
-                            "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
-                            "skip_sighs": bool(self.var_skip_sighs.get()),
-                            "skip_sfx": bool(self.var_skip_sfx.get()),
-                            "detect_free_text": bool(self.var_detect_free_text.get()),
-                            "min_text_length": int(self.var_min_text_len.get()),
-                        },
-                    )
+                    resp = client.post(f"{SERVER_URL}/settings", json=settings_payload)
+                    if not resp.is_success:
+                        logger.warning("Ошибка сохранения настроек на сервере (HTTP %s): %s", resp.status_code, resp.text[:300])
                 self._ping_server(force_models=True)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.warning("Не удалось применить настройки на сервере: %s", exc)
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2042,9 +2079,10 @@ class MikoMangaStudioGUI:
                     )
                     resp.raise_for_status()
                     data = resp.json()
-                    self.root.after(0, lambda: self._populate_folder_ui(data))
+                    self.root.after(0, lambda d=data: self._populate_folder_ui(d))
             except Exception as exc:
-                self.root.after(0, lambda: self._say_miko(f"Ошибка чтения папки: {exc}"))
+                err_msg = str(exc)
+                self.root.after(0, lambda m=err_msg: self._say_miko(f"Ошибка чтения папки: {m}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2119,16 +2157,20 @@ class MikoMangaStudioGUI:
         dst_p = Path(page["dest_path"]) if page.get("dest_path") else None
 
         try:
-            self.preview_orig_pil = Image.open(src_p).convert("RGB").copy() if src_p.exists() else None
+            if src_p.exists():
+                with Image.open(src_p) as orig_im:
+                    self.preview_orig_pil = orig_im.convert("RGB")
+            else:
+                self.preview_orig_pil = None
         except Exception:
             self.preview_orig_pil = None
 
         try:
-            self.preview_trans_pil = (
-                Image.open(dst_p).convert("RGB").copy()
-                if (dst_p and dst_p.exists() and dst_p.stat().st_size > 128)
-                else None
-            )
+            if dst_p and dst_p.exists() and dst_p.stat().st_size > 128:
+                with Image.open(dst_p) as tr_im:
+                    self.preview_trans_pil = tr_im.convert("RGB")
+            else:
+                self.preview_trans_pil = None
         except Exception:
             self.preview_trans_pil = None
 
@@ -2379,7 +2421,8 @@ class MikoMangaStudioGUI:
                 trans_pil: Image.Image | None = None
                 if b64_img:
                     raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
-                    trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                    with Image.open(io.BytesIO(base64.b64decode(raw))) as dec_im:
+                        trans_pil = dec_im.convert("RGB")
                 elif data.get("saved_output_path") and os.path.exists(data["saved_output_path"]):
                     with Image.open(data["saved_output_path"]) as saved_im:
                         trans_pil = saved_im.convert("RGB")
@@ -2397,7 +2440,8 @@ class MikoMangaStudioGUI:
 
                 self.root.after(0, _done)
             except Exception as exc:
-                self.root.after(0, lambda: self._say_miko(f"Ошибка сохранения рамок: {exc}"))
+                err_msg = str(exc)
+                self.root.after(0, lambda m=err_msg: self._say_miko(f"Ошибка сохранения рамок: {m}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2596,7 +2640,8 @@ class MikoMangaStudioGUI:
                 trans_pil: Image.Image | None = None
                 if b64_img:
                     raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
-                    trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                    with Image.open(io.BytesIO(base64.b64decode(raw))) as dec_im:
+                        trans_pil = dec_im.convert("RGB")
 
                 def _done() -> None:
                     if trans_pil is not None:
@@ -2617,7 +2662,8 @@ class MikoMangaStudioGUI:
 
                 self.root.after(0, _done)
             except Exception as exc:
-                self.root.after(0, lambda: self._say_miko(f"Ошибка перевода выделенной области: {exc}"))
+                err_msg = str(exc)
+                self.root.after(0, lambda m=err_msg: self._say_miko(f"Ошибка перевода выделенной области: {m}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
@@ -2671,14 +2717,17 @@ class MikoMangaStudioGUI:
                         ),
                     )
             except Exception as exc:
-                self.root.after(0, lambda: self._say_miko(f"Ошибка запуска перевода папки: {exc}"))
+                err_msg = str(exc)
+                self.root.after(0, lambda m=err_msg: self._say_miko(f"Ошибка запуска перевода папки: {m}"))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _poll_folder_status_loop(self) -> None:
+        if self._closing:
+            return
         if self.server_online and self.is_folder_job_running:
             threading.Thread(target=self._check_folder_status_once, daemon=True).start()
-        self.root.after(1200, self._poll_folder_status_loop)
+        self._poll_after_id = self.root.after(1200, self._poll_folder_status_loop)
 
     def _check_folder_status_once(self) -> None:
         try:
@@ -2764,7 +2813,8 @@ class MikoMangaStudioGUI:
                 trans_pil: Image.Image | None = None
                 if b64_img:
                     raw = b64_img.split(",", 1)[1] if "," in b64_img else b64_img
-                    trans_pil = Image.open(io.BytesIO(base64.b64decode(raw))).convert("RGB")
+                    with Image.open(io.BytesIO(base64.b64decode(raw))) as dec_im:
+                        trans_pil = dec_im.convert("RGB")
 
                 def _done() -> None:
                     self.preview_trans_pil = trans_pil
@@ -2780,27 +2830,40 @@ class MikoMangaStudioGUI:
 
                 self.root.after(0, _done)
             except Exception as exc:
-                self.root.after(0, lambda: self._say_miko(f"Ой, не получилось перевести страницу: {exc}"))
+                err_msg = str(exc)
+                self.root.after(0, lambda m=err_msg: self._say_miko(f"Ой, не получилось перевести страницу: {m}"))
             finally:
                 self.is_translating_single = False
-                self.root.after(0, lambda: self.btn_context_page.config(state=tk.NORMAL))
+                if not self._closing:
+                    self.root.after(0, lambda: self.btn_context_page.config(state=tk.NORMAL))
 
         threading.Thread(target=_worker, daemon=True).start()
 
     def _open_output_folder_in_explorer(self) -> None:
         out_dir = self.current_output_dir
-        if out_dir and out_dir.exists() and os.name == "nt" and hasattr(os, "startfile"):
-            os.startfile(str(out_dir))
-        else:
-            self._say_miko("Сначала выбери папку и переведи хотя бы одну страничку~ 🌸")
+        if out_dir is not None and not str(out_dir).startswith("\\\\") and not out_dir.is_symlink():
+            resolved = out_dir.resolve()
+            if resolved.exists() and resolved.is_dir() and os.name == "nt" and hasattr(os, "startfile"):
+                os.startfile(str(resolved))
+                return
+        self._say_miko("Сначала выбери папку и переведи хотя бы одну страничку~ 🌸")
 
     def _on_close(self) -> None:
+        self._closing = True
+        for job_attr in ("_poll_after_id", "_idle_autosave_job"):
+            job_id = getattr(self, job_attr, None)
+            if job_id:
+                try:
+                    self.root.after_cancel(job_id)
+                except Exception:
+                    pass
+                setattr(self, job_attr, None)
         self._save_gui_settings()
         if self.server_process is not None and self.server_process.poll() is None:
             try:
                 self.server_process.terminate()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Не удалось корректно остановить server_process при закрытии GUI: %s", exc)
         self.root.destroy()
 
 

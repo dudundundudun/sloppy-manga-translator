@@ -1,6 +1,6 @@
 """
 Консольный клиент для выбора модели, пакетного перевода папок (с продолжением с места остановки)
-и перевода отдельных страниц (v5.3.0).
+и перевода отдельных страниц (v6.1.0).
 Вызывается из translate_folder.bat и test_page.bat.
 """
 
@@ -65,7 +65,7 @@ def run_select_model(server_url: str = "http://127.0.0.1:5000") -> int:
                 new_url = input(f"Enter Unsloth Studio URL (default {unsloth_url}): ").strip()
                 if new_url:
                     payload["unsloth_url"] = new_url
-                payload["selected_model"] = "unsloth::default"
+                payload["selected_model"] = "auto"
             elif choice.upper() == "M":
                 custom_mod = input("Enter model ID (e.g. unsloth::default or ollama::qwen2.5:14b): ").strip()
                 if not custom_mod:
@@ -101,7 +101,7 @@ def run_test_page(
     target_lang: str = "en",
     min_font_size: int = 12,
     max_font_size: int = 32,
-    detect_free_text: bool = True,
+    detect_free_text: bool | None = None,
     server_url: str = "http://127.0.0.1:5000",
 ) -> int:
     _configure_stdout()
@@ -112,17 +112,19 @@ def run_test_page(
 
     try:
         with httpx.Client(trust_env=False, timeout=240.0) as client:
+            req_payload: dict[str, object] = {
+                "file_path": str(img_path),
+                "lang": "auto",
+                "target_lang": target_lang,
+                "min_font_size": min_font_size,
+                "max_font_size": max_font_size,
+                "return_image": False,
+            }
+            if detect_free_text is not None:
+                req_payload["detect_free_text"] = detect_free_text
             resp = client.post(
                 f"{server_url}/translate_page_file",
-                json={
-                    "file_path": str(img_path),
-                    "lang": "auto",
-                    "target_lang": target_lang,
-                    "min_font_size": min_font_size,
-                    "max_font_size": max_font_size,
-                    "detect_free_text": detect_free_text,
-                    "return_image": False,
-                },
+                json=req_payload,
             )
             resp.raise_for_status()
             data = resp.json()
@@ -158,21 +160,22 @@ def run_translate_folder(
     skip_existing: bool = True,
     min_font_size: int = 12,
     max_font_size: int = 32,
-    detect_free_text: bool = True,
+    detect_free_text: bool | None = None,
     server_url: str = "http://127.0.0.1:5000",
 ) -> int:
     _configure_stdout()
     try:
-        with httpx.Client(trust_env=False, timeout=60.0) as client:
+        with httpx.Client(trust_env=False, timeout=240.0) as client:
             payload: dict[str, object] = {
                 "lang": "auto",
                 "target_lang": target_lang,
                 "min_font_size": min_font_size,
                 "max_font_size": max_font_size,
-                "detect_free_text": detect_free_text,
                 "skip_existing": skip_existing,
                 "open_when_done": True,
             }
+            if detect_free_text is not None:
+                payload["detect_free_text"] = detect_free_text
             if folder_path:
                 payload["folder_path"] = folder_path
 
@@ -183,6 +186,9 @@ def run_translate_folder(
             if data.get("status") == "cancelled":
                 print("Folder selection cancelled.")
                 return 0
+            if data.get("status") == "busy":
+                print(f"[BUSY] {data.get('message') or 'Folder translation or native dialog is currently busy.'}")
+                return 1
 
             already = data.get("already_translated", 0)
             total = data.get("total_images", 0)
@@ -191,23 +197,34 @@ def run_translate_folder(
                 f"Total pages: {total} | Already translated (skipped): {already} | Remaining: {data.get('remaining_images', total)}"
             )
 
+            idle_ticks = 0
             for _ in range(36000):
                 time.sleep(1.0)
-                st = client.get(f"{server_url}/folder_status").json()
+                st_resp = client.get(f"{server_url}/folder_status")
+                st_resp.raise_for_status()
+                st = st_resp.json()
                 det_lang = str(st.get("detected_lang") or st.get("lang") or "auto").upper()
                 print(
                     f"[{st.get('current', 0)}/{st.get('total', 0)} | {det_lang}->{target_lang.upper()}] "
                     f"{st.get('current_file', '')} ({st.get('elapsed_sec', 0.0)}s)"
                 )
-                if st.get("status") == "completed":
+                status = st.get("status")
+                if status == "completed":
                     print(f"[OK] Completed! Output folder: {st.get('output_dir')}")
                     return 0
-                if st.get("status") == "stopped":
+                if status == "stopped":
                     print(f"[PAUSED] Stopped at {st.get('current')}/{st.get('total')}. Next run will resume from here!")
                     return 0
-                if st.get("status") == "error":
+                if status == "error":
                     print(f"[ERROR] Batch translation failed: {st.get('error')}")
                     return 1
+                if status == "idle":
+                    idle_ticks += 1
+                    if idle_ticks >= 3:
+                        print("[INFO] Server reports folder job is idle.")
+                        return 0
+                else:
+                    idle_ticks = 0
     except KeyboardInterrupt:
         try:
             with httpx.Client(trust_env=False, timeout=5.0) as client:

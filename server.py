@@ -189,9 +189,12 @@ from api.security import (
     _TRUSTED_LOCAL_HOSTS,
     _download_remote_image_bytes,
     _is_blocked_ip,
+    _is_trusted_host_header,
     _is_trusted_local_origin,
+    _is_trusted_referer,
     _mask_api_key,
     _register_allowed_root,
+    _reject_unc_path,
     _validate_remote_image_url,
     is_path_within_allowed_roots as _is_path_within_allowed_roots_core,
 )
@@ -221,8 +224,10 @@ from translator import (
     export_glossary_to_sakura_text,
     export_glossary_to_tsv,
     japanese_to_romaji_local,
+    is_mt_only_local_model,
     merge_glossaries,
     normalize_glossary_entries,
+    normalize_pipeline_mode,
     is_translated_sigh_text,
     parse_glossary_text_or_json,
 )
@@ -637,6 +642,9 @@ folder_job_state: dict[str, Any] = {
 }
 _folder_task: asyncio.Task[None] | None = None
 _pull_task: asyncio.Task[Any] | None = None
+_folder_start_lock = asyncio.Lock()
+_pull_start_lock = asyncio.Lock()
+_uvicorn_server: Any = None
 _folder_stop_requested: bool = False
 _AUTO_OPEN_GUI: bool = False
 
@@ -763,7 +771,7 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     return block
 
 
-_CLEANED_PAGE_CACHE_MAX = 28
+_CLEANED_PAGE_CACHE_MAX = 48
 _cleaned_page_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
 _cleaned_page_cache_lock = threading.Lock()
 
@@ -987,7 +995,11 @@ def launch_studio_window(url: str = "http://127.0.0.1:5000/") -> None:
         logger.warning("Не удалось автоматически открыть окно браузера: %s", exc)
 
 
-def _apply_stack_to_engines(stack: dict[str, Any], save_config: bool = False) -> dict[str, str]:
+def _apply_stack_to_engines(
+    stack: dict[str, Any],
+    save_config: bool = False,
+    sync_translator_fields: bool = True,
+) -> dict[str, str]:
     """Применяет связку моделей (6 ролей + режим) одновременно к translator_engine, ocr_engine и cleaner_engine."""
     if translator_engine is None:
         return dict(DEFAULT_MODEL_STACK_TEMPLATE)
@@ -1002,7 +1014,8 @@ def _apply_stack_to_engines(stack: dict[str, Any], save_config: bool = False) ->
     ocr_b = merged_stack.get("ocr_backend", "hybrid_nar_mangaocr")
     det_b = merged_stack.get("detector_backend", "rtdetr_yolov8")
     inp_b = merged_stack.get("inpaint_backend", "anime_lama_sota")
-    pmode = merged_stack.get("pipeline_mode", translator_engine.pipeline_mode or "balanced")
+    pmode = normalize_pipeline_mode(merged_stack.get("pipeline_mode", translator_engine.pipeline_mode or "balanced"))
+    merged_stack["pipeline_mode"] = pmode
     tprof = merged_stack.get("translation_profile", translator_engine.translation_profile or "balanced")
 
     if ocr_engine is not None and hasattr(ocr_engine, "set_model_stack_backends"):
@@ -1028,8 +1041,9 @@ def _apply_stack_to_engines(stack: dict[str, Any], save_config: bool = False) ->
         )
     else:
         translator_engine.default_model_stack = merged_stack
-        translator_engine.pipeline_mode = pmode
-        translator_engine.translation_profile = tprof
+        if sync_translator_fields:
+            translator_engine.pipeline_mode = pmode
+            translator_engine.translation_profile = tprof
     return merged_stack
 
 
@@ -1042,7 +1056,7 @@ def _init_heavy_engines_sync() -> tuple[MangaOCREngine, BubbleCleaner]:
     loaded_cleaner = BubbleCleaner(
         use_lama=True,
         dilate_size=11,
-        cache_max_pages=8,
+        cache_max_pages=48,
         disk_cache_dir=TEMP_DIR / "clean_cache",
         models_dir=BASE_DIR / "models",
     )
@@ -1059,7 +1073,7 @@ async def _background_init_engines() -> None:
         cleaner_engine = loaded_cleaner
         _engines_init_error = None
         if translator_engine is not None:
-            _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
+            _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False, sync_translator_fields=False)
             try:
                 resolved_model = await translator_engine.resolve_model()
                 print(f"  [READY] Нейросети OCR и LaMa готовы! Активная модель: {resolved_model}", flush=True)
@@ -1118,7 +1132,7 @@ async def lifespan(app: FastAPI):
         overflow_mode=getattr(translator_engine, "overflow_mode", "shrink"),
     )
     # Применяем дефолтную связку моделей (default_model_stack) из config.json к переводчику сразу
-    _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False)
+    _apply_stack_to_engines(translator_engine.default_model_stack, save_config=False, sync_translator_fields=False)
 
     # Строго ленивая загрузка: тяжелые нейросети OCR и LaMa не загружаются при старте
     # и не занимают VRAM, пока пользователь не запустит первый перевод/клининг.
@@ -1137,14 +1151,25 @@ async def lifespan(app: FastAPI):
 
     yield
     logger.info("Остановка сервера и очистка ресурсов...")
-    if _engines_init_task is not None and not _engines_init_task.done():
-        _engines_init_task.cancel()
-        try:
-            await _engines_init_task
-        except asyncio.CancelledError:
-            logger.debug("Фоновая инициализация движков отменена при остановке сервера.")
+    global _folder_task, _pull_task, _folder_stop_requested
+    _folder_stop_requested = True
+    for bg_task_name, bg_task in (
+        ("инициализации движков", _engines_init_task),
+        ("пакетного перевода папки", _folder_task),
+        ("загрузки модели", _pull_task),
+    ):
+        if bg_task is not None and not bg_task.done():
+            bg_task.cancel()
+            try:
+                await bg_task
+            except asyncio.CancelledError:
+                logger.debug("Фоновая задача (%s) отменена при остановке сервера.", bg_task_name)
+            except Exception as _bg_exc:
+                logger.debug("Фоновая задача (%s) завершилась при остановке: %s", bg_task_name, _bg_exc)
     _engines_init_task = None
     _engines_ready_event = None
+    _folder_task = None
+    _pull_task = None
     if translator_engine is not None:
         await translator_engine.aclose()
     ocr_engine = None
@@ -1162,36 +1187,59 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
 
 @app.middleware("http")
 async def chrome_private_network_access_middleware(request: Request, call_next):
-    origin = request.headers.get("origin")
-    req_path = request.url.path.rstrip("/") or "/"
-    if req_path in _PRIVILEGED_ENDPOINTS and not _is_trusted_local_origin(origin):
+    if not _is_trusted_host_header(request.headers.get("host")):
         return Response(
             status_code=403,
-            content=json.dumps({"detail": "Blocked cross-origin access to privileged local endpoint."}),
+            content=json.dumps({"detail": "Blocked untrusted Host header."}),
             media_type="application/json",
         )
-    if request.method == "OPTIONS" and request.headers.get("access-control-request-private-network") == "true":
+
+    origin = request.headers.get("origin")
+    trusted_origin = bool(origin and _is_trusted_local_origin(origin))
+    if origin and not trusted_origin:
+        return Response(
+            status_code=403,
+            content=json.dumps({"detail": "Blocked cross-origin access to local service."}),
+            media_type="application/json",
+        )
+
+    req_path = request.url.path.rstrip("/") or "/"
+    if req_path in _PRIVILEGED_ENDPOINTS and not origin:
+        sec_fetch_site = (request.headers.get("sec-fetch-site") or "").strip().lower()
+        if sec_fetch_site == "cross-site" or not _is_trusted_referer(request.headers.get("referer")):
+            return Response(
+                status_code=403,
+                content=json.dumps({"detail": "Blocked cross-site request to privileged local endpoint."}),
+                media_type="application/json",
+            )
+
+    if request.method == "OPTIONS":
+        if not trusted_origin:
+            return Response(
+                status_code=403,
+                content=json.dumps({"detail": "Blocked untrusted preflight request."}),
+                media_type="application/json",
+            )
         resp = Response(status_code=200)
-        resp.headers["Access-Control-Allow-Origin"] = origin or "*"
+        resp.headers["Access-Control-Allow-Origin"] = origin
+        resp.headers["Vary"] = "Origin"
         resp.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, DELETE, OPTIONS"
-        resp.headers["Access-Control-Allow-Headers"] = request.headers.get("access-control-request-headers") or "*"
+        resp.headers["Access-Control-Allow-Headers"] = (
+            request.headers.get("access-control-request-headers") or "Content-Type"
+        )
         resp.headers["Access-Control-Allow-Private-Network"] = "true"
         return resp
+
     response = await call_next(request)
-    response.headers["Access-Control-Allow-Private-Network"] = "true"
-    if "Access-Control-Allow-Origin" not in response.headers:
-        response.headers["Access-Control-Allow-Origin"] = origin or "*"
+    response.headers["X-Content-Type-Options"] = "nosniff"
+    response.headers["X-Frame-Options"] = "DENY"
+    if trusted_origin:
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Vary"] = "Origin"
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
 
 
@@ -1218,8 +1266,11 @@ def _unwrap_output_folder_if_needed(folder: Path) -> Path:
 
 
 def get_output_dir_for_folder(source_dir: Path, target_lang: str) -> Path:
+    t_lang = (target_lang or "en").lower().strip()
+    if t_lang not in VALID_TARGET_LANGS:
+        t_lang = "en"
     clean_src = _unwrap_output_folder_if_needed(source_dir)
-    return clean_src.parent / f"{clean_src.name}_{target_lang.upper().strip()}"
+    return clean_src.parent / f"{clean_src.name}_{t_lang.upper()}"
 
 
 def collect_images_in_folder(folder: Path) -> list[Path]:
@@ -1277,6 +1328,21 @@ def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
 
     pages = data.get("pages")
     if isinstance(pages, dict) and pages:
+        for rel_k in list(pages.keys()):
+            if not isinstance(rel_k, str):
+                pages.pop(rel_k, None)
+                continue
+            norm_k = rel_k.strip()
+            if (
+                not norm_k
+                or "\x00" in norm_k
+                or "\\" in norm_k
+                or ":" in norm_k
+                or norm_k.startswith("/")
+                or ".." in norm_k.split("/")
+            ):
+                pages.pop(rel_k, None)
+
         lang_counts: dict[str, int] = {}
         for p_meta in pages.values():
             if isinstance(p_meta, dict):
@@ -1298,6 +1364,23 @@ def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
             for b in p_blocks:
                 if not isinstance(b, dict):
                     continue
+                raw_bp = b.get("bubble_polygon")
+                if isinstance(raw_bp, list) and len(raw_bp) > 36:
+                    try:
+                        cnt_bp = np.array(
+                            [[int(round(float(pt[0]))), int(round(float(pt[1])))] for pt in raw_bp if isinstance(pt, (list, tuple)) and len(pt) >= 2],
+                            dtype=np.int32,
+                        ).reshape((-1, 1, 2))
+                        if len(cnt_bp) > 36:
+                            arc_bp = float(cv2.arcLength(cnt_bp, True))
+                            if arc_bp > 4.0:
+                                approx_bp = cv2.approxPolyDP(cnt_bp, max(1.5, 0.010 * arc_bp), True)
+                                if len(approx_bp) > 32:
+                                    approx_bp = cv2.approxPolyDP(cnt_bp, max(2.2, 0.016 * arc_bp), True)
+                                if len(approx_bp) >= 3:
+                                    b["bubble_polygon"] = [[int(p[0][0]), int(p[0][1])] for p in approx_bp]
+                    except Exception as _bp_exc:
+                        logger.debug("Manifest polygon simplification skipped: %s", _bp_exc)
                 orig_t = str(b.get("original_text") or "").strip()
                 tr_t = str(b.get("translated_text") or "").strip()
                 tsrc = str(b.get("translation_source") or "").strip()
@@ -1394,12 +1477,12 @@ def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
 _manifest_write_lock = threading.Lock()
 
 
-def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
+def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any], sync_disk: bool = True) -> None:
     try:
         with _manifest_write_lock:
             output_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = output_dir / MANIFEST_FILENAME
-            payload_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode("utf-8")
+            payload_bytes = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             fd, tmp_path = tempfile.mkstemp(
                 dir=str(output_dir),
                 prefix=".translation_state_",
@@ -1409,7 +1492,8 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any]) -> None:
                 with os.fdopen(fd, "wb") as f:
                     f.write(payload_bytes)
                     f.flush()
-                    os.fsync(f.fileno())
+                    if sync_disk:
+                        os.fsync(f.fileno())
                 os.replace(tmp_path, str(manifest_path))
             except Exception:
                 if os.path.exists(tmp_path):
@@ -2566,15 +2650,37 @@ def _pil_to_rgb_clean(img: Image.Image) -> Image.Image:
     return img.convert("RGB")
 
 
+_MAX_BASE64_IMAGE_CHARS = 35 * 1024 * 1024
+_MAX_IMAGE_PIXELS = 40_000_000
+
+
 def decode_base64_image(base64_str: str) -> Image.Image:
     cleaned = base64_str.strip()
     if "," in cleaned and cleaned.startswith("data:"):
         cleaned = cleaned.split(",", 1)[1]
 
+    if len(cleaned) > _MAX_BASE64_IMAGE_CHARS:
+        raise HTTPException(
+            status_code=413,
+            detail="Размер Base64 изображения превышает допустимый лимит (25 МБ).",
+        )
+
     try:
         image_bytes = base64.b64decode(cleaned, validate=False)
-        raw_img = Image.open(io.BytesIO(image_bytes))
-        return _pil_to_rgb_clean(raw_img)
+        if len(image_bytes) > _MAX_REMOTE_IMAGE_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail="Размер декодированного изображения превышает допустимый лимит (25 МБ).",
+            )
+        with Image.open(io.BytesIO(image_bytes)) as raw_img:
+            if (int(raw_img.width) * int(raw_img.height)) > _MAX_IMAGE_PIXELS:
+                raise HTTPException(
+                    status_code=413,
+                    detail="Разрешение изображения превышает допустимый лимит (40 Мпикс).",
+                )
+            return _pil_to_rgb_clean(raw_img)
+    except HTTPException:
+        raise
     except (binascii.Error, OSError, ValueError) as exc:
         logger.warning("Ошибка декодирования изображения (400): %s", exc)
         raise HTTPException(
@@ -2761,17 +2867,15 @@ async def process_single_pil_image(
     assert cleaner_engine is not None
     assert renderer_engine is not None
 
-    eff_pmode = (
-        pipeline_mode.strip().lower()
+    eff_pmode = normalize_pipeline_mode(
+        pipeline_mode
         if (pipeline_mode and pipeline_mode.strip())
         else getattr(translator_engine, "pipeline_mode", "balanced")
     )
-    if eff_pmode not in PIPELINE_MODES:
-        eff_pmode = "balanced"
     eff_img_ctx = (
         bool(use_image_context)
         if use_image_context is not None
-        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode in ("accuracy", "ultra"))
+        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode == "ultra")
     )
     if cleaner_engine is not None:
         cleaner_engine.pipeline_mode = eff_pmode
@@ -2931,17 +3035,15 @@ async def _run_folder_translation_job(
     _folder_stop_requested = False
     translator_engine.stop_requested = False
     start_ts = time.perf_counter()
-    eff_pmode = (
-        pipeline_mode.strip().lower()
+    eff_pmode = normalize_pipeline_mode(
+        pipeline_mode
         if (pipeline_mode and pipeline_mode.strip())
         else getattr(translator_engine, "pipeline_mode", "balanced")
     )
-    if eff_pmode not in PIPELINE_MODES:
-        eff_pmode = "balanced"
     eff_img_ctx = (
         bool(use_image_context)
         if use_image_context is not None
-        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode in ("accuracy", "ultra"))
+        else (bool(getattr(translator_engine, "use_image_context", False)) or eff_pmode == "ultra")
     )
     if cleaner_engine is not None:
         cleaner_engine.pipeline_mode = eff_pmode
@@ -3260,6 +3362,7 @@ async def _run_folder_translation_job(
                         }
                     )
 
+            preloaded_pils.clear()
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
@@ -3358,7 +3461,12 @@ async def _run_folder_translation_job(
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
                     if phrase_cache and not force_retranslate:
                         translator_engine.phrase_cache.update(phrase_cache)
-                    if eff_pmode == "ultra" and len(combined_blocks) >= 4 and target_lang.lower().strip() != "romaji":
+                    if (
+                        eff_pmode == "ultra"
+                        and len(combined_blocks) >= 4
+                        and target_lang.lower().strip() != "romaji"
+                        and not is_mt_only_local_model(active_mod)
+                    ):
                         folder_job_state["current_file"] = f"💎 [Ультра Проход 0/2: Авто-сбор глоссария имен персонажей ({len(combined_blocks)} фраз)]..."
                         extracted_gloss = await translator_engine.extract_chapter_glossary_prepass(
                             blocks=combined_blocks,
@@ -3368,7 +3476,7 @@ async def _run_folder_translation_job(
                             existing_glossary=folder_glossary_entries,
                         )
                         if extracted_gloss:
-                            folder_glossary_entries = merge_glossaries(folder_glossary_entries, extracted_gloss)
+                            folder_glossary_entries = merge_glossaries(extracted_gloss, folder_glossary_entries)
                             manifest["glossary"] = folder_glossary_entries
                     valid_sp_list = [sp for sp in scanned_pages if sp.get("ok") and (sp.get("pil_img") is not None or sp.get("pil") is not None)]
                     first_valid_pil = (valid_sp_list[0].get("pil_img") or valid_sp_list[0].get("pil")) if len(valid_sp_list) == 1 else None
@@ -3395,8 +3503,21 @@ async def _run_folder_translation_job(
                         api_censored_by_gid[gid_eb] = bool(eb.get("api_censored", False))
                         api_failed_by_gid[gid_eb] = bool(eb.get("api_failed", False))
 
-                    # В режиме 💎 Ультра (2-Pass AI) выполняем автоматическую литературную вычитку пачки (Проход 2/2)
-                    if eff_pmode == "ultra" and not _folder_stop_requested and target_lang.lower().strip() in ("en", "ru"):
+                    # В режиме 💎 Максимум (2-Pass AI) выполняем автоматическую литературную вычитку пачки (Проход 2/2)
+                    # только на универсальных LLM (на узких MT-моделях вроде Sugoi / TranslateGemma вычитка пропускается).
+                    eff_proof_mod = active_mod
+                    if getattr(translator_engine, "nsfw_mode", False) and eff_proof_mod.startswith("unsloth::"):
+                        fb_pr = await translator_engine._resolve_local_fallback_model(
+                            target_lang=target_lang, source_lang=batch_detected_lang
+                        )
+                        if fb_pr:
+                            eff_proof_mod = fb_pr
+                    if (
+                        eff_pmode == "ultra"
+                        and not _folder_stop_requested
+                        and target_lang.lower().strip() in ("en", "ru")
+                        and not is_mt_only_local_model(eff_proof_mod)
+                    ):
                         book_for_proof: dict[str, dict[str, str]] = {}
                         for eb in enriched_combined:
                             gid_p = str(eb["id"])
@@ -3406,19 +3527,58 @@ async def _run_folder_translation_job(
                                 book_for_proof[gid_p] = {"orig": orig_p, "trans": tr_p}
                         if len(book_for_proof) >= 3:
                             folder_job_state["current_file"] = f"💎 [Ультра Проход 2/2: Литературная вычитка и сверка рода ({len(book_for_proof)} реплик)]..."
+                            is_cloud_proof = (
+                                eff_proof_mod.startswith("unsloth::")
+                                and not getattr(translator_engine, "nsfw_mode", False)
+                                and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+                            )
+                            proof_chunk_size = 90 if is_cloud_proof else 40
                             proof_keys = list(book_for_proof.keys())
-                            for p_start in range(0, len(proof_keys), 36):
-                                if _folder_stop_requested:
-                                    break
-                                sub_keys = proof_keys[p_start : p_start + 36]
-                                sub_book = {k: book_for_proof[k] for k in sub_keys}
-                                polished_map = await translator_engine.proofread_chapter_book_script(
-                                    book_map=sub_book,
-                                    source_lang=batch_detected_lang,
-                                    target_lang=target_lang,
-                                    model=active_mod,
-                                    glossary_entries=folder_glossary_entries,
+                            proof_sub_books = [
+                                {k: book_for_proof[k] for k in proof_keys[p_start : p_start + proof_chunk_size]}
+                                for p_start in range(0, len(proof_keys), proof_chunk_size)
+                            ]
+                            polished_results: list[dict[str, str]] = []
+                            if is_cloud_proof and len(proof_sub_books) > 1:
+                                proof_sem = asyncio.Semaphore(3)
+
+                                async def _run_proof_chunk(sub_b: dict[str, dict[str, str]]) -> dict[str, str]:
+                                    if _folder_stop_requested or getattr(translator_engine, "nsfw_mode", False):
+                                        return {}
+                                    async with proof_sem:
+                                        if _folder_stop_requested or getattr(translator_engine, "nsfw_mode", False):
+                                            return {}
+                                        try:
+                                            return await translator_engine.proofread_chapter_book_script(
+                                                book_map=sub_b,
+                                                source_lang=batch_detected_lang,
+                                                target_lang=target_lang,
+                                                model=eff_proof_mod,
+                                                glossary_entries=folder_glossary_entries,
+                                            )
+                                        except Exception as p_exc:
+                                            logger.debug("Ошибка параллельной вычитки подпачки: %s", p_exc)
+                                            return {}
+
+                                polished_results = list(
+                                    await asyncio.gather(*(_run_proof_chunk(sb) for sb in proof_sub_books))
                                 )
+                            else:
+                                for sub_book in proof_sub_books:
+                                    if _folder_stop_requested:
+                                        break
+                                    if is_cloud_proof and getattr(translator_engine, "nsfw_mode", False):
+                                        break
+                                    polished_results.append(
+                                        await translator_engine.proofread_chapter_book_script(
+                                            book_map=sub_book,
+                                            source_lang=batch_detected_lang,
+                                            target_lang=target_lang,
+                                            model=eff_proof_mod,
+                                            glossary_entries=folder_glossary_entries,
+                                        )
+                                    )
+                            for polished_map in polished_results:
                                 for pk, pv in (polished_map or {}).items():
                                     if pk in translated_by_gid and pv and pv.strip():
                                         clean_pv = pv.strip()
@@ -3518,26 +3678,25 @@ async def _run_folder_translation_job(
             render_sem = asyncio.Semaphore(4)
             uses_gpu_lama = cleaner_engine.lama_model is not None
 
-            def _clean_render_save_sync(
+            def _clean_page_only_sync(
                 pil_img_in: Image.Image,
-                blocks_in: list[dict[str, Any]],
+                active_in: list[dict[str, Any]],
                 src_p: Path,
-                dst_p: Path,
-            ) -> None:
-                active_in = [
-                    b for b in (blocks_in or [])
-                    if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()
-                ]
-                if not active_in:
-                    shutil.copy2(src_p, dst_p)
-                    return
+            ) -> Image.Image:
                 clean_hash = _compute_clean_state_hash(src_p, active_in)
                 cached_im = _get_cached_cleaned_image(src_p, clean_hash)
                 if cached_im is not None:
-                    cleaned_im = cached_im
-                else:
-                    cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in, src_p)
-                    _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
+                    return cached_im
+                cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in, src_p)
+                _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=False)
+                return cleaned_im
+
+            def _render_and_save_page_sync(
+                cleaned_im: Image.Image,
+                active_in: list[dict[str, Any]],
+                src_p: Path,
+                dst_p: Path,
+            ) -> None:
                 eff_overflow = overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
                 try:
                     final_im = renderer_engine.render_blocks(
@@ -3558,7 +3717,8 @@ async def _run_folder_translation_job(
                     fallback_blocks = []
                     for fb in active_in:
                         fb_copy = dict(fb)
-                        fb_copy["is_modified"] = True
+                        fb_copy["bbox_modified"] = True
+                        fb_copy["is_merged_bubble"] = False
                         fallback_blocks.append(fb_copy)
                     final_im = renderer_engine.render_blocks(
                         cleaned_im,
@@ -3596,12 +3756,21 @@ async def _run_folder_translation_job(
 
                 folder_job_state["current_file"] = f"🎨 [3/3 Очистка и верстка] {rel_norm}"
                 try:
-                    if uses_gpu_lama and p_blocks:
-                        async with gpu_lock(priority=1):
-                            await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
+                    active_in = [
+                        b for b in (p_blocks or [])
+                        if not bool(b.get("is_deleted")) and str(b.get("translated_text") or "").strip()
+                    ]
+                    if not active_in:
+                        await asyncio.to_thread(shutil.copy2, img_path, dest_path)
                     else:
+                        if uses_gpu_lama:
+                            async with gpu_lock(priority=1):
+                                cleaned_im = await asyncio.to_thread(_clean_page_only_sync, pil_img, active_in, img_path)
+                        else:
+                            async with render_sem:
+                                cleaned_im = await asyncio.to_thread(_clean_page_only_sync, pil_img, active_in, img_path)
                         async with render_sem:
-                            await asyncio.to_thread(_clean_render_save_sync, pil_img, p_blocks, img_path, dest_path)
+                            await asyncio.to_thread(_render_and_save_page_sync, cleaned_im, active_in, img_path, dest_path)
 
                     manifest["pages"][rel_norm] = {
                         "needs_retranslate": any(b.get("translation_source") == "untranslated_error" for b in p_blocks),
@@ -3620,8 +3789,8 @@ async def _run_folder_translation_job(
                     }
                     manifest["rolling_context"] = rolling_context
                     manifest["phrase_cache"] = phrase_cache
-                    if len(scanned_pages) <= 6 or (done_in_run + 1) % 6 == 0:
-                        _save_folder_manifest(output_dir, manifest)
+                    if len(scanned_pages) <= 3:
+                        _save_folder_manifest(output_dir, manifest, sync_disk=False)
                 except Exception as render_exc:
                     logger.exception("Ошибка при сохранении страницы %s: %s", img_path, render_exc)
                     manifest["pages"][rel_norm] = {
@@ -3641,7 +3810,7 @@ async def _run_folder_translation_job(
                     }
                     manifest["rolling_context"] = rolling_context
                     manifest["phrase_cache"] = phrase_cache
-                    _save_folder_manifest(output_dir, manifest)
+                    _save_folder_manifest(output_dir, manifest, sync_disk=False)
                 finally:
                     sp_item["pil_img"] = None
 
@@ -3650,13 +3819,7 @@ async def _run_folder_translation_job(
                 folder_job_state["current"] = skipped_count + done_in_run
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
 
-            if uses_gpu_lama:
-                for sp in scanned_pages:
-                    if _folder_stop_requested:
-                        break
-                    await _render_page_task(sp)
-            else:
-                await asyncio.gather(*(_render_page_task(sp) for sp in scanned_pages))
+            await asyncio.gather(*(_render_page_task(sp) for sp in scanned_pages))
 
             await asyncio.to_thread(_release_pipeline_vram, f"batch_{_batch_num}_after_render")
             folder_job_state["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
@@ -3895,7 +4058,7 @@ async def health_check() -> dict[str, Any]:
         "models": models,
         "recommended_models": RECOMMENDED_LOCAL_MODELS,
         "cloud_presets": CLOUD_API_PRESETS,
-        "unsloth_url": translator_engine.unsloth_url if translator_engine else "http://127.0.0.1:8888",
+        "unsloth_url": translator_engine.unsloth_url if translator_engine else "",
         "unsloth_api_key": "",
         "masked_api_key": _mask_api_key(translator_engine.unsloth_api_key if translator_engine else ""),
         "unsloth_status": translator_engine.last_unsloth_status if translator_engine else {},
@@ -3982,18 +4145,21 @@ async def pull_model_endpoint(payload: PullModelRequest) -> dict[str, Any]:
     global _pull_task
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
-    if translator_engine.pull_state.get("status") == "downloading":
-        return {
-            "status": "already_downloading",
-            "pull_state": translator_engine.pull_state,
-        }
+    async with _pull_start_lock:
+        if translator_engine.pull_state.get("status") == "downloading" or (
+            _pull_task is not None and not _pull_task.done()
+        ):
+            return {
+                "status": "already_downloading",
+                "pull_state": translator_engine.pull_state,
+            }
 
-    _pull_task = asyncio.create_task(
-        translator_engine.pull_ollama_model(
-            model_name=payload.model,
-            set_as_default=payload.set_as_default,
+        _pull_task = asyncio.create_task(
+            translator_engine.pull_ollama_model(
+                model_name=payload.model,
+                set_as_default=payload.set_as_default,
+            )
         )
-    )
     return {
         "status": "started",
         "model": payload.model,
@@ -4195,47 +4361,71 @@ async def update_model_stack_endpoint(payload: ModelStackActionRequest) -> dict[
 async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, Any]:
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    if payload.web_save_dir is not None:
+        _reject_unc_path(payload.web_save_dir, "web_save_dir")
+        if payload.web_save_dir.strip() and Path(payload.web_save_dir.strip()).is_symlink():
+            raise HTTPException(status_code=400, detail="Символические ссылки для web_save_dir запрещены.")
+
     effective_api_key: str | None = None
+    explicit_new_key = bool(payload.unsloth_api_key is not None and payload.unsloth_api_key.strip())
     if payload.clear_api_key:
         effective_api_key = ""
-    elif payload.unsloth_api_key is not None and payload.unsloth_api_key.strip():
+    elif explicit_new_key:
         effective_api_key = payload.unsloth_api_key.strip()
+
+    normalized_new_url: str | None = None
+    origin_changed = False
+    if payload.unsloth_url is not None and payload.unsloth_url.strip():
+        try:
+            normalized_new_url = translator_engine._normalize_api_base_url(payload.unsloth_url)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        prev_p = urlparse(translator_engine.unsloth_url or "")
+        new_p = urlparse(normalized_new_url or "")
+        origin_changed = (prev_p.scheme.lower(), prev_p.netloc.lower()) != (new_p.scheme.lower(), new_p.netloc.lower())
+        if origin_changed and not explicit_new_key and not payload.clear_api_key:
+            effective_api_key = ""
+
     url_or_key_changed = (
-        (payload.unsloth_url is not None and translator_engine._normalize_api_base_url(payload.unsloth_url) != translator_engine.unsloth_url)
+        (normalized_new_url is not None and normalized_new_url != translator_engine.unsloth_url)
         or (effective_api_key is not None and effective_api_key != translator_engine.unsloth_api_key)
     )
-    saved = translator_engine.save_config(
-        unsloth_url=payload.unsloth_url,
-        unsloth_api_key=effective_api_key,
-        selected_model=payload.selected_model,
-        translation_profile=payload.translation_profile,
-        pipeline_mode=payload.pipeline_mode,
-        use_image_context=payload.use_image_context,
-        local_fallback_model_multilang=payload.local_fallback_model_multilang,
-        auto_save_web_pages=payload.auto_save_web_pages,
-        web_save_dir=payload.web_save_dir,
-        text_filter_mode=payload.text_filter_mode,
-        skip_sighs=payload.skip_sighs,
-        skip_sfx=payload.skip_sfx,
-        detect_free_text=payload.detect_free_text,
-        min_text_length=payload.min_text_length,
-        min_font_size=payload.min_font_size,
-        max_font_size=payload.max_font_size,
-        uppercase=payload.uppercase,
-        overflow_mode=payload.overflow_mode,
-        batch_pages=payload.batch_pages,
-        ui_settings=payload.ui_settings,
-        anti_censorship_prompt=payload.anti_censorship_prompt,
-        anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
-        default_model_stack=payload.default_model_stack,
-    )
+    try:
+        saved = translator_engine.save_config(
+            unsloth_url=normalized_new_url,
+            unsloth_api_key=effective_api_key,
+            selected_model=payload.selected_model,
+            translation_profile=payload.translation_profile,
+            pipeline_mode=payload.pipeline_mode,
+            use_image_context=payload.use_image_context,
+            local_fallback_model_multilang=payload.local_fallback_model_multilang,
+            auto_save_web_pages=payload.auto_save_web_pages,
+            web_save_dir=payload.web_save_dir,
+            text_filter_mode=payload.text_filter_mode,
+            skip_sighs=payload.skip_sighs,
+            skip_sfx=payload.skip_sfx,
+            detect_free_text=payload.detect_free_text,
+            min_text_length=payload.min_text_length,
+            min_font_size=payload.min_font_size,
+            max_font_size=payload.max_font_size,
+            uppercase=payload.uppercase,
+            overflow_mode=payload.overflow_mode,
+            batch_pages=payload.batch_pages,
+            ui_settings=payload.ui_settings,
+            anti_censorship_prompt=payload.anti_censorship_prompt,
+            anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
+            default_model_stack=payload.default_model_stack,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     if payload.default_model_stack:
         _apply_stack_to_engines(payload.default_model_stack, save_config=False)
     elif payload.pipeline_mode:
+        norm_pm = normalize_pipeline_mode(saved.get("pipeline_mode", "balanced"))
         if ocr_engine is not None:
-            ocr_engine.pipeline_mode = saved.get("pipeline_mode", "balanced")
+            ocr_engine.pipeline_mode = norm_pm
         if cleaner_engine is not None:
-            cleaner_engine.pipeline_mode = saved.get("pipeline_mode", "balanced")
+            cleaner_engine.pipeline_mode = norm_pm
     if renderer_engine is not None:
         if payload.overflow_mode:
             renderer_engine.overflow_mode = renderer_engine._normalize_overflow_mode(payload.overflow_mode)
@@ -4300,9 +4490,34 @@ async def pick_web_save_folder_endpoint() -> dict[str, Any]:
 @app.post("/open_web_save_folder")
 async def open_web_save_folder_endpoint(path: str | None = Query(default=None)) -> dict[str, Any]:
     """Создает (если еще нет) и открывает в Проводнике Windows папку автосохранения манги из браузера."""
-    raw_dir = path or (translator_engine.web_save_dir if translator_engine else str(BASE_DIR / "Saved_Manga"))
-    target = Path(raw_dir).resolve()
-    target.mkdir(parents=True, exist_ok=True)
+    default_dir_str = (
+        translator_engine.web_save_dir
+        if (translator_engine is not None and getattr(translator_engine, "web_save_dir", None))
+        else str(BASE_DIR / "Saved_Manga")
+    )
+    if path is not None and path.strip():
+        _reject_unc_path(path, "path")
+        raw_p = Path(path.strip())
+        if raw_p.is_symlink():
+            raise HTTPException(status_code=400, detail="Символические ссылки запрещены.")
+        target = raw_p.resolve()
+        configured_dir = Path(default_dir_str).resolve()
+        default_saved = (BASE_DIR / "Saved_Manga").resolve()
+        if (
+            target != configured_dir
+            and not target.is_relative_to(configured_dir)
+            and not target.is_relative_to(default_saved)
+            and not _is_path_within_allowed_roots(target)
+        ):
+            if not target.exists():
+                raise HTTPException(status_code=403, detail="Создание директории вне разрешенных корней запрещено.")
+            if not target.is_dir():
+                raise HTTPException(status_code=400, detail="Разрешено открывать только папки, а не файлы.")
+        else:
+            target.mkdir(parents=True, exist_ok=True)
+    else:
+        target = Path(default_dir_str).resolve()
+        target.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and hasattr(os, "startfile"):
         try:
             os.startfile(str(target))
@@ -4313,8 +4528,13 @@ async def open_web_save_folder_endpoint(path: str | None = Query(default=None)) 
 
 @app.post("/shutdown")
 async def shutdown_server() -> dict[str, str]:
-    loop = asyncio.get_running_loop()
-    loop.call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
+    global _folder_stop_requested
+    _folder_stop_requested = True
+    if _uvicorn_server is not None:
+        _uvicorn_server.should_exit = True
+    else:
+        loop = asyncio.get_running_loop()
+        loop.call_later(0.5, lambda: os.kill(os.getpid(), signal.SIGTERM))
     return {"status": "shutting_down"}
 
 
@@ -4360,7 +4580,11 @@ async def open_folder_in_explorer_endpoint(path: str = Query(...)) -> dict[str, 
     raw_path = (path or "").strip()
     if not raw_path:
         raise HTTPException(status_code=400, detail="Путь к папке не указан")
-    target = Path(raw_path).resolve()
+    _reject_unc_path(raw_path, "path")
+    raw_p = Path(raw_path)
+    if raw_p.is_symlink():
+        raise HTTPException(status_code=400, detail="Символические ссылки запрещены")
+    target = raw_p.resolve()
     if not target.exists():
         raise HTTPException(status_code=404, detail="Папка еще не создана")
     if not target.is_dir():
@@ -4376,6 +4600,7 @@ async def open_folder_in_explorer_endpoint(path: str = Query(...)) -> dict[str, 
 
 @app.post("/folder_inspect")
 async def folder_inspect_endpoint(payload: FolderInspectRequest) -> dict[str, Any]:
+    _reject_unc_path(payload.folder_path, "folder_path")
     source_dir = Path(payload.folder_path).resolve()
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
@@ -4396,6 +4621,7 @@ def _is_path_within_allowed_roots(img_path: Path) -> bool:
 
 @app.get("/local_image")
 async def get_local_image_endpoint(path: str = Query(..., description="Абсолютный путь к изображению на ПК")):
+    _reject_unc_path(path, "path")
     img_path = Path(path).resolve()
     if not img_path.exists() or not img_path.is_file():
         raise HTTPException(status_code=404, detail=f"Файл не найден: {img_path}")
@@ -4478,8 +4704,10 @@ def _save_web_translated_page(
         existing_cnt = len(list(output_chapter_dir.glob("*.png")))
         filename = f"{existing_cnt + 1:03d}_{int(time.time()) % 100000}.png"
 
-    orig_file_path = source_chapter_dir / filename
-    dest_file_path = output_chapter_dir / filename
+    orig_file_path = (source_chapter_dir / filename).resolve()
+    dest_file_path = (output_chapter_dir / filename).resolve()
+    if not orig_file_path.is_relative_to(source_chapter_dir.resolve()) or not dest_file_path.is_relative_to(output_chapter_dir.resolve()):
+        raise ValueError("Небезопасный путь сохранения веб-страницы.")
 
     if not orig_file_path.exists():
         raw_image.save(orig_file_path, format="PNG")
@@ -4571,7 +4799,13 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
                 max_bytes=_MAX_REMOTE_IMAGE_BYTES,
                 max_redirects=_MAX_REMOTE_IMAGE_REDIRECTS,
             )
-            pil_image = Image.open(io.BytesIO(raw_img_bytes)).convert("RGB")
+            with Image.open(io.BytesIO(raw_img_bytes)) as raw_dl_im:
+                if (int(raw_dl_im.width) * int(raw_dl_im.height)) > _MAX_IMAGE_PIXELS:
+                    raise HTTPException(
+                        status_code=413,
+                        detail="Разрешение скачанного изображения превышает допустимый лимит (40 Мпикс).",
+                    )
+                pil_image = _pil_to_rgb_clean(raw_dl_im)
         except HTTPException:
             raise
         except Exception as dl_exc:
@@ -4642,6 +4876,27 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
         else bool(translator_engine.auto_save_web_pages)
     )
     if should_auto_save and blocks:
+        safe_custom_save_dir = translator_engine.web_save_dir
+        if payload.save_dir and payload.save_dir.strip():
+            _reject_unc_path(payload.save_dir, "save_dir")
+            cand_save = Path(payload.save_dir.strip()).resolve()
+            default_saved_root = (BASE_DIR / "Saved_Manga").resolve()
+            configured_save_root = (
+                Path(translator_engine.web_save_dir).resolve()
+                if getattr(translator_engine, "web_save_dir", None)
+                else default_saved_root
+            )
+            if (
+                cand_save != configured_save_root
+                and not cand_save.is_relative_to(configured_save_root)
+                and not cand_save.is_relative_to(default_saved_root)
+                and not _is_path_within_allowed_roots(cand_save)
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Указанная в save_dir директория находится вне разрешенных путей сохранения.",
+                )
+            safe_custom_save_dir = str(cand_save)
         try:
             saved_web_path = await asyncio.to_thread(
                 _save_web_translated_page,
@@ -4654,7 +4909,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
                 uppercase=payload.uppercase,
                 min_font_size=payload.min_font_size,
                 max_font_size=payload.max_font_size,
-                custom_save_dir=payload.save_dir or translator_engine.web_save_dir,
+                custom_save_dir=safe_custom_save_dir,
                 chapter_title=payload.chapter_title,
                 page_url=payload.page_url,
                 image_url=payload.image_url,
@@ -4697,6 +4952,18 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
 
 @app.post("/translate_page_file", response_model=TranslateResponse)
 async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> TranslateResponse:
+    _reject_unc_path(payload.file_path, "file_path")
+    _reject_unc_path(payload.source_dir, "source_dir")
+    _reject_unc_path(payload.output_path, "output_path")
+    if payload.file_path and Path(payload.file_path.strip()).is_symlink():
+        raise HTTPException(status_code=400, detail="Символические ссылки запрещены.")
+    if payload.output_path and payload.output_path.strip():
+        out_p_chk = Path(payload.output_path.strip())
+        if out_p_chk.is_symlink():
+            raise HTTPException(status_code=400, detail="Символические ссылки в output_path запрещены.")
+        if out_p_chk.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
+            raise HTTPException(status_code=400, detail="Неподдерживаемое расширение файла в output_path.")
+
     await _ensure_engines_ready()
     if (
         ocr_engine is None
@@ -4867,6 +5134,18 @@ def _resolve_page_paths(
     dest_path_str: str | None,
     target_lang: str,
 ) -> tuple[Path, Path, Path, Path, str]:
+    _reject_unc_path(source_path_str, "source_path")
+    _reject_unc_path(source_dir_str, "source_dir")
+    _reject_unc_path(dest_path_str, "dest_path")
+    if Path(source_path_str.strip()).is_symlink():
+        raise HTTPException(status_code=400, detail="Символические ссылки запрещены.")
+    if dest_path_str and dest_path_str.strip():
+        dp_raw = Path(dest_path_str.strip())
+        if dp_raw.is_symlink():
+            raise HTTPException(status_code=400, detail="Символические ссылки в dest_path запрещены.")
+        if dp_raw.suffix.lower() not in SUPPORTED_IMAGE_EXTS:
+            raise HTTPException(status_code=400, detail="Неподдерживаемое расширение файла в dest_path.")
+
     src_file = Path(source_path_str).resolve()
     t_lang = (target_lang or "en").lower().strip()
     if t_lang not in VALID_TARGET_LANGS:
@@ -5013,7 +5292,8 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
                     ]
                     async with gpu_lock:
                         cleaned_h, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_im_h, active_h, src_file)
-                    final_h = renderer_engine.render_blocks(
+                    final_h = await asyncio.to_thread(
+                        renderer_engine.render_blocks,
                         cleaned_h,
                         active_h,
                         bool(getattr(translator_engine, "uppercase", False)),
@@ -5223,7 +5503,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
             pil_image,
             active_blocks,
             src_file=src_file,
-            save_to_disk=False,
+            save_to_disk=True,
         )
         eff_overflow = payload.overflow_mode or (getattr(translator_engine, "overflow_mode", "shrink") if translator_engine else "shrink")
         final_image = await asyncio.to_thread(
@@ -5865,8 +6145,7 @@ async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[
 async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str, Any]:
     global _folder_task
 
-    if folder_job_state.get("status") == "running":
-        raise HTTPException(status_code=409, detail="Перевод папки уже выполняется.")
+    _reject_unc_path(payload.folder_path, "folder_path")
 
     req_lang = payload.lang.lower().strip()
     if req_lang not in VALID_SOURCE_LANGS:
@@ -5879,83 +6158,98 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
             detail="target_lang должен быть 'en', 'ru' или 'romaji'.",
         )
 
-    folder_str = payload.folder_path
-    if not folder_str:
-        try:
-            folder_str = await asyncio.to_thread(open_native_folder_picker)
-        except NativePickerBusyError as exc:
-            return {"status": "busy", "message": str(exc)}
+    async with _folder_start_lock:
+        if folder_job_state.get("status") in ("running", "starting") or (
+            _folder_task is not None and not _folder_task.done()
+        ):
+            raise HTTPException(status_code=409, detail="Перевод папки уже выполняется.")
+        folder_job_state["status"] = "starting"
+
+    started_task = False
+    try:
+        folder_str = payload.folder_path
         if not folder_str:
-            return {"status": "cancelled", "message": "Выбор папки отменен."}
+            try:
+                folder_str = await asyncio.to_thread(open_native_folder_picker)
+            except NativePickerBusyError as exc:
+                return {"status": "busy", "message": str(exc)}
+            if not folder_str:
+                return {"status": "cancelled", "message": "Выбор папки отменен."}
 
-    source_dir = Path(folder_str).resolve()
-    if not source_dir.exists() or not source_dir.is_dir():
-        raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+        source_dir = Path(folder_str).resolve()
+        if not source_dir.exists() or not source_dir.is_dir():
+            raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
 
-    all_images = collect_images_in_folder(source_dir)
-    if not all_images:
-        raise HTTPException(status_code=400, detail=f"В папке '{source_dir.name}' нет картинок.")
+        all_images = collect_images_in_folder(source_dir)
+        if not all_images:
+            raise HTTPException(status_code=400, detail=f"В папке '{source_dir.name}' нет картинок.")
 
-    if payload.selected_files:
-        wanted = {_normalize_rel_path(x) for x in payload.selected_files if str(x).strip()}
-        images = [
-            p
-            for p in all_images
-            if _normalize_rel_path(p.relative_to(source_dir)) in wanted or p.name in wanted
-        ]
-        if not images:
-            raise HTTPException(status_code=400, detail="Выбранные страницы не найдены в папке.")
-    else:
-        images = all_images
+        if payload.selected_files:
+            wanted = {_normalize_rel_path(x) for x in payload.selected_files if str(x).strip()}
+            images = [
+                p
+                for p in all_images
+                if _normalize_rel_path(p.relative_to(source_dir)) in wanted or p.name in wanted
+            ]
+            if not images:
+                raise HTTPException(status_code=400, detail="Выбранные страницы не найдены в папке.")
+        else:
+            images = all_images
 
-    output_dir = get_output_dir_for_folder(source_dir, target_lang)
-    output_dir.mkdir(parents=True, exist_ok=True)
+        output_dir = get_output_dir_for_folder(source_dir, target_lang)
+        output_dir.mkdir(parents=True, exist_ok=True)
 
-    manifest_preview = _load_folder_manifest(output_dir)
-    pages_meta_preview = manifest_preview.get("pages", {}) if isinstance(manifest_preview.get("pages"), dict) else {}
-    already_done = sum(
-        1
-        for p in images
-        if payload.skip_existing
-        and not payload.force_retranslate
-        and is_page_already_translated(
-            output_dir / p.relative_to(source_dir),
-            page_meta=pages_meta_preview.get(_normalize_rel_path(p.relative_to(source_dir))),
-            target_lang=target_lang,
+        manifest_preview = _load_folder_manifest(output_dir)
+        pages_meta_preview = manifest_preview.get("pages", {}) if isinstance(manifest_preview.get("pages"), dict) else {}
+        already_done = sum(
+            1
+            for p in images
+            if payload.skip_existing
+            and not payload.force_retranslate
+            and is_page_already_translated(
+                output_dir / p.relative_to(source_dir),
+                page_meta=pages_meta_preview.get(_normalize_rel_path(p.relative_to(source_dir))),
+                target_lang=target_lang,
+            )
         )
-    )
 
-    if payload.anti_censorship_prompt is not None and translator_engine is not None:
-        translator_engine.save_config(anti_censorship_prompt=payload.anti_censorship_prompt)
+        if payload.anti_censorship_prompt is not None and translator_engine is not None:
+            translator_engine.save_config(anti_censorship_prompt=payload.anti_censorship_prompt)
 
-    await _ensure_engines_ready()
+        await _ensure_engines_ready()
 
-    _folder_task = asyncio.create_task(
-        _run_folder_translation_job(
-            source_dir=source_dir,
-            output_dir=output_dir,
-            image_paths=images,
-            lang=req_lang,
-            target_lang=target_lang,
-            ollama_model=(payload.ollama_model or payload.model),
-            uppercase=payload.uppercase,
-            min_font_size=payload.min_font_size,
-            max_font_size=payload.max_font_size,
-            detect_free_text=payload.detect_free_text,
-            overflow_mode=payload.overflow_mode,
-            skip_existing=payload.skip_existing,
-            force_retranslate=payload.force_retranslate,
-            open_when_done=payload.open_when_done,
-            batch_pages=payload.batch_pages,
-            translation_profile=payload.translation_profile,
-            text_filter_mode=payload.text_filter_mode,
-            skip_sighs=payload.skip_sighs,
-            skip_sfx=payload.skip_sfx,
-            min_text_length=payload.min_text_length,
-            pipeline_mode=payload.pipeline_mode,
-            use_image_context=payload.use_image_context,
-        )
-    )
+        async with _folder_start_lock:
+            folder_job_state["status"] = "running"
+            _folder_task = asyncio.create_task(
+                _run_folder_translation_job(
+                    source_dir=source_dir,
+                    output_dir=output_dir,
+                    image_paths=images,
+                    lang=req_lang,
+                    target_lang=target_lang,
+                    ollama_model=(payload.ollama_model or payload.model),
+                    uppercase=payload.uppercase,
+                    min_font_size=payload.min_font_size,
+                    max_font_size=payload.max_font_size,
+                    detect_free_text=payload.detect_free_text,
+                    overflow_mode=payload.overflow_mode,
+                    skip_existing=payload.skip_existing,
+                    force_retranslate=payload.force_retranslate,
+                    open_when_done=payload.open_when_done,
+                    batch_pages=payload.batch_pages,
+                    translation_profile=payload.translation_profile,
+                    text_filter_mode=payload.text_filter_mode,
+                    skip_sighs=payload.skip_sighs,
+                    skip_sfx=payload.skip_sfx,
+                    min_text_length=payload.min_text_length,
+                    pipeline_mode=payload.pipeline_mode,
+                    use_image_context=payload.use_image_context,
+                )
+            )
+            started_task = True
+    finally:
+        if not started_task and folder_job_state.get("status") == "starting":
+            folder_job_state["status"] = "idle"
 
     return {
         "status": "started",
@@ -6094,6 +6388,7 @@ async def get_glossary_endpoint(
     resolved_output_dir: str | None = None
 
     if folder_path and folder_path.strip():
+        _reject_unc_path(folder_path, "folder_path")
         src_dir = _unwrap_output_folder_if_needed(Path(folder_path.strip()).resolve())
         if src_dir.exists() and src_dir.is_dir():
             out_dir = get_output_dir_for_folder(src_dir, target_lang)
@@ -6131,6 +6426,7 @@ async def save_glossary_endpoint(payload: GlossarySaveRequest) -> dict[str, Any]
     manifest: dict[str, Any] | None = None
 
     if payload.folder_path and payload.folder_path.strip():
+        _reject_unc_path(payload.folder_path, "folder_path")
         src_dir = _unwrap_output_folder_if_needed(Path(payload.folder_path.strip()).resolve())
         if src_dir.exists() and src_dir.is_dir():
             out_dir = get_output_dir_for_folder(src_dir, t_lang)
@@ -6198,6 +6494,7 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
     raw_folder = (payload.folder_path or "").strip()
     if not raw_folder:
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
+    _reject_unc_path(raw_folder, "folder_path")
 
     source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
     if not source_dir.exists() or not source_dir.is_dir():
@@ -6372,6 +6669,7 @@ async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
+    _reject_unc_path(payload.source_dir, "source_dir")
     source_dir = _unwrap_output_folder_if_needed(Path(payload.source_dir).resolve())
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
@@ -6507,6 +6805,7 @@ async def get_folder_report_endpoint(
             status_code=400,
             detail="Сначала выберите папку с мангой слева, чтобы сформировать отчет по главе.",
         )
+    _reject_unc_path(raw_folder, "folder_path")
 
     cand_dir = Path(raw_folder).resolve()
     if not cand_dir.exists() or not cand_dir.is_dir():
@@ -6718,6 +7017,7 @@ async def get_chapter_book_endpoint(
     raw_folder = (folder_path or folder_job_state.get("source_dir") or folder_job_state.get("output_dir") or "").strip()
     if not raw_folder:
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги слева.")
+    _reject_unc_path(raw_folder, "folder_path")
 
     cand_dir = Path(raw_folder).resolve()
     if not cand_dir.exists() or not cand_dir.is_dir():
@@ -6754,6 +7054,7 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
     raw_folder = (payload.folder_path or "").strip()
     if not raw_folder:
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
+    _reject_unc_path(raw_folder, "folder_path")
 
     source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
     if not source_dir.exists() or not source_dir.is_dir():
@@ -6869,6 +7170,7 @@ async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) 
     raw_folder = (payload.folder_path or "").strip()
     if not raw_folder:
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
+    _reject_unc_path(raw_folder, "folder_path")
 
     source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
     if not source_dir.exists() or not source_dir.is_dir():
@@ -7842,4 +8144,5 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"Запуск локального сервера Manga Translator v{APP_VERSION} на 127.0.0.1:5000...", flush=True)
-    uvicorn.run(app, host="127.0.0.1", port=5000, reload=False)
+    _uvicorn_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=5000, reload=False))
+    _uvicorn_server.run()

@@ -1,5 +1,6 @@
 {
   "manifest_version": 3,
+  "minimum_chrome_version": "116",
   "name": "Local Manga / Manhwa / Manhua Translator",
   "version": "6.1.0",
   "description": "Локальный и облачный AI-переводчик манги, манхвы и маньхуа v6.1.0 (YOLO26-seg/SAM 2.1 + Baberu/HayaiOCR + DeepSeek/Ollama + LaMa)",
@@ -10,7 +11,9 @@
   ],
   "host_permissions": [
     "http://127.0.0.1:5000/*",
-    "http://localhost:5000/*",
+    "http://localhost:5000/*"
+  ],
+  "optional_host_permissions": [
     "https://*/*",
     "http://*/*"
   ],
@@ -20,23 +23,6 @@
   "background": {
     "service_worker": "background.js"
   },
-  "content_scripts": [
-    {
-      "matches": [
-        "https://*/*",
-        "http://*/*"
-      ],
-      "js": [
-        "content.js"
-      ],
-      "run_at": "document_idle",
-      "all_frames": false,
-      "exclude_matches": [
-        "http://127.0.0.1:5000/*",
-        "http://localhost:5000/*"
-      ]
-    }
-  ],
   "commands": {
     "translate-page": {
       "suggested_key": {

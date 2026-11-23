@@ -34,7 +34,9 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import gc
 import hashlib
+import importlib.util
 import json
 import logging
 import os
@@ -93,6 +95,24 @@ def _torch_inference_mode():
         return fn
 
     return _decorator
+
+
+def _pil_to_rgb_u8(image: Image.Image) -> Image.Image:
+    """Safely converts 16-bit and alpha-transparent images to 8-bit RGB over a white background."""
+    mode = getattr(image, "mode", "")
+    if mode in ("I;16", "I;16L", "I;16B", "I;16N", "I"):
+        arr = np.asarray(image, dtype=np.float32)
+        if arr.size > 0 and float(arr.max()) > 255.0:
+            arr = np.clip(arr / 256.0, 0.0, 255.0)
+        return Image.fromarray(arr.astype(np.uint8), mode="L").convert("RGB")
+    if mode in ("RGBA", "LA", "PA") or (mode == "P" and "transparency" in getattr(image, "info", {})):
+        rgba = image.convert("RGBA")
+        bg = Image.new("RGB", rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.split()[3])
+        return bg
+    if mode == "RGB":
+        return image
+    return image.convert("RGB")
 
 
 LAMA_WEIGHTS_URLS: tuple[str, ...] = (
@@ -158,10 +178,9 @@ _CTD_DOWNLOAD_ATTEMPTED: bool = False
 
 
 def _download_file_no_proxy(url: str, dst_path: Path, timeout: int = 120) -> None:
-    """Скачивает файл в обход системного Fake-IP прокси (NO_PROXY, ProxyHandler({}))."""
-    os.environ["NO_PROXY"] = "127.0.0.1,localhost"
+    """Скачивает файл в обход системного Fake-IP прокси (ProxyHandler({}))."""
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/v5.3.0-Python3.14"})
+    req = urllib.request.Request(url, headers={"User-Agent": "MikoStudio/v6.1.0-Python3.14"})
     with opener.open(req, timeout=timeout) as resp, open(dst_path, "wb") as out_f:
         while True:
             buf = resp.read(1024 * 1024)
@@ -233,8 +252,13 @@ def ensure_lama_weights(
     target_dir.mkdir(parents=True, exist_ok=True)
     filename = str(spec["filename"])
     model_path = target_dir / filename
-    expected_md5 = str(spec.get("md5") or "")
-    expected_sha256 = str(spec.get("sha256") or "")
+    expected_md5 = str(spec.get("md5") or "").strip().lower()
+    expected_sha256 = str(spec.get("sha256") or "").strip().lower()
+    if not expected_sha256 and not expected_md5:
+        raise RuntimeError(
+            f"Вариант весов '{model_variant}' не имеет контрольных сумм SHA256/MD5 — "
+            "неверифицированная автозагрузка отключена (используйте anime-manga-big-lama или big-lama)."
+        )
 
     torch_home = Path(os.environ.get("TORCH_HOME", str(Path.home() / ".cache" / "torch")))
     candidate_paths = [
@@ -244,19 +268,24 @@ def ensure_lama_weights(
         Path.home() / ".cache" / "simple_lama_inpainting" / filename,
     ]
 
+    def _hashes_match(actual_m: str, actual_s: str) -> bool:
+        if expected_sha256 and actual_s != expected_sha256:
+            return False
+        if expected_md5 and actual_m != expected_md5:
+            return False
+        return bool(expected_sha256 or expected_md5)
+
     for cand in candidate_paths:
         if cand.is_file():
-            if not expected_md5 and cand.stat().st_size > 32 * 1024 * 1024:
-                return cand
             actual_md5, actual_sha256 = _compute_hashes(cand)
-            if actual_md5 == expected_md5 and actual_sha256 == expected_sha256:
+            if _hashes_match(actual_md5, actual_sha256):
                 return cand
-            if cand == model_path and expected_md5:
+            if cand == model_path:
                 logger.warning(
-                    "Поврежденный файл весов %s (MD5=%s, ожидался %s). Перезагрузка...",
+                    "Поврежденный файл весов %s (SHA256=%s, ожидался %s). Перезагрузка...",
                     cand,
-                    actual_md5,
-                    expected_md5,
+                    actual_sha256[:16],
+                    expected_sha256[:16] or expected_md5[:16],
                 )
                 cand.unlink(missing_ok=True)
 
@@ -276,14 +305,11 @@ def ensure_lama_weights(
             else:
                 _download_file_no_proxy(url, tmp_path, timeout=120)
 
-            if expected_md5:
-                actual_md5, actual_sha256 = _compute_hashes(tmp_path)
-                if actual_md5 != expected_md5 or actual_sha256 != expected_sha256:
-                    raise RuntimeError(
-                        f"Несовпадение контрольной суммы для {url}: MD5={actual_md5} (ожидался {expected_md5})"
-                    )
-            elif tmp_path.stat().st_size < 32 * 1024 * 1024:
-                raise RuntimeError(f"Скачанный файл весов {tmp_path} слишком мал (< 32 МБ)")
+            actual_md5, actual_sha256 = _compute_hashes(tmp_path)
+            if not _hashes_match(actual_md5, actual_sha256):
+                raise RuntimeError(
+                    f"Несовпадение контрольной суммы для {url}: SHA256={actual_sha256[:16]} (ожидался {expected_sha256[:16]})"
+                )
 
             tmp_path.replace(model_path)
             logger.info("Веса LaMa успешно загружены и верифицированы: %s", model_path)
@@ -639,6 +665,8 @@ class ComicTextStrokeSegmenter:
         self._input_size: Tuple[int, int] = (512, 512)
         self._has_pretrained_weights: bool = False
         self._init_done: bool = False
+        self._download_attempted: bool = False
+        self._init_lock = threading.Lock()
 
     def _create_onnx_session(self, onnx_path: Path) -> Optional[Any]:
         try:
@@ -705,30 +733,42 @@ class ComicTextStrokeSegmenter:
                     return dl_cp, "onnx_ctd"
             except Exception as ctd_exc:
                 logger.debug("ONNX comic-text-detector недоступен (%s).", ctd_exc)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Ошибка поиска/загрузки ONNX-моделей (%s).", exc)
 
         return None, "morph_fallback"
 
     def _lazy_init(self, allow_download: bool = True) -> None:
-        if self._init_done and not (allow_download and self.model is None):
+        if self._init_done and (self.model is not None or not allow_download or self._download_attempted):
             return
-        self._init_done = True
-        try:
-            onnx_path, bname = self._find_or_download_onnx(allow_download=allow_download)
-            if onnx_path is not None:
-                sess = self._create_onnx_session(onnx_path)
-                if sess is not None:
-                    self.model = sess
-                    self.backend_name = bname
-                    self._has_pretrained_weights = True
-                    logger.info("ComicTextStrokeSegmenter инициализирован (%s): %s", bname, onnx_path.name)
-                    return
-        except Exception as exc:
-            logger.debug("Инициализация нейросетевого сегментатора глифов переключена в морфологический фоллбэк: %s", exc)
-        self.model = None
-        self.backend_name = "morph_fallback"
-        self._has_pretrained_weights = False
+        with self._init_lock:
+            if self._init_done and (self.model is not None or not allow_download or self._download_attempted):
+                return
+            self._init_done = True
+            if importlib.util.find_spec("onnxruntime") is None:
+                self._download_attempted = True
+                self.model = None
+                self.backend_name = "morph_fallback"
+                self._has_pretrained_weights = False
+                logger.debug("ComicTextStrokeSegmenter: onnxruntime не установлен, используется морфологический режим.")
+                return
+            if allow_download:
+                self._download_attempted = True
+            try:
+                onnx_path, bname = self._find_or_download_onnx(allow_download=allow_download)
+                if onnx_path is not None:
+                    sess = self._create_onnx_session(onnx_path)
+                    if sess is not None:
+                        self.model = sess
+                        self.backend_name = bname
+                        self._has_pretrained_weights = True
+                        logger.info("ComicTextStrokeSegmenter инициализирован (%s): %s", bname, onnx_path.name)
+                        return
+            except Exception as exc:
+                logger.debug("Инициализация нейросетевого сегментатора глифов переключена в морфологический фоллбэк: %s", exc)
+            self.model = None
+            self.backend_name = "morph_fallback"
+            self._has_pretrained_weights = False
 
     def _run_onnx_mask(self, roi_rgb: np.ndarray) -> Optional[np.ndarray]:
         if self.model is None or not self._has_pretrained_weights:
@@ -1726,18 +1766,20 @@ class SotaMangaCleaner:
             se_belt = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * belt_r + 1, 2 * belt_r + 1))
             belt_mask = cv2.subtract(cv2.dilate(mask_inside, se_belt), mask_inside)
             belt_mask = cv2.bitwise_and(belt_mask, cavity_roi)
-            if np.any(belt_mask > 0):
-                denoised = cv2.fastNlMeansDenoisingColored(
-                    out,
-                    None,
-                    h=self.cfg.filter_strength,
-                    hColor=self.cfg.filter_strength,
-                    templateWindowSize=7,
-                    searchWindowSize=21,
-                )
-                alpha = cv2.GaussianBlur(belt_mask.astype(np.float32) / 255.0, (3, 3), 0)[..., None]
-                out = (
-                    out.astype(np.float32) * (1.0 - alpha) + denoised.astype(np.float32) * alpha
+            bys, bxs = np.where(belt_mask > 0)
+            if len(bxs) > 0:
+                rh_o, rw_o = out.shape[:2]
+                bx1 = max(0, int(bxs.min()) - 4)
+                by1 = max(0, int(bys.min()) - 4)
+                bx2 = min(rw_o, int(bxs.max()) + 5)
+                by2 = min(rh_o, int(bys.max()) + 5)
+                sub_out = out[by1:by2, bx1:bx2]
+                sub_belt = belt_mask[by1:by2, bx1:bx2]
+                sig_c = max(8.0, float(self.cfg.filter_strength) * 4.5)
+                denoised = cv2.bilateralFilter(sub_out, d=5, sigmaColor=sig_c, sigmaSpace=5.0)
+                alpha = cv2.GaussianBlur(sub_belt.astype(np.float32) / 255.0, (3, 3), 0)[..., None]
+                out[by1:by2, bx1:bx2] = (
+                    sub_out.astype(np.float32) * (1.0 - alpha) + denoised.astype(np.float32) * alpha
                 ).round().astype(np.uint8)
             return out
 
@@ -1842,8 +1884,8 @@ class SotaMangaCleaner:
                         wall_vals = roi_rgb[wall_roi > 0]
                         w_col = np.median(wall_vals, axis=0).astype(np.uint8) if len(wall_vals) > 0 else np.array([15, 15, 15], dtype=np.uint8)
                         out[bridge_mask > 0] = w_col
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("hermite_wall_bridge skipped: %s", exc)
         return out
 
 
@@ -2009,41 +2051,94 @@ class HybridMangaCleaner:
     ) -> Tuple[np.ndarray, float]:
         """
         Строит точную маску чернил + контрастной обводки (stroke/halo) оригинального текста
-        на сложном фоне (text_free) с адаптивной морфологической дилатацией 5..20 * S_proc px.
+        на сложном фоне (text_free) с авто-детекцией полярности (тёмные буквы или белые буквы
+        на тёмном фоне) и адаптивной дилатацией без перераздувания на пёстром фоне.
         """
-        _, otsu_dark = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        rh, rw = roi_gray.shape[:2]
+        if rh < 4 or rw < 4:
+            return np.zeros_like(roi_gray, dtype=np.uint8), 20.0
+
+        pad_ring = max(1, min(2, min(rh, rw) // 6))
+        border_px = np.concatenate([
+            roi_gray[:pad_ring, :].ravel(),
+            roi_gray[max(0, rh - pad_ring) :, :].ravel(),
+            roi_gray[:, :pad_ring].ravel(),
+            roi_gray[:, max(0, rw - pad_ring) :].ravel(),
+        ])
+        border_med = float(np.median(border_px)) if border_px.size > 0 else float(np.median(roi_gray))
+        p05 = float(np.percentile(roi_gray, 5))
+        p95 = float(np.percentile(roi_gray, 95))
+        is_light_text_on_dark = (border_med < 120.0) and (p95 >= max(180.0, border_med + 55.0))
+
         edges = cv2.Canny(roi_gray, 80, 180, L2gradient=True)
         edge_dilated = cv2.dilate(edges, np.ones((3, 3), np.uint8))
-
-        ink_core = cv2.bitwise_and(otsu_dark, edge_dilated)
-        ink_core = cv2.morphologyEx(
-            ink_core, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
-        )
-        if np.count_nonzero(ink_core) < 15:
-            ink_core = edge_dilated
 
         halo_r = max(4, int(round(6.0 * scale)))
         halo_kernel = cv2.getStructuringElement(
             cv2.MORPH_ELLIPSE, (2 * halo_r + 1, 2 * halo_r + 1)
         )
-        ring_mask = (cv2.dilate(ink_core, halo_kernel) > 0) & (ink_core == 0)
 
-        ink_luma = float(np.median(roi_gray[ink_core > 0])) if np.any(ink_core > 0) else 30.0
-        if ink_luma < 128.0:
-            halo_pixels = ring_mask & (roi_gray >= 210)
+        if is_light_text_on_dark:
+            _, otsu_light = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
+            bright_thr = max(150, int(round(border_med + 40.0)))
+            bright_cand = ((otsu_light > 0) & (roi_gray >= bright_thr)).astype(np.uint8) * 255
+            n_bc, lbl_bc, st_bc, _ = cv2.connectedComponentsWithStats(bright_cand, connectivity=8)
+            for idx_b in range(1, n_bc):
+                bx = int(st_bc[idx_b, cv2.CC_STAT_LEFT])
+                by = int(st_bc[idx_b, cv2.CC_STAT_TOP])
+                bw_c = int(st_bc[idx_b, cv2.CC_STAT_WIDTH])
+                bh_c = int(st_bc[idx_b, cv2.CC_STAT_HEIGHT])
+                b_touches = sum([bx <= 1, by <= 1, (bx + bw_c) >= (rw - 1), (by + bh_c) >= (rh - 1)])
+                if b_touches >= 3 and st_bc[idx_b, cv2.CC_STAT_AREA] >= int(0.35 * rw * rh):
+                    bright_cand[lbl_bc == idx_b] = 0
+
+            edge_dil_5 = cv2.dilate(edges, np.ones((5, 5), np.uint8))
+            very_bright = (roi_gray >= 205).astype(np.uint8) * 255
+            ink_core = cv2.bitwise_and(bright_cand, cv2.bitwise_or(edge_dil_5, very_bright))
+            ink_core = cv2.morphologyEx(
+                ink_core, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            )
+            if np.count_nonzero(ink_core) < 15:
+                ink_core = cv2.bitwise_or(bright_cand, edge_dilated)
+
+            ring_mask = (cv2.dilate(ink_core, halo_kernel) > 0) & (ink_core == 0)
+            small_ring_3 = (cv2.dilate(ink_core, np.ones((3, 3), np.uint8)) > 0) & (ink_core == 0)
+            dark_outline_thr = min(80, int(round(border_med + 10.0)))
+            halo_pixels = (ring_mask & (roi_gray <= dark_outline_thr)) | (small_ring_3 & (roi_gray >= 135))
         else:
-            halo_pixels = ring_mask & (roi_gray <= 55)
+            _, otsu_dark = cv2.threshold(roi_gray, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+            if border_med >= 130.0:
+                dark_gate = min(135, int(round(border_med - 25.0)))
+                otsu_dark = cv2.bitwise_and(otsu_dark, (roi_gray <= dark_gate).astype(np.uint8) * 255)
+
+            ink_core = cv2.bitwise_and(otsu_dark, edge_dilated)
+            ink_core = cv2.morphologyEx(
+                ink_core, cv2.MORPH_CLOSE, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+            )
+            if np.count_nonzero(ink_core) < 15:
+                ink_core = edge_dilated
+
+            ring_mask = (cv2.dilate(ink_core, halo_kernel) > 0) & (ink_core == 0)
+            ink_luma = float(np.median(roi_gray[ink_core > 0])) if np.any(ink_core > 0) else 30.0
+            if ink_luma < 128.0:
+                halo_thr = min(245, max(215, int(round(border_med + 35.0))))
+                halo_pixels = ring_mask & (roi_gray >= halo_thr)
+            else:
+                halo_pixels = ring_mask & (roi_gray <= 55)
 
         combined = np.where((ink_core > 0) | halo_pixels, 255, 0).astype(np.uint8)
 
         perim = (cv2.dilate(combined, np.ones((3, 3), np.uint8)) > 0) & (combined == 0)
         edge_std = float(np.std(roi_gray[perim].astype(np.float32))) if np.any(perim) else 20.0
 
+        max_dil_eff = max(8, int(round(self.max_inpaint_radius * scale)))
+        if edge_std > 12.0:
+            max_dil_eff = min(max_dil_eff, max(6, int(round(10.0 * scale))))
         dilate_r = int(
             np.clip(
                 round((self.min_inpaint_radius + self.inpaint_radius_mult * edge_std) * scale),
                 max(4, int(round(self.min_inpaint_radius * scale))),
-                max(8, int(round(self.max_inpaint_radius * scale))),
+                max_dil_eff,
             )
         )
         dilate_kernel = cv2.getStructuringElement(
@@ -2355,8 +2450,8 @@ def analyze_bubble_geometry(
         return _build_fallback_geometry()
 
     is_narrow_col = box_w < box_h * 0.35
-    expand_x = max(72 if is_narrow_col else 36, int(box_w * (1.35 if is_narrow_col else 0.55)))
-    expand_y = max(40, int(box_h * 0.48))
+    expand_x = min(max(72, int(img_w * 0.40)), max(72 if is_narrow_col else 56, int(box_w * (1.35 if is_narrow_col else 0.90))))
+    expand_y = min(max(72, int(img_h * 0.45)), max(72, int(box_h * 1.25)))
     rx1 = max(0, x1 - expand_x)
     ry1 = max(0, y1 - expand_y)
     rx2 = min(img_w, x2 + expand_x)
@@ -2421,29 +2516,48 @@ def analyze_bubble_geometry(
     if cavity_candidates[seed_cy, seed_cx] == 0:
         cavity_candidates[seed_y1:seed_y2, seed_x1:seed_x2] = lum_mask[seed_y1:seed_y2, seed_x1:seed_x2]
 
-    max_leak_x = max(48, int(box_w * 0.85)) if is_narrow_col else 2
-    max_leak_y = max(6, int(box_h * 0.04))
-    lim_x1 = max(0, tb_x1 - max_leak_x)
-    lim_y1 = max(0, tb_y1 - max_leak_y)
-    lim_x2 = min(rw, tb_x2 + max_leak_x)
-    lim_y2 = min(rh, tb_y2 + max_leak_y)
-    if lim_x1 > 0:
-        cavity_candidates[:, :lim_x1] = 0
-    if lim_x2 < rw:
-        cavity_candidates[:, lim_x2:] = 0
-    if lim_y1 > 0:
-        cavity_candidates[:lim_y1, :] = 0
-    if lim_y2 < rh:
-        cavity_candidates[lim_y2:, :] = 0
-
     voronoi_cut_mask = np.zeros((rh, rw), dtype=bool)
-    ff_probe = cavity_candidates.copy()
-    ff_probe_mask = np.zeros((rh + 2, rw + 2), dtype=np.uint8)
-    if ff_probe[seed_cy, seed_cx] > 0:
-        cv2.floodFill(ff_probe, ff_probe_mask, (int(seed_cx), int(seed_cy)), 128)
-        unsplit_fill = ff_probe_mask[1:-1, 1:-1] > 0
-    else:
-        return _build_fallback_geometry()
+    is_truly_closed_cavity = False
+    area_text_init = float(max(1, box_w * box_h))
+    closed_area_cap = (6.0 if (box_w < 180 or box_h < 180) else 4.2) * area_text_init
+    if cavity_candidates[seed_cy, seed_cx] > 0:
+        ff_unrestricted = cavity_candidates.copy()
+        ff_unres_mask = np.zeros((rh + 2, rw + 2), dtype=np.uint8)
+        cv2.floodFill(ff_unrestricted, ff_unres_mask, (int(seed_cx), int(seed_cy)), 128)
+        probe_fill = ff_unres_mask[1:-1, 1:-1] > 0
+        p_top = int(np.count_nonzero(probe_fill[0, :]))
+        p_bot = int(np.count_nonzero(probe_fill[rh - 1, :]))
+        p_left = int(np.count_nonzero(probe_fill[:, 0]))
+        p_right = int(np.count_nonzero(probe_fill[:, rw - 1]))
+        probe_touch = (p_top + p_bot + p_left + p_right) / float(max(1, 2 * (rw + rh)))
+        probe_area = float(np.count_nonzero(probe_fill))
+        if probe_touch <= 0.04 and (0.45 * area_text_init <= probe_area <= closed_area_cap):
+            is_truly_closed_cavity = True
+            unsplit_fill = probe_fill
+
+    if not is_truly_closed_cavity:
+        max_leak_x = max(48, int(box_w * 0.85)) if is_narrow_col else 2
+        max_leak_y = max(6, int(box_h * 0.04))
+        lim_x1 = max(0, tb_x1 - max_leak_x)
+        lim_y1 = max(0, tb_y1 - max_leak_y)
+        lim_x2 = min(rw, tb_x2 + max_leak_x)
+        lim_y2 = min(rh, tb_y2 + max_leak_y)
+        if lim_x1 > 0:
+            cavity_candidates[:, :lim_x1] = 0
+        if lim_x2 < rw:
+            cavity_candidates[:, lim_x2:] = 0
+        if lim_y1 > 0:
+            cavity_candidates[:lim_y1, :] = 0
+        if lim_y2 < rh:
+            cavity_candidates[lim_y2:, :] = 0
+
+        ff_probe = cavity_candidates.copy()
+        ff_probe_mask = np.zeros((rh + 2, rw + 2), dtype=np.uint8)
+        if ff_probe[seed_cy, seed_cx] > 0:
+            cv2.floodFill(ff_probe, ff_probe_mask, (int(seed_cx), int(seed_cy)), 128)
+            unsplit_fill = ff_probe_mask[1:-1, 1:-1] > 0
+        else:
+            return _build_fallback_geometry()
 
     leaking_neighbor_boxes_roi: list[tuple[int, int, int, int]] = []
     if other_bboxes:
@@ -2559,7 +2673,8 @@ def analyze_bubble_geometry(
     right_touch = int(np.count_nonzero(bubble_mask[:, rw - 1] > 0))
     perimeter_touch_ratio = (top_touch + bot_touch + left_touch + right_touch) / float(max(1, 2 * (rw + rh)))
 
-    max_allowed_area = 3.8 * eff_ref_area if perimeter_touch_ratio <= 0.02 else 3.8 * area_text
+    area_cap_mult = 6.0 if (is_truly_closed_cavity and (box_w < 180 or box_h < 180)) else (4.2 if is_truly_closed_cavity else 3.8)
+    max_allowed_area = area_cap_mult * eff_ref_area if perimeter_touch_ratio <= 0.04 else 3.8 * area_text
     if perimeter_touch_ratio > 0.25 or area_bubble > max_allowed_area or area_bubble < 0.45 * area_text:
         return _build_fallback_geometry()
 
@@ -2569,7 +2684,7 @@ def analyze_bubble_geometry(
     raw_bw = int(np.max(xs_b) - np.min(xs_b) + 1)
     raw_bh = int(np.max(ys_b) - np.min(ys_b) + 1)
 
-    open_r = max(5, min(raw_bw, raw_bh) // 11)
+    open_r = min(12, max(4, min(raw_bw, raw_bh) // 18))
     k_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * open_r + 1, 2 * open_r + 1))
     core_mask = cv2.morphologyEx(bubble_mask, cv2.MORPH_OPEN, k_open, iterations=1)
     if np.count_nonzero(core_mask) < 0.45 * area_bubble:
@@ -2578,11 +2693,26 @@ def analyze_bubble_geometry(
     n_c, lbl_c, st_c, _ = cv2.connectedComponentsWithStats(core_mask, connectivity=8)
     if n_c > 2:
         seed_lbl = int(lbl_c[min(rh - 1, max(0, seed_cy)), min(rw - 1, max(0, seed_cx))])
-        if seed_lbl >= 1 and st_c[seed_lbl, cv2.CC_STAT_AREA] >= 0.25 * area_text:
-            best_lbl = seed_lbl
+        if not leaking_neighbor_boxes_roi:
+            kept_mask = np.zeros_like(core_mask)
+            for lbl_k in range(1, n_c):
+                comp_a = float(st_c[lbl_k, cv2.CC_STAT_AREA])
+                if lbl_k == seed_lbl or comp_a >= 0.22 * area_bubble:
+                    kept_mask[lbl_c == lbl_k] = 255
+            if np.count_nonzero(kept_mask) >= 16:
+                core_mask = kept_mask
+            else:
+                if seed_lbl >= 1 and st_c[seed_lbl, cv2.CC_STAT_AREA] >= 0.25 * area_text:
+                    best_lbl = seed_lbl
+                else:
+                    best_lbl = 1 + int(np.argmax(st_c[1:, cv2.CC_STAT_AREA]))
+                core_mask = np.where(lbl_c == best_lbl, 255, 0).astype(np.uint8)
         else:
-            best_lbl = 1 + int(np.argmax(st_c[1:, cv2.CC_STAT_AREA]))
-        core_mask = np.where(lbl_c == best_lbl, 255, 0).astype(np.uint8)
+            if seed_lbl >= 1 and st_c[seed_lbl, cv2.CC_STAT_AREA] >= 0.25 * area_text:
+                best_lbl = seed_lbl
+            else:
+                best_lbl = 1 + int(np.argmax(st_c[1:, cv2.CC_STAT_AREA]))
+            core_mask = np.where(lbl_c == best_lbl, 255, 0).astype(np.uint8)
 
     ys_c, xs_c = np.where(core_mask > 0)
     if len(xs_c) < 16:
@@ -2643,8 +2773,16 @@ def analyze_bubble_geometry(
         area_s = float(cv2.contourArea(main_cnt_s))
         hull_s = max(1.0, float(cv2.contourArea(cv2.convexHull(main_cnt_s))))
         if (area_s / hull_s) < 0.88:
+            cur_sw = max(1, sx2_roi - sx1_roi)
+            cur_sh = max(1, sy2_roi - sy1_roi)
             lx_r, ly_r, lw_r, lh_r = BubblePolygonSolver.largest_inscribed_rectangle(safe_mask, aspect_weight=0.15)
-            if lw_r >= 16 and lh_r >= 16 and (lw_r * lh_r) >= 0.32 * area_s:
+            if (
+                lw_r >= 16
+                and lh_r >= 16
+                and (lw_r * lh_r) >= 0.68 * area_s
+                and lw_r >= 0.65 * cur_sw
+                and lh_r >= 0.65 * cur_sh
+            ):
                 sx1_roi, sy1_roi = int(lx_r), int(ly_r)
                 sx2_roi, sy2_roi = int(lx_r + lw_r), int(ly_r + lh_r)
 
@@ -2652,11 +2790,17 @@ def analyze_bubble_geometry(
     bub_y1_abs = ry1 + by1_roi
     bub_x2_abs = rx1 + bx2_roi
     bub_y2_abs = ry1 + by2_roi
-    if not is_narrow_col:
-        bub_x1_abs = max(x1, bub_x1_abs)
-        bub_x2_abs = min(x2, bub_x2_abs)
-    bub_y1_abs = max(y1, bub_y1_abs)
-    bub_y2_abs = min(y2, bub_y2_abs)
+    if not is_truly_closed_cavity:
+        if not is_narrow_col:
+            bub_x1_abs = max(x1, bub_x1_abs)
+            bub_x2_abs = min(x2, bub_x2_abs)
+        bub_y1_abs = max(y1, bub_y1_abs)
+        bub_y2_abs = min(y2, bub_y2_abs)
+    else:
+        bub_x1_abs = max(0, bub_x1_abs)
+        bub_y1_abs = max(0, bub_y1_abs)
+        bub_x2_abs = min(img_w, bub_x2_abs)
+        bub_y2_abs = min(img_h, bub_y2_abs)
 
     sx1_abs = max(0, rx1 + sx1_roi)
     sy1_abs = max(0, ry1 + sy1_roi)
@@ -2781,7 +2925,7 @@ class BubbleCleaner:
         dilate_size: int = 11,
         box_margin_ratio: float = 0.03,
         crop_padding: int = 48,
-        cache_max_pages: int = 8,
+        cache_max_pages: int = 48,
         disk_cache_dir: str | Path | None = None,
         models_dir: str | Path | None = None,
         device: str | None = None,
@@ -2802,6 +2946,7 @@ class BubbleCleaner:
         has_cuda = bool(torch is not None and torch.cuda.is_available())
         self.device = device or ("cuda" if has_cuda else "cpu")
         self._cache_lock = threading.Lock()
+        self._model_lock = threading.RLock()
         self._cleaned_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
         self._base_page_cache: OrderedDict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = OrderedDict()
         self._block_crop_cache: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray]] = OrderedDict()
@@ -2869,8 +3014,9 @@ class BubbleCleaner:
         inpaint_backend: str | None = None,
         pipeline_mode: str | None = None,
     ) -> None:
-        if pipeline_mode and str(pipeline_mode).strip().lower() in ("fast", "balanced", "accuracy", "ultra"):
-            self.pipeline_mode = str(pipeline_mode).strip().lower()
+        if pipeline_mode and str(pipeline_mode).strip():
+            pm_low = str(pipeline_mode).strip().lower()
+            self.pipeline_mode = "ultra" if pm_low in ("ultra", "accuracy", "hq", "max", "high") else "balanced"
         if inpaint_backend and str(inpaint_backend).strip() in (
             "anime_lama_sota",
             "ultra_deep_redraw",
@@ -2878,21 +3024,31 @@ class BubbleCleaner:
             "fast_telea",
         ):
             target_b = str(inpaint_backend).strip()
-            self.inpaint_backend = target_b
-            desired_variant = "big-lama" if target_b == "big_lama" else "anime-manga-big-lama"
-            if target_b != "fast_telea" and (
-                self.lama_model is None or getattr(self, "active_lama_variant", "") != desired_variant
-            ):
-                try:
-                    self.lama_model = StandaloneLaMaInpainter(
-                        model_variant=desired_variant,
-                        models_dir=self.models_dir,
-                        device=self.device,
-                    )
-                    self.active_lama_variant = desired_variant
-                    self.sota_cleaner.lama_inpainter = self._invoke_lama_np
-                except Exception as exc:
-                    logger.debug("Не удалось переключить вариант LaMa (%s): %s", desired_variant, exc)
+            with self._model_lock:
+                self.inpaint_backend = target_b
+                desired_variant = "big-lama" if target_b == "big_lama" else "anime-manga-big-lama"
+                if target_b != "fast_telea" and (
+                    self.lama_model is None or getattr(self, "active_lama_variant", "") != desired_variant
+                ):
+                    try:
+                        self.lama_model = StandaloneLaMaInpainter(
+                            model_variant=desired_variant,
+                            models_dir=self.models_dir,
+                            device=self.device,
+                        )
+                        self.active_lama_variant = desired_variant
+                        self.sota_cleaner.lama_inpainter = self._invoke_lama_np
+                    except Exception as exc:
+                        logger.debug("Не удалось переключить вариант LaMa (%s): %s", desired_variant, exc)
+
+    def release_transient_vram(self) -> None:
+        """Освобождает временные буферы и очищает неиспользуемый кэш CUDA VRAM."""
+        try:
+            gc.collect()
+            if torch is not None and torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception as exc:
+            logger.debug("Ошибка освобождения временной VRAM в BubbleCleaner: %s", exc)
 
     def get_inpaint_backend_label(self) -> str:
         if self.inpaint_backend == "fast_telea":
@@ -2982,8 +3138,8 @@ class BubbleCleaner:
         if torch is not None and torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("CUDA empty_cache warning during delete_local_model_weights: %s", exc)
         return {
             "ok": True,
             "model_id": key,
@@ -2994,39 +3150,47 @@ class BubbleCleaner:
     def _invoke_lama_np(self, img_rgb: np.ndarray, mask_u8: np.ndarray) -> np.ndarray:
         """Обёртка вызова `self.lama_model` на numpy-массивах `(H, W, 3)` и `(H, W)` с поддержкой 1.5x Super-Sampled Two-Pass Deep Redraw."""
         ch, cw = img_rgb.shape[:2]
-        is_ultra_redraw = (self.pipeline_mode == "ultra") or (self.inpaint_backend == "ultra_deep_redraw")
-        if self.inpaint_backend != "fast_telea" and self.lama_model is not None:
-            try:
-                if is_ultra_redraw and max(ch, cw) <= 960 and ch >= 16 and cw >= 16:
-                    up_w = max(16, int(round(cw * 1.5)))
-                    up_h = max(16, int(round(ch * 1.5)))
-                    up_rgb = cv2.resize(img_rgb, (up_w, up_h), interpolation=cv2.INTER_LANCZOS4)
-                    up_msk = cv2.resize((mask_u8 > 0).astype(np.uint8) * 255, (up_w, up_h), interpolation=cv2.INTER_NEAREST)
-                    if hasattr(self.lama_model, "inpaint_rgb_crop"):
-                        pass1_up = self.lama_model.inpaint_rgb_crop(up_rgb, up_msk)
-                    else:
-                        pass1_up = np.array(self.lama_model(Image.fromarray(up_rgb), Image.fromarray(up_msk)).convert("RGB"))
-                    k_seam = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
-                    seam_ring = cv2.subtract(cv2.dilate(up_msk, k_seam, iterations=1), cv2.erode(up_msk, k_seam, iterations=1))
-                    if np.count_nonzero(seam_ring) >= 12 and hasattr(self.lama_model, "inpaint_rgb_crop"):
-                        blend_in = up_rgb.copy()
-                        blend_in[up_msk > 0] = pass1_up[up_msk > 0]
-                        pass2_up = self.lama_model.inpaint_rgb_crop(blend_in, seam_ring)
-                        alpha_s = cv2.GaussianBlur((seam_ring > 0).astype(np.float32), (5, 5), 1.2)[..., None]
-                        pass1_up = np.clip(pass2_up.astype(np.float32) * alpha_s + pass1_up.astype(np.float32) * (1.0 - alpha_s), 0, 255).astype(np.uint8)
-                    down_rgb = cv2.resize(pass1_up, (cw, ch), interpolation=cv2.INTER_AREA)
-                    return down_rgb
+        with self._model_lock:
+            is_ultra_redraw = (self.pipeline_mode == "ultra") or (self.inpaint_backend == "ultra_deep_redraw")
+            if self.inpaint_backend != "fast_telea" and self.lama_model is not None:
+                try:
+                    if is_ultra_redraw and max(ch, cw) <= 960 and ch >= 16 and cw >= 16:
+                        unmasked = img_rgb[mask_u8 == 0]
+                        is_flat_white_bg = (
+                            unmasked.size >= 48
+                            and float(np.std(unmasked)) <= 12.0
+                            and float(np.median(unmasked)) >= 225.0
+                        )
+                        if not is_flat_white_bg:
+                            up_w = max(16, int(round(cw * 1.5)))
+                            up_h = max(16, int(round(ch * 1.5)))
+                            up_rgb = cv2.resize(img_rgb, (up_w, up_h), interpolation=cv2.INTER_LANCZOS4)
+                            up_msk = cv2.resize((mask_u8 > 0).astype(np.uint8) * 255, (up_w, up_h), interpolation=cv2.INTER_NEAREST)
+                            if hasattr(self.lama_model, "inpaint_rgb_crop"):
+                                pass1_up = self.lama_model.inpaint_rgb_crop(up_rgb, up_msk)
+                            else:
+                                pass1_up = np.array(self.lama_model(Image.fromarray(up_rgb), Image.fromarray(up_msk)).convert("RGB"))
+                            k_seam = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                            seam_ring = cv2.subtract(cv2.dilate(up_msk, k_seam, iterations=1), cv2.erode(up_msk, k_seam, iterations=1))
+                            if np.count_nonzero(seam_ring) >= 12 and hasattr(self.lama_model, "inpaint_rgb_crop"):
+                                blend_in = up_rgb.copy()
+                                blend_in[up_msk > 0] = pass1_up[up_msk > 0]
+                                pass2_up = self.lama_model.inpaint_rgb_crop(blend_in, seam_ring)
+                                alpha_s = cv2.GaussianBlur((seam_ring > 0).astype(np.float32), (5, 5), 1.2)[..., None]
+                                pass1_up = np.clip(pass2_up.astype(np.float32) * alpha_s + pass1_up.astype(np.float32) * (1.0 - alpha_s), 0, 255).astype(np.uint8)
+                            down_rgb = cv2.resize(pass1_up, (cw, ch), interpolation=cv2.INTER_AREA)
+                            return down_rgb
 
-                if hasattr(self.lama_model, "inpaint_rgb_crop"):
-                    return self.lama_model.inpaint_rgb_crop(img_rgb, mask_u8)
-                crop_pil = Image.fromarray(img_rgb, mode="RGB")
-                mask_pil = Image.fromarray(mask_u8, mode="L")
-                inpainted_pil = self.lama_model(crop_pil, mask_pil).convert("RGB")
-                if inpainted_pil.size != (cw, ch):
-                    inpainted_pil = inpainted_pil.crop((0, 0, cw, ch))
-                return np.array(inpainted_pil)
-            except Exception as exc:
-                logger.debug("Ошибка вызова LaMa на патче (%s), переключаемся на OpenCV INPAINT_NS.", exc)
+                    if hasattr(self.lama_model, "inpaint_rgb_crop"):
+                        return self.lama_model.inpaint_rgb_crop(img_rgb, mask_u8)
+                    crop_pil = Image.fromarray(img_rgb, mode="RGB")
+                    mask_pil = Image.fromarray(mask_u8, mode="L")
+                    inpainted_pil = self.lama_model(crop_pil, mask_pil).convert("RGB")
+                    if inpainted_pil.size != (cw, ch):
+                        inpainted_pil = inpainted_pil.crop((0, 0, cw, ch))
+                    return np.array(inpainted_pil)
+                except Exception as exc:
+                    logger.debug("Ошибка вызова LaMa на патче (%s), переключаемся на OpenCV INPAINT_NS.", exc)
         bgr_in = cv2.cvtColor(img_rgb, cv2.COLOR_RGB2BGR)
         bgr_out = cv2.inpaint(bgr_in, mask_u8, inpaintRadius=5, flags=cv2.INPAINT_NS)
         return cv2.cvtColor(bgr_out, cv2.COLOR_BGR2RGB)
@@ -3045,17 +3209,18 @@ class BubbleCleaner:
         """
         if not roi_bboxes:
             return page_bgr
-        if self.lama_model is not None and hasattr(self.lama_model, "inpaint_rois_batch"):
-            try:
-                return self.lama_model.inpaint_rois_batch(
-                    page_bgr=page_bgr,
-                    page_mask=page_mask,
-                    roi_bboxes=roi_bboxes,
-                    context_pad=context_pad,
-                    max_batch_size=max_batch_size,
-                )
-            except Exception as batch_exc:
-                logger.debug("Ошибка батч-инпейнтинга LaMa (%s), используем поблочный фоллбэк.", batch_exc)
+        with self._model_lock:
+            if self.lama_model is not None and hasattr(self.lama_model, "inpaint_rois_batch"):
+                try:
+                    return self.lama_model.inpaint_rois_batch(
+                        page_bgr=page_bgr,
+                        page_mask=page_mask,
+                        roi_bboxes=roi_bboxes,
+                        context_pad=context_pad,
+                        max_batch_size=max_batch_size,
+                    )
+                except Exception as batch_exc:
+                    logger.debug("Ошибка батч-инпейнтинга LaMa (%s), используем поблочный фоллбэк.", batch_exc)
 
         H_page, W_page = page_bgr.shape[:2]
         out_bgr = page_bgr.copy()
@@ -3280,11 +3445,11 @@ class BubbleCleaner:
                         self.disk_cache_dir.glob("clean_*.png"),
                         key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
                     )
-                    for old_f in cache_files[:-16]:
+                    for old_f in cache_files[:-120]:
                         try:
                             old_f.unlink(missing_ok=True)
-                        except OSError:
-                            pass
+                        except OSError as exc:
+                            logger.debug("Could not unlink stale clean cache file %s: %s", old_f, exc)
                 except Exception as exc:
                     logger.debug("Не удалось сохранить кэш очищенного слоя на диск: %s", exc)
 
@@ -3510,8 +3675,8 @@ class BubbleCleaner:
                         by1 = min(by1, ty1)
                         bx2 = max(bx2, tx2)
                         by2 = max(by2, ty2)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Ignored invalid text_bbox in _get_clean_bbox: %s", exc)
         return [bx1, by1, bx2, by2]
 
     def _get_effective_clean_bounds(
@@ -3585,8 +3750,8 @@ class BubbleCleaner:
                         if (tx2 - tx1) >= 8 and (ty2 - ty1) >= 8 and [tx1, ty1, tx2, ty2] != [x1, y1, x2, y2]:
                             has_valid_tb = True
                             tb_box = [tx1, ty1, tx2, ty2]
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Ignored invalid text_bbox in build_text_mask: %s", exc)
 
             if is_free_text:
                 ix1 = max(0, x1 - 6)
@@ -3642,7 +3807,7 @@ class BubbleCleaner:
                     cv2.fillPoly(poly_mask, [poly_rel], 255)
                     if np.count_nonzero(poly_mask) >= 64:
                         scale_p = max(1.0, min(2.2, float(min(bw, bh)) / 96.0))
-                        shrink_px = max(3, min(6, int(round(3.0 * scale_p))))
+                        shrink_px = max(2, min(4, int(round(2.5 * scale_p))))
                         erode_k = cv2.getStructuringElement(
                             cv2.MORPH_ELLIPSE, (2 * shrink_px + 1, 2 * shrink_px + 1)
                         )
@@ -3653,6 +3818,41 @@ class BubbleCleaner:
                         # Выделяем текст внутри сжатого полигона (Fixed Threshold 210 / Otsu + сегментатор глифов)
                         inside_vals = roi_gray[shrunk_poly > 0]
                         is_dark_bubble = float(np.percentile(inside_vals, 50)) < 110.0
+                        if (not is_dark_bubble) and inside_vals.size >= 32:
+                            bg_inside = inside_vals[inside_vals >= 180]
+                            if bg_inside.size >= 16 and float(np.std(bg_inside)) <= 12.0 and float(np.median(bg_inside)) >= 225.0:
+                                w_cand = (roi_gray >= 228).astype(np.uint8) * 255
+                                d_w_close = cv2.morphologyEx(
+                                    (roi_gray < 210).astype(np.uint8) * 255,
+                                    cv2.MORPH_CLOSE,
+                                    np.ones((3, 3), dtype=np.uint8),
+                                )
+                                w_cand[d_w_close > 0] = 0
+                                seed_mask = (shrunk_poly > 0) & (w_cand > 0)
+                                sy_s, sx_s = np.where(seed_mask)
+                                if len(sx_s) > 0:
+                                    mid_idx = len(sx_s) // 2
+                                    ff_c = w_cand.copy()
+                                    ff_cm = np.zeros((rh + 2, rw + 2), dtype=np.uint8)
+                                    cv2.floodFill(ff_c, ff_cm, (int(sx_s[mid_idx]), int(sy_s[mid_idx])), 128)
+                                    cav_flood = (ff_cm[1:-1, 1:-1] > 0).astype(np.uint8) * 255
+                                    if np.count_nonzero(cav_flood) > 0:
+                                        cnts_f, _ = cv2.findContours(cav_flood, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                                        cav_filled = np.zeros_like(cav_flood)
+                                        cv2.drawContours(cav_filled, cnts_f, -1, 255, -1)
+                                        ptouch = (
+                                            int(np.count_nonzero(cav_filled[0, :]))
+                                            + int(np.count_nonzero(cav_filled[rh - 1, :]))
+                                            + int(np.count_nonzero(cav_filled[:, 0]))
+                                            + int(np.count_nonzero(cav_filled[:, rw - 1]))
+                                        ) / float(max(1, 2 * (rw + rh)))
+                                        poly_nz = max(1, int(np.count_nonzero(poly_mask)))
+                                        if ptouch <= 0.04 and np.count_nonzero(cav_filled) <= 2.2 * poly_nz:
+                                            k_wall_g = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                                            cav_exp_eroded = cv2.erode(cav_filled, k_wall_g, iterations=1)
+                                            if np.count_nonzero(cav_exp_eroded) >= 32:
+                                                shrunk_poly = cv2.bitwise_or(shrunk_poly, cav_exp_eroded)
+                                                inside_vals = roi_gray[shrunk_poly > 0]
                         if is_dark_bubble:
                             _, bin_txt = cv2.threshold(roi_gray, 130, 255, cv2.THRESH_BINARY)
                         else:
@@ -3751,7 +3951,13 @@ class BubbleCleaner:
                     for l_s in range(1, nl_s):
                         sx_s, sy_s, sw_s, sh_s, sa_s = st_s[l_s]
                         fill_r = float(sa_s) / max(1.0, float(sw_s * sh_s))
-                        if (sw_s > core_w * 0.48 or sh_s > core_h * 0.48) and fill_r <= 0.18:
+                        touches_core_edge = (
+                            (sx_s <= cx1_r + 4)
+                            or (sy_s <= cy1_r + 4)
+                            or ((sx_s + sw_s) >= cx2_r - 4)
+                            or ((sy_s + sh_s) >= cy2_r - 4)
+                        )
+                        if touches_core_edge and (sw_s > core_w * 0.48 or sh_s > core_h * 0.48) and fill_r <= 0.18:
                             hollow_arc_mask[lbl_s == l_s] = 255
                     if np.count_nonzero(hollow_arc_mask) > 0:
                         inner_tb_core = np.zeros_like(strict_dark)
@@ -3837,15 +4043,24 @@ class BubbleCleaner:
                         or (comp_y + comp_h) >= cy2_r - 2
                     )
                     if comp_area >= int(150 * scale_area):
-                        if (
+                        if touches_any_border:
+                            if (
+                                comp_dt.size > 0
+                                and max_dt_val >= max(6.0, 3.6 * scale_f)
+                                and float(np.percentile(comp_dt, 85)) >= max(4.0, 2.2 * scale_f)
+                            ):
+                                chibi_art_mask[labels == label_idx] = 255
+                                continue
+                        elif (
                             comp_dt.size > 0
-                            and (
-                                (max_dt_val >= max(9.5, 5.2 * scale_f) and float(np.percentile(comp_dt, 90)) >= max(5.2, 2.8 * scale_f))
-                                or (touches_any_border and max_dt_val >= max(6.0, 3.6 * scale_f) and float(np.percentile(comp_dt, 85)) >= max(4.0, 2.2 * scale_f))
-                            )
+                            and max_dt_val >= max(14.0, 7.5 * scale_f)
+                            and float(np.percentile(comp_dt, 90)) >= max(7.5, 4.0 * scale_f)
                         ):
-                            chibi_art_mask[labels == label_idx] = 255
-                            continue
+                            comp_gray = roi_gray[labels == label_idx]
+                            midgray_ratio = float(np.mean((comp_gray >= 50) & (comp_gray <= 185))) if comp_gray.size > 0 else 0.0
+                            if midgray_ratio >= 0.22 or comp_area >= 0.22 * core_w * core_h:
+                                chibi_art_mask[labels == label_idx] = 255
+                                continue
 
                     if not has_valid_tb:
                         touches_left = comp_x <= cx1_r + 1
@@ -4428,7 +4643,7 @@ class BubbleCleaner:
            с поблочным кэшированием кропов (`_block_crop_cache`) и двухзонной гарантией Zero Bleed.
         2) Мгновенно (< 2 мс) накладывает ручные мазки кисти/ластика (`custom_mask_strokes`).
         """
-        rgb_image = image.convert("RGB")
+        rgb_image = _pil_to_rgb_u8(image)
         orig_w, orig_h = rgb_image.size
         img_np = np.array(rgb_image)
 
@@ -4547,6 +4762,7 @@ class BubbleCleaner:
                 textured_rois_set: set[tuple[int, int, int, int]] = set()
                 if (
                     len(uncached_blocks) >= 2
+                    and self.inpaint_backend != "fast_telea"
                     and self.lama_model is not None
                     and hasattr(self.lama_model, "inpaint_rois_batch")
                 ):

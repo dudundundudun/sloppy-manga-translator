@@ -1,34 +1,34 @@
 /**
- * Content Script (v5.3.1) — Локальный и облачный AI-переводчик Манги / Манхвы / Маньхуа
+ * Content Script (v6.1.0) — Локальный и облачный AI-переводчик Манги / Манхвы / Маньхуа
  *
- * Ключевые улучшения v5.3.0:
- * 1. Полностью переработан интерфейс выбора ИИ-моделей:
- *    - Информативная карточка активной модели с бейджем провайдера (✨ Авто / ☁️ Cloud / 🦙 Ollama),
- *      открывающая сгруппированный список моделей с быстрым поиском.
- *    - Исправлен баг подсветки кнопок быстрого выбора (`✨ Авто`, `⚡ Flash`, `🧠 Pro`, `🦙 Локальная`):
- *      больше никаких ложных срабатываний `startsWith("unsloth::")`, из-за которых клик по `⚡ Flash`
- *      подсвечивал кнопку `🧠 Pro`.
- *    - Переключение модели использует изолированный вызов `SET_ACTIVE_MODEL` с защитой от гонок запросов
- *      и больше НЕ затирает сохраненный `unsloth_api_key` на сервере.
- *    - Поддержка скачивания рекомендованных локальных моделей Ollama в 1 клик (`PULL_MODEL`) с живым прогресс-баром.
- * 2. Улучшено управление переводом:
- *    - Перетаскиваемая шапка панели (с сохранением позиции) и кнопка сворачивания (`—`).
- *    - Кнопка `🎯 Кадр` (перевод только видимых на экране страниц) и кнопка `⏹ Стоп` для остановки перевода страницы или папки.
- *    - Корректная замена и восстановление `<picture><source srcset>` на современных читалках манги.
+ * Ключевые улучшения v6.1.0:
+ * 1. Изоляция панели и бейджей в закрытом Shadow DOM (mode: "closed") + WeakMap вместо expando на <img>.
+ * 2. Полный отказ от хранения unslothApiKey в chrome.storage и Light DOM (write-only поле + clear_api_key).
+ * 3. Проверка e.isTrusted на чувствительных кнопках/горячих клавишах и полный cleanup при ре-инжекции.
  */
 
 (() => {
+  let wasPanelOpen = false;
   if (typeof window.__mtCleanup === "function") {
     try {
-      window.__mtCleanup();
+      const prevState = window.__mtCleanup();
+      wasPanelOpen = Boolean(prevState && prevState.open);
     } catch (_) {}
   }
 
+  const oldHost = document.getElementById("mt-studio-shadow-host");
+  if (oldHost) oldHost.remove();
   const oldPanel = document.getElementById("mt-floating-panel");
-  const wasPanelOpen = Boolean(oldPanel && oldPanel.classList.contains("mt-open"));
-  if (oldPanel) oldPanel.remove();
+  if (oldPanel) {
+    wasPanelOpen = wasPanelOpen || oldPanel.classList.contains("mt-open");
+    oldPanel.remove();
+  }
   const oldFab = document.getElementById("mt-fab-launcher");
   if (oldFab) oldFab.remove();
+  const oldBadges = document.getElementById("mt-badges-layer");
+  if (oldBadges) oldBadges.remove();
+  const oldStyle = document.getElementById("mt-floating-styles");
+  if (oldStyle) oldStyle.remove();
 
   const MIN_WIDTH = 280;
   const MIN_HEIGHT = 350;
@@ -52,7 +52,6 @@
     autoSaveWeb: true,
     webSaveDir: "",
     unslothUrl: "https://moduleapi.pro/v1",
-    unslothApiKey: "",
     minimized: false,
     panelPos: null,
   };
@@ -61,6 +60,7 @@
   let availableModelsCache = [];
   let resolvedServerModel = "";
   let serverHasApiKey = false;
+  let serverMaskedApiKey = "";
   let showingOriginal = false;
   let folderPollTimer = null;
   let pullPollTimer = null;
@@ -71,8 +71,16 @@
   let pageBatchRunning = false;
   let pageStopRequested = false;
 
+  function normalizePipelineMode(mode) {
+    const m = String(mode || "balanced").trim().toLowerCase();
+    return (m === "ultra" || m === "accuracy" || m === "hq" || m === "max" || m === "high") ? "ultra" : "balanced";
+  }
+
   function migrateAndLoadSettings(onLoaded) {
     if (typeof chrome !== "undefined" && chrome.storage && chrome.storage.local) {
+      try {
+        chrome.storage.local.remove("mt_unsloth_key");
+      } catch (_) {}
       chrome.storage.local.get(
         [
           "mt_source_lang",
@@ -93,7 +101,6 @@
           "mt_auto_save_web",
           "mt_web_save_dir",
           "mt_unsloth_url",
-          "mt_unsloth_key",
           "mt_minimized",
           "mt_panel_pos",
         ],
@@ -103,7 +110,7 @@
           settings.targetLang = s.mt_target_lang || DEFAULT_SETTINGS.targetLang;
           settings.model = s.mt_model_v8 || DEFAULT_SETTINGS.model;
           settings.lastLocalModel = s.mt_last_local_model || "";
-          settings.pipelineMode = s.mt_pipeline_mode || DEFAULT_SETTINGS.pipelineMode;
+          settings.pipelineMode = normalizePipelineMode(s.mt_pipeline_mode || DEFAULT_SETTINGS.pipelineMode);
           settings.useImageContext =
             s.mt_use_image_context !== undefined ? Boolean(s.mt_use_image_context) : false;
           settings.uppercase =
@@ -123,7 +130,6 @@
             s.mt_auto_save_web !== undefined ? Boolean(s.mt_auto_save_web) : true;
           settings.webSaveDir = s.mt_web_save_dir || "";
           settings.unslothUrl = s.mt_unsloth_url || DEFAULT_SETTINGS.unslothUrl;
-          settings.unslothApiKey = s.mt_unsloth_key || DEFAULT_SETTINGS.unslothApiKey;
           settings.minimized = Boolean(s.mt_minimized);
           settings.panelPos = s.mt_panel_pos || null;
           if (typeof onLoaded === "function") onLoaded();
@@ -156,7 +162,6 @@
           mt_auto_save_web: Boolean(settings.autoSaveWeb),
           mt_web_save_dir: settings.webSaveDir || "",
           mt_unsloth_url: settings.unslothUrl,
-          mt_unsloth_key: settings.unslothApiKey,
           mt_minimized: Boolean(settings.minimized),
           mt_panel_pos: settings.panelPos || null,
         });
@@ -202,8 +207,12 @@
     setTimeout(() => a.remove(), 500);
   }
 
-  const oldStyle = document.getElementById("mt-floating-styles");
-  if (oldStyle) oldStyle.remove();
+  const shadowHost = document.createElement("div");
+  shadowHost.id = "mt-studio-shadow-host";
+  shadowHost.style.cssText = "all: initial; position: static; z-index: 2147483647;";
+  (document.body || document.documentElement).appendChild(shadowHost);
+  const uiRoot = shadowHost.attachShadow({ mode: "closed" });
+  const $mt = (id) => uiRoot.getElementById(id);
 
   const style = document.createElement("style");
   style.id = "mt-floating-styles";
@@ -705,7 +714,7 @@
       display: none !important;
     }
   `;
-  document.head.appendChild(style);
+  uiRoot.appendChild(style);
 
   const panel = document.createElement("div");
   panel.id = "mt-floating-panel";
@@ -714,7 +723,7 @@
       <div class="mt-title">
         <span id="mt-server-dot" class="mt-server-dot" title="Статус локального сервера"></span>
         <span>Manga Translator</span>
-        <span class="mt-ver-tag">v5.3.1</span>
+        <span class="mt-ver-tag">v6.1.0</span>
       </div>
       <div style="display:flex; gap:4px;">
         <button id="mt-web-ui-btn" class="mt-icon-btn" title="Открыть локальную Веб-Студию (http://127.0.0.1:5000/)">🌐</button>
@@ -744,11 +753,9 @@
 
       <div class="mt-row">
         <span class="mt-label">Режим:</span>
-        <select id="mt-pipeline-mode" class="mt-select" title="Режим работы пайплайна (скорость / точность / 2-Pass Ультра)">
-          <option value="fast">⚡ Быстрый (Fast)</option>
-          <option value="balanced">⚖️ Оптимальный (Balanced)</option>
-          <option value="accuracy">🎯 Макс. точность (Accuracy)</option>
-          <option value="ultra">💎 Ультра (2-Pass AI & Deep Redraw)</option>
+        <select id="mt-pipeline-mode" class="mt-select" title="Режим работы пайплайна (Стандарт / Максимум HQ)">
+          <option value="balanced">⚖️ Стандарт (Быстрый и чистый)</option>
+          <option value="ultra">💎 Максимум (HQ + Deep Redraw)</option>
         </select>
       </div>
 
@@ -834,7 +841,8 @@
         </div>
         <div class="mt-row">
           <span class="mt-label">API Key:</span>
-          <input id="mt-unsloth-key" class="mt-input" type="password" placeholder="Оставьте пустым, чтобы не менять" />
+          <input id="mt-unsloth-key" class="mt-input" type="password" autocomplete="off" placeholder="Оставьте пустым, чтобы не менять" />
+          <button id="mt-clear-key-btn" type="button" class="mt-icon-btn" title="Очистить API Key на сервере">✖</button>
         </div>
         <div class="mt-row">
           <span class="mt-label">ID модели:</span>
@@ -911,14 +919,14 @@
       <div id="mt-status-text" class="mt-status">Нажмите 🔄 для проверки сервера</div>
     </div>
   `;
-  (document.body || document.documentElement).appendChild(panel);
+  uiRoot.appendChild(panel);
 
   const fabLauncher = document.createElement("button");
   fabLauncher.id = "mt-fab-launcher";
   fabLauncher.type = "button";
-  fabLauncher.title = "Открыть панель Manga Translator v5.3.1 (Alt+T — перевести страницу)";
+  fabLauncher.title = "Открыть панель Manga Translator v6.1.0 (Alt+T — перевести страницу)";
   fabLauncher.innerHTML = `<span>🉐</span><span>Переводчик</span>`;
-  (document.body || document.documentElement).appendChild(fabLauncher);
+  uiRoot.appendChild(fabLauncher);
 
   function setPanelOpenState(openState) {
     panel.classList.toggle("mt-open", Boolean(openState));
@@ -945,60 +953,61 @@
     });
   });
 
-  const headerDrag = document.getElementById("mt-header-drag");
-  const serverDot = document.getElementById("mt-server-dot");
-  const minimizeBtn = document.getElementById("mt-minimize-btn");
-  const sourceLangSelect = document.getElementById("mt-source-lang");
-  const targetLangSelect = document.getElementById("mt-target-lang");
-  const pipelineModeSelect = document.getElementById("mt-pipeline-mode");
-  const imageContextChk = document.getElementById("mt-image-context-chk");
-  const activeModelBar = document.getElementById("mt-active-model-bar");
-  const providerBadge = document.getElementById("mt-provider-badge");
-  const activeModelTitle = document.getElementById("mt-active-model-title");
-  const activeModelSub = document.getElementById("mt-active-model-sub");
-  const modelChevron = document.getElementById("mt-model-chevron");
-  const pillAuto = document.getElementById("mt-pill-auto");
-  const pillFlash = document.getElementById("mt-pill-flash");
-  const pillPro = document.getElementById("mt-pill-pro");
-  const pillLocal = document.getElementById("mt-pill-local");
-  const customModelPicker = document.getElementById("mt-custom-model-picker");
-  const modelSearchInput = document.getElementById("mt-model-search-input");
-  const modelListItems = document.getElementById("mt-model-list-items");
-  const pullProgressWrap = document.getElementById("mt-pull-progress-wrap");
-  const pullProgressText = document.getElementById("mt-pull-progress-text");
-  const pullProgressFill = document.getElementById("mt-pull-progress-fill");
-  const startServerBtn = document.getElementById("mt-start-server-btn");
-  const translateAllBtn = document.getElementById("mt-translate-all-btn");
-  const translateViewportBtn = document.getElementById("mt-translate-viewport-btn");
-  const stopPageBtn = document.getElementById("mt-stop-page-btn");
-  const pageProgressWrap = document.getElementById("mt-page-progress-wrap");
-  const pageProgressText = document.getElementById("mt-page-progress-text");
-  const pageProgressFill = document.getElementById("mt-page-progress-fill");
-  const folderBtn = document.getElementById("mt-folder-btn");
-  const folderProgressWrap = document.getElementById("mt-folder-progress-wrap");
-  const folderProgressText = document.getElementById("mt-folder-progress-text");
-  const folderStopBtn = document.getElementById("mt-folder-stop-btn");
-  const progressBarFill = document.getElementById("mt-progress-bar-fill");
-  const toggleOrigBtn = document.getElementById("mt-toggle-orig-btn");
-  const settingsDrawer = document.getElementById("mt-settings-drawer");
-  const unslothUrlInput = document.getElementById("mt-unsloth-url");
-  const unslothKeyInput = document.getElementById("mt-unsloth-key");
-  const manualModelInput = document.getElementById("mt-manual-model");
-  const minFontSlider = document.getElementById("mt-min-font-slider");
-  const minFontVal = document.getElementById("mt-min-font-val");
-  const fontSlider = document.getElementById("mt-font-slider");
-  const fontVal = document.getElementById("mt-font-val");
-  const overflowModeSel = document.getElementById("mt-overflow-mode-sel");
-  const autoSaveChk = document.getElementById("mt-autosave-chk");
-  const webSaveDirInput = document.getElementById("mt-web-save-dir");
-  const pickSaveDirBtn = document.getElementById("mt-pick-save-dir-btn");
-  const openSavedBtn = document.getElementById("mt-open-saved-btn");
-  const filterModeSel = document.getElementById("mt-filter-mode-sel");
-  const skipSighsChk = document.getElementById("mt-skip-sighs-chk");
-  const skipSfxChk = document.getElementById("mt-skip-sfx-chk");
-  const freeTextChk = document.getElementById("mt-free-text-chk");
-  const uppercaseChk = document.getElementById("mt-uppercase-chk");
-  const statusText = document.getElementById("mt-status-text");
+  const headerDrag = $mt("mt-header-drag");
+  const serverDot = $mt("mt-server-dot");
+  const minimizeBtn = $mt("mt-minimize-btn");
+  const sourceLangSelect = $mt("mt-source-lang");
+  const targetLangSelect = $mt("mt-target-lang");
+  const pipelineModeSelect = $mt("mt-pipeline-mode");
+  const imageContextChk = $mt("mt-image-context-chk");
+  const activeModelBar = $mt("mt-active-model-bar");
+  const providerBadge = $mt("mt-provider-badge");
+  const activeModelTitle = $mt("mt-active-model-title");
+  const activeModelSub = $mt("mt-active-model-sub");
+  const modelChevron = $mt("mt-model-chevron");
+  const pillAuto = $mt("mt-pill-auto");
+  const pillFlash = $mt("mt-pill-flash");
+  const pillPro = $mt("mt-pill-pro");
+  const pillLocal = $mt("mt-pill-local");
+  const customModelPicker = $mt("mt-custom-model-picker");
+  const modelSearchInput = $mt("mt-model-search-input");
+  const modelListItems = $mt("mt-model-list-items");
+  const pullProgressWrap = $mt("mt-pull-progress-wrap");
+  const pullProgressText = $mt("mt-pull-progress-text");
+  const pullProgressFill = $mt("mt-pull-progress-fill");
+  const startServerBtn = $mt("mt-start-server-btn");
+  const translateAllBtn = $mt("mt-translate-all-btn");
+  const translateViewportBtn = $mt("mt-translate-viewport-btn");
+  const stopPageBtn = $mt("mt-stop-page-btn");
+  const pageProgressWrap = $mt("mt-page-progress-wrap");
+  const pageProgressText = $mt("mt-page-progress-text");
+  const pageProgressFill = $mt("mt-page-progress-fill");
+  const folderBtn = $mt("mt-folder-btn");
+  const folderProgressWrap = $mt("mt-folder-progress-wrap");
+  const folderProgressText = $mt("mt-folder-progress-text");
+  const folderStopBtn = $mt("mt-folder-stop-btn");
+  const progressBarFill = $mt("mt-progress-bar-fill");
+  const toggleOrigBtn = $mt("mt-toggle-orig-btn");
+  const settingsDrawer = $mt("mt-settings-drawer");
+  const unslothUrlInput = $mt("mt-unsloth-url");
+  const unslothKeyInput = $mt("mt-unsloth-key");
+  const clearKeyBtn = $mt("mt-clear-key-btn");
+  const manualModelInput = $mt("mt-manual-model");
+  const minFontSlider = $mt("mt-min-font-slider");
+  const minFontVal = $mt("mt-min-font-val");
+  const fontSlider = $mt("mt-font-slider");
+  const fontVal = $mt("mt-font-val");
+  const overflowModeSel = $mt("mt-overflow-mode-sel");
+  const autoSaveChk = $mt("mt-autosave-chk");
+  const webSaveDirInput = $mt("mt-web-save-dir");
+  const pickSaveDirBtn = $mt("mt-pick-save-dir-btn");
+  const openSavedBtn = $mt("mt-open-saved-btn");
+  const filterModeSel = $mt("mt-filter-mode-sel");
+  const skipSighsChk = $mt("mt-skip-sighs-chk");
+  const skipSfxChk = $mt("mt-skip-sfx-chk");
+  const freeTextChk = $mt("mt-free-text-chk");
+  const uppercaseChk = $mt("mt-uppercase-chk");
+  const statusText = $mt("mt-status-text");
 
   /* Перетаскивание панели за шапку */
   let isDraggingPanel = false;
@@ -1018,6 +1027,7 @@
   }
 
   headerDrag.addEventListener("mousedown", (e) => {
+    if (!e.isTrusted) return;
     if (e.target.closest("button")) return;
     isDraggingPanel = true;
     const rect = panel.getBoundingClientRect();
@@ -1026,7 +1036,7 @@
     e.preventDefault();
   });
 
-  window.addEventListener("mousemove", (e) => {
+  const onWindowMouseMove = (e) => {
     if (!isDraggingPanel) return;
     const maxLeft = Math.max(8, window.innerWidth - panel.offsetWidth - 8);
     const maxTop = Math.max(8, window.innerHeight - 54);
@@ -1036,14 +1046,16 @@
     panel.style.top = `${Math.round(newTop)}px`;
     panel.style.right = "auto";
     settings.panelPos = { left: Math.round(newLeft), top: Math.round(newTop) };
-  });
+  };
+  window.addEventListener("mousemove", onWindowMouseMove);
 
-  window.addEventListener("mouseup", () => {
+  const onWindowMouseUp = () => {
     if (isDraggingPanel) {
       isDraggingPanel = false;
       saveLocalSettings();
     }
-  });
+  };
+  window.addEventListener("mouseup", onWindowMouseUp);
 
   minimizeBtn.addEventListener("click", () => {
     settings.minimized = !settings.minimized;
@@ -1146,14 +1158,11 @@
       imageContextChk.checked = Boolean(settings.useImageContext);
     }
     unslothUrlInput.value = settings.unslothUrl;
-    if (settings.unslothApiKey) {
-      unslothKeyInput.value = settings.unslothApiKey;
-      unslothKeyInput.placeholder = "Ключ сохранен";
-    } else if (serverHasApiKey) {
-      unslothKeyInput.value = "";
-      unslothKeyInput.placeholder = "•••••••• (ключ сохранен на сервере)";
+    unslothKeyInput.value = "";
+    if (serverHasApiKey) {
+      const maskHint = serverMaskedApiKey ? ` (${serverMaskedApiKey})` : "";
+      unslothKeyInput.placeholder = `••••••••${maskHint} — введите новый для замены`;
     } else {
-      unslothKeyInput.value = "";
       unslothKeyInput.placeholder = "Пусто, если без пароля";
     }
     manualModelInput.value = settings.model !== "auto" ? settings.model : "";
@@ -1169,7 +1178,7 @@
     skipSfxChk.checked = settings.skipSfx !== false;
     freeTextChk.checked = Boolean(settings.detectFreeText);
     uppercaseChk.checked = settings.uppercase;
-    const antiCensorChk = document.getElementById("mt-anti-censorship-chk");
+    const antiCensorChk = $mt("mt-anti-censorship-chk");
     if (antiCensorChk) antiCensorChk.checked = Boolean(settings.antiCensorshipPrompt);
     panel.classList.toggle("mt-minimized", Boolean(settings.minimized));
     minimizeBtn.textContent = settings.minimized ? "▢" : "—";
@@ -1179,11 +1188,12 @@
 
   migrateAndLoadSettings(syncUiFromSettings);
 
-  document.getElementById("mt-close-panel-btn").addEventListener("click", () => {
+  $mt("mt-close-panel-btn").addEventListener("click", () => {
     setPanelOpenState(false);
   });
 
-  document.getElementById("mt-web-ui-btn").addEventListener("click", () => {
+  $mt("mt-web-ui-btn").addEventListener("click", (e) => {
+    if (!e.isTrusted) return;
     window.open("http://127.0.0.1:5000/", "_blank");
   });
 
@@ -1199,8 +1209,8 @@
 
   if (pipelineModeSelect) {
     pipelineModeSelect.addEventListener("change", () => {
-      settings.pipelineMode = pipelineModeSelect.value || "balanced";
-      if (settings.pipelineMode === "accuracy" || settings.pipelineMode === "ultra") {
+      settings.pipelineMode = normalizePipelineMode(pipelineModeSelect.value || "balanced");
+      if (settings.pipelineMode === "ultra") {
         settings.useImageContext = true;
         if (imageContextChk) imageContextChk.checked = true;
       }
@@ -1409,7 +1419,8 @@
     saveLocalSettings();
   });
 
-  pickSaveDirBtn.addEventListener("click", async () => {
+  pickSaveDirBtn.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     statusText.textContent = "Выберите папку сохранения в окне Windows...";
     const res = await safeSendMessage({ action: "PICK_WEB_SAVE_FOLDER" });
     if (res && res.ok && res.data && res.data.status === "ok") {
@@ -1422,7 +1433,8 @@
     }
   });
 
-  openSavedBtn.addEventListener("click", async () => {
+  openSavedBtn.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     const res = await safeSendMessage({
       action: "OPEN_WEB_SAVE_FOLDER",
       path: settings.webSaveDir || null,
@@ -1499,21 +1511,39 @@
     safeSendMessage({ action: "SAVE_SERVER_SETTINGS", uppercase: settings.uppercase });
   });
 
-  document.getElementById("mt-settings-toggle").addEventListener("click", () => {
+  $mt("mt-settings-toggle").addEventListener("click", () => {
     const isHidden = settingsDrawer.style.display === "none" || !settingsDrawer.style.display;
     settingsDrawer.style.display = isHidden ? "flex" : "none";
   });
 
-  document.getElementById("mt-refresh-btn").addEventListener("click", () => {
+  $mt("mt-refresh-btn").addEventListener("click", () => {
     checkServerAndLoadModels(false, true);
   });
 
-  document.getElementById("mt-save-settings-btn").addEventListener("click", async () => {
+  if (clearKeyBtn) {
+    clearKeyBtn.addEventListener("click", async (e) => {
+      if (!e.isTrusted) return;
+      unslothKeyInput.value = "";
+      statusText.textContent = "🔑 Очистка API-ключа на сервере...";
+      const res = await safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        clearApiKey: true,
+      });
+      if (res && res.ok && res.data) {
+        serverHasApiKey = Boolean(res.data.has_unsloth_key);
+        serverMaskedApiKey = String(res.data.masked_api_key || "");
+        syncUiFromSettings();
+        statusText.textContent = "✅ API-ключ удален с сервера.";
+      } else {
+        statusText.textContent = `❌ ${(res && res.error) || "Сервер недоступен"}`;
+      }
+    });
+  }
+
+  $mt("mt-save-settings-btn").addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     settings.unslothUrl = unslothUrlInput.value.trim() || "https://moduleapi.pro/v1";
     const enteredKey = unslothKeyInput.value.trim();
-    if (enteredKey) {
-      settings.unslothApiKey = enteredKey;
-    }
     settings.autoSaveWeb = autoSaveChk.checked;
     settings.webSaveDir = webSaveDirInput.value.trim();
     settings.overflowMode = overflowModeSel.value || "shrink";
@@ -1544,7 +1574,7 @@
       maxFontSize: settings.maxFontSize,
       uppercase: settings.uppercase,
       overflowMode: settings.overflowMode,
-      antiCensorshipPrompt: Boolean(document.getElementById("mt-anti-censorship-chk")?.checked),
+      antiCensorshipPrompt: Boolean($mt("mt-anti-censorship-chk")?.checked),
     };
     if (enteredKey) {
       savePayload.unslothApiKey = enteredKey;
@@ -1555,16 +1585,26 @@
       availableModelsCache = res.data.models || [];
       resolvedServerModel = res.data.active_model || settings.model;
       serverHasApiKey = Boolean(res.data.has_unsloth_key);
+      serverMaskedApiKey = String(res.data.masked_api_key || "");
+      if (res.data.unsloth_url) {
+        settings.unslothUrl = res.data.unsloth_url;
+        saveLocalSettings();
+      }
+      unslothKeyInput.value = "";
       syncUiFromSettings();
       renderCustomModelList(availableModelsCache, resolvedServerModel);
       const shortActive = resolvedServerModel.replace(/^.*?::/, "");
-      statusText.textContent = `✅ Сохранено! Активна: ${shortActive}`;
+      const probeErr = res.data.unsloth_status?.error;
+      statusText.textContent = probeErr
+        ? `✅ Сохранено! Активна: ${shortActive} (⚠️ ${probeErr})`
+        : `✅ Сохранено! Активна: ${shortActive}`;
     } else {
       statusText.textContent = `❌ ${(res && res.error) || "Сервер недоступен"}`;
     }
   });
 
-  startServerBtn.addEventListener("click", async () => {
+  startServerBtn.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     statusText.textContent = "Запуск сервера (~6–10 сек)...";
     triggerCustomProtocol("manga-translator://start");
 
@@ -1577,7 +1617,8 @@
     statusText.textContent = "Не удалось дождаться ответа сервера. Нажмите 🔄";
   });
 
-  document.getElementById("mt-stop-server-btn").addEventListener("click", async () => {
+  $mt("mt-stop-server-btn").addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     await safeSendMessage({ action: "STOP_SERVER" });
     setTimeout(() => checkServerAndLoadModels(false, false), 800);
   });
@@ -1732,11 +1773,9 @@
 
       const hd = healthRes.data || {};
       serverHasApiKey = Boolean(hd.has_unsloth_key);
+      serverMaskedApiKey = String(hd.masked_api_key || "");
       if (hd.unsloth_url) {
         settings.unslothUrl = hd.unsloth_url;
-      }
-      if (hd.unsloth_api_key && !settings.unslothApiKey) {
-        settings.unslothApiKey = hd.unsloth_api_key;
       }
       if (hd.selected_model) {
         settings.model = hd.selected_model;
@@ -1751,7 +1790,7 @@
         settings.overflowMode = hd.overflow_mode;
       }
       if (hd.pipeline_mode) {
-        settings.pipelineMode = hd.pipeline_mode;
+        settings.pipelineMode = normalizePipelineMode(hd.pipeline_mode);
       }
       if (typeof hd.use_image_context === "boolean") {
         settings.useImageContext = hd.use_image_context;
@@ -2039,14 +2078,16 @@
     }
   }
 
-  let badgesLayer = document.getElementById("mt-badges-layer");
+  let badgesLayer = $mt("mt-badges-layer");
   if (!badgesLayer) {
     badgesLayer = document.createElement("div");
     badgesLayer.id = "mt-badges-layer";
-    document.body.appendChild(badgesLayer);
+    uiRoot.appendChild(badgesLayer);
   }
 
   const trackedImages = new Set();
+  const imgBadgeMap = new WeakMap();
+  const hookedLoadImages = new WeakSet();
 
   function updateBadgePosition(img, badge) {
     if (!img || !img.isConnected || !badge) return;
@@ -2078,18 +2119,21 @@
 
   function refreshActiveBadgePositions() {
     trackedImages.forEach((img) => {
+      const badge = imgBadgeMap.get(img);
       if (!img.isConnected) {
-        if (img.__mtBadge) img.__mtBadge.remove();
+        if (badge) badge.remove();
+        imgBadgeMap.delete(img);
         trackedImages.delete(img);
         return;
       }
-      if (img.__mtBadge) {
-        updateBadgePosition(img, img.__mtBadge);
+      if (badge) {
+        updateBadgePosition(img, badge);
       }
     });
   }
 
   let scrollScanTimer = null;
+  let mutationScanTimer = null;
   const onWindowScroll = () => {
     refreshActiveBadgePositions();
     if (!scrollScanTimer) {
@@ -2100,11 +2144,13 @@
     }
   };
 
-  window.addEventListener("scroll", onWindowScroll, { passive: true });
-  window.addEventListener("resize", () => {
+  const onWindowResize = () => {
     refreshActiveBadgePositions();
     applySavedPanelPosition();
-  }, { passive: true });
+  };
+
+  window.addEventListener("scroll", onWindowScroll, { passive: true });
+  window.addEventListener("resize", onWindowResize, { passive: true });
 
   /* Отслеживание наведения по координатам курсора — работает даже если поверх <img> лежит оверлей читалки */
   let pointerRafPending = false;
@@ -2129,7 +2175,7 @@
         }
       }
       trackedImages.forEach((img) => {
-        const badge = img.__mtBadge;
+        const badge = imgBadgeMap.get(img);
         if (!badge || !img.isConnected) return;
         const r = img.getBoundingClientRect();
         const inside =
@@ -2154,17 +2200,15 @@
   window.addEventListener("mousemove", onGlobalPointerMove, { passive: true });
 
   function attachBadgeToImage(img) {
-    if (img.dataset.mtAttached === "true") return;
+    if (imgBadgeMap.has(img)) return;
     if (!isMangaCandidate(img)) return;
 
-    img.dataset.mtAttached = "true";
-
     if (!badgesLayer || !badgesLayer.isConnected) {
-      badgesLayer = document.getElementById("mt-badges-layer");
+      badgesLayer = $mt("mt-badges-layer");
       if (!badgesLayer) {
         badgesLayer = document.createElement("div");
         badgesLayer.id = "mt-badges-layer";
-        (document.body || document.documentElement).appendChild(badgesLayer);
+        uiRoot.appendChild(badgesLayer);
       }
     }
 
@@ -2198,23 +2242,24 @@
     badge.addEventListener("mouseleave", hideBadge);
 
     badge.addEventListener("click", (e) => {
+      if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
       translateSingleImage(img, badge);
     });
 
     badgesLayer.appendChild(badge);
-    img.__mtBadge = badge;
+    imgBadgeMap.set(img, badge);
     trackedImages.add(img);
   }
 
   function scanPageImages() {
     document.querySelectorAll("img").forEach((img) => {
-      if (img.dataset.mtAttached === "true") return;
+      if (imgBadgeMap.has(img)) return;
       if (isMangaCandidate(img)) {
         attachBadgeToImage(img);
-      } else if (img.dataset.mtLoadHooked !== "true") {
-        img.dataset.mtLoadHooked = "true";
+      } else if (!hookedLoadImages.has(img)) {
+        hookedLoadImages.add(img);
         img.addEventListener("load", () => attachBadgeToImage(img));
       }
     });
@@ -2248,7 +2293,7 @@
       pageProgressText.textContent = `⏳ Перевод ${i + 1} из ${candidates.length} (готово: ${okCount})...`;
       statusText.textContent = `⏳ Перевод ${modeLabel}: ${i + 1} из ${candidates.length}...`;
 
-      const res = await translateSingleImage(candidates[i], candidates[i].__mtBadge);
+      const res = await translateSingleImage(candidates[i], imgBadgeMap.get(candidates[i]));
       if (res && res.ok) {
         okCount++;
       } else if (!res?.skipped) {
@@ -2370,12 +2415,14 @@
     }, 1000);
   }
 
-  folderStopBtn.addEventListener("click", async () => {
+  folderStopBtn.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     folderProgressText.textContent = "⏸ Остановка перевода папки...";
     await safeSendMessage({ action: "STOP_FOLDER_TRANSLATION" });
   });
 
-  folderBtn.addEventListener("click", async () => {
+  folderBtn.addEventListener("click", async (e) => {
+    if (!e.isTrusted) return;
     statusText.textContent = "Выберите папку в открывшемся окне Windows...";
     folderBtn.disabled = true;
 
@@ -2413,9 +2460,18 @@
     pollFolderStatus();
   });
 
-  translateAllBtn.addEventListener("click", translateAllVisibleImages);
-  translateViewportBtn.addEventListener("click", translateViewportImagesOnly);
-  toggleOrigBtn.addEventListener("click", toggleOriginalAll);
+  translateAllBtn.addEventListener("click", (e) => {
+    if (!e.isTrusted) return;
+    translateAllVisibleImages();
+  });
+  translateViewportBtn.addEventListener("click", (e) => {
+    if (!e.isTrusted) return;
+    translateViewportImagesOnly();
+  });
+  toggleOrigBtn.addEventListener("click", (e) => {
+    if (!e.isTrusted) return;
+    toggleOriginalAll();
+  });
 
   const onRuntimeMessage = (msg, _sender, sendResponse) => {
     if (msg && msg.action === "TOGGLE_PANEL") {
@@ -2437,6 +2493,7 @@
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
   const onKeyDown = (e) => {
+    if (!e.isTrusted) return;
     if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyT" || e.key === "t" || e.key === "T")) {
       e.preventDefault();
       if (!panel.classList.contains("mt-open")) {
@@ -2448,28 +2505,39 @@
   window.addEventListener("keydown", onKeyDown);
 
   scanPageImages();
-  const observer = new MutationObserver(() => scanPageImages());
+  const observer = new MutationObserver(() => {
+    if (mutationScanTimer) return;
+    mutationScanTimer = setTimeout(() => {
+      mutationScanTimer = null;
+      scanPageImages();
+    }, 250);
+  });
   if (document.body) {
     observer.observe(document.body, {
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["src", "srcset", "data-src", "data-lazy-src", "data-original", "class"],
+      attributeFilter: ["src", "srcset", "data-src", "data-lazy-src", "data-original"],
     });
   }
 
   window.__mtCleanup = () => {
+    const wasOpen = panel.classList.contains("mt-open");
     observer.disconnect();
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("scroll", onWindowScroll);
+    window.removeEventListener("resize", onWindowResize);
     window.removeEventListener("mousemove", onGlobalPointerMove);
+    window.removeEventListener("mousemove", onWindowMouseMove);
+    window.removeEventListener("mouseup", onWindowMouseUp);
     if (scrollScanTimer) clearTimeout(scrollScanTimer);
+    if (mutationScanTimer) clearTimeout(mutationScanTimer);
     if (folderPollTimer) clearInterval(folderPollTimer);
     if (pullPollTimer) clearInterval(pullPollTimer);
-    if (badgesLayer) badgesLayer.remove();
-    if (fabLauncher) fabLauncher.remove();
+    if (shadowHost && shadowHost.isConnected) shadowHost.remove();
     try {
       chrome.runtime.onMessage.removeListener(onRuntimeMessage);
     } catch (_) {}
+    return { open: wasOpen };
   };
 })();

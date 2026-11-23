@@ -25,9 +25,11 @@ echo   [12] Qwen 3 30B-A3B MoE (Top-3 JP-TL-Bench 84.3% WR Translator, ~16.0 GB)
 echo ==========================================================================
 set "CHOICE=1"
 set /p "CHOICE=Select model to download [1-12] (Enter=1): "
+set "CHOICE=%CHOICE:"=%"
 
-set "MODEL_TAG=hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M"
+set "MODEL_TAG="
 set "SET_DEFAULT=True"
+if "%CHOICE%"=="1" set "MODEL_TAG=hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M"
 if "%CHOICE%"=="2" set "MODEL_TAG=hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M"
 if "%CHOICE%"=="3" set "MODEL_TAG=hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF"
 if "%CHOICE%"=="4" set "MODEL_TAG=hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M"
@@ -39,9 +41,19 @@ if "%CHOICE%"=="9" (
     set "MODEL_TAG=glm-ocr:latest"
     set "SET_DEFAULT=False"
 )
-if "%CHOICE%"=="10" set "MODEL_TAG=qwen3-vl:8b"
+if "%CHOICE%"=="10" (
+    set "MODEL_TAG=qwen3-vl:8b"
+    set "SET_DEFAULT=False"
+)
 if "%CHOICE%"=="11" set "MODEL_TAG=gemma3:27b-it-qat"
 if "%CHOICE%"=="12" set "MODEL_TAG=qwen3:30b-a3b"
+
+if not defined MODEL_TAG (
+    echo.
+    echo [ERROR] Invalid selection "%CHOICE%". Please choose a number from 1 to 12.
+    pause
+    exit /b 1
+)
 
 echo.
 echo [1/1] Downloading and registering "%MODEL_TAG%" (with automatic Python GGUF bypass if Ollama blocks VPN redirect)...

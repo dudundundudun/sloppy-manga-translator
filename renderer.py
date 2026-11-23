@@ -26,9 +26,11 @@
 
 from __future__ import annotations
 
+from collections import OrderedDict
 from dataclasses import dataclass
 import logging
 import math
+import threading
 import time
 import re
 from pathlib import Path
@@ -564,7 +566,15 @@ def render_edt_supersampled_layer(
 
     rgba_u8 = np.clip(rgba_ss * np.array([1.0, 1.0, 1.0, 255.0], dtype=np.float32), 0.0, 255.0).round().astype(np.uint8)
     if ss > 1:
-        rgba_u8 = cv2.resize(rgba_u8, (w0, h0), interpolation=cv2.INTER_AREA)
+        # Premultiply RGB by alpha before INTER_AREA downsampling to eliminate dark edge fringes
+        alpha_f = rgba_u8[..., 3:4].astype(np.float32) / 255.0
+        alpha_u8_f = rgba_u8[..., 3:4].astype(np.float32)
+        premult = np.concatenate([rgba_u8[..., :3].astype(np.float32) * alpha_f, alpha_u8_f], axis=-1)
+        down = cv2.resize(premult, (w0, h0), interpolation=cv2.INTER_AREA)
+        down_a = down[..., 3:4]
+        safe_a = np.maximum(down_a, 1e-4)
+        down_rgb = np.where(down_a > 0.5, down[..., :3] * (255.0 / safe_a), 0.0)
+        rgba_u8 = np.clip(np.concatenate([down_rgb, down_a], axis=-1), 0.0, 255.0).round().astype(np.uint8)
     return Image.fromarray(rgba_u8, mode="RGBA")
 
 
@@ -874,9 +884,13 @@ class SotaShapeAwareRenderer:
             if Path(cand).exists():
                 try:
                     return ImageFont.truetype(cand, font_size)
-                except OSError:
+                except OSError as exc:
+                    logger.debug("Fallback font failed (%s): %s", cand, exc)
                     continue
-        return ImageFont.load_default()
+        try:
+            return ImageFont.load_default(size=font_size)
+        except TypeError:
+            return ImageFont.load_default()
 
     def compute_optimal_layout(
         self,
@@ -1127,6 +1141,32 @@ class MangaRenderer:
     """Вписывает переведенный текст в очищенные бабблы и свободные области страницы манги (v5.3.0 Ultra Edition)."""
 
     _PYPHEN_HYPHENATORS: dict[str, Any] = {}
+    _LINE_METRIC_LOCK = threading.RLock()
+
+    @staticmethod
+    def _pil_to_rgb_u8(image: Image.Image) -> Image.Image:
+        mode = getattr(image, "mode", "")
+        if mode in ("I;16", "I;16L", "I;16B", "I;16N", "I"):
+            arr = np.asarray(image, dtype=np.float32)
+            if arr.size > 0 and float(arr.max()) > 255.0:
+                arr = np.clip(arr / 256.0, 0.0, 255.0)
+            return Image.fromarray(arr.astype(np.uint8), mode="L").convert("RGB")
+        if mode in ("RGBA", "LA", "PA") or (mode == "P" and "transparency" in getattr(image, "info", {})):
+            rgba = image.convert("RGBA")
+            bg = Image.new("RGB", rgba.size, (255, 255, 255))
+            bg.paste(rgba, mask=rgba.split()[3])
+            return bg
+        if mode == "RGB":
+            return image
+        return image.convert("RGB")
+
+    @staticmethod
+    def _font_cache_identity(font: ImageFont.FreeTypeFont | ImageFont.ImageFont | None) -> tuple[str, int]:
+        if font is None:
+            return ("none", 0)
+        fpath = str(getattr(font, "path", None) or type(font).__name__)
+        fsize = int(getattr(font, "size", 0) or 0)
+        return (fpath, fsize)
 
     def __init__(
         self,
@@ -1149,15 +1189,33 @@ class MangaRenderer:
         self.overflow_mode = self._normalize_overflow_mode(overflow_mode)
         self.crossbar_i_mode = crossbar_i_mode
 
+        self._font_lock = threading.RLock()
+        self._fonts_dir_cache: tuple[int, list[Path]] | None = None
         self.font_path = self._resolve_font_path()
         self.fallback_font_paths: list[str] = [
             p for p in FALLBACK_SYMBOL_FONT_CANDIDATES if Path(p).exists()
         ]
-        self._font_cache: dict[tuple[str, int], ImageFont.FreeTypeFont | ImageFont.ImageFont] = {}
-        self._notdef_sig_cache: dict[int, set[tuple[tuple[int, int], bytes]]] = {}
-        self._glyph_support_cache: dict[tuple[int, str], bool] = {}
+        self._font_cache: OrderedDict[tuple[str, int], ImageFont.FreeTypeFont | ImageFont.ImageFont] = OrderedDict()
+        self._notdef_sig_cache: OrderedDict[tuple[str, int], set[tuple[tuple[int, int], bytes]]] = OrderedDict()
+        self._glyph_support_cache: OrderedDict[tuple[tuple[str, int], str], bool] = OrderedDict()
         self._symbol_icon_cache: dict[tuple[str, int, tuple[int, int, int], tuple[int, int, int], int], Image.Image] = {}
         logger.info("Используемый шрифт для тайпсеттинга: %s", self.font_path or "Pillow Default")
+
+    def _list_custom_font_files(self) -> list[Path]:
+        if not self.fonts_dir.exists():
+            return []
+        try:
+            dir_mtime_ns = int(self.fonts_dir.stat().st_mtime_ns)
+        except OSError:
+            dir_mtime_ns = -1
+        with self._font_lock:
+            if self._fonts_dir_cache is not None and self._fonts_dir_cache[0] == dir_mtime_ns:
+                return list(self._fonts_dir_cache[1])
+            files = sorted(
+                list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf"))
+            )
+            self._fonts_dir_cache = (dir_mtime_ns, files)
+            return list(files)
 
     @classmethod
     def _get_pyphen_hyphenator(cls, lang: str) -> Any | None:
@@ -1174,10 +1232,7 @@ class MangaRenderer:
 
     def has_custom_scanlation_fonts(self) -> bool:
         """Возвращает True, если в папке `fonts/` установлены пользовательские `.ttf`/`.otf` шрифты."""
-        if not self.fonts_dir.exists():
-            return False
-        custom_fonts = list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf"))
-        return len(custom_fonts) > 0
+        return len(self._list_custom_font_files()) > 0
 
     def get_font_status_info(self) -> dict[str, Any]:
         """Возвращает диагностику шрифтовой системы и список рекомендуемых сканлейт-шрифтов для UI."""
@@ -1197,16 +1252,13 @@ class MangaRenderer:
         }
 
     def _resolve_font_path(self) -> str | None:
-        if self.fonts_dir.exists():
-            custom_fonts = sorted(
-                list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf"))
-            )
-            if custom_fonts:
-                for pref_name in ("wildwords", "animeace", "anime_ace", "mangatemple", "manga_temple", "chinacat"):
-                    for f_path in custom_fonts:
-                        if pref_name in f_path.stem.lower().replace(" ", "_"):
-                            return str(f_path)
-                return str(custom_fonts[0])
+        custom_fonts = self._list_custom_font_files()
+        if custom_fonts:
+            for pref_name in ("wildwords", "animeace", "anime_ace", "mangatemple", "manga_temple", "chinacat"):
+                for f_path in custom_fonts:
+                    if pref_name in f_path.stem.lower().replace(" ", "_"):
+                        return str(f_path)
+            return str(custom_fonts[0])
 
         for candidate in DEFAULT_FONT_PATHS:
             local_cand = self.fonts_dir / candidate
@@ -1230,16 +1282,12 @@ class MangaRenderer:
             {"id": "Serif", "name": "📖 Georgia Bold / Cambria (Книжный нарратив)"},
         ]
         seen_ids = {x["id"].lower() for x in items}
-        if self.fonts_dir.exists():
-            custom_files = sorted(
-                list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf"))
-            )
-            for f_path in custom_files:
-                fid = f_path.name
-                if fid.lower() in seen_ids:
-                    continue
-                seen_ids.add(fid.lower())
-                items.append({"id": fid, "name": f"📁 {f_path.stem} ({f_path.suffix.lower()})"})
+        for f_path in self._list_custom_font_files():
+            fid = f_path.name
+            if fid.lower() in seen_ids:
+                continue
+            seen_ids.add(fid.lower())
+            items.append({"id": fid, "name": f"📁 {f_path.stem} ({f_path.suffix.lower()})"})
         return items
 
     def _resolve_font_family_path(
@@ -1255,38 +1303,56 @@ class MangaRenderer:
         if fam.lower() in ("comic", "comicbd.ttf", "comic.ttf", "comic sans", "comic sans ms"):
             fam = "Comic"
 
+        custom_files = self._list_custom_font_files()
+
         if fam and fam.lower() not in ("default", "auto", "none"):
-            local_cand = self.fonts_dir / fam
-            if local_cand.exists() and local_cand.is_file():
-                return str(local_cand)
-            if self.fonts_dir.exists():
-                for f_p in list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf")):
+            # Reject path traversal, UNC paths, and arbitrary filesystem paths
+            is_known_system_font = fam in DEFAULT_FONT_PATHS or any(
+                fam in cand_list for cand_list in SYSTEM_FONT_PRESETS.values()
+            )
+            has_unsafe_sep = (
+                "\\" in fam
+                or "/" in fam
+                or ".." in fam
+                or ":" in fam
+                or "\x00" in fam
+                or Path(fam).is_absolute()
+            )
+            if is_known_system_font and Path(fam).exists() and Path(fam).is_file():
+                return fam
+
+            if not has_unsafe_sep:
+                try:
+                    fonts_root = self.fonts_dir.resolve()
+                    local_cand = (fonts_root / Path(fam).name).resolve()
+                    if local_cand.is_relative_to(fonts_root) and local_cand.exists() and local_cand.is_file():
+                        return str(local_cand)
+                except OSError as exc:
+                    logger.debug("Font path resolution error for %r: %s", fam, exc)
+
+                for f_p in custom_files:
                     if f_p.name.lower() == fam.lower() or f_p.stem.lower() == fam.lower():
                         return str(f_p)
 
-            for preset_key, cand_list in SYSTEM_FONT_PRESETS.items():
-                if preset_key.lower() == fam.lower():
-                    for cand in cand_list:
-                        local_p = self.fonts_dir / cand
-                        if local_p.exists() and local_p.is_file():
-                            return str(local_p)
-                        if Path(cand).exists() and Path(cand).is_file():
-                            return cand
-
-            if Path(fam).exists() and Path(fam).is_file():
-                return str(Path(fam))
+                for preset_key, cand_list in SYSTEM_FONT_PRESETS.items():
+                    if preset_key.lower() == fam.lower():
+                        for cand in cand_list:
+                            local_p = self.fonts_dir / Path(cand).name
+                            if local_p.exists() and local_p.is_file():
+                                return str(local_p)
+                            if Path(cand).exists() and Path(cand).is_file():
+                                return cand
 
         preset_candidates = SYSTEM_FONT_PRESETS.get(preset, SYSTEM_FONT_PRESETS["dialogue"])
         for cand in preset_candidates:
-            local_p = self.fonts_dir / cand
+            local_p = self.fonts_dir / Path(cand).name
             if local_p.exists() and local_p.is_file():
                 return str(local_p)
-            if self.fonts_dir.exists():
-                cand_stem = Path(cand).stem.lower().replace(" ", "").replace("_", "").replace("-", "")
-                for f_p in list(self.fonts_dir.glob("*.ttf")) + list(self.fonts_dir.glob("*.otf")):
-                    f_norm = f_p.stem.lower().replace(" ", "").replace("_", "").replace("-", "")
-                    if cand_stem and (f_norm == cand_stem or cand_stem in f_norm):
-                        return str(f_p)
+            cand_stem = Path(cand).stem.lower().replace(" ", "").replace("_", "").replace("-", "")
+            for f_p in custom_files:
+                f_norm = f_p.stem.lower().replace(" ", "").replace("_", "").replace("-", "")
+                if cand_stem and (f_norm == cand_stem or cand_stem in f_norm):
+                    return str(f_p)
             if Path(cand).exists() and Path(cand).is_file():
                 return cand
 
@@ -1331,6 +1397,13 @@ class MangaRenderer:
     def _apply_crossbar_i_rule(text: str) -> str:
         return _apply_crossbar_i_rule(text)
 
+    @staticmethod
+    def _load_default_font_sized(size: int) -> ImageFont.FreeTypeFont | ImageFont.ImageFont:
+        try:
+            return ImageFont.load_default(size=size)
+        except TypeError:
+            return ImageFont.load_default()
+
     def _get_font(
         self,
         size: int,
@@ -1339,21 +1412,28 @@ class MangaRenderer:
         size = max(6, int(size))
         eff_path = font_family_path if font_family_path is not None else (self.font_path or "")
         cache_key = (str(eff_path), size)
-        if cache_key not in self._font_cache:
+        with self._font_lock:
+            if cache_key in self._font_cache:
+                self._font_cache.move_to_end(cache_key)
+                return self._font_cache[cache_key]
+            loaded: ImageFont.FreeTypeFont | ImageFont.ImageFont
             if eff_path:
                 try:
-                    self._font_cache[cache_key] = ImageFont.truetype(eff_path, size=size)
+                    loaded = ImageFont.truetype(eff_path, size=size)
                 except OSError:
                     if self.font_path and self.font_path != eff_path:
                         try:
-                            self._font_cache[cache_key] = ImageFont.truetype(self.font_path, size=size)
+                            loaded = ImageFont.truetype(self.font_path, size=size)
                         except OSError:
-                            self._font_cache[cache_key] = ImageFont.load_default()
+                            loaded = self._load_default_font_sized(size)
                     else:
-                        self._font_cache[cache_key] = ImageFont.load_default()
+                        loaded = self._load_default_font_sized(size)
             else:
-                self._font_cache[cache_key] = ImageFont.load_default()
-        return self._font_cache[cache_key]
+                loaded = self._load_default_font_sized(size)
+            self._font_cache[cache_key] = loaded
+            while len(self._font_cache) > 128:
+                self._font_cache.popitem(last=False)
+            return loaded
 
     def _is_glyph_missing(
         self,
@@ -1365,38 +1445,46 @@ class MangaRenderer:
         if ch in VECTOR_MANGA_SYMBOLS:
             return True
 
-        font_id = id(font)
+        font_id = self._font_cache_identity(font)
         cache_key = (font_id, ch)
-        if cache_key in self._glyph_support_cache:
-            return not self._glyph_support_cache[cache_key]
+        with self._font_lock:
+            if cache_key in self._glyph_support_cache:
+                self._glyph_support_cache.move_to_end(cache_key)
+                return not self._glyph_support_cache[cache_key]
 
-        if font_id not in self._notdef_sig_cache:
-            sigs: set[tuple[tuple[int, int], bytes]] = set()
-            for probe in ("\ufffd", "\ufffe", "\uffff", "\U0010ffff"):
-                try:
-                    m = font.getmask(probe)
-                    b = bytes(m)
-                    if b:
-                        sigs.add((m.size, b))
-                except Exception:
-                    pass
-            self._notdef_sig_cache[font_id] = sigs
-
-        notdef_sigs = self._notdef_sig_cache[font_id]
-        try:
-            mask = font.getmask(ch)
-            raw = bytes(mask)
-            if not raw:
-                supported = False
-            elif (mask.size, raw) in notdef_sigs:
-                supported = False
+            if font_id not in self._notdef_sig_cache:
+                sigs: set[tuple[tuple[int, int], bytes]] = set()
+                for probe in ("\ufffd", "\ufffe", "\uffff", "\U0010ffff"):
+                    try:
+                        m = font.getmask(probe)
+                        b = bytes(m)
+                        if b:
+                            sigs.add((m.size, b))
+                    except Exception as exc:
+                        logger.debug("Probe getmask error for %r: %s", probe, exc)
+                self._notdef_sig_cache[font_id] = sigs
+                while len(self._notdef_sig_cache) > 128:
+                    self._notdef_sig_cache.popitem(last=False)
             else:
-                supported = True
-        except Exception:
-            supported = False
+                self._notdef_sig_cache.move_to_end(font_id)
 
-        self._glyph_support_cache[cache_key] = supported
-        return not supported
+            notdef_sigs = self._notdef_sig_cache[font_id]
+            try:
+                mask = font.getmask(ch)
+                raw = bytes(mask)
+                if not raw:
+                    supported = False
+                elif (mask.size, raw) in notdef_sigs:
+                    supported = False
+                else:
+                    supported = True
+            except Exception:
+                supported = False
+
+            self._glyph_support_cache[cache_key] = supported
+            while len(self._glyph_support_cache) > 8192:
+                self._glyph_support_cache.popitem(last=False)
+            return not supported
 
     def _get_fallback_font_for_char(
         self,
@@ -1432,9 +1520,10 @@ class MangaRenderer:
         fs = max(8, int(font_size))
         sw_clamped = max(0, min(16, int(stroke_w)))
         cache_key = (sym, fs, text_fill, stroke_fill, sw_clamped)
-        cached = self._symbol_icon_cache.get(cache_key)
-        if cached is not None:
-            return cached
+        with self._font_lock:
+            cached = self._symbol_icon_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         ss = 4
         box = max(10, int(round(fs * 0.92)))
@@ -1562,9 +1651,10 @@ class MangaRenderer:
 
         target_size = (box + pad * 2, box + pad * 2)
         icon = img.resize(target_size, resample=Image.LANCZOS)
-        if len(self._symbol_icon_cache) > 512:
-            self._symbol_icon_cache.clear()
-        self._symbol_icon_cache[cache_key] = icon
+        with self._font_lock:
+            if len(self._symbol_icon_cache) > 512:
+                self._symbol_icon_cache.clear()
+            self._symbol_icon_cache[cache_key] = icon
         return icon
 
     @staticmethod
@@ -1605,7 +1695,7 @@ class MangaRenderer:
             total_w += float(draw.textlength(buf, font=font))
         return total_w
 
-    _LINE_METRIC_CACHE: dict[tuple[int, int, bool, bool], tuple[int, int, int, int]] = {}
+    _LINE_METRIC_CACHE: OrderedDict[tuple[tuple[str, int], int, bool, bool], tuple[int, int, int, int]] = OrderedDict()
 
     @classmethod
     def _get_font_line_metrics(
@@ -1620,32 +1710,34 @@ class MangaRenderer:
             est_def = max(2, int(round(fs * (0.18 if not use_upper else (0.14 if has_tall_cyr else 0.10)))))
             return fs, 0, fs + est_def, est_def
 
-        cache_key = (id(font), fs, bool(use_upper), bool(has_tall_cyr))
-        cached = cls._LINE_METRIC_CACHE.get(cache_key)
-        if cached is not None:
-            return cached
+        cache_key = (cls._font_cache_identity(font), fs, bool(use_upper), bool(has_tall_cyr))
+        with cls._LINE_METRIC_LOCK:
+            cached = cls._LINE_METRIC_CACHE.get(cache_key)
+            if cached is not None:
+                cls._LINE_METRIC_CACHE.move_to_end(cache_key)
+                return cached
 
-        dummy_img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
-        dummy_draw = ImageDraw.Draw(dummy_img)
-        b_a = dummy_draw.textbbox((0, 0), "A", font=font, stroke_width=0)
-        ba_y1 = int(b_a[3])
+            dummy_img = Image.new("RGBA", (16, 16), (0, 0, 0, 0))
+            dummy_draw = ImageDraw.Draw(dummy_img)
+            b_a = dummy_draw.textbbox((0, 0), "A", font=font, stroke_width=0)
+            ba_y1 = int(b_a[3])
 
-        if use_upper:
-            ref_sample = "АБВДЁЙЦЩABCDEFGHIJKLMNOPQRSTUVWXYZ?!" if has_tall_cyr else "АБВДЦЩABCDEFGHIJKLMNOPQRSTUVWXYZ?!"
-        else:
-            ref_sample = "АБВДЁЙЦЩабвгдеёжзийклмнопрстуфхцчшщъыьэюяABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz?!"
+            if use_upper:
+                ref_sample = "АБВДЁЙЦЩABCDEFGHIJKLMNOPQRSTUVWXYZ?!" if has_tall_cyr else "АБВДЦЩABCDEFGHIJKLMNOPQRSTUVWXYZ?!"
+            else:
+                ref_sample = "АБВДЁЙЦЩабвгдеёжзийклмнопрстуфхцчшщъыьэюяABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz?!"
 
-        b_ref = dummy_draw.textbbox((0, 0), ref_sample, font=font, stroke_width=0)
-        ref_y0 = int(b_ref[1])
-        ref_y1 = int(b_ref[3])
-        ref_h = max(fs, ref_y1 - ref_y0)
-        metric_deficit = max(0, ref_h - ba_y1)
+            b_ref = dummy_draw.textbbox((0, 0), ref_sample, font=font, stroke_width=0)
+            ref_y0 = int(b_ref[1])
+            ref_y1 = int(b_ref[3])
+            ref_h = max(fs, ref_y1 - ref_y0)
+            metric_deficit = max(0, ref_h - ba_y1)
 
-        res = (ba_y1, ref_y0, ref_y1, metric_deficit)
-        if len(cls._LINE_METRIC_CACHE) > 1024:
-            cls._LINE_METRIC_CACHE.clear()
-        cls._LINE_METRIC_CACHE[cache_key] = res
-        return res
+            res = (ba_y1, ref_y0, ref_y1, metric_deficit)
+            cls._LINE_METRIC_CACHE[cache_key] = res
+            while len(cls._LINE_METRIC_CACHE) > 512:
+                cls._LINE_METRIC_CACHE.popitem(last=False)
+            return res
 
     @staticmethod
     def _draw_multiline_text_clean(
@@ -1699,14 +1791,19 @@ class MangaRenderer:
         max_line_w = max(line_widths, default=float(fs))
 
         has_tall_cyr = any(ch in wrapped_text for ch in ("Ё", "Й", "ё", "й"))
+        is_all_upper = wrapped_text == wrapped_text.upper()
         ba_y1, ref_y0, ref_y1, _ = self._get_font_line_metrics(
             font=font,
             font_size=fs,
-            use_upper=False,
+            use_upper=is_all_upper,
             has_tall_cyr=has_tall_cyr,
         )
         glyph_h = max(fs, ref_y1 - ref_y0)
-        step_y = max(ba_y1 + 2 * stroke_w + spacing, glyph_h + 2 * stroke_w + max(2, int(round(fs * 0.12))))
+        tight_glyph_h = max(int(round(fs * 0.85)), ref_y1 - ref_y0)
+        step_y = max(
+            tight_glyph_h + stroke_w + max(2, int(round(fs * 0.16))),
+            ba_y1 + spacing + stroke_w,
+        )
         total_h = max(glyph_h + 2 * stroke_w, (len(lines) - 1) * step_y + glyph_h + 2 * stroke_w)
 
         pad = max(14, stroke_w * 2 + 10)
@@ -1896,11 +1993,16 @@ class MangaRenderer:
         lines = wrapped_text.split("\n")
         n_lines = max(1, len(lines))
         has_tall_cyr = any(ch in wrapped_text for ch in ("Ё", "Й", "ё", "й"))
+        is_all_upper = wrapped_text == wrapped_text.upper()
         ba_y1, ref_y0, ref_y1, _ = self._get_font_line_metrics(
-            font=font, font_size=fs, use_upper=False, has_tall_cyr=has_tall_cyr
+            font=font, font_size=fs, use_upper=is_all_upper, has_tall_cyr=has_tall_cyr
         )
         glyph_h = max(fs, ref_y1 - ref_y0)
-        step_y = max(ba_y1 + 2 * stroke_w + spacing, glyph_h + 2 * stroke_w + max(2, int(round(fs * 0.12))))
+        tight_glyph_h = max(int(round(fs * 0.85)), ref_y1 - ref_y0)
+        step_y = max(
+            tight_glyph_h + stroke_w + max(2, int(round(fs * 0.16))),
+            ba_y1 + spacing + stroke_w,
+        )
         total_h = max(glyph_h + 2 * stroke_w, (n_lines - 1) * step_y + glyph_h + 2 * stroke_w)
         eff_sh = target_safe_h if (target_safe_h and target_safe_h > 0) else total_h
 
@@ -1967,7 +2069,7 @@ class MangaRenderer:
     ) -> int:
         preset = (style_preset or "dialogue").lower().strip()
         has_tall_cyr = bool(text and any(ch in text for ch in ("Ё", "Й", "ё", "й")))
-        _, _, _, metric_deficit = cls._get_font_line_metrics(
+        _, ref_y0, _, metric_deficit = cls._get_font_line_metrics(
             font=font,
             font_size=font_size,
             use_upper=use_upper,
@@ -1989,6 +2091,10 @@ class MangaRenderer:
 
         if has_tall_cyr:
             visual_gap += max(1, int(round(font_size * 0.04)))
+
+        if use_upper and metric_deficit == 0 and ref_y0 >= 3:
+            excess_lead = max(0, ref_y0 - max(2, int(round(font_size * 0.14))))
+            return int(max(-min(4, excess_lead // 2), visual_gap - excess_lead))
 
         return int(metric_deficit + visual_gap)
 
@@ -2106,8 +2212,8 @@ class MangaRenderer:
                     idx_pos = int(pos)
                     if eff_min_part <= idx_pos <= n - eff_min_part:
                         pyphen_splits.add(idx_pos)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("pyphen hyphenation skipped: %s", exc)
 
         if is_latin:
             morpheme_splits: set[int] = set(pyphen_splits)
@@ -2772,9 +2878,20 @@ class MangaRenderer:
         if self._needs_special_rendering(font, wrapped_text):
             line_widths = [self._measure_line_width(draw, ln, font) + 2 * stroke_w for ln in lines]
             total_w = max(line_widths, default=0.0)
-            ba_y1, ref_y0, ref_y1, _ = self._get_font_line_metrics(font=font, font_size=fs, use_upper=False, has_tall_cyr=True)
+            has_tall_cyr = any(ch in wrapped_text for ch in ("Ё", "Й", "ё", "й"))
+            is_all_upper = wrapped_text == wrapped_text.upper()
+            ba_y1, ref_y0, ref_y1, _ = self._get_font_line_metrics(
+                font=font,
+                font_size=fs,
+                use_upper=is_all_upper,
+                has_tall_cyr=has_tall_cyr,
+            )
             glyph_h = max(fs, ref_y1 - ref_y0)
-            step_y = max(ba_y1 + 2 * stroke_w + spacing, glyph_h + 2 * stroke_w + max(2, int(round(fs * 0.12))))
+            tight_glyph_h = max(int(round(fs * 0.85)), ref_y1 - ref_y0)
+            step_y = max(
+                tight_glyph_h + stroke_w + max(2, int(round(fs * 0.16))),
+                ba_y1 + spacing + stroke_w,
+            )
             total_h = (len(lines) - 1) * step_y + glyph_h + 2 * stroke_w
         else:
             bbox = draw.multiline_textbbox(
@@ -3215,7 +3332,7 @@ class MangaRenderer:
         - Проход 2: Гармонизация кегля между баблами страницы, уточнение центра под реальные габариты `(tw, th)`
           через 2D Integral Image Feasibility (`find_optimal_box_center_integral`) и жесткое зажатие внутри `safe_bbox`.
         """
-        canvas = cleaned_image.convert("RGB").copy()
+        canvas = self._pil_to_rgb_u8(cleaned_image).copy()
         draw = ImageDraw.Draw(canvas)
         img_np = np.array(canvas)
         img_w, img_h = canvas.size
@@ -3357,7 +3474,11 @@ class MangaRenderer:
                 if (lx2 - lx1) >= 18 and (ly2 - ly1) >= 18:
                     ix1_l, iy1_l = max(sx1, lx1), max(sy1, ly1)
                     ix2_l, iy2_l = min(sx2, lx2), min(sy2, ly2)
-                    if (ix2_l - ix1_l) >= 16 and (iy2_l - iy1_l) >= 16:
+                    if (
+                        (ix2_l - ix1_l) >= 16
+                        and (iy2_l - iy1_l) >= 16
+                        and ((ix2_l - ix1_l) * (iy2_l - iy1_l)) >= 0.65 * safe_w * safe_h
+                    ):
                         sx1, sy1, sx2, sy2 = ix1_l, iy1_l, ix2_l, iy2_l
                         safe_w = max(12, sx2 - sx1)
                         safe_h = max(12, sy2 - sy1)
@@ -3391,8 +3512,8 @@ class MangaRenderer:
                                 est_rot_h = int(round(float(r_h_span) * 0.82))
                                 safe_w = max(24, min(int(max(box_w, box_h) * 1.15), est_rot_w))
                                 safe_h = max(24, min(int(max(box_w, box_h) * 1.15), est_rot_h))
-                    except Exception:
-                        pass
+                    except Exception as exc:
+                        logger.debug("Rotated cavity chord estimation skipped: %s", exc)
 
             block["safe_bbox"] = [int(sx1), int(sy1), int(sx2), int(sy2)]
             block["bubble_bbox"] = [int(c) for c in geom["bubble_bbox"]]
@@ -3428,6 +3549,20 @@ class MangaRenderer:
             )
             max_exp_w = max(safe_w, min(img_w - 16, max(int(box_w * 2.0), 260)))
 
+            fit_stroke_override = eff_stroke_override
+            if (
+                fit_stroke_override is None
+                and not is_free_text
+                and bg_style == "none"
+                and bool(geom.get("is_closed_bubble", False))
+                and style_preset in ("dialogue", "thought", "whisper")
+            ):
+                sub_p1 = img_np[max(0, sy1) : min(img_h, sy2), max(0, sx1) : min(img_w, sx2)]
+                if sub_p1.size > 0:
+                    sub_g1 = cv2.cvtColor(sub_p1, cv2.COLOR_RGB2GRAY) if sub_p1.ndim == 3 else sub_p1
+                    if float(np.percentile(sub_g1, 10)) >= 235.0 and float(np.std(sub_g1)) <= 3.5:
+                        fit_stroke_override = 0
+
             raw_wrap, raw_font, raw_stroke, raw_spacing, raw_fs, raw_fit_ok = self._fit_text_to_box(
                 draw=draw,
                 text=text,
@@ -3436,7 +3571,7 @@ class MangaRenderer:
                 min_font_limit=b_min,
                 max_font_limit=b_max,
                 is_free_text=is_free_text,
-                stroke_width_override=eff_stroke_override,
+                stroke_width_override=fit_stroke_override,
                 force_rectangular=force_rect,
                 unconstrained_size=unconstrained_size,
                 font_family_path=font_family_path,
@@ -3498,6 +3633,7 @@ class MangaRenderer:
                     "b_min": b_min,
                     "b_max": b_max,
                     "eff_stroke_override": eff_stroke_override,
+                    "fit_stroke_override": fit_stroke_override,
                     "block_overflow_mode": block_overflow_mode,
                     "max_exp_w": max_exp_w,
                     "raw_wrap": raw_wrap,
@@ -3666,8 +3802,8 @@ class MangaRenderer:
                         max_dy = min(14.0, float(it["safe_h"]) * 0.08)
                         it["center_x"] = max(safe_mid_x - max_dx, min(safe_mid_x + max_dx, blended_cx))
                         it["center_y"] = max(safe_mid_y - max_dy, min(safe_mid_y + max_dy, blended_cy))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Feasible center calculation skipped: %s", exc)
 
         def _clamp_item_center_to_safe_box(it: dict[str, Any]) -> None:
             if it["is_free_text"]:
@@ -3709,6 +3845,7 @@ class MangaRenderer:
             chord_profile = item["chord_profile"]
             b_min, b_max = item["b_min"], item["b_max"]
             eff_stroke_override = item["eff_stroke_override"]
+            fit_stroke_override = item.get("fit_stroke_override", eff_stroke_override)
             block_overflow_mode = item["block_overflow_mode"]
             max_exp_w = item["max_exp_w"]
 
@@ -3724,18 +3861,31 @@ class MangaRenderer:
             if not has_manual_fs and not is_resized and not is_free_text:
                 words_cnt = len(raw_text.split())
                 chars_cnt = len(raw_text.strip())
+                bubble_area_px = safe_w * safe_h
 
                 is_monologue_role = str(block.get("box_role") or "") == "monologue"
                 if (style_preset == "dialogue" and words_cnt <= 4 and chars_cnt <= 18) or (is_monologue_role and page_base_fs <= 22):
-                    cap_mult = 1.22 if is_monologue_role else 1.28
-                    harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * cap_mult)), min(b_max, 23 if is_monologue_role else 24)))
+                    if (
+                        style_preset == "dialogue"
+                        and words_cnt <= 4
+                        and chars_cnt <= 18
+                        and not is_monologue_role
+                        and (bubble_area_px >= 42000 or min(safe_w, safe_h) >= 200)
+                    ):
+                        harmonized_max = min(
+                            max(b_max, 64),
+                            max(b_min, int(round(page_base_fs * 2.2)), int(round(min(safe_w, safe_h) * 0.22))),
+                        )
+                    else:
+                        cap_mult = 1.22 if is_monologue_role else 1.28
+                        harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * cap_mult)), min(b_max, 23 if is_monologue_role else 24)))
                 elif style_preset == "whisper":
                     harmonized_max = min(b_max, max(b_min, int(round(page_base_fs * 0.80))))
                 elif style_preset == "shout":
                     harmonized_min = max(b_min, min(b_max, int(round(page_base_fs * 1.15))))
                     harmonized_max = max(harmonized_min, min(140, int(round(b_max * 1.25))))
 
-                if chosen_fs > harmonized_max or chosen_fs < harmonized_min:
+                if chosen_fs > harmonized_max or chosen_fs < harmonized_min or (harmonized_max > b_max and chosen_fs >= b_max - 1):
                     wrapped_text, font, stroke_w, dyn_spacing, chosen_fs, fit_ok = self._fit_text_to_box(
                         draw=draw,
                         text=text,
@@ -3744,7 +3894,7 @@ class MangaRenderer:
                         min_font_limit=harmonized_min,
                         max_font_limit=harmonized_max,
                         is_free_text=is_free_text,
-                        stroke_width_override=eff_stroke_override,
+                        stroke_width_override=fit_stroke_override,
                         force_rectangular=force_rect,
                         unconstrained_size=unconstrained_size,
                         font_family_path=font_family_path,

@@ -197,3 +197,78 @@
   - Позволяет выбрать дефолты сразу для всех 6 ролей пайплайна (`translation_model`, `fallback_model`, `vlm_model`, `ocr_backend`, `detector_backend`, `inpaint_backend`), закрепить любимую связку как дефолтную при запуске (`config.json`) или сохранить её как именованный пресет в 1 клик.
 - **Менеджер удаления моделей и очистки VRAM/диска (`GET /model_storage`, `POST /delete_model`)**:
   - Удаление любых моделей из локального Ollama (`DELETE /api/delete` + `ollama rm` + очистка `.gguf` кэша в `models/gguf/`) и выгрузка/удаление локальных весов детекторов, OCR и LaMa из папки `models/` прямо из интерфейса студии.
+
+---
+
+## 12. Обновление v5.4.0 – v6.1.0 (Полный аудит безопасности, модульная декомпозиция `api/`, ускорение LIR/Геометрии и 24 автотеста)
+
+### ✅ 1. Архитектурная декомпозиция и удаление мёртвого кода (`api/`):
+- Выделены модули:
+  - `api/security.py` — маскирование API-ключей (`_mask_api_key`), проверка Origin/Host/Referer (`_is_trusted_local_origin`, `_is_trusted_host_header`, `_is_trusted_referer`), блокировка UNC/NUL путей (`_reject_unc_path`), белый список разрешённых директорий сессии (`_SESSION_ALLOWED_ROOTS`, `is_path_within_allowed_roots`), защита от SSRF и DNS-rebinding (`_validate_remote_image_url`, проверка `peername` IP сокета в `_download_remote_image_bytes`, лимит 25 МБ).
+  - `api/schemas.py` — все Pydantic-модели запросов и ответов (`TextBlock`, `TranslateRequest`, `RenderRequest`, `CleanPreviewRequest`, `ServerSettingsRequest` с `clear_api_key` и др.).
+  - `api/native_dialogs.py` — потокобезопасный вызов нативных диалогов выбора папки (`_native_picker_lock`, возврат `status: "busy"` без зависания при повторном клике).
+- Удалены 5 мёртвых/дублирующихся классов из `cleaner.py` (`_DoubleConvBlock`, `CleaningRegionTask`) и `renderer.py` (`TypesetBlockSpec`, `LayoutSolution`, `AdaptiveTypesetter`), а также устранены 22 тихих блока `except Exception: pass` в `server.py`.
+
+### ✅ 2. Безопасность (Hardening Web Studio, FastAPI & Chrome Extension MV3):
+- В `web_studio.html` устранены все сырые вставки в `innerHTML`: добавлены `escapeHtml` (с экранированием `&#39;`), `escapeJsAttr`, `safeCssColor`; подписка `visibilitychange` перенесена с `window` на `document`.
+- В `extension/manifest.json` (`v6.1.0`, `minimum_chrome_version: "116"`) права урезаны по принципу минимальных привилегий: убраны `"tabs"`, `"content_scripts"` и `<all_urls>` из `host_permissions` (оставлены только `http://127.0.0.1:5000/*` и `http://localhost:5000/*`, а внешние сайты переведены в `optional_host_permissions`).
+- В `decode_base64_image` добавлены лимиты размера строки (`35 МБ`) и числа пикселей (`40 Мп`, HTTP 413).
+- В `get_output_dir_for_folder` и `_sanitize_loaded_manifest` заблокирован Path Traversal (`../` и абсолютные ключи страниц).
+- В `translator.py` устранена уязвимость ReDoS в регулярках `_is_refusal_response` и `_strip_trailing_ja_particles`, добавлена валидация тегов Ollama `_validate_ollama_tag` против инъекции переносов строк в Modelfile.
+- Все 9 `.bat`-файлов приведены к строгому ASCII + `CRLF (\r\n)` без неэкранированных символов `>` / `<` в `echo` (удалён паразитный файл `EN`).
+
+### ✅ 3. Улучшения CV, Клинера, Тайпсеттинга и Глоссария (v5.4.0 – v6.1.0):
+- **Управление VRAM между фазами**: `ocr_engine.release_transient_vram()` и `torch.cuda.empty_cache()` между OCR, LaMa Inpainting и локальной LLM; авто-активация `nsfw_mode = True` при 100%-м цензурном отказе облака.
+- **Геометрия сдвоенных бабблов («восьмёрок») и закрытых овальных чаш (`cleaner.py`, `renderer.py`)**:
+  - `analyze_bubble_geometry` сохраняет обе доли сдвоенного баббла-восьмёрки (без схлопывания в один круг) и автоматически расширяет `safe_bbox` вверх/вниз по реальной белой полости закрытого баббла, если исходный `text_bbox` занимал только нижнюю половину.
+  - В `MangaRenderer._get_line_spacing` добавлена компенсация избыточного встроенного интерлиньяжа системных шрифтов (например, `comicbd.ttf`).
+- **Очистка крупных плавающих штрихов каны и белого текста на тёмном фоне (`cleaner.py`)**:
+  - `BubbleCleaner.build_text_mask` надёжно захватывает крупные толстые штрихи каны в центре баббла (`covered_ratio >= 0.70`), не задевая стенки.
+  - `HybridMangaCleaner.build_free_text_ink_and_halo_mask` точно маскирует белый текст с тёмным контуром на тёмном фоне (`white_cov >= 0.85`, без расползания на фон).
+- **Ускорение `BubblePolygonSolver.largest_inscribed_rectangle` и упрощение полигонов (`ocr_engine.py`, `server.py`)**:
+  - Расчёт LIR на масках `1400x900` ускорен в ~6 раз (`< 45 мс` вместо `~240 мс`).
+  - `_simplify_bubble_polygon` и `_sanitize_loaded_manifest` сжимают раздутые контуры `bubble_polygon` (400+ точек) до компактных `6..32` вершин, уменьшая размер `.translation_state.json`.
+- **Точная фильтрация SFX и защита коротких вопросов (`ocr_engine.py`)**:
+  - `is_sfx_or_onomatopoeia` и `classify_filter_reason` отсекают длинную катакану-ономатопею (`シャシャシャカ...`, `カタカタ...`, `ザアアア...`) и безрамочные вздохи/звуки в режиме `bubbles_only`, но гарантированно сохраняют легитимные реплики в бабблах и короткие вопросы со знаком `?` (например, `ママ?`, `プログラマー？`).
+- **Валидация авто-глоссария и приоритет зафиксированных имён главы (`translator.py`)**:
+  - `clean_and_validate_glossary_name` отсекает числительные (`千円`, `100万`, `IQ140`), нарицательные слова (`わがまま`, `レイプ`) и родственников (`母ちゃん`, `お兄ちゃん`), автоматически отделяет суффиксы вежливости (`_canonicalize_glossary_honorifics`: `金成くん -> 金成 / Kanari`) и в `merge_glossaries` сохраняет приоритет уже закреплённых имён главы (`locked_chapter`).
+- **Автотесты (`tests/test_security_and_core.py`)**:
+  - Развёрнуто **24 быстрых автотеста** (безопасность, SSRF, XSS, `.bat` ASCII/CRLF, геометрия бабблов, клинер, SFX-фильтр, глоссарий, LIR), запускаемых одной командой: `python tests/test_security_and_core.py`.
+
+---
+
+## 13. Обновление v6.1.1 (Ускорение пайплайна в ~1.8–2.5×, упрощение до 2 режимов и 33 автотеста)
+
+### ✅ 1. Упрощение режимов пайплайна до 2 канонических (`⚖️ Стандарт` / `💎 Максимум` + `🏠 Локально`)
+- **`translator.py`, `ocr_engine.py`, `cleaner.py`, `server.py`**:
+  - `PIPELINE_MODES` сокращён с 4 до **2 канонических режимов**: `balanced` (**«⚖️ Стандарт»**) и `ultra` (**«💎 Максимум (HQ)»**).
+  - Добавлена обратная совместимость через `normalize_pipeline_mode()` (устаревшие `fast` маппятся в `balanced`, а `accuracy`/`hq`/`max`/`high` — в `ultra` при загрузке `config.json`, стеков и API-запросов).
+- **`web_studio.html`, `gui_app.py`, `extension/content.js`**:
+  - Переключатели режимов в веб-студии (топбар и сайдбар), десктопном окне Tkinter и Chrome-расширении сведены к 2 кнопкам/опциям (`⚖️ Стандарт` / `💎 Максимум`).
+  - Выпадающий список профилей в топбаре веб-студии заменён на кнопку в 1 клик `#btn-top-local-only` (**«🏠 Локально»** / `toggleLocalOnlyProfile()`), при этом `TRANSLATION_PROFILES` сохранены в модальном окне настроек и на бэкенде.
+
+### ✅ 2. Ускорение и стабилизация перевода (`translator.py`, `server.py`)
+- **Защита узких MT-моделей (`is_mt_only_local_model`)**:
+  - Для `sugoi`, `translategemma`, `opus-mt`, `helsinki`, `nllb` автоматически пропускаются Pass 0 (`extract_chapter_glossary_prepass`) и Pass 2 (`proofread_chapter_book_script`), возвращая `pre_locked` / `{}` без лишних вызовов LLM, а `allow_mt_fallback=False` запрещает подстановку MT-модели в промпт-задачи JSON/вычитки.
+- **Параллельная вычитка и устранение двойного чанкинга Sugoi**:
+  - В `_run_folder_translation_job` (`server.py`) Pass 2 вычитки для облачных моделей распараллелен через `asyncio.Semaphore(3)` + `asyncio.gather` с укрупнённым чанком `90` блоков (против `36` последовательно ранее) и `40` для локальных LLM.
+  - В `_call_ollama_direct` лимит прямого плоского режима для `Sugoi` увеличен с `8` до `12` блоков (`max_direct_chunk = 12 if is_sugoi else 16`), что убрало лишнее дробление пачек `12 -> 8 + 4`.
+- **Быстрое срабатывание `nsfw_mode` при тихой облачной цензуре**:
+  - Добавлен счётчик `self._consecutive_cloud_refusals`: если облачный API возвращает тихий пустой ответ (`not parsed and items_cnt >= 8`), он сразу помечается как `{"__refusal__": ...}` и после 2 подряд отказов/пустых ответов активирует локальный обход `nsfw_mode`.
+- **Качество авто-глоссария, аудита вопросов и SFX-фоллбэка**:
+  - В `GLOSSARY_PRONOUN_AND_PARTICLE_STOPLIST` / `GLOSSARY_TARGET_PRONOUN_STOPLIST` добавлены термины родства (`祖母`, `曾祖母`, `曽祖母`, `祖父`, `曾祖父`, `孫`, `ひ孫`, `曾孫`, `叔父`/`叔母`, `娘`/`息子`, `長女`/`次女` и др.).
+  - В `_detect_batch_misalignment_and_hallucinations` расширена детекция разговорных японских вопросов без `?` (`_has_cjk_question_marker`: `じゃん`, `のね`, `のか`, `かい`, `んの`, `すんの`, `だろ`, `でしょ`, `じゃね`, `じゃない` и т.д.) и сужен триггер ложного «фантомного вопроса».
+  - В `_rescue_romaji_or_interjection` добавлен словарь спасения повторяющихся SFX на хирагане/катакане (`ぷに`, `くちゅ`, `どき`, `ぺろ`, `ちゅぱ` и др.).
+
+### ✅ 3. Ускорение OCR, клинера и кэширования (`ocr_engine.py`, `cleaner.py`, `server.py`)
+- **OCR (`ocr_engine.py`)**:
+  - По умолчанию `use_sam2_seg=False` (тяжёлый SAM 2.1 отключён поверх YOLO26s-seg).
+  - Настроен порог каскада `manga-ocr-nar-small` -> `HallucinationFreeMangaOCR FP16` (`len_thresh = 46/50`), а ленивая загрузка `HayaiOCR` на `ja`-страницах заблокирована без жёсткого триггера (`hayai_hard_trigger`).
+  - В `is_sfx_or_onomatopoeia` добавлен фильтр 3+ повторов 2–3-морной чистой хираганы даже внутри бабблов (`ぷにぷにぷに`, `くちゅくちゅくちゅ`) с сохранением обычных реплик и вопросов (`?`/`？`).
+- **Клинер и кэш (`cleaner.py`, `server.py`)**:
+  - В `_invoke_lama_np` для ровных белых чаш бабблов (`std <= 12.0`, `median >= 225.0`) пропускается 1.5× Two-Pass `ultra_deep_redraw`.
+  - Увеличен размер кэша очищенных страниц: `_CLEANED_PAGE_CACHE_MAX = 48` (ОЗУ) и `cache_files[:-120]` (диск `clean_cache/`), а `save_edited_page_endpoint` сохраняет очищенный слой на диск (`save_to_disk=True`).
+- **Автотесты (`tests/test_security_and_core.py`)**:
+  - Набор расширен до **33 автотестов** (добавлены 5 новых тестов для проверки 2 режимов и UI, пропуска Pass 0/2 и отсутствия `8+4` дробления для Sugoi, стоп-листа родства и аудита японских вопросов, фильтра/спасения SFX на хирагане, отключения SAM 2.1 по умолчанию, лимита кэша и пропуска 1.5× апскейла LaMa на белом фоне).
+
+

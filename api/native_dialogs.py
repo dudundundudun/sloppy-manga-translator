@@ -167,48 +167,17 @@ def _run_native_picker_dialog(mode: str = "folder") -> str | None:
             logger.warning("Истек таймаут (180 сек) ожидания системного окна выбора (%s).", mode)
             return None
         except Exception as sub_exc:
-            logger.warning("Фоллбэк на прямой вызов Tkinter (%s): %s", mode, sub_exc)
-
-        try:
-            import ctypes
-            import tkinter as tk
-            from tkinter import filedialog
-
-            root = tk.Tk()
-            root.geometry("1x1+400+300")
-            root.attributes("-topmost", True)
-            root.attributes("-alpha", 0.01)
-            root.deiconify()
-            root.lift()
-            root.focus_force()
-            root.update()
-            if os.name == "nt":
-                try:
-                    user32 = ctypes.windll.user32
-                    hwnd = user32.GetParent(root.winfo_id()) or root.winfo_id()
-                    user32.SetForegroundWindow(hwnd)
-                except Exception as _exc:
-                    logger.debug("Ignored Exception in Tkinter fallback: %s", _exc)
-            if mode == "file":
-                selected = filedialog.askopenfilename(
-                    parent=root,
-                    title="Выберите страницу манги для перевода",
-                    filetypes=[
-                        ("Изображения манги", "*.jpg *.jpeg *.png *.webp *.bmp"),
-                        ("Все файлы", "*.*"),
-                    ],
-                )
-            else:
-                selected = filedialog.askdirectory(
-                    parent=root,
-                    mustexist=True,
-                    title="Выберите папку с мангой / манхвой / маньхуа для перевода",
-                )
-            root.destroy()
-            return selected if selected else None
-        except Exception as exc:
-            logger.error("Не удалось открыть диалог выбора (%s) Tkinter: %s", mode, exc)
+            logger.warning("Ошибка запуска системного диалога выбора (%s): %s", mode, sub_exc)
             return None
+        if proc.returncode != 0:
+            err_tail = (proc.stderr or "").strip()[-300:]
+            logger.warning(
+                "Дочерний процесс системного диалога (%s) завершился с кодом %s%s",
+                mode,
+                proc.returncode,
+                f": {err_tail}" if err_tail else "",
+            )
+        return None
     finally:
         _native_picker_lock.release()
 

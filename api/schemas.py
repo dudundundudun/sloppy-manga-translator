@@ -18,8 +18,8 @@ class TranslateRequest(BaseModel):
     ollama_model: str | None = Field(default=None)
     model: str | None = Field(default=None)
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12, description="Минимальный размер шрифта (px)")
-    max_font_size: int = Field(default=32, description="Максимальный размер шрифта (px)")
+    min_font_size: int = Field(default=12, ge=6, le=200, description="Минимальный размер шрифта (px)")
+    max_font_size: int = Field(default=32, ge=8, le=300, description="Максимальный размер шрифта (px)")
     overflow_mode: str | None = Field(
         default=None,
         description="Режим вписывания длинного текста: 'shrink' (сжимать до мин. шрифта), 'overflow' (Вариант Б: выход за рамки баббла), 'expand_bubble' (Вариант В: авто-расширение/перерисовка баббла)",
@@ -42,6 +42,8 @@ class TranslateRequest(BaseModel):
     )
     min_text_length: int | None = Field(
         default=None,
+        ge=1,
+        le=50,
         description="Минимальная длина текста в символах для перевода",
     )
     return_image: bool = Field(default=True)
@@ -61,7 +63,7 @@ class TranslateRequest(BaseModel):
     )
     page_url: str | None = Field(default=None, description="URL страницы сайта, где читается манга")
     image_url: str | None = Field(default=None, description="URL исходной картинки манги")
-    page_index: int | None = Field(default=None, description="Порядковый номер картинки на веб-странице (1..N)")
+    page_index: int | None = Field(default=None, ge=1, le=100000, description="Порядковый номер картинки на веб-странице (1..N)")
     force_retranslate: bool = Field(
         default=False,
         description="Принудительно перевести все блоки заново через ИИ (игнорируя и обновляя старый кэш фраз)",
@@ -78,7 +80,7 @@ class TranslateRequest(BaseModel):
 
 class TextBlock(BaseModel):
     id: int
-    bbox: list[int]
+    bbox: list[int] = Field(..., min_length=4, max_length=4)
     clean_bbox: list[int] | None = Field(
         default=None,
         description="Исходные координаты оригинального текста для инпейнтинга (не смещаются при перетаскивании рамки перевода)",
@@ -124,6 +126,8 @@ class TextBlock(BaseModel):
     )
     stroke_width: int | None = Field(
         default=None,
+        ge=0,
+        le=16,
         description="Толщина обводки текста (0..16 px). Если None — авто-расчет от кегля",
     )
     align: str = Field(
@@ -132,6 +136,8 @@ class TextBlock(BaseModel):
     )
     angle: float = Field(
         default=0.0,
+        ge=-45.0,
+        le=45.0,
         description="Угол поворота текста в градусах (-45..+45)",
     )
     style_preset: str = Field(
@@ -148,6 +154,8 @@ class TextBlock(BaseModel):
     )
     bg_padding: int | None = Field(
         default=None,
+        ge=-24,
+        le=48,
         description="Дополнительный отступ/расширение подложки текста в пикселях (-24..+48)",
     )
     overflow_mode: str | None = Field(
@@ -216,14 +224,19 @@ class TextBlock(BaseModel):
     )
     condense_ratio: float | None = Field(
         default=None,
+        ge=0.5,
+        le=1.0,
         description="Коэффициент горизонтального анаморфного сжатия строк (0.88..1.00) при полиграфическом тайпсеттинге",
     )
     mask_dilate: int | None = Field(
         default=None,
+        ge=1,
+        le=28,
         description="Индивидуальная толщина маски очистки для этого блока (1..28 px). Если None — авто",
     )
     custom_mask_strokes: list[dict[str, Any]] | None = Field(
         default=None,
+        max_length=2000,
         description="Ручные мазки кисти/ластика замазки: [{'x': int, 'y': int, 'r': int, 'mode': 'add'|'erase'}]",
     )
     translation_source: str | None = Field(
@@ -272,17 +285,17 @@ class FolderTranslateRequest(BaseModel):
     ollama_model: str | None = Field(default=None)
     model: str | None = Field(default=None)
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
     skip_sfx: bool | None = Field(default=None)
-    min_text_length: int | None = Field(default=None)
+    min_text_length: int | None = Field(default=None, ge=1, le=50)
     skip_existing: bool = Field(default=True)
     force_retranslate: bool = Field(default=False)
-    batch_pages: int = Field(default=15, description="Сколько страниц сканировать через OCR и отправлять в ИИ одним пакетом (экономия токенов)")
+    batch_pages: int = Field(default=15, ge=1, le=50, description="Сколько страниц сканировать через OCR и отправлять в ИИ одним пакетом (экономия токенов)")
     translation_profile: str | None = Field(
         default=None,
         description="Профиль перевода: 'eco_book', 'balanced', 'turbo', 'local_only'",
@@ -317,14 +330,14 @@ class PageFileTranslateRequest(BaseModel):
     ollama_model: str | None = Field(default=None)
     model: str | None = Field(default=None)
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
     skip_sfx: bool | None = Field(default=None)
-    min_text_length: int | None = Field(default=None)
+    min_text_length: int | None = Field(default=None, ge=1, le=50)
     force_retranslate: bool = Field(
         default=False,
         description="Принудительно перевести все блоки страницы заново через ИИ (без старого кэша)",
@@ -370,12 +383,12 @@ class ServerSettingsRequest(BaseModel):
     skip_sighs: bool | None = Field(default=None)
     skip_sfx: bool | None = Field(default=None)
     detect_free_text: bool | None = Field(default=None)
-    min_text_length: int | None = Field(default=None)
-    min_font_size: int | None = Field(default=None)
-    max_font_size: int | None = Field(default=None)
+    min_text_length: int | None = Field(default=None, ge=1, le=50)
+    min_font_size: int | None = Field(default=None, ge=6, le=200)
+    max_font_size: int | None = Field(default=None, ge=8, le=300)
     uppercase: bool | None = Field(default=None)
     overflow_mode: str | None = Field(default=None)
-    batch_pages: int | None = Field(default=None)
+    batch_pages: int | None = Field(default=None, ge=1, le=50)
     ui_settings: dict[str, Any] | None = Field(default=None)
 
 
@@ -397,7 +410,7 @@ class PageBlocksRequest(BaseModel):
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)
     skip_sfx: bool | None = Field(default=None)
-    min_text_length: int | None = Field(default=None)
+    min_text_length: int | None = Field(default=None, ge=1, le=50)
     force_rescan: bool = Field(default=False, description="Принудительно запустить OCR заново")
     use_llm_romaji: bool = Field(default=False, description="Уточнить чтение кандзи в Ромадзи через активную ИИ-модель")
     ollama_model: str | None = Field(default=None)
@@ -409,7 +422,7 @@ class PageRomajiRequest(BaseModel):
     target_lang: str = Field(default="en")
     use_llm: bool = Field(default=True, description="Использовать ИИ для контекстного чтения кандзи в Ромадзи")
     ollama_model: str | None = Field(default=None)
-    blocks: list[TextBlock]
+    blocks: list[TextBlock] = Field(..., max_length=500)
 
 
 class SaveEditedPageRequest(BaseModel):
@@ -418,8 +431,8 @@ class SaveEditedPageRequest(BaseModel):
     source_dir: str | None = Field(default=None)
     target_lang: str = Field(default="en")
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     prefer_url: bool = Field(
@@ -427,14 +440,14 @@ class SaveEditedPageRequest(BaseModel):
         description="Если True и dest_path существует, возвращает легковесный URL /local_image вместо огромного Base64",
     )
     image_format: str = Field(default="webp")
-    blocks: list[TextBlock]
+    blocks: list[TextBlock] = Field(..., max_length=500)
 
 
 class ManualRegionTranslateRequest(BaseModel):
     source_path: str = Field(description="Путь к исходному файлу страницы манги")
     dest_path: str | None = Field(default=None)
     source_dir: str | None = Field(default=None)
-    bbox: list[int] = Field(description="Координаты обведенной области [x1, y1, x2, y2]")
+    bbox: list[int] = Field(..., min_length=4, max_length=4, description="Координаты обведенной области [x1, y1, x2, y2]")
     lang: str = Field(default="auto")
     target_lang: str = Field(default="en")
     ollama_model: str | None = Field(default=None)
@@ -444,14 +457,14 @@ class ManualRegionTranslateRequest(BaseModel):
     )
     vlm_model: str | None = Field(default=None, description="Явное имя Vision-модели для VLM-OCR (опционально)")
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
     custom_original_text: str | None = Field(default=None)
     custom_translated_text: str | None = Field(default=None)
-    blocks: list[TextBlock] = Field(default_factory=list)
+    blocks: list[TextBlock] = Field(default_factory=list, max_length=500)
 
 
 class RetranslateSingleBlockRequest(BaseModel):
@@ -468,33 +481,33 @@ class RetranslateSingleBlockRequest(BaseModel):
     )
     vlm_model: str | None = Field(default=None, description="Явное имя Vision-модели для VLM-OCR (опционально)")
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     image_format: str = Field(default="webp")
-    blocks: list[TextBlock] = Field(default_factory=list)
+    blocks: list[TextBlock] = Field(default_factory=list, max_length=500)
 
 
 class DiamondWrapBlockRequest(BaseModel):
     block_id: int
     text: str | None = Field(default=None)
-    bbox: list[int] | None = Field(default=None)
+    bbox: list[int] | None = Field(default=None, min_length=4, max_length=4)
     style_preset: str = Field(default="dialogue")
     font_family: str | None = Field(default=None)
-    font_size: int | None = Field(default=None)
+    font_size: int | None = Field(default=None, ge=6, le=300)
     uppercase: bool = Field(default=False)
     source_path: str | None = Field(default=None)
     dest_path: str | None = Field(default=None)
     source_dir: str | None = Field(default=None)
     target_lang: str = Field(default="ru")
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     prefer_url: bool = Field(default=True)
     image_format: str = Field(default="webp")
-    blocks: list[TextBlock] = Field(default_factory=list)
+    blocks: list[TextBlock] = Field(default_factory=list, max_length=500)
 
 
 class ShortenBlockTextRequest(BaseModel):
@@ -505,8 +518,8 @@ class ShortenBlockTextRequest(BaseModel):
     target_lang: str = Field(default="ru")
     ollama_model: str | None = Field(default=None)
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
     return_image: bool = Field(default=True)
     prefer_url: bool = Field(default=True)
@@ -557,8 +570,8 @@ class FolderFindReplaceRequest(BaseModel):
         description="Если True — только найти и вернуть список всех совпадений без изменения файлов",
     )
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
 
 
@@ -574,10 +587,10 @@ class FolderCleanNoiseRequest(BaseModel):
 class ChapterBookImportRequest(BaseModel):
     folder_path: str = Field(..., description="Путь к папке главы манги")
     target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
-    book_text: str = Field(..., description="Отредактированный текст книги (_chapter_book.md, _chapter_script_bilingual.txt или JSON)")
+    book_text: str = Field(..., max_length=5_000_000, description="Отредактированный текст книги (_chapter_book.md, _chapter_script_bilingual.txt или JSON)")
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
 
 
@@ -586,8 +599,8 @@ class ChapterBookProofreadRequest(BaseModel):
     target_lang: str = Field(default="en", description="Целевой язык: en, ru, romaji")
     ollama_model: str | None = Field(default=None)
     uppercase: bool = Field(default=False)
-    min_font_size: int = Field(default=12)
-    max_font_size: int = Field(default=32)
+    min_font_size: int = Field(default=12, ge=6, le=200)
+    max_font_size: int = Field(default=32, ge=8, le=300)
     overflow_mode: str | None = Field(default=None)
 
 
@@ -606,7 +619,7 @@ class UxEventItem(BaseModel):
 
 
 class UxEventsBatchRequest(BaseModel):
-    events: list[UxEventItem] = Field(default_factory=list)
+    events: list[UxEventItem] = Field(default_factory=list, max_length=500)
     active_dock_mode: str | None = Field(default=None)
     active_view_mode: str | None = Field(default=None)
     elapsed_active_sec: float = Field(default=0.0, description="Активное время работы пользователя за батч (сек)")

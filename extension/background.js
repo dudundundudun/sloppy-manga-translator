@@ -1,18 +1,78 @@
 /**
- * Background Service Worker (v5.3.1)
+ * Background Service Worker (v6.1.0)
  *
- * Изменения v5.3.1:
- * 1. Исправлены запросы к локальному серверу (127.0.0.1:5000): для GET-запросов не передается лишний
- *    заголовок Content-Type: application/json (избегает лишних CORS/PNA preflight блокировок в Chrome).
- * 2. Исправлено скачивание защищенных изображений (HTTP 403 Hotlink / Referer): убран некорректный
- *    cross-origin referrer в Service Worker fetch, а при блокировке скачивания в браузере URL картинки
- *    и Referer страницы передаются напрямую на сервер (/translate), который скачивает изображение через httpx.
- * 3. Исправлена гонка повторной инжекции content.js при клике по иконке расширения до завершения document_idle.
- * 4. Добавлена передача pipeline_mode (fast / balanced / accuracy / ultra) и use_image_context.
+ * Изменения v6.1.0:
+ * 1. Персистентность activeServerBase в chrome.storage.session при усыплении MV3 Service Worker.
+ * 2. SSRF-валидация URL изображений, отказ от credentials: "include", таймаут 30с и лимит 25 МБ в fetchImageAsDataUrl.
+ * 3. Надежный цикл ожидания после on-demand инъекции content.js (chrome.scripting.executeScript).
+ * 4. Проверка sender.id / структуры msg и корректная передача clear_api_key.
  */
 
 const SERVER_URLS = ["http://127.0.0.1:5000", "http://localhost:5000"];
+const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 let activeServerBase = SERVER_URLS[0];
+
+async function getActiveServerBase() {
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      const stored = await chrome.storage.session.get("mt_active_server_base");
+      if (stored && typeof stored.mt_active_server_base === "string" && SERVER_URLS.includes(stored.mt_active_server_base)) {
+        activeServerBase = stored.mt_active_server_base;
+      }
+    }
+  } catch (_) {}
+  return activeServerBase;
+}
+
+async function setActiveServerBase(baseUrl) {
+  activeServerBase = baseUrl;
+  try {
+    if (chrome.storage && chrome.storage.session) {
+      await chrome.storage.session.set({ mt_active_server_base: baseUrl });
+    }
+  } catch (_) {}
+}
+
+function isSafeRemoteImageUrl(urlStr) {
+  try {
+    const parsed = new URL(urlStr);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return false;
+    }
+    const host = (parsed.hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+    if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) {
+      return false;
+    }
+    if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) {
+      return false;
+    }
+    if (
+      host === "0.0.0.0" ||
+      /^127\./.test(host) ||
+      /^10\./.test(host) ||
+      /^192\.168\./.test(host) ||
+      /^169\.254\./.test(host) ||
+      /^0\./.test(host) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+      /^100\.(6[4-9]|[7-9]\d|1([01]\d|2[0-7]))\./.test(host)
+    ) {
+      return false;
+    }
+    if (
+      host === "::1" ||
+      host === "::" ||
+      host.startsWith("fe80:") ||
+      host.startsWith("fc") ||
+      host.startsWith("fd") ||
+      host.includes("::ffff:")
+    ) {
+      return false;
+    }
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
 
 function arrayBufferToBase64(buffer) {
   const bytes = new Uint8Array(buffer);
@@ -59,8 +119,9 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
   let lastError = null;
   const method = String(options.method || "GET").toUpperCase();
   const hasBody = options.body !== undefined && options.body !== null;
+  const currentBase = await getActiveServerBase();
 
-  for (const baseUrl of [activeServerBase, ...SERVER_URLS.filter((u) => u !== activeServerBase)]) {
+  for (const baseUrl of [currentBase, ...SERVER_URLS.filter((u) => u !== currentBase)]) {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
 
@@ -97,7 +158,7 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
         throw new Error(data.detail || data.error || `Ошибка сервера HTTP ${res.status}`);
       }
 
-      activeServerBase = baseUrl;
+      await setActiveServerBase(baseUrl);
       return data;
     } catch (err) {
       clearTimeout(timer);
@@ -119,15 +180,21 @@ async function fetchImageAsDataUrl(imageUrl) {
   if (imageUrl.startsWith("data:image/")) {
     return imageUrl;
   }
+  if (!isSafeRemoteImageUrl(imageUrl)) {
+    throw new Error("Запрещенный URL изображения");
+  }
 
   let lastErr = null;
 
-  for (const credMode of ["include", "omit"]) {
+  for (const credMode of ["omit", "same-origin"]) {
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 30000);
     try {
       const res = await fetch(imageUrl, {
         method: "GET",
         credentials: credMode,
         cache: "no-cache",
+        signal: controller.signal,
       });
 
       if (!res.ok) {
@@ -140,10 +207,15 @@ async function fetchImageAsDataUrl(imageUrl) {
         lastErr = new Error("Скачан пустой файл изображения");
         continue;
       }
+      if (blob.size > MAX_REMOTE_IMAGE_BYTES) {
+        throw new Error("Размер изображения превышает допустимый лимит 25 МБ");
+      }
 
       return await blobToDataUrl(blob);
     } catch (err) {
       lastErr = err;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
@@ -153,18 +225,23 @@ async function fetchImageAsDataUrl(imageUrl) {
 async function sendMessageToTab(tabId, payload) {
   try {
     await chrome.tabs.sendMessage(tabId, payload);
-  } catch (_) {
-    try {
-      await chrome.scripting.executeScript({
-        target: { tabId },
-        files: ["content.js"],
-      });
-      setTimeout(() => {
-        chrome.tabs.sendMessage(tabId, payload).catch(() => {});
-      }, 120);
-    } catch (injErr) {
-      console.warn("[MangaTranslator] Не удалось внедрить скрипт:", injErr);
+    return;
+  } catch (_) {}
+
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId },
+      files: ["content.js"],
+    });
+    for (let attempt = 0; attempt < 6; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 80 * (attempt + 1)));
+      try {
+        await chrome.tabs.sendMessage(tabId, payload);
+        return;
+      } catch (_) {}
     }
+  } catch (injErr) {
+    console.warn("[MangaTranslator] Не удалось внедрить скрипт:", injErr);
   }
 }
 
@@ -186,6 +263,14 @@ chrome.commands.onCommand.addListener(async (command) => {
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   (async () => {
     try {
+      if (!sender || sender.id !== chrome.runtime.id) {
+        sendResponse({ ok: false, error: "Недоверенный отправитель сообщения" });
+        return;
+      }
+      if (!msg || typeof msg !== "object" || typeof msg.action !== "string") {
+        sendResponse({ ok: false, error: "Некорректный формат сообщения" });
+        return;
+      }
       switch (msg.action) {
         case "CHECK_HEALTH": {
           const data = await callLocalServer("/health", { method: "GET" }, 25000);
@@ -220,10 +305,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (typeof msg.unslothUrl === "string" && msg.unslothUrl.trim()) {
             payload.unsloth_url = msg.unslothUrl.trim();
           }
-          if (typeof msg.unslothApiKey === "string") {
-            if (msg.unslothApiKey.trim() || msg.clearApiKey === true) {
-              payload.unsloth_api_key = msg.unslothApiKey.trim();
-            }
+          if (msg.clearApiKey === true) {
+            payload.clear_api_key = true;
+          } else if (typeof msg.unslothApiKey === "string" && msg.unslothApiKey.trim()) {
+            payload.unsloth_api_key = msg.unslothApiKey.trim();
           }
           if (typeof msg.selectedModel === "string" && msg.selectedModel.trim()) {
             payload.selected_model = msg.selectedModel.trim();
@@ -432,7 +517,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           sendResponse({ ok: false, error: `Неизвестная команда: ${msg.action}` });
       }
     } catch (err) {
-      console.error(`[MangaTranslator BG Error] (${msg.action}):`, err);
+      const actionName = msg && typeof msg === "object" && msg.action ? msg.action : "UNKNOWN";
+      console.error(`[MangaTranslator BG Error] (${actionName}):`, err);
       sendResponse({
         ok: false,
         error: err && err.message ? err.message : String(err),

@@ -36,16 +36,20 @@ from __future__ import annotations
 import math
 
 import base64
+import functools
 import io
 import logging
 import re
 import sys
+import threading
 import time
 import unicodedata
 import warnings
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="triton.*")
@@ -108,24 +112,39 @@ def _torch_inference_mode():
     return _decorator
 
 
+def _pil_to_rgb_u8(image: Image.Image) -> Image.Image:
+    """Safely converts 16-bit and alpha-transparent images to 8-bit RGB over a white background."""
+    mode = getattr(image, "mode", "")
+    if mode in ("I;16", "I;16L", "I;16B", "I;16N", "I"):
+        arr = np.asarray(image, dtype=np.float32)
+        if arr.size > 0 and float(arr.max()) > 255.0:
+            arr = np.clip(arr / 256.0, 0.0, 255.0)
+        return Image.fromarray(arr.astype(np.uint8), mode="L").convert("RGB")
+    if mode in ("RGBA", "LA", "PA") or (mode == "P" and "transparency" in getattr(image, "info", {})):
+        rgba = image.convert("RGBA")
+        bg = Image.new("RGB", rgba.size, (255, 255, 255))
+        bg.paste(rgba, mask=rgba.split()[3])
+        return bg
+    if mode == "RGB":
+        return image
+    return image.convert("RGB")
+
+
 # ==============================================================================
 # Блок 1: Многоуровневый фильтр галлюцинаций MangaOCR
 # (Pre-OCR Stroke Gate + Post-OCR Decoder Confidence / Attention Entropy Gate)
 # ==============================================================================
 
-# Кэш радиальных масок высоких частот для 2D RFFT (исключает пересчет сеток частот)
-_FFT_HF_MASK_CACHE: Dict[Tuple[int, int], np.ndarray] = {}
-
-
+# Ограниченный LRU-кэш радиальных масок высоких частот для 2D RFFT (исключает утечку RAM)
+@functools.lru_cache(maxsize=256)
 def _get_hf_fft_mask(h: int, w: int) -> np.ndarray:
-    key = (h, w)
-    if key not in _FFT_HF_MASK_CACHE:
-        fy = np.fft.fftfreq(h)[:, None] * h
-        fx = np.fft.rfftfreq(w)[None, :] * w
-        radius = np.hypot(fy, fx)
-        # Полоса пространственных частот регулярного скринтона (период от 2 до 14 пикселей)
-        _FFT_HF_MASK_CACHE[key] = radius >= max(4.0, min(h, w) / 14.0)
-    return _FFT_HF_MASK_CACHE[key]
+    fy = np.fft.fftfreq(h)[:, None] * h
+    fx = np.fft.rfftfreq(w)[None, :] * w
+    radius = np.hypot(fy, fx)
+    # Полоса пространственных частот регулярного скринтона (период от 2 до 14 пикселей)
+    mask = radius >= max(4.0, min(h, w) / 14.0)
+    mask.flags.writeable = False
+    return mask
 
 
 @dataclass
@@ -154,7 +173,7 @@ def pre_ocr_stroke_gate(crop_img: Union[np.ndarray, Image.Image]) -> StrokeGateR
     if isinstance(crop_img, Image.Image):
         gray = np.array(crop_img.convert("L"), dtype=np.uint8)
     elif crop_img.ndim == 3:
-        gray = cv2.cvtColor(crop_img, cv2.COLOR_BGR2GRAY)
+        gray = cv2.cvtColor(crop_img, cv2.COLOR_RGB2GRAY)
     else:
         gray = crop_img
 
@@ -444,7 +463,7 @@ class HallucinationFreeMangaOCR:
 
         if isinstance(img_or_crop, np.ndarray):
             if img_or_crop.ndim == 3:
-                pil_img = Image.fromarray(cv2.cvtColor(img_or_crop, cv2.COLOR_BGR2RGB))
+                pil_img = Image.fromarray(img_or_crop, mode="RGB")
             else:
                 pil_img = Image.fromarray(img_or_crop)
         else:
@@ -597,7 +616,7 @@ def segment_manga_panels(
     """
     H, W = page_bgr.shape[:2]
     page_area = float(H * W)
-    gray = cv2.cvtColor(page_bgr, cv2.COLOR_BGR2GRAY) if page_bgr.ndim == 3 else page_bgr
+    gray = cv2.cvtColor(page_bgr, cv2.COLOR_RGB2GRAY) if page_bgr.ndim == 3 else page_bgr
 
     # Бинаризация темных рамок и содержимого панелей относительно белой бумаги гаттеров
     _, bw = cv2.threshold(gray, white_thresh, 255, cv2.THRESH_BINARY_INV)
@@ -1036,8 +1055,8 @@ def _detect_bubble_tail_vector(
                 def_arr = np.asarray(defects, dtype=np.int32).reshape(-1, 4)
                 if np.any(def_arr[:, 3] / 256.0 >= 2.5):
                     has_neck_defect = True
-    except Exception:
-        pass
+    except Exception as exc:
+        logger.debug("convexityDefects tail check skipped: %s", exc)
 
     # Проверка на прямоугольную рамку повествования / монолога (4 прямых угла и высокий extent, либо выпуклый прямоугольник без вогнутой шейки)
     approx = cv2.approxPolyDP(cnt, 0.028 * peri, True)
@@ -1112,7 +1131,7 @@ def assign_speaker_diarization_magi_graph(
         return blocks
 
     page_gray = (
-        cv2.cvtColor(page_bgr, cv2.COLOR_BGR2GRAY)
+        cv2.cvtColor(page_bgr, cv2.COLOR_RGB2GRAY)
         if (page_bgr is not None and page_bgr.ndim == 3)
         else page_bgr
     )
@@ -1216,7 +1235,7 @@ def group_text_boxes_by_bubble_cavity(
     Возвращает список сгруппированных блоков и полную карту полостей `final_cavity_map` (для использования в cleaner.py).
     """
     gray = (
-        cv2.cvtColor(page_bgr_or_gray, cv2.COLOR_BGR2GRAY)
+        cv2.cvtColor(page_bgr_or_gray, cv2.COLOR_RGB2GRAY)
         if page_bgr_or_gray.ndim == 3
         else page_bgr_or_gray
     )
@@ -1460,22 +1479,43 @@ class BubblePolygonSolver:
     ) -> Tuple[int, int, int, int]:
         """
         Поиск максимального вписанного прямоугольника (x, y, w, h) внутри невыпуклой маски
-        методом динамического программирования на монотонном стеке за время O(H * W).
+        методом динамического программирования на монотонном стеке с авто-кропом ненулевой области
+        и даунсэмплингом крупных масок (>144px) для ускорения в 20-60 раз.
         """
         if mask is None or mask.size == 0:
             return (0, 0, 0, 0)
-        binary = (mask > 0).astype(np.int32)
-        h, w = binary.shape[:2]
-        heights = np.zeros(w, dtype=np.int32)
-        best_score = -1.0
-        best_rect = (0, 0, w, h)
+        ys, xs = np.where(mask > 0)
+        if len(xs) == 0:
+            return (0, 0, 0, 0)
+        x0, x1 = int(xs.min()), int(xs.max()) + 1
+        y0, y1 = int(ys.min()), int(ys.max()) + 1
+        sub_u8 = (mask[y0:y1, x0:x1] > 0).astype(np.uint8)
+        ch, cw = sub_u8.shape[:2]
 
-        for r in range(h):
+        max_dim = max(ch, cw)
+        if max_dim > 144:
+            scale_d = 144.0 / float(max_dim)
+            sw = max(8, int(round(cw * scale_d)))
+            sh = max(8, int(round(ch * scale_d)))
+            binary = cv2.resize(sub_u8, (sw, sh), interpolation=cv2.INTER_NEAREST).astype(np.int32)
+            inv_sx = float(cw) / float(sw)
+            inv_sy = float(ch) / float(sh)
+        else:
+            binary = sub_u8.astype(np.int32)
+            sh, sw = ch, cw
+            inv_sx = 1.0
+            inv_sy = 1.0
+
+        heights = np.zeros(sw, dtype=np.int32)
+        best_score = -1.0
+        best_rect = (0, 0, sw, sh)
+
+        for r in range(sh):
             row = binary[r]
             heights = np.where(row > 0, heights + 1, 0)
             stack: List[Tuple[int, int]] = []
-            for c in range(w + 1):
-                cur_h = int(heights[c]) if c < w else 0
+            for c in range(sw + 1):
+                cur_h = int(heights[c]) if c < sw else 0
                 start_c = c
                 while stack and stack[-1][1] > cur_h:
                     idx, rect_h = stack.pop()
@@ -1489,7 +1529,14 @@ class BubblePolygonSolver:
                             best_rect = (int(idx), int(r - rect_h + 1), int(rect_w), int(rect_h))
                     start_c = idx
                 stack.append((start_c, cur_h))
-        return best_rect
+
+        if inv_sx > 1.001 or inv_sy > 1.001:
+            rx0 = min(cw - 1, max(0, int(round(best_rect[0] * inv_sx))))
+            ry0 = min(ch - 1, max(0, int(round(best_rect[1] * inv_sy))))
+            rx1 = min(cw, max(rx0 + 1, int(round((best_rect[0] + best_rect[2]) * inv_sx))))
+            ry1 = min(ch, max(ry0 + 1, int(round((best_rect[1] + best_rect[3]) * inv_sy))))
+            return (x0 + rx0, y0 + ry0, rx1 - rx0, ry1 - ry0)
+        return (x0 + best_rect[0], y0 + best_rect[1], best_rect[2], best_rect[3])
 
     @staticmethod
     def compute_scanline_chords(
@@ -3145,6 +3192,11 @@ SFX_EXACT_SET: set[str] = {
     "ぞく", "ぞくっ", "ぬる", "ぬるっ", "じゅわ", "じゅわっ", "じゅる", "れろ", "ぺろ", "もみ", "ぐちゅ",
     "ピッ", "ピロ", "ピロッ", "ピロン", "ポカ", "ポカッ", "ポカポカ", "もぞ", "もぞっ", "もぞもぞ",
     "モゾ", "モゾモゾ", "ゴク", "ゴクッ", "ゴクリ", "ごくり", "ごくっ", "ぽかぽか", "ぴっ", "ぴろ",
+    "カタ", "カタッ", "カタカタ", "カシャ", "カシャカシャ", "カチ", "カチッ", "カチカチ",
+    "シャ", "シャッ", "シャシャ", "シャカ", "シャカシャカ", "ザア", "ザアア", "ザァ", "ザァァ", "ザッ",
+    "ジャ", "ジャア", "ジャー", "ゴロ", "ゴロゴロ", "シュー", "サー", "ザー", "ポン", "ぽん",
+    "パタ", "パタパタ", "トントン", "コンコン", "ガチャ", "ガチャガチャ",
+    "ぷち", "ぶじゅ", "ズチュ", "ぴちゅ", "ぬちゅ", "ぺろ", "ぷに", "くちゅ", "びゅ", "どく", "びく", "ぺち",
 }
 
 
@@ -3213,7 +3265,7 @@ class MangaOCREngine:
         use_ja_nar: bool = True,
         use_hayai_ocr: bool = True,
         use_baberu_ocr: bool = True,
-        use_sam2_seg: bool = True,
+        use_sam2_seg: bool = False,
         ollama_base_url: str = "http://127.0.0.1:11434",
     ) -> None:
         self.models_dir = Path(models_dir)
@@ -3242,6 +3294,7 @@ class MangaOCREngine:
         self.detector_backend: str = "rtdetr_yolov8"
         self.preferred_vlm_model: str = "auto"
         self.ollama_base_url = ollama_base_url.rstrip("/")
+        self._inference_lock = threading.RLock()
 
         logger.info("Инициализация MangaOCREngine (v6.1.0) на устройстве: %s", self.device)
         self.detector = self._load_detector()
@@ -3325,6 +3378,11 @@ class MangaOCREngine:
             self.get_vlm_ocr_backend_name(),
         )
 
+    @staticmethod
+    def _normalize_pipeline_mode(mode: str | None) -> str:
+        m = str(mode or "balanced").strip().lower()
+        return "ultra" if m in ("ultra", "accuracy", "hq", "max", "high") else "balanced"
+
     def set_model_stack_backends(
         self,
         ocr_backend: str | None = None,
@@ -3348,8 +3406,8 @@ class MangaOCREngine:
             self.detector_backend = str(detector_backend).strip()
         if preferred_vlm_model is not None and str(preferred_vlm_model).strip():
             self.preferred_vlm_model = str(preferred_vlm_model).strip()
-        if pipeline_mode and str(pipeline_mode).strip().lower() in ("fast", "balanced", "accuracy", "ultra"):
-            self.pipeline_mode = str(pipeline_mode).strip().lower()
+        if pipeline_mode and str(pipeline_mode).strip():
+            self.pipeline_mode = self._normalize_pipeline_mode(pipeline_mode)
 
     def get_detector_backend_name(self) -> str:
         if self.detector_backend == "yolov8_fast":
@@ -3435,8 +3493,8 @@ class MangaOCREngine:
                             if sub_f.is_file():
                                 try:
                                     size_bytes += sub_f.stat().st_size
-                                except Exception:
-                                    pass
+                                except Exception as exc:
+                                    logger.debug("stat failed for %s: %s", sub_f, exc)
             size_mb = round(size_bytes / (1024 * 1024), 1)
             out.append(
                 {
@@ -3470,6 +3528,7 @@ class MangaOCREngine:
             targets.append(self.models_dir / LOCAL_YOLO26_SEG_FILENAME)
             targets.append(self.models_dir / "yolo26_seg_cache")
         elif key == "yolov8m":
+            self.detector = None
             targets.append(self.models_dir / HF_YOLO_FILENAME)
         elif key == "ja_nar_ocr":
             self._ja_nar_recognizer = None
@@ -3498,16 +3557,16 @@ class MangaOCREngine:
                         if sf.is_file():
                             try:
                                 freed_bytes += sf.stat().st_size
-                            except Exception:
-                                pass
+                            except Exception as exc:
+                                logger.debug("stat failed during delete_local_model_weights for %s: %s", sf, exc)
                     shutil.rmtree(t_path, ignore_errors=True)
                     removed_paths.append(str(t_path))
 
         if torch is not None and torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("CUDA empty_cache failed in delete_local_model_weights: %s", exc)
 
         return {
             "ok": True,
@@ -3555,112 +3614,122 @@ class MangaOCREngine:
         ):
             return self._hayai_model, self._hayai_tokenizer, self._hayai_processor
 
-        local_dir = self.models_dir / HF_HAYAI_SUBDIR
-        proc_dir = self.models_dir / HF_HAYAI_PROCESSOR_SUBDIR
-        local_dir.mkdir(parents=True, exist_ok=True)
-        proc_dir.mkdir(parents=True, exist_ok=True)
+        with self._inference_lock:
+            if self._hayai_available is False:
+                return None
+            if (
+                self._hayai_model is not None
+                and self._hayai_tokenizer is not None
+                and self._hayai_processor is not None
+            ):
+                return self._hayai_model, self._hayai_tokenizer, self._hayai_processor
 
-        try:
-            weights_file = local_dir / "model.safetensors"
-            config_file = local_dir / "config.json"
-            if not weights_file.exists() or not config_file.exists():
+            local_dir = self.models_dir / HF_HAYAI_SUBDIR
+            proc_dir = self.models_dir / HF_HAYAI_PROCESSOR_SUBDIR
+            local_dir.mkdir(parents=True, exist_ok=True)
+            proc_dir.mkdir(parents=True, exist_ok=True)
+
+            try:
+                weights_file = local_dir / "model.safetensors"
+                config_file = local_dir / "config.json"
+                if not weights_file.exists() or not config_file.exists():
+                    logger.info(
+                        "Скачивание мультиязычной OCR-модели (KO/ZH/JA/EN) %s...",
+                        HF_HAYAI_REPO,
+                    )
+                    snapshot_download(
+                        repo_id=HF_HAYAI_REPO,
+                        local_dir=str(local_dir),
+                        allow_patterns=list(HF_HAYAI_ALLOW_PATTERNS),
+                    )
+
+                import transformers
+                from transformers import AutoModel, AutoProcessor, PreTrainedTokenizerFast
+
+                hf_logging = getattr(transformers, "logging", None)
+                if hf_logging is not None and hasattr(hf_logging, "set_verbosity_error"):
+                    try:
+                        hf_logging.set_verbosity_error()
+                    except Exception as exc:
+                        logger.debug("Ignored transformers logging error: %s", exc)
+                logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
+
+                # Загружаем быстрый токенизатор HayaiOCR локально без лишних сетевых запросов
+                try:
+                    tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir), local_files_only=True)
+                except Exception:
+                    try:
+                        tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir))
+                    except Exception:
+                        auto_tok_cls = getattr(transformers, "AutoTokenizer", None)
+                        if auto_tok_cls is None:
+                            raise
+                        tokenizer = auto_tok_cls.from_pretrained(str(local_dir), trust_remote_code=True)
+
+                # Загружаем процессор SigLIP2 NaFlex (сначала из локального кэша proc_dir без обращения к сети!)
+                processor = None
+                if not (proc_dir / "preprocessor_config.json").exists():
+                    logger.info(
+                        "Скачивание конфигурации процессора %s...",
+                        HF_HAYAI_PROCESSOR_REPO,
+                    )
+                    snapshot_download(
+                        repo_id=HF_HAYAI_PROCESSOR_REPO,
+                        local_dir=str(proc_dir),
+                        allow_patterns=list(HF_HAYAI_PROCESSOR_ALLOW_PATTERNS),
+                    )
+
+                img_proc_cls = getattr(transformers, "AutoImageProcessor", None)
+                if img_proc_cls is not None:
+                    try:
+                        processor = img_proc_cls.from_pretrained(str(proc_dir), local_files_only=True)
+                    except Exception:
+                        try:
+                            processor = img_proc_cls.from_pretrained(str(proc_dir))
+                        except Exception:
+                            processor = None
+                if processor is None:
+                    try:
+                        processor = AutoProcessor.from_pretrained(str(proc_dir), local_files_only=True)
+                    except Exception:
+                        try:
+                            if (local_dir / "preprocessor_config.json").exists():
+                                processor = AutoProcessor.from_pretrained(str(local_dir))
+                        except Exception:
+                            processor = AutoProcessor.from_pretrained(HF_HAYAI_PROCESSOR_REPO)
+
+                try:
+                    model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True, local_files_only=True)
+                except Exception:
+                    model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True)
+                model.to(self.device)
+                model.eval()
+
+                self._hayai_model = model
+                self._hayai_tokenizer = tokenizer
+                self._hayai_processor = processor
+                self._hayai_available = True
+                self.last_detection_stats["hayai_active"] = True
+                self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
                 logger.info(
-                    "Скачивание мультиязычной OCR-модели (KO/ZH/JA/EN) %s...",
+                    "Мультиязычная модель %s (KO/ZH/JA/EN) успешно подключена на %s!",
                     HF_HAYAI_REPO,
+                    self.device,
                 )
-                snapshot_download(
-                    repo_id=HF_HAYAI_REPO,
-                    local_dir=str(local_dir),
-                    allow_patterns=list(HF_HAYAI_ALLOW_PATTERNS),
+                return self._hayai_model, self._hayai_tokenizer, self._hayai_processor
+            except Exception as exc:
+                logger.warning(
+                    "Модель %s недоступна (%s). Используем резервный конвейер SmartLineSplit + RapidOCR/EasyOCR.",
+                    HF_HAYAI_REPO,
+                    exc,
                 )
-
-            import transformers
-            from transformers import AutoModel, AutoProcessor, PreTrainedTokenizerFast
-
-            hf_logging = getattr(transformers, "logging", None)
-            if hf_logging is not None and hasattr(hf_logging, "set_verbosity_error"):
-                try:
-                    hf_logging.set_verbosity_error()
-                except Exception:
-                    pass
-            logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
-
-            # Загружаем быстрый токенизатор HayaiOCR локально без лишних сетевых запросов
-            try:
-                tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir), local_files_only=True)
-            except Exception:
-                try:
-                    tokenizer = PreTrainedTokenizerFast.from_pretrained(str(local_dir))
-                except Exception:
-                    auto_tok_cls = getattr(transformers, "AutoTokenizer", None)
-                    if auto_tok_cls is None:
-                        raise
-                    tokenizer = auto_tok_cls.from_pretrained(str(local_dir), trust_remote_code=True)
-
-            # Загружаем процессор SigLIP2 NaFlex (сначала из локального кэша proc_dir без обращения к сети!)
-            processor = None
-            if not (proc_dir / "preprocessor_config.json").exists():
-                logger.info(
-                    "Скачивание конфигурации процессора %s...",
-                    HF_HAYAI_PROCESSOR_REPO,
-                )
-                snapshot_download(
-                    repo_id=HF_HAYAI_PROCESSOR_REPO,
-                    local_dir=str(proc_dir),
-                    allow_patterns=list(HF_HAYAI_PROCESSOR_ALLOW_PATTERNS),
-                )
-
-            img_proc_cls = getattr(transformers, "AutoImageProcessor", None)
-            if img_proc_cls is not None:
-                try:
-                    processor = img_proc_cls.from_pretrained(str(proc_dir), local_files_only=True)
-                except Exception:
-                    try:
-                        processor = img_proc_cls.from_pretrained(str(proc_dir))
-                    except Exception:
-                        processor = None
-            if processor is None:
-                try:
-                    processor = AutoProcessor.from_pretrained(str(proc_dir), local_files_only=True)
-                except Exception:
-                    try:
-                        if (local_dir / "preprocessor_config.json").exists():
-                            processor = AutoProcessor.from_pretrained(str(local_dir))
-                    except Exception:
-                        processor = AutoProcessor.from_pretrained(HF_HAYAI_PROCESSOR_REPO)
-
-            try:
-                model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True, local_files_only=True)
-            except Exception:
-                model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True)
-            model.to(self.device)
-            model.eval()
-
-            self._hayai_model = model
-            self._hayai_tokenizer = tokenizer
-            self._hayai_processor = processor
-            self._hayai_available = True
-            self.last_detection_stats["hayai_active"] = True
-            self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
-            logger.info(
-                "Мультиязычная модель %s (KO/ZH/JA/EN) успешно подключена на %s!",
-                HF_HAYAI_REPO,
-                self.device,
-            )
-            return self._hayai_model, self._hayai_tokenizer, self._hayai_processor
-        except Exception as exc:
-            logger.warning(
-                "Модель %s недоступна (%s). Используем резервный конвейер SmartLineSplit + RapidOCR/EasyOCR.",
-                HF_HAYAI_REPO,
-                exc,
-            )
-            self._hayai_available = False
-            self._hayai_model = None
-            self._hayai_tokenizer = None
-            self._hayai_processor = None
-            self.last_detection_stats["hayai_active"] = False
-            self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
-            return None
+                self._hayai_available = False
+                self._hayai_model = None
+                self._hayai_tokenizer = None
+                self._hayai_processor = None
+                self.last_detection_stats["hayai_active"] = False
+                self.last_detection_stats["ko_zh_ocr_backend"] = self.get_multilang_ocr_backend_name()
+                return None
 
     @staticmethod
     def _normalize_hayai_ocr_text(text: str, lang: str = "auto") -> str:
@@ -3894,11 +3963,13 @@ class MangaOCREngine:
 
         # 2. Пробуем облачный OpenAI-совместимый Vision API (с ретраями при сетевых таймаутах)
         if cloud_api_url and cloud_api_key:
-            c_url = cloud_api_url.rstrip("/")
-            for sfx in ("/v1/chat/completions", "/chat/completions", "/v1"):
+            c_url = cloud_api_url.strip().rstrip("/")
+            for sfx in ("/chat/completions", "/models"):
                 if c_url.endswith(sfx):
                     c_url = c_url[: -len(sfx)].rstrip("/")
                     break
+            c_path = (urlparse(c_url).path or "").rstrip("/")
+            chat_url = f"{c_url}/chat/completions" if c_path else f"{c_url}/v1/chat/completions"
             candidate_cloud_models: list[str] = []
             if cloud_vlm_model and cloud_vlm_model.strip() and cloud_vlm_model.strip() != "auto":
                 cm = cloud_vlm_model.strip().split("::", 1)[-1]
@@ -3911,8 +3982,11 @@ class MangaOCREngine:
                 "Content-Type": "application/json",
                 "Accept": "application/json",
                 "Authorization": f"Bearer {cloud_api_key.strip()}",
-                "User-Agent": "MikoMangaStudio/5.3.0",
+                "User-Agent": "MikoMangaStudio/6.1.0",
             }
+            if httpx is None:
+                logger.debug("httpx недоступен для облачного VLM-OCR.")
+                return ""
             with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), trust_env=False) as client:
                 for c_mod in candidate_cloud_models[:2]:
                     payload_cloud = {
@@ -3936,7 +4010,7 @@ class MangaOCREngine:
                     for attempt in range(2):
                         try:
                             c_resp = client.post(
-                                f"{c_url}/v1/chat/completions",
+                                chat_url,
                                 headers=headers,
                                 json=payload_cloud,
                             )
@@ -4103,65 +4177,71 @@ class MangaOCREngine:
         if self._ja_nar_recognizer is not None:
             return self._ja_nar_recognizer
 
-        local_dir = self.models_dir / HF_JA_NAR_SUBDIR
-        local_dir.mkdir(parents=True, exist_ok=True)
+        with self._inference_lock:
+            if self._ja_nar_available is False:
+                return None
+            if self._ja_nar_recognizer is not None:
+                return self._ja_nar_recognizer
 
-        try:
-            weights_file = local_dir / "model.safetensors"
-            pkg_init = local_dir / "manga_ocr_nar_small" / "__init__.py"
-            if not weights_file.exists() or not pkg_init.exists():
-                logger.info(
-                    "Скачивание японской OCR-модели нового поколения %s (~217 МБ)...",
-                    HF_JA_NAR_REPO,
-                )
-                snapshot_download(
-                    repo_id=HF_JA_NAR_REPO,
-                    local_dir=str(local_dir),
-                    allow_patterns=list(HF_JA_NAR_ALLOW_PATTERNS),
-                )
-
-            local_dir_str = str(local_dir.resolve())
-            if local_dir_str not in sys.path:
-                sys.path.insert(0, local_dir_str)
+            local_dir = self.models_dir / HF_JA_NAR_SUBDIR
+            local_dir.mkdir(parents=True, exist_ok=True)
 
             try:
-                from manga_ocr_nar_small import MangaOcrNarSmall  # type: ignore[import-not-found]
-            except ImportError:
-                from mangaocr_nar_small import MangaOcrNarSmall  # type: ignore[import-not-found]
+                weights_file = local_dir / "model.safetensors"
+                pkg_init = local_dir / "manga_ocr_nar_small" / "__init__.py"
+                if not weights_file.exists() or not pkg_init.exists():
+                    logger.info(
+                        "Скачивание японской OCR-модели нового поколения %s (~217 МБ)...",
+                        HF_JA_NAR_REPO,
+                    )
+                    snapshot_download(
+                        repo_id=HF_JA_NAR_REPO,
+                        local_dir=str(local_dir),
+                        allow_patterns=list(HF_JA_NAR_ALLOW_PATTERNS),
+                    )
 
-            nar_inst = None
-            last_err: Exception | None = None
-            backend_candidates = ("cuda", "auto", None) if self.device.startswith("cuda") else ("auto", None)
-            for b_arg in backend_candidates:
+                local_dir_str = str(local_dir.resolve())
+                if local_dir_str not in sys.path:
+                    sys.path.append(local_dir_str)
+
                 try:
-                    if b_arg is None:
-                        nar_inst = MangaOcrNarSmall()
-                    else:
-                        nar_inst = MangaOcrNarSmall(b_arg)
-                    break
-                except Exception as exc:
-                    last_err = exc
+                    from manga_ocr_nar_small import MangaOcrNarSmall  # type: ignore[import-not-found]
+                except ImportError:
+                    from mangaocr_nar_small import MangaOcrNarSmall  # type: ignore[import-not-found]
 
-            if nar_inst is None:
-                raise RuntimeError(f"Не удалось создать экземпляр MangaOcrNarSmall ({last_err})")
+                nar_inst = None
+                last_err: Exception | None = None
+                backend_candidates = ("cuda", "auto", None) if self.device.startswith("cuda") else ("auto", None)
+                for b_arg in backend_candidates:
+                    try:
+                        if b_arg is None:
+                            nar_inst = MangaOcrNarSmall()
+                        else:
+                            nar_inst = MangaOcrNarSmall(b_arg)
+                        break
+                    except Exception as exc:
+                        last_err = exc
 
-            self._ja_nar_recognizer = nar_inst
-            self._ja_nar_available = True
-            self.last_detection_stats["ja_ocr_backend"] = self.get_ja_ocr_backend_name()
-            logger.info(
-                "Модель %s успешно подключена (гибридный режим с MangaOCR для длинных бабблов)!",
-                HF_JA_NAR_REPO,
-            )
-            return self._ja_nar_recognizer
-        except Exception as exc:
-            logger.warning(
-                "Модель %s недоступна (%s). Используем улучшенный MangaOCR FP16 + SmartPreprocess.",
-                HF_JA_NAR_REPO,
-                exc,
-            )
-            self._ja_nar_available = False
-            self._ja_nar_recognizer = None
-            return None
+                if nar_inst is None:
+                    raise RuntimeError(f"Не удалось создать экземпляр MangaOcrNarSmall ({last_err})")
+
+                self._ja_nar_recognizer = nar_inst
+                self._ja_nar_available = True
+                self.last_detection_stats["ja_ocr_backend"] = self.get_ja_ocr_backend_name()
+                logger.info(
+                    "Модель %s успешно подключена (гибридный режим с MangaOCR для длинных бабблов)!",
+                    HF_JA_NAR_REPO,
+                )
+                return self._ja_nar_recognizer
+            except Exception as exc:
+                logger.warning(
+                    "Модель %s недоступна (%s). Используем улучшенный MangaOCR FP16 + SmartPreprocess.",
+                    HF_JA_NAR_REPO,
+                    exc,
+                )
+                self._ja_nar_available = False
+                self._ja_nar_recognizer = None
+                return None
 
     def _load_detector(self) -> YOLO:
         local_weights = self.models_dir / HF_YOLO_FILENAME
@@ -4192,35 +4272,80 @@ class MangaOCREngine:
         if self._yolo26_seg_model is not None:
             return self._yolo26_seg_model
 
-        local_weights = self.models_dir / LOCAL_YOLO26_SEG_FILENAME
-        if not local_weights.exists():
-            if not download_if_missing:
+        with self._inference_lock:
+            if self._yolo26_seg_available is False:
                 return None
+            if self._yolo26_seg_model is not None:
+                return self._yolo26_seg_model
+
+            local_weights = self.models_dir / LOCAL_YOLO26_SEG_FILENAME
+            if not local_weights.exists():
+                if not download_if_missing:
+                    return None
+                try:
+                    logger.info("Скачивание весов сегментатора %s/%s...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
+                    dl_path = hf_hub_download(
+                        repo_id=HF_YOLO26_SEG_REPO,
+                        filename=HF_YOLO26_SEG_FILENAME,
+                        local_dir=str(self.models_dir / "yolo26_seg_cache"),
+                    )
+                    import shutil
+                    shutil.copy2(dl_path, local_weights)
+                except Exception as exc:
+                    logger.debug("YOLO26s-seg недоступен (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
+                    self._yolo26_seg_available = False
+                    return None
+
             try:
-                logger.info("Скачивание весов сегментатора %s/%s...", HF_YOLO26_SEG_REPO, HF_YOLO26_SEG_FILENAME)
-                dl_path = hf_hub_download(
-                    repo_id=HF_YOLO26_SEG_REPO,
-                    filename=HF_YOLO26_SEG_FILENAME,
-                    local_dir=str(self.models_dir / "yolo26_seg_cache"),
-                )
-                import shutil
-                shutil.copy2(dl_path, local_weights)
+                seg_model = YOLO(str(local_weights))
+                seg_model.to(self.device)
+                self._yolo26_seg_model = seg_model
+                self._yolo26_seg_available = True
+                logger.info("Сегментатор масок YOLO26s-seg (%s) подключен на %s!", LOCAL_YOLO26_SEG_FILENAME, self.device)
+                return seg_model
             except Exception as exc:
-                logger.debug("YOLO26s-seg недоступен (%s), продолжаем с RT-DETR-v2 + YOLOv8m.", exc)
+                logger.debug("Не удалось загрузить YOLO26s-seg (%s).", exc)
                 self._yolo26_seg_available = False
                 return None
 
-        try:
-            seg_model = YOLO(str(local_weights))
-            seg_model.to(self.device)
-            self._yolo26_seg_model = seg_model
-            self._yolo26_seg_available = True
-            logger.info("Сегментатор масок YOLO26s-seg (%s) подключен на %s!", LOCAL_YOLO26_SEG_FILENAME, self.device)
-            return seg_model
-        except Exception as exc:
-            logger.debug("Не удалось загрузить YOLO26s-seg (%s).", exc)
-            self._yolo26_seg_available = False
+    @staticmethod
+    def _simplify_bubble_polygon(
+        raw_pts: Any,
+        img_w: int,
+        img_h: int,
+        y_offset: int = 0,
+        max_points: int = 32,
+    ) -> list[list[int]] | None:
+        """
+        Упрощает плотный контур от YOLO26s-seg / SAM 2.1 (300-1000 точек) через Дугласа-Пекера
+        (`cv2.approxPolyDP`) до 12..32 вершин без потери формы баббла (сжимает .translation_state.json в 20-50 раз).
+        """
+        if raw_pts is None or len(raw_pts) < 3:
             return None
+        pts_list: list[list[int]] = [
+            [
+                max(0, min(img_w - 1, int(round(float(pt[0]))))),
+                max(0, min(img_h - 1, int(round(float(pt[1]) + y_offset)))),
+            ]
+            for pt in raw_pts
+        ]
+        if len(pts_list) <= 24:
+            return pts_list
+        try:
+            cnt = np.array(pts_list, dtype=np.int32).reshape((-1, 1, 2))
+            arc_len = float(cv2.arcLength(cnt, True))
+            if arc_len > 4.0:
+                approx = cv2.approxPolyDP(cnt, max(1.5, 0.008 * arc_len), True)
+                if len(approx) > max_points:
+                    approx = cv2.approxPolyDP(cnt, max(2.2, 0.015 * arc_len), True)
+                if len(approx) >= 3:
+                    pts_list = [[int(p[0][0]), int(p[0][1])] for p in approx]
+        except Exception as exc:
+            logger.debug("Polygon simplification fallback: %s", exc)
+        if len(pts_list) > max_points:
+            step = max(1, len(pts_list) // max_points)
+            pts_list = pts_list[::step][:max_points]
+        return pts_list if len(pts_list) >= 3 else None
 
     def _run_yolo26_seg_on_slice(
         self,
@@ -4237,14 +4362,16 @@ class MangaOCREngine:
         seg_bubbles: list[dict[str, Any]] = []
         seg_texts: list[dict[str, Any]] = []
         try:
-            res_list = seg_det.predict(
-                source=slice_np,
-                conf=max(0.22, active_conf),
-                iou=self.iou_threshold,
-                imgsz=self.imgsz,
-                device=self.device,
-                verbose=False,
-            )
+            slice_bgr = cv2.cvtColor(slice_np, cv2.COLOR_RGB2BGR) if slice_np.ndim == 3 else slice_np
+            with self._inference_lock:
+                res_list = seg_det.predict(
+                    source=slice_bgr,
+                    conf=max(0.22, active_conf),
+                    iou=self.iou_threshold,
+                    imgsz=self.imgsz,
+                    device=self.device,
+                    verbose=False,
+                )
             if not res_list or res_list[0].boxes is None:
                 return [], []
             r0 = res_list[0]
@@ -4266,14 +4393,12 @@ class MangaOCREngine:
                     continue
                 poly_pts: list[list[int]] | None = None
                 if polys_xy is not None and idx < len(polys_xy) and len(polys_xy[idx]) >= 3:
-                    raw_pts = polys_xy[idx]
-                    poly_pts = [
-                        [
-                            max(0, min(img_w - 1, int(round(float(pt[0]))))),
-                            max(0, min(img_h - 1, int(round(float(pt[1]) + y_start)))),
-                        ]
-                        for pt in raw_pts
-                    ]
+                    poly_pts = self._simplify_bubble_polygon(
+                        polys_xy[idx],
+                        img_w=img_w,
+                        img_h=img_h,
+                        y_offset=y_start,
+                    )
                 cls_name = str(names_map.get(int(cls_id), "")).lower()
                 if "balloon" in cls_name or "bubble" in cls_name or int(cls_id) == 2:
                     seg_bubbles.append(
@@ -4309,38 +4434,44 @@ class MangaOCREngine:
         if self._sam2_model is not None:
             return self._sam2_model
 
-        try:
-            from ultralytics import SAM  # type: ignore
-        except Exception as exc:
-            logger.debug("ultralytics.SAM недоступен для полигональной сегментации: %s", exc)
-            self._sam2_available = False
-            return None
-
-        local_candidates = [
-            self.models_dir / LOCAL_SAM2_SEG_FILENAME,
-            self.models_dir / LOCAL_SAM2_FALLBACK_FILENAME,
-        ]
-        chosen_path: Path | None = None
-        for p in local_candidates:
-            if p.exists() and p.stat().st_size > 10_000_000:
-                chosen_path = p
-                break
-
-        if chosen_path is None:
-            if not download_if_missing:
+        with self._inference_lock:
+            if self._sam2_available is False:
                 return None
-            chosen_path = self.models_dir / LOCAL_SAM2_SEG_FILENAME
+            if self._sam2_model is not None:
+                return self._sam2_model
 
-        try:
-            sam_model = SAM(str(chosen_path))
-            self._sam2_model = sam_model
-            self._sam2_available = True
-            logger.info("SAM 2.1 загружен для полигональной сегментации бабблов: %s", chosen_path.name)
-            return self._sam2_model
-        except Exception as exc:
-            logger.warning("Не удалось загрузить SAM 2.1 (%s): %s", chosen_path.name, exc)
-            self._sam2_available = False
-            return None
+            try:
+                from ultralytics import SAM  # type: ignore
+            except Exception as exc:
+                logger.debug("ultralytics.SAM недоступен для полигональной сегментации: %s", exc)
+                self._sam2_available = False
+                return None
+
+            local_candidates = [
+                self.models_dir / LOCAL_SAM2_SEG_FILENAME,
+                self.models_dir / LOCAL_SAM2_FALLBACK_FILENAME,
+            ]
+            chosen_path: Path | None = None
+            for p in local_candidates:
+                if p.exists() and p.stat().st_size > 10_000_000:
+                    chosen_path = p
+                    break
+
+            if chosen_path is None:
+                if not download_if_missing:
+                    return None
+                chosen_path = self.models_dir / LOCAL_SAM2_SEG_FILENAME
+
+            try:
+                sam_model = SAM(str(chosen_path))
+                self._sam2_model = sam_model
+                self._sam2_available = True
+                logger.info("SAM 2.1 загружен для полигональной сегментации бабблов: %s", chosen_path.name)
+                return self._sam2_model
+            except Exception as exc:
+                logger.warning("Не удалось загрузить SAM 2.1 (%s): %s", chosen_path.name, exc)
+                self._sam2_available = False
+                return None
 
     def _extract_contour_polygon_fallback(
         self,
@@ -4380,8 +4511,8 @@ class MangaOCREngine:
                                 ]
                                 for pt in approx
                             ]
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Contour polygon fallback failed, using ellipse: %s", exc)
 
         # Эллиптическая аппроксимация баббла (отсекает 4 внешних угла прямоугольника bbox)
         cx = 0.5 * (x1 + x2)
@@ -4430,12 +4561,14 @@ class MangaOCREngine:
             sam_model = self._get_sam2_segmenter(download_if_missing=download_sam_if_missing)
             if sam_model is not None:
                 try:
-                    sam_res = sam_model.predict(
-                        source=img_np,
-                        bboxes=need_sam_bboxes,
-                        device=self.device,
-                        verbose=False,
-                    )
+                    img_bgr_sam = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR) if img_np.ndim == 3 else img_np
+                    with self._inference_lock:
+                        sam_res = sam_model.predict(
+                            source=img_bgr_sam,
+                            bboxes=need_sam_bboxes,
+                            device=self.device,
+                            verbose=False,
+                        )
                     if sam_res:
                         r0 = sam_res[0]
                         masks_obj = getattr(r0, "masks", None)
@@ -4443,14 +4576,13 @@ class MangaOCREngine:
                         if polys_xy is not None:
                             for local_i, det_idx in enumerate(need_sam_indices):
                                 if local_i < len(polys_xy) and len(polys_xy[local_i]) >= 3:
-                                    raw_pts = polys_xy[local_i]
-                                    detections[det_idx]["bubble_polygon"] = [
-                                        [
-                                            max(0, min(img_w - 1, int(round(float(pt[0]))))),
-                                            max(0, min(img_h - 1, int(round(float(pt[1]))))),
-                                        ]
-                                        for pt in raw_pts
-                                    ]
+                                    simp_pts = self._simplify_bubble_polygon(
+                                        polys_xy[local_i],
+                                        img_w=img_w,
+                                        img_h=img_h,
+                                    )
+                                    if simp_pts is not None:
+                                        detections[det_idx]["bubble_polygon"] = simp_pts
                 except Exception as exc:
                     logger.debug("SAM 2.1 батч-сегментация не удалась, использую контурный фоллбэк: %s", exc)
 
@@ -4473,38 +4605,51 @@ class MangaOCREngine:
         if self._baberu_model is not None and self._baberu_processor is not None:
             return self._baberu_model, self._baberu_processor
 
-        local_dir = self.models_dir / HF_BABERU_SUBDIR
-        try:
-            from transformers import AutoModelForImageTextToText, AutoProcessor  # type: ignore
+        with self._inference_lock:
+            if self._baberu_available is False:
+                return None
+            if self._baberu_model is not None and self._baberu_processor is not None:
+                return self._baberu_model, self._baberu_processor
 
-            if not (local_dir.exists() and any(local_dir.glob("*.safetensors"))):
-                if not allow_download:
-                    return None
-                from huggingface_hub import snapshot_download  # type: ignore
-                local_dir.mkdir(parents=True, exist_ok=True)
-                snapshot_download(
-                    repo_id=HF_BABERU_REPO,
-                    local_dir=str(local_dir),
-                    allow_patterns=list(HF_BABERU_ALLOW_PATTERNS),
-                )
+            local_dir = self.models_dir / HF_BABERU_SUBDIR
+            try:
+                from transformers import AutoModelForImageTextToText, AutoProcessor  # type: ignore
 
-            processor = AutoProcessor.from_pretrained(str(local_dir), trust_remote_code=True)
-            dtype = torch.bfloat16 if self.device.startswith("cuda") else torch.float32
-            model = AutoModelForImageTextToText.from_pretrained(
-                str(local_dir),
-                torch_dtype=dtype,
-                trust_remote_code=True,
-            ).to(self.device)
-            model.eval()
-            self._baberu_model = model
-            self._baberu_processor = processor
-            self._baberu_available = True
-            logger.info("Baberu-OCR успешно загружен из %s", local_dir)
-            return self._baberu_model, self._baberu_processor
-        except Exception as exc:
-            logger.warning("Не удалось загрузить Baberu-OCR (%s): %s", HF_BABERU_REPO, exc)
-            self._baberu_available = False
-            return None
+                if not (local_dir.exists() and any(local_dir.glob("*.safetensors"))):
+                    if not allow_download:
+                        return None
+                    from huggingface_hub import snapshot_download  # type: ignore
+                    local_dir.mkdir(parents=True, exist_ok=True)
+                    snapshot_download(
+                        repo_id=HF_BABERU_REPO,
+                        local_dir=str(local_dir),
+                        allow_patterns=list(HF_BABERU_ALLOW_PATTERNS),
+                    )
+
+                processor = AutoProcessor.from_pretrained(str(local_dir), trust_remote_code=True)
+                dtype = torch.bfloat16 if self.device.startswith("cuda") else torch.float32
+                try:
+                    model = AutoModelForImageTextToText.from_pretrained(
+                        str(local_dir),
+                        dtype=dtype,
+                        trust_remote_code=True,
+                    ).to(self.device)
+                except TypeError:
+                    model = AutoModelForImageTextToText.from_pretrained(
+                        str(local_dir),
+                        torch_dtype=dtype,
+                        trust_remote_code=True,
+                    ).to(self.device)
+                model.eval()
+                self._baberu_model = model
+                self._baberu_processor = processor
+                self._baberu_available = True
+                logger.info("Baberu-OCR успешно загружен из %s", local_dir)
+                return self._baberu_model, self._baberu_processor
+            except Exception as exc:
+                logger.warning("Не удалось загрузить Baberu-OCR (%s): %s", HF_BABERU_REPO, exc)
+                self._baberu_available = False
+                return None
 
     def _recognize_crops_batch_baberu(
         self,
@@ -4572,8 +4717,8 @@ class MangaOCREngine:
             if hf_logging is not None and hasattr(hf_logging, "set_verbosity_error"):
                 try:
                     hf_logging.set_verbosity_error()
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Ignored transformers logging error in RT-DETR init: %s", exc)
             logging.getLogger("transformers.modeling_utils").setLevel(logging.ERROR)
 
             proc_cls = getattr(transformers, "AutoImageProcessor", None) or getattr(
@@ -4710,34 +4855,36 @@ class MangaOCREngine:
         return False
 
     def _get_ko_reader(self) -> Any | None:
-        if not self._check_easyocr():
-            return None
-        if self._ko_reader is None:
-            import easyocr
+        with self._inference_lock:
+            if not self._check_easyocr():
+                return None
+            if self._ko_reader is None:
+                import easyocr
 
-            logger.info("Загрузка модели EasyOCR для корейского языка (ko)...")
-            self._ko_reader = easyocr.Reader(
-                ["ko", "en"],
-                gpu=self.device.startswith("cuda"),
-                model_storage_directory=str(self.models_dir / "easyocr"),
-                verbose=False,
-            )
-        return self._ko_reader
+                logger.info("Загрузка модели EasyOCR для корейского языка (ko)...")
+                self._ko_reader = easyocr.Reader(
+                    ["ko", "en"],
+                    gpu=self.device.startswith("cuda"),
+                    model_storage_directory=str(self.models_dir / "easyocr"),
+                    verbose=False,
+                )
+            return self._ko_reader
 
     def _get_zh_reader(self) -> Any | None:
-        if not self._check_easyocr():
-            return None
-        if self._zh_reader is None:
-            import easyocr
+        with self._inference_lock:
+            if not self._check_easyocr():
+                return None
+            if self._zh_reader is None:
+                import easyocr
 
-            logger.info("Загрузка модели EasyOCR для китайского языка (ch_sim)...")
-            self._zh_reader = easyocr.Reader(
-                ["ch_sim", "en"],
-                gpu=self.device.startswith("cuda"),
-                model_storage_directory=str(self.models_dir / "easyocr"),
-                verbose=False,
-            )
-        return self._zh_reader
+                logger.info("Загрузка модели EasyOCR для китайского языка (ch_sim)...")
+                self._zh_reader = easyocr.Reader(
+                    ["ch_sim", "en"],
+                    gpu=self.device.startswith("cuda"),
+                    model_storage_directory=str(self.models_dir / "easyocr"),
+                    verbose=False,
+                )
+            return self._zh_reader
 
     def _get_any_craft_reader(self) -> Any | None:
         """
@@ -5313,8 +5460,8 @@ class MangaOCREngine:
             if sota_tilt.get("is_tilted_screen") and abs(float(sota_tilt.get("angle_deg", 0.0))) >= 8.0:
                 cand_angles.append(float(sota_tilt["angle_deg"]))
                 cand_angles.append(-float(sota_tilt["angle_deg"]))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("estimate_and_deskew_tilted_text_block skipped: %s", exc)
         for deg in cand_angles:
             sc, vv, _, nb = _score_angle(float(deg))
             if sc > best_sc:
@@ -5502,8 +5649,8 @@ class MangaOCREngine:
                 xs = pts[:, 0]
                 ys = pts[:, 1]
                 return float(np.min(ys)), float(np.max(ys)), float(np.mean(xs))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("Invalid OCR poly bounds: %s", exc)
         return 0.0, 10.0, 0.0
 
     @staticmethod
@@ -5806,13 +5953,13 @@ class MangaOCREngine:
         if (ink_x2 - ink_x1) < 10 or (ink_y2 - ink_y1) < 10:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
 
-        # Защита от фрагментации interior_mask на длинных вертикальных/горизонтальных плашках без RT-DETR подсказки:
-        # если _extract_bubble_interior_mask отрезал больше 42% высоты/ширины баббла, а в отрезанной внутренней
-        # части баббла осталась значимая доля темных штрихов текста — расширяем text_bbox на все штрихи внутри баббла!
-        if valid_hint is None and has_clean_interior and (bh >= 70 or bw >= 70):
+        # Защита от фрагментации interior_mask на длинных вертикальных/горизонтальных плашках:
+        # если _extract_bubble_interior_mask или узкий text_bbox отрезал значимую часть чистой полости баббла,
+        # а в отрезанной внутренней части осталась значимая доля темных штрихов текста — расширяем text_bbox на все штрихи внутри баббла!
+        if not is_dashed_wall_roi and has_clean_interior and (bh >= 70 or bw >= 70):
             span_h_ratio = float(ink_y2 - ink_y1) / float(max(1, bh))
             span_w_ratio = float(ink_x2 - ink_x1) / float(max(1, bw))
-            if span_h_ratio < 0.58 or span_w_ratio < 0.58:
+            if span_h_ratio < 0.72 or span_w_ratio < 0.72:
                 in_pad_x = max(3, int(rw * 0.08))
                 in_pad_y = max(3, int(rh * 0.03))
                 if rh > 2 * in_pad_y + 8 and rw > 2 * in_pad_x + 8:
@@ -5843,7 +5990,7 @@ class MangaOCREngine:
                         c_max_x = max(c_max_x, ccx + ccw)
                         c_max_y = max(c_max_y, ccy + cch)
                         c_kept_px += cca
-                    if c_kept_px > int(kept_ink_px * 1.25) and c_kept_px >= 24 and c_max_x > c_min_x and c_max_y > c_min_y:
+                    if c_kept_px > int(kept_ink_px * 1.15) and c_kept_px >= 24 and c_max_x > c_min_x and c_max_y > c_min_y:
                         ink_x1 = max(bx1, min(ink_x1, ix1 + in_pad_x + c_min_x - 4))
                         ink_y1 = max(by1, min(ink_y1, iy1 + in_pad_y + c_min_y - 4))
                         ink_x2 = min(bx2, max(ink_x2, ix1 + in_pad_x + c_max_x + 4))
@@ -6109,21 +6256,62 @@ class MangaOCREngine:
         return False
 
     @classmethod
-    def is_sfx_or_onomatopoeia(cls, text: str, is_free_text: bool = False, confidence: float = 1.0) -> bool:
+    def is_sfx_or_onomatopoeia(
+        cls,
+        text: str,
+        is_free_text: bool = False,
+        confidence: float = 1.0,
+        has_enclosing_frame: bool = True,
+    ) -> bool:
         """
         Определяет, является ли блок фоновым звуковым спецэффектом (SFX / ономатопеей).
-        ВАЖНО: Внутри уверенно распознанных речевых бабблов (`is_free_text=False` и `confidence >= 0.60`)
-        реакции и междометия сохраняются как речь персонажа. Однако если детектор захватил область
-        с низкой уверенностью (`confidence < 0.60`, без четкой рамки баббла) и текст является чистой ономатопеей
-        из словаря SFX (`ドキドキ`, `ポカポカ`, `ピッ`, `ピロ`, `もぞ…`, `ぱん`), блок корректно распознается как SFX!
+        ВАЖНО: Внутри уверенно распознанных речевых бабблов (`is_free_text=False`, `has_enclosing_frame=True`
+        и `confidence >= 0.60`) короткие реакции сохраняются как речь персонажа, однако длинные потоки
+        повторяющейся катаканы (`シャシャシャカシャカ…`, `カタカタカタ…`, `ザアアアアア`) отсекаются всегда.
         """
         if not text:
             return True
+        if "?" in text or "？" in text:
+            return False
         core = STRIP_PUNCT_REGEX.sub("", text.strip())
         if not core:
             return True
-        is_low_conf_bubble = (not is_free_text) and (float(confidence) < 0.60)
-        if not is_free_text and not is_low_conf_bubble:
+
+        # Длинные или повторяющиеся звуковые потоки из чистой катаканы отсекаем даже внутри баббла
+        if (
+            not HANZI_REGEX.search(core)
+            and "?" not in text
+            and "？" not in text
+            and KATAKANA_ONLY_REGEX.match(core)
+            and core not in DIALOGUE_VOWEL_WORDS_JA
+        ):
+            collapsed_kata = re.sub(r"(.)\1{2,}", r"\1", core)
+            if len(core) >= 4 and (collapsed_kata in SFX_EXACT_SET or REDUPLICATED_SFX_REGEX.match(core)):
+                return True
+            if len(core) >= 8:
+                uniq_ratio = len(set(core)) / float(len(core))
+                max_ch_freq = max(core.count(c) for c in set(core)) / float(len(core))
+                bigrams = Counter(core[i : i + 2] for i in range(len(core) - 1))
+                max_bg = max(bigrams.values(), default=0)
+                if uniq_ratio <= 0.45 and (max_bg >= 2 or max_ch_freq >= 0.35):
+                    return True
+
+        # Длинные 3+ повторы 2-3-морового слога чистой хираганы (ぷにぷにぷに, くちゅくちゅくちゅ, どきどきどき) отсекаем даже внутри баббла
+        if (
+            not HANZI_REGEX.search(core)
+            and "?" not in text
+            and "？" not in text
+            and re.fullmatch(r"[ぁ-んー〜っ]+", core)
+            and core not in DIALOGUE_VOWEL_WORDS_JA
+        ):
+            m_hira_sfx = re.fullmatch(r"([ぁ-ん]{2,3})\1{2,}[ぁ-んっー〜]*", core)
+            if m_hira_sfx and m_hira_sfx.group(1) not in {
+                "まま", "ただ", "ここ", "それ", "なに", "いや", "だめ", "やだ", "いい", "もう", "うん"
+            }:
+                return True
+
+        is_low_conf_or_unframed = (not is_free_text) and (float(confidence) < 0.60 or not has_enclosing_frame)
+        if not is_free_text and not is_low_conf_or_unframed:
             return False
 
         if core in SFX_EXACT_SET or core.lower() in SFX_EXACT_SET:
@@ -6134,9 +6322,9 @@ class MangaOCREngine:
             return True
 
         if not HANZI_REGEX.search(core):
-            if len(core) <= 8 and REDUPLICATED_SFX_REGEX.match(core) and core not in DIALOGUE_VOWEL_WORDS_JA:
+            if REDUPLICATED_SFX_REGEX.match(core) and core not in DIALOGUE_VOWEL_WORDS_JA:
                 return True
-            if is_free_text and KATAKANA_ONLY_REGEX.match(core) and len(core) <= 6:
+            if (is_free_text or not has_enclosing_frame) and KATAKANA_ONLY_REGEX.match(core) and len(core) <= 6:
                 return True
 
         return False
@@ -6151,6 +6339,7 @@ class MangaOCREngine:
         skip_sfx: bool = True,
         min_text_length: int = 1,
         confidence: float = 1.0,
+        has_enclosing_frame: bool = True,
     ) -> tuple[str, str] | None:
         """
         Возвращает `(reason_code, reason_label_ru)`, если блок должен быть отсеян фильтром объема текста,
@@ -6181,10 +6370,18 @@ class MangaOCREngine:
         if effective_char_len < eff_min_len:
             return ("min_length", f"Короткий текст ({len(core)} симв. < порога {eff_min_len})")
 
+        if mode in ("dialogue_only", "bubbles_only", "long_only") and not has_enclosing_frame and cls.is_sigh_or_interjection(text):
+            return ("unframed_sigh", "Фоновый вздох вне рамки баббла")
+
         if eff_skip_sighs and cls.is_sigh_or_interjection(text):
             return ("sigh", "Короткий вздох/стон (skip_sighs=True)")
 
-        if eff_skip_sfx and cls.is_sfx_or_onomatopoeia(text, is_free_text=is_free_text, confidence=confidence):
+        if eff_skip_sfx and cls.is_sfx_or_onomatopoeia(
+            text,
+            is_free_text=is_free_text,
+            confidence=confidence,
+            has_enclosing_frame=has_enclosing_frame,
+        ):
             return ("sfx", "Звуковой спецэффект / SFX (skip_sfx=True)")
 
         return None
@@ -6199,6 +6396,7 @@ class MangaOCREngine:
         skip_sfx: bool = True,
         min_text_length: int = 1,
         confidence: float = 1.0,
+        has_enclosing_frame: bool = True,
     ) -> bool:
         """
         Проверяет, нужно ли пропустить (не замазывать и не переводить) данный текстовый блок
@@ -6213,6 +6411,7 @@ class MangaOCREngine:
                 skip_sfx=skip_sfx,
                 min_text_length=min_text_length,
                 confidence=confidence,
+                has_enclosing_frame=has_enclosing_frame,
             )
             is not None
         )
@@ -6406,8 +6605,8 @@ class MangaOCREngine:
                     padded_np = np.array(deskew_kz)
                     raw_crop_np = padded_np
                     precomputed_hayai_text = None
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("KO/ZH deskew skipped: %s", exc)
 
         hayai_text = precomputed_hayai_text
         if hayai_text is None and self.use_hayai_ocr and self._hayai_available is not False:
@@ -6544,8 +6743,8 @@ class MangaOCREngine:
                     self._page_ocr_cache[(*bbox_key, "ja")] = ja_txt
                     kana_chars += len(KANA_REGEX.findall(ja_txt))
                     ja_hanzi_chars += len(HANZI_REGEX.findall(ja_txt))
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("detect_page_language JA probe skipped: %s", exc)
             return kana_chars, ja_hanzi_chars
 
         # 1. Быстрая проверка японского (классическая японская манга и обложки с хираганой/катаканой — ~35 мс)
@@ -6632,8 +6831,8 @@ class MangaOCREngine:
                         hangul_chars += h_cnt
                         ko_weighted_sum += h_conf * h_cnt
                         ko_score = max(ko_score, h_conf)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("detect_page_language KO EasyOCR probe skipped: %s", exc)
             if hangul_chars > 0:
                 ko_score = max(ko_score, ko_weighted_sum / hangul_chars)
 
@@ -6658,8 +6857,8 @@ class MangaOCREngine:
                         hanzi_chars += c_cnt
                         zh_weighted_sum += c_conf * c_cnt
                         zh_score = max(zh_score, c_conf)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("detect_page_language ZH EasyOCR probe skipped: %s", exc)
             if hanzi_chars > 0:
                 zh_avg = zh_weighted_sum / hanzi_chars
                 zh_score = (zh_score * 0.5) + (zh_avg * 0.5)
@@ -7249,9 +7448,11 @@ class MangaOCREngine:
                             continue
                         elif len(decomp.regions) == 1:
                             lx, ly, lw, lh = decomp.regions[0].lir_rect
-                            b_det["lir_bbox"] = [int(lx), int(ly), int(lx + lw), int(ly + lh)]
-                except Exception:
-                    pass
+                            cav_nz = max(1, int(np.count_nonzero(cav_sub)))
+                            if (lw * lh) >= 0.65 * cav_nz:
+                                b_det["lir_bbox"] = [int(lx), int(ly), int(lx + lw), int(ly + lh)]
+                except Exception as exc:
+                    logger.debug("BubblePolygonSolver decomposition skipped: %s", exc)
 
             if len(matched) == 0:
                 tight_tb = self._compute_tight_ink_bbox(img_np, [bx1, by1, bx2, by2], None, is_free_text=is_free)
@@ -7296,7 +7497,13 @@ class MangaOCREngine:
                             "confidence": float(m.get("confidence", 0.5)),
                         }
                     )
-                local_groups, _ = group_text_boxes_by_bubble_cavity(roi_bub, local_tbs_in, is_bubble_roi=True)
+                local_groups, _ = group_text_boxes_by_bubble_cavity(
+                    roi_bub,
+                    local_tbs_in,
+                    neck_ratio_thresh=0.68,
+                    is_bubble_roi=True,
+                )
+                split_parts = None
                 if len(local_groups) >= 2:
                     lobe_matched: list[dict[str, Any]] = []
                     for lg in local_groups:
@@ -7336,8 +7543,58 @@ class MangaOCREngine:
                             )
                         if all_wide_enough and len(cand_split_parts) >= 2:
                             split_parts = cand_split_parts
-                else:
-                    split_parts = None
+
+                if not split_parts and not is_free and (bx2 - bx1) >= 72 and (by2 - by1) >= 72:
+                    try:
+                        roi_g_sub = page_g_full[by1:by2, bx1:bx2]
+                        p75_sub = float(np.percentile(roi_g_sub, 75))
+                        if p75_sub >= 205.0:
+                            cav_sub = self._extract_bubble_interior_mask(roi_g_sub, p75_sub)
+                            multi_solver = BubblePolygonSolver(neck_ratio_thresh=0.74)
+                            decomp_m = multi_solver.solve(
+                                bubble_mask_roi=cav_sub,
+                                roi_offset=(bx1, by1),
+                                page_shape=(img_h, img_w),
+                                text_bubble_boxes=[tuple(m["bbox"]) for m in matched],
+                                page_gray=page_g_full,
+                            )
+                            if (
+                                len(decomp_m.regions) >= 2
+                                and sum(1 for r in decomp_m.regions if r.matched_text_boxes) >= 2
+                            ):
+                                cand_m: list[dict[str, Any]] = []
+                                for reg in decomp_m.regions:
+                                    rx1_r, ry1_r, rx2_r, ry2_r = reg.bbox
+                                    lx, ly, lw, lh = reg.lir_rect
+                                    sub_b = [int(rx1_r), int(ry1_r), int(rx2_r), int(ry2_r)]
+                                    if (sub_b[2] - sub_b[0]) < 36 or (sub_b[3] - sub_b[1]) < 36:
+                                        continue
+                                    reg_boxes = reg.matched_text_boxes
+                                    if reg_boxes:
+                                        hint_b = [
+                                            min(b[0] for b in reg_boxes),
+                                            min(b[1] for b in reg_boxes),
+                                            max(b[2] for b in reg_boxes),
+                                            max(b[3] for b in reg_boxes),
+                                        ]
+                                    else:
+                                        hint_b = [int(lx), int(ly), int(lx + lw), int(ly + lh)]
+                                    reg_det: dict[str, Any] = {
+                                        "bbox": sub_b,
+                                        "text_bbox": self._compute_tight_ink_bbox(img_np, sub_b, hint_b, is_free_text=False),
+                                        "confidence": round(float(b_det["confidence"]), 4),
+                                        "is_free_text": False,
+                                        "decomp_mode": decomp_m.mode,
+                                        "text_allocation_ratio": round(float(reg.text_allocation_ratio), 4),
+                                    }
+                                    reg_mask_nz = max(1, int(np.count_nonzero(reg.mask)))
+                                    if (lw * lh) >= 0.65 * reg_mask_nz:
+                                        reg_det["lir_bbox"] = [int(lx), int(ly), int(lx + lw), int(ly + lh)]
+                                    cand_m.append(reg_det)
+                                if len(cand_m) >= 2:
+                                    split_parts = cand_m
+                    except Exception as exc:
+                        logger.debug("Multi-box BubblePolygonSolver split skipped: %s", exc)
 
                 if split_parts:
                     split_count += 1
@@ -7433,6 +7690,7 @@ class MangaOCREngine:
             ver_ctx = verify_bubble_and_text_candidate(ctx_gray, bubbles_only=True)
             if (ver_ctx["is_kagon"] or ver_ctx["is_tile_grid"]) and not is_strict_screen:
                 continue
+            has_frame = bool(is_strict_screen or ver_ctx.get("has_enclosing_frame", False))
             is_clean_bubble_bg = is_strict_screen or (
                 white_pixel_ratio >= 0.58
                 and bg_std <= 11.5
@@ -7440,7 +7698,7 @@ class MangaOCREngine:
                 and perimeter_white_ratio >= 0.62
                 and not ver_ctx["is_tile_grid"]
             )
-            is_free_orphan = not is_clean_bubble_bg
+            is_free_orphan = (not is_clean_bubble_bg) or (not has_frame and tw < 56 and th < 56)
 
             rescued_count += 1
             final_detections.append(
@@ -7449,6 +7707,7 @@ class MangaOCREngine:
                     "text_bbox": self._compute_tight_ink_bbox(img_np, [ex1, ey1, ex2, ey2], [tx1, ty1, tx2, ty2], is_free_text=is_free_orphan),
                     "confidence": round(otb_conf, 4),
                     "is_free_text": is_free_orphan,
+                    "has_enclosing_frame": has_frame,
                     "_source": "rtdetr_rescued_text_bubble",
                 }
             )
@@ -7464,9 +7723,7 @@ class MangaOCREngine:
         conf_override: float | None = None,
         pipeline_mode: str | None = None,
     ) -> list[dict[str, Any]]:
-        eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
-        if eff_pmode not in ("fast", "balanced", "accuracy", "ultra"):
-            eff_pmode = "balanced"
+        eff_pmode = self._normalize_pipeline_mode(pipeline_mode or getattr(self, "pipeline_mode", "balanced"))
         img_h, img_w = img_np.shape[:2]
         yolo_detections: list[dict[str, Any]] = []
         rtdetr_bubbles: list[dict[str, Any]] = []
@@ -7500,15 +7757,17 @@ class MangaOCREngine:
             for y_start, y_end in slices:
                 slice_np = img_np[y_start:y_end, :]
 
-                # 1. Прогон YOLOv8m (speech bubble detector)
-                results = self.detector.predict(
-                    source=slice_np,
-                    conf=active_conf,
-                    iou=self.iou_threshold,
-                    imgsz=self.imgsz,
-                    device=self.device,
-                    verbose=False,
-                )
+                # 1. Прогон YOLOv8m (speech bubble detector; Ultralytics expects BGR numpy arrays)
+                slice_bgr = cv2.cvtColor(slice_np, cv2.COLOR_RGB2BGR) if slice_np.ndim == 3 else slice_np
+                with self._inference_lock:
+                    results = self.detector.predict(
+                        source=slice_bgr,
+                        conf=active_conf,
+                        iou=self.iou_threshold,
+                        imgsz=self.imgsz,
+                        device=self.device,
+                        verbose=False,
+                    )
 
                 if results and len(results) > 0 and results[0].boxes is not None:
                     boxes = results[0].boxes
@@ -7666,7 +7925,7 @@ class MangaOCREngine:
         raw_detections = self._attach_bubble_polygons(
             img_np,
             raw_detections,
-            download_sam_if_missing=(eff_pmode == "ultra"),
+            download_sam_if_missing=False,
         )
         return raw_detections
 
@@ -8405,16 +8664,17 @@ class MangaOCREngine:
         if nar_model is not None:
             try:
                 rgb_crops = [c.convert("RGB") for c in crops_pil]
-                with torch.inference_mode():
-                    if len(rgb_crops) == 1:
-                        raw_res = nar_model(rgb_crops[0])
-                        nar_texts = [str(raw_res).strip()] if isinstance(raw_res, str) else [str(x).strip() for x in raw_res]
-                    else:
-                        raw_res = nar_model(rgb_crops)
-                        if isinstance(raw_res, str):
-                            nar_texts = [raw_res.strip()]
+                with self._inference_lock:
+                    with torch.inference_mode():
+                        if len(rgb_crops) == 1:
+                            raw_res = nar_model(rgb_crops[0])
+                            nar_texts = [str(raw_res).strip()] if isinstance(raw_res, str) else [str(x).strip() for x in raw_res]
                         else:
-                            nar_texts = [str(x).strip() for x in raw_res]
+                            raw_res = nar_model(rgb_crops)
+                            if isinstance(raw_res, str):
+                                nar_texts = [raw_res.strip()]
+                            else:
+                                nar_texts = [str(x).strip() for x in raw_res]
 
                 if len(nar_texts) == len(crops_pil):
                     # ВАЖНО: Дочитываем через классический авторегрессионный MangaOCR ТОЛЬКО длинные монологи (len >= 54),
@@ -8446,8 +8706,7 @@ class MangaOCREngine:
                                     return True
                         return False
 
-                    is_acc_or_ultra = is_ultra_ocr or (getattr(self, "pipeline_mode", "balanced") == "accuracy")
-                    len_thresh = 42 if is_ultra_ocr else (44 if is_acc_or_ultra else 48)
+                    len_thresh = 46 if is_ultra_ocr else 50
                     fallback_indices = [
                         idx
                         for idx, txt in enumerate(nar_texts)
@@ -8456,8 +8715,8 @@ class MangaOCREngine:
                         or _looks_like_merged_english_ocr(txt)
                         or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).passed)
                         or (
-                            len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= (6 if is_ultra_ocr else 4)
-                            and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= (10000 if is_ultra_ocr else 16000)
+                            len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= (5 if is_ultra_ocr else 4)
+                            and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= (18000 if is_ultra_ocr else 22000)
                             and pre_ocr_stroke_gate(crops_pil[idx]).passed
                         )
                     ]
@@ -8485,8 +8744,14 @@ class MangaOCREngine:
                                 or (cur_core_len <= 4 and fb_core_len >= cur_core_len + 2)
                             ):
                                 nar_texts[idx] = fb_clean
-                    # Если после NAR + MangaOCR какой-то баббл остался с галлюцинацией или слипшимся английским текстом — дочитываем через HayaiOCR v2.5 Nova!
+                    # Если после NAR + MangaOCR какой-то баббл остался с галлюцинацией или слипшимся английским текстом — дочитываем через HayaiOCR v2.5 Nova
+                    # (не запускаем ленивую загрузку HayaiOCR на японской главе ради пустых кропов, уже отброшенных обоими JA-декодерами).
                     if self.use_hayai_ocr and (self._hayai_model is not None or is_ultra_ocr):
+                        hayai_hard_trigger = any(
+                            idx not in rejected_by_hf_ocr
+                            and (KNOWN_OCR_HALLUCINATIONS_REGEX.search(txt) or _looks_like_merged_english_ocr(txt))
+                            for idx, txt in enumerate(nar_texts)
+                        )
                         hayai_rescue_indices = [
                             idx
                             for idx, txt in enumerate(nar_texts)
@@ -8494,11 +8759,15 @@ class MangaOCREngine:
                             and (
                                 KNOWN_OCR_HALLUCINATIONS_REGEX.search(txt)
                                 or _looks_like_merged_english_ocr(txt)
-                                or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).valid_cc_count >= 6)
+                                or (
+                                    self._hayai_model is not None
+                                    and not txt.strip()
+                                    and pre_ocr_stroke_gate(crops_pil[idx]).valid_cc_count >= 6
+                                )
                             )
                         ]
                         if hayai_rescue_indices:
-                            if self._hayai_model is None and is_ultra_ocr and self._is_hayai_cached_locally():
+                            if self._hayai_model is None and is_ultra_ocr and hayai_hard_trigger and self._is_hayai_cached_locally():
                                 self._get_hayai_recognizer()
                             if self._hayai_model is not None:
                                 hayai_sub_crops = [crops_pil[idx] for idx in hayai_rescue_indices]
@@ -8567,9 +8836,7 @@ class MangaOCREngine:
         min_text_length: int = 1,
         pipeline_mode: str | None = None,
     ) -> tuple[list[dict[str, Any]], str]:
-        eff_pmode = (pipeline_mode or getattr(self, "pipeline_mode", "balanced") or "balanced").strip().lower()
-        if eff_pmode not in ("fast", "balanced", "accuracy", "ultra"):
-            eff_pmode = "balanced"
+        eff_pmode = self._normalize_pipeline_mode(pipeline_mode or getattr(self, "pipeline_mode", "balanced"))
         self.pipeline_mode = eff_pmode
         req_lang = (lang or "auto").lower().strip()
         if req_lang not in ("auto", "ja", "ko", "zh"):
@@ -8583,8 +8850,34 @@ class MangaOCREngine:
             effective_free_text = True if mode == "all" else bool(detect_free_text)
 
         self._page_ocr_cache.clear()
+        try:
+            return self._process_image_impl(
+                image=image,
+                req_lang=req_lang,
+                mode=mode,
+                effective_free_text=effective_free_text,
+                min_box_size=min_box_size,
+                skip_sighs=skip_sighs,
+                skip_sfx=skip_sfx,
+                min_text_length=min_text_length,
+                eff_pmode=eff_pmode,
+            )
+        finally:
+            self._page_ocr_cache.clear()
 
-        rgb_image = image.convert("RGB")
+    def _process_image_impl(
+        self,
+        image: Image.Image,
+        req_lang: str,
+        mode: str,
+        effective_free_text: bool,
+        min_box_size: int,
+        skip_sighs: bool,
+        skip_sfx: bool,
+        min_text_length: int,
+        eff_pmode: str,
+    ) -> tuple[list[dict[str, Any]], str]:
+        rgb_image = _pil_to_rgb_u8(image)
         img_np = np.array(rgb_image)
 
         if mode == "long_only":
@@ -8717,6 +9010,8 @@ class MangaOCREngine:
                     self._page_ocr_cache[c_key] = b_txt
 
         for det in sorted_detections:
+            if getattr(self, "stop_requested", False):
+                break
             x1, y1, x2, y2 = det["bbox"]
             ocr_coords = self._get_ocr_bbox(det)
             ox1, oy1, ox2, oy2 = ocr_coords
@@ -8794,6 +9089,7 @@ class MangaOCREngine:
                     empty_ocr_count += 1
                 continue
 
+            has_frame_det = bool(det.get("has_enclosing_frame", True))
             filter_reason = self.classify_filter_reason(
                 recognized_text,
                 is_free_text=is_free,
@@ -8802,6 +9098,7 @@ class MangaOCREngine:
                 skip_sfx=skip_sfx,
                 min_text_length=min_text_length,
                 confidence=float(det.get("confidence", 1.0)),
+                has_enclosing_frame=has_frame_det,
             )
             if filter_reason is not None:
                 r_code, r_label = filter_reason
@@ -8815,7 +9112,12 @@ class MangaOCREngine:
                         "is_free_text": is_free,
                     }
                 )
-                if not is_free and not self.is_sfx_or_onomatopoeia(recognized_text, is_free_text=False):
+                if not is_free and not self.is_sfx_or_onomatopoeia(
+                    recognized_text,
+                    is_free_text=False,
+                    confidence=float(det.get("confidence", 1.0)),
+                    has_enclosing_frame=has_frame_det,
+                ):
                     filtered_bubble_SamePage_fallback.append(
                         {
                             "id": 0,
@@ -8954,8 +9256,8 @@ class MangaOCREngine:
         if torch is not None and torch.cuda.is_available():
             try:
                 torch.cuda.empty_cache()
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("CUDA empty_cache failed in release_transient_vram: %s", exc)
 
     def recognize_manual_region(
         self,
@@ -8977,14 +9279,14 @@ class MangaOCREngine:
           снайперский `recognize_crop_via_vlm`!
         Возвращает `(recognized_text, resolved_lang, is_free_text)`.
         """
-        rgb_image = image.convert("RGB")
+        rgb_image = _pil_to_rgb_u8(image)
         img_w, img_h = rgb_image.size
         img_np = np.array(rgb_image)
         x1, y1, x2, y2 = [int(round(c)) for c in bbox[:4]]
-        x1 = max(0, min(x1, img_w - 2))
-        y1 = max(0, min(y1, img_h - 2))
-        x2 = max(x1 + 4, min(x2, img_w))
-        y2 = max(y1 + 4, min(y2, img_h))
+        x1 = max(0, min(x1, max(0, img_w - 4)))
+        y1 = max(0, min(y1, max(0, img_h - 4)))
+        x2 = min(img_w, max(x1 + 4, x2))
+        y2 = min(img_h, max(y1 + 4, y2))
 
         raw_crop_np = img_np[y1:y2, x1:x2]
         gray_crop = cv2.cvtColor(raw_crop_np, cv2.COLOR_RGB2GRAY)
@@ -9050,8 +9352,8 @@ class MangaOCREngine:
                         lang=resolved_lang,
                         is_free_text=False,
                     )
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Manual region tight KO/ZH OCR failed: %s", exc)
         else:
             # Для одиночного выделенного пользователем баббла запускаем и классический MangaOCR (с выравниванием пропорций ViT),
             # и manga-ocr-nar-small на полном кропе `full_padded`, выбирая наиболее полное и осмысленное чтение!
@@ -9060,21 +9362,21 @@ class MangaOCREngine:
                 classic_outs = self._run_classic_manga_ocr_batch([full_padded], batch_size=1)
                 if classic_outs and classic_outs[0].strip():
                     ja_candidates.append(classic_outs[0].strip())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Manual region classic MangaOCR failed: %s", exc)
             try:
                 nar_outs = self._recognize_crops_batch_ja([full_padded])
                 if nar_outs and nar_outs[0].strip() and nar_outs[0].strip() not in ja_candidates:
                     ja_candidates.append(nar_outs[0].strip())
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Manual region NAR OCR failed: %s", exc)
             if use_tight:
                 try:
                     classic_tight = self._run_classic_manga_ocr_batch([tight_padded], batch_size=1)
                     if classic_tight and classic_tight[0].strip() and classic_tight[0].strip() not in ja_candidates:
                         ja_candidates.append(classic_tight[0].strip())
-                except Exception:
-                    pass
+                except Exception as exc:
+                    logger.debug("Manual region tight classic MangaOCR failed: %s", exc)
 
             def _score_ja_manual_cand(cand_s: str) -> float:
                 c = cand_s.strip()
@@ -9120,7 +9422,8 @@ class MangaOCREngine:
                         elif HANZI_REGEX.search(recognized) and (req_lang == "zh" or len(ZH_SPECIFIC_MARKERS_REGEX.findall(recognized)) >= 2):
                             resolved_lang = "zh"
                 if (not recognized or PUNCT_ONLY_REGEX.match(recognized)) and self._check_easyocr():
-                    for fallback_reader in (self._get_ko_reader(), self._get_zh_reader()):
+                    for get_reader in (self._get_ko_reader, self._get_zh_reader):
+                        fallback_reader = get_reader()
                         if fallback_reader is not None:
                             lines = fallback_reader.readtext(full_padded_np, detail=0, paragraph=True)
                             cand = " ".join(str(x).strip() for x in lines if str(x).strip())
@@ -9136,8 +9439,8 @@ class MangaOCREngine:
                     cand2 = self.ja_recognizer(self._pad_to_balanced_aspect_for_vit(contrast_pil)).strip()
                 if cand2 and not PUNCT_ONLY_REGEX.match(cand2) and not KNOWN_OCR_HALLUCINATIONS_REGEX.search(cand2):
                     recognized = cand2
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug("Manual region autocontrast retry failed: %s", exc)
 
         # Автоматический снайперский фоллбэк на VLM-OCR (Шаг 4):
         # Срабатывает не только когда стандартный OCR вернул пустую строку, но и когда он ошибочно прочитал

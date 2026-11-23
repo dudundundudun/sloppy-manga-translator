@@ -13,5 +13,9 @@ echo   Miko-chan Web Studio: http://127.0.0.1:5000/
 echo   Folder: %CD%
 echo ===================================================
 
-python server.py --open-gui
+python "%~dp0server.py" --open-gui
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Server exited with an error. Check messages above.
+)
 pause

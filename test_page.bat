@@ -1,5 +1,5 @@
 @echo off
-title Local Manga Translator v5.3.0 - Single Page Translation
+title Local Manga Translator v6.1.0 - Single Page Translation
 cd /d "%~dp0"
 
 set PYTHONUTF8=1
@@ -20,17 +20,26 @@ if not exist "%IMG_FILE%" (
 
 set "TARGET_LANG=en"
 echo ================================================================
-echo   Image: %IMG_FILE%
+echo   Image: "%IMG_FILE%"
 echo   Press [Enter] for English (default), or type: ru / romaji
 echo ================================================================
+set "USER_LANG="
 set /p "USER_LANG=Target language [en/ru/romaji] (default: en): "
+if defined USER_LANG set "USER_LANG=%USER_LANG:"=%"
+if /i "%USER_LANG%"=="en" set "TARGET_LANG=en"
 if /i "%USER_LANG%"=="ru" set "TARGET_LANG=ru"
 if /i "%USER_LANG%"=="romaji" set "TARGET_LANG=romaji"
 
 echo.
 echo Sending "%IMG_FILE%" to local server (target_lang=%TARGET_LANG%)...
 echo.
-python cli_client.py test "%IMG_FILE%" "%TARGET_LANG%"
+python "%~dp0cli_client.py" test "%IMG_FILE%" "%TARGET_LANG%"
+if errorlevel 1 (
+    echo.
+    echo [ERROR] Page translation failed. Make sure the local server is running.
+    pause
+    exit /b 1
+)
 
 echo.
 pause

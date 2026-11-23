@@ -25,10 +25,25 @@ from fastapi import HTTPException
 
 logger = logging.getLogger("manga_server")
 
-_TRUSTED_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost"})
+_TRUSTED_LOCAL_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 _TRUSTED_EXTENSION_SCHEMES = frozenset({"chrome-extension", "moz-extension"})
 
 _PRIVILEGED_ENDPOINTS = {
+    "/models",
+    "/pull_status",
+    "/model_storage",
+    "/translate",
+    "/translate_page_file",
+    "/page_blocks",
+    "/page_romaji",
+    "/translate_manual_region",
+    "/retranslate_single_block",
+    "/auto_diamond_wrap",
+    "/shorten_block_text",
+    "/folder_status",
+    "/folder_report",
+    "/ux_telemetry/record",
+    "/ux_telemetry/report",
     "/local_image",
     "/settings",
     "/delete_model",
@@ -88,8 +103,60 @@ def _is_trusted_local_origin(origin: str | None) -> bool:
     if scheme in _TRUSTED_EXTENSION_SCHEMES:
         return bool(parsed.netloc)
     if scheme in ("http", "https"):
-        return (parsed.hostname or "").lower() in _TRUSTED_LOCAL_HOSTS
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        return hostname in _TRUSTED_LOCAL_HOSTS
     return False
+
+
+def _is_trusted_host_header(host: str | None) -> bool:
+    """Проверяет заголовок Host для защиты от DNS-rebinding атак."""
+    if not host or not host.strip():
+        return True
+    h = host.strip().lower()
+    if h.startswith("["):
+        end_idx = h.find("]")
+        if end_idx == -1:
+            return False
+        after = h[end_idx + 1 :]
+        if after and (not after.startswith(":") or not after[1:].isdigit()):
+            return False
+        hostname = h[1:end_idx]
+    else:
+        parts = h.split(":")
+        if len(parts) > 2:
+            return False
+        if len(parts) == 2 and (not parts[1] or not parts[1].isdigit()):
+            return False
+        hostname = parts[0]
+    hostname = hostname.strip().rstrip(".")
+    return hostname in _TRUSTED_LOCAL_HOSTS
+
+
+def _is_trusted_referer(referer: str | None) -> bool:
+    """Проверяет заголовок Referer для запросов без Origin к локальному API."""
+    if not referer or not referer.strip():
+        return True
+    try:
+        parsed = urlparse(referer.strip())
+    except Exception:
+        return False
+    if not parsed.scheme or not parsed.netloc:
+        return False
+    return _is_trusted_local_origin(f"{parsed.scheme}://{parsed.netloc}")
+
+
+def _reject_unc_path(raw_path: str | None, field_name: str = "path") -> None:
+    """Блокирует сетевые UNC-пути (NTLM-утечки) и NUL-байты во входных путях."""
+    if raw_path is None:
+        return
+    s = str(raw_path).strip()
+    if not s:
+        return
+    if "\x00" in s or s.startswith("\\\\") or s.startswith("//") or s.lower().startswith("\\\\?\\unc\\"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Сетевые UNC-пути и недопустимые символы в '{field_name}' запрещены.",
+        )
 
 
 def _register_allowed_root(path_val: Path | str | None) -> None:
@@ -202,6 +269,14 @@ async def _download_remote_image_bytes(
     async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=30.0) as dl_client:
         for _hop in range(max_redirects + 1):
             async with dl_client.stream("GET", current_url, headers=headers) as dl_resp:
+                exts = getattr(dl_resp, "extensions", None)
+                net_stream = exts.get("network_stream") if isinstance(exts, dict) else None
+                if net_stream is not None and hasattr(net_stream, "get_extra_info"):
+                    peer = net_stream.get_extra_info("peername")
+                    if peer and isinstance(peer, (tuple, list)) and peer[0]:
+                        peer_ip = ipaddress.ip_address(str(peer[0]).split("%", 1)[0])
+                        if _is_blocked_ip(peer_ip):
+                            raise ValueError("Доступ к локальным и приватным IP-адресам запрещен.")
                 if dl_resp.status_code in (301, 302, 303, 307, 308):
                     location = dl_resp.headers.get("location")
                     if not location:
