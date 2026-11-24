@@ -3227,6 +3227,7 @@
           <div class="lm-stall-banner" id="lm-stall-banner">
             ⚠️ Запрос долго без новых токенов — можно прервать запрос (спася готовые реплики) или на лету сменить модель.
           </div>
+          <div class="lm-stall-banner" id="lm-rate-limit-banner" style="display:none; background:rgba(251,191,36,0.12); border-color:rgba(251,191,36,0.38); color:#fde68a;"></div>
           <div class="lm-controls" id="lm-controls">
             <div class="lm-model-row">
               <select class="lm-select" id="lm-switch-model-sel" title="Выбрать модель для мгновенного переключения"></select>
@@ -3789,6 +3790,20 @@
                   </div>
                   <input id="chk-cloud-only-no-local-fallback" type="checkbox" onchange="onCloudOnlyNoFallbackToggle(this.checked)" />
                 </label>
+
+                <div id="cloud-slow-model-warning" style="display:none; align-items:center; justify-content:space-between; gap:10px; padding:10px 12px; margin:6px 0 8px; border-radius:10px; border:1px solid rgba(251,191,36,0.35); background:rgba(251,191,36,0.10); color:#fde68a; font-size:12px;">
+                  <div style="flex:1; line-height:1.45;"><span id="cloud-slow-model-warning-text"></span></div>
+                  <button type="button" id="btn-switch-fast-cloud-model" class="romaji-copy-btn" style="display:none; white-space:nowrap; border-color:rgba(251,191,36,0.55); background:rgba(251,191,36,0.18); color:#fff; font-weight:600;" onclick="switchToDetectedFastCloudModel()">⚡ Переключить</button>
+                </div>
+
+                <div class="field-group" id="row-cloud-fallback-model" style="margin:6px 0 10px;">
+                  <label for="sel-cloud-fallback-model">⚡ Облачный резерв (Cloud-to-Cloud без Ollama)</label>
+                  <select id="sel-cloud-fallback-model" onchange="onCloudFallbackModelChange()">
+                    <option value="auto">🤖 Авто — быстрая модель со шлюза</option>
+                    <option value="off">⛔ Отключён</option>
+                  </select>
+                  <div class="field-hint" id="cloud-fallback-auto-hint" style="font-size:11px; color:var(--text-muted); margin-top:4px;"></div>
+                </div>
 
                 <label class="toggle-row" id="row-preflight-nsfw-split">
                   <div class="toggle-row-text">
@@ -6054,6 +6069,7 @@
         banner.appendChild(document.createTextNode(". Нажмите «Сохранить настройки» внизу окна!"));
       }
       renderCloudModelsPreview(window._lastUnslothStatus, null);
+      updateCloudSlowModelWarningUi();
       if (document.getElementById("settings-modal")?.classList.contains("open")) {
         setSettingsDirty(true);
       }
@@ -6074,6 +6090,8 @@
       box.textContent = "";
       if (det.length === 0) {
         box.style.display = "none";
+        populateCloudFallbackSelect([], null);
+        updateCloudSlowModelWarningUi([]);
         return;
       }
       box.style.display = "block";
@@ -6107,6 +6125,8 @@
         wrap.appendChild(more);
       }
       box.appendChild(wrap);
+      populateCloudFallbackSelect(det, null);
+      updateCloudSlowModelWarningUi(det);
     }
 
     async function clearSavedApiKey() {
@@ -6303,6 +6323,205 @@
       }
     }
 
+    function isSlowReasoningCloudModel(modelId) {
+      const low = String(modelId || "").trim().toLowerCase().replace(/^.*?::/, "");
+      if (!low || low.includes("non-reasoning")) return false;
+      const slowKeys = [
+        "grok-4.7", "grok-4-reasoning", "-reasoning", "deepseek-r1",
+        "deepseek-reasoner", "qwq", "o1", "o3", "o4-mini", "thinking"
+      ];
+      return slowKeys.some(k => low.includes(k));
+    }
+
+    function findDetectedFastCloudModel(excludeModel, detectedOverride) {
+      const exclLow = String(excludeModel || "").trim().toLowerCase().replace(/^.*?::/, "");
+      const detSrc = Array.isArray(detectedOverride)
+        ? detectedOverride
+        : (Array.isArray(window._lastUnslothStatus?.detected_models) ? window._lastUnslothStatus.detected_models : []);
+      const mediaSkip = [
+        "whisper", "tts-", "dall-e", "embedding", "text-embedding",
+        "moderation", "rerank", "bge-", "omni-moderation", "image",
+        "vision-only", "sora", "veo", "midjourney", "flux", "sdxl", "stable-diffusion"
+      ];
+      const seen = new Set();
+      const candidates = [];
+      for (const raw of detSrc) {
+        const clean = String(raw || "").trim().replace(/^.*?::/, "");
+        const low = clean.toLowerCase();
+        if (!clean || ["auto", "default", "off", "none", "disabled"].includes(low)) continue;
+        if (low === exclLow || seen.has(low)) continue;
+        if (mediaSkip.some(mk => low.includes(mk))) continue;
+        if (isSlowReasoningCloudModel(clean)) continue;
+        seen.add(low);
+        candidates.push(clean);
+      }
+      if (candidates.length === 0) {
+        const srvFast = String(window._serverDetectedFastCloudModel || "").trim().replace(/^.*?::/, "");
+        if (srvFast && srvFast.toLowerCase() !== exclLow && !isSlowReasoningCloudModel(srvFast)) {
+          return srvFast;
+        }
+        return "";
+      }
+      const tierScore = (m) => {
+        const low = m.toLowerCase();
+        const t0 = ["grok-4-fast-non-reasoning", "grok-4-fast", "grok-3-mini-fast", "grok-3-fast"];
+        for (let i = 0; i < t0.length; i++) if (low.includes(t0[i])) return [0, i, low];
+        const t1 = ["deepseek-v4-flash", "deepseek-chat", "deepseek-v3"];
+        for (let i = 0; i < t1.length; i++) if (low.includes(t1[i])) return [1, i, low];
+        if (["grok-4", "grok-3", "grok-2", "grok"].some(p => low.includes(p))) return [2, 0, low];
+        if (["flash", "mini", "haiku", "nano", "lite", "fast", "turbo", "mistral-small", "qwen-turbo", "qwen-plus"].some(p => low.includes(p))) return [3, 0, low];
+        if (["deepseek-v4-pro", "gpt-4o", "claude", "gemini", "qwen", "glm", "mistral", "llama"].some(p => low.includes(p))) return [4, 0, low];
+        return [5, 0, low];
+      };
+      candidates.sort((a, b) => {
+        const sa = tierScore(a), sb = tierScore(b);
+        if (sa[0] !== sb[0]) return sa[0] - sb[0];
+        if (sa[1] !== sb[1]) return sa[1] - sb[1];
+        return sa[2].localeCompare(sb[2]);
+      });
+      return candidates[0] || "";
+    }
+
+    function populateCloudFallbackSelect(detectedOverride, preferredVal) {
+      const sel = document.getElementById("sel-cloud-fallback-model");
+      const hint = document.getElementById("cloud-fallback-auto-hint");
+      if (!sel) return;
+      const curVal = (preferredVal !== undefined && preferredVal !== null && preferredVal !== "")
+        ? String(preferredVal)
+        : (sel.value || "auto");
+      const detSrc = Array.isArray(detectedOverride) && detectedOverride.length > 0
+        ? detectedOverride
+        : (Array.isArray(window._lastUnslothStatus?.detected_models) ? window._lastUnslothStatus.detected_models : []);
+      const mediaSkip = [
+        "whisper", "tts-", "dall-e", "embedding", "text-embedding",
+        "moderation", "rerank", "bge-", "omni-moderation", "image",
+        "vision-only", "sora", "veo", "midjourney", "flux", "sdxl", "stable-diffusion"
+      ];
+      sel.innerHTML = "";
+      const addOpt = (val, text) => {
+        const opt = document.createElement("option");
+        opt.value = val;
+        opt.textContent = text;
+        sel.appendChild(opt);
+      };
+      addOpt("auto", "🤖 Авто — быстрая модель со шлюза");
+      addOpt("off", "⛔ Отключён (без резерва)");
+      const added = new Set(["auto", "off"]);
+      const cleanList = [];
+      for (const raw of detSrc) {
+        const clean = String(raw || "").trim().replace(/^.*?::/, "");
+        const low = clean.toLowerCase();
+        if (!clean || ["auto", "default", "off", "none", "disabled"].includes(low)) continue;
+        if (mediaSkip.some(mk => low.includes(mk))) continue;
+        const fullVal = `unsloth::${clean}`;
+        if (!added.has(fullVal)) {
+          added.add(fullVal);
+          cleanList.push(clean);
+        }
+      }
+      const fastAuto = findDetectedFastCloudModel(null, detSrc);
+      cleanList.sort((a, b) => {
+        const fa = !isSlowReasoningCloudModel(a), fb = !isSlowReasoningCloudModel(b);
+        if (fa !== fb) return fa ? -1 : 1;
+        return a.localeCompare(b);
+      });
+      for (const cid of cleanList) {
+        const label = isSlowReasoningCloudModel(cid) ? `🐢 ${cid}` : `⚡ ${cid}`;
+        addOpt(`unsloth::${cid}`, label);
+      }
+      if (curVal && !added.has(curVal)) {
+        addOpt(curVal, curVal.replace(/^.*?::/, ""));
+      }
+      sel.value = curVal || "auto";
+      if (hint) {
+        const selNorm = sel.value || "auto";
+        if (selNorm === "off") {
+          hint.textContent = "Резервный обход 18+ и сетевых сбоев отключён: при ошибке шлюза запросы не переключаются.";
+        } else if (selNorm === "auto") {
+          hint.textContent = fastAuto
+            ? `Авто-резерв готов: при отказе или сбое подхватит «${fastAuto}» (без отката в Ollama).`
+            : "Авто-резерв выберет самую быструю non-reasoning модель из списка шлюза (нажмите «Проверить и обновить модели»).";
+        } else {
+          hint.textContent = `Фиксированный облачный резерв: «${selNorm.replace(/^.*?::/, "")}» (без отката в Ollama).`;
+        }
+      }
+    }
+
+    function updateCloudSlowModelWarningUi(detectedOverride) {
+      const warnBox = document.getElementById("cloud-slow-model-warning");
+      const warnText = document.getElementById("cloud-slow-model-warning-text");
+      const btnFast = document.getElementById("btn-switch-fast-cloud-model");
+      const rowFb = document.getElementById("row-cloud-fallback-model");
+      const cloudOnly = Boolean(document.getElementById("chk-cloud-only-no-local-fallback")?.checked);
+      if (rowFb) rowFb.style.opacity = cloudOnly ? "1" : "0.65";
+
+      const customInp = (document.getElementById("inp-custom-model")?.value || "").trim();
+      const selMod = (document.getElementById("sel-model")?.value || "").trim();
+      const curModelRaw = customInp || selMod;
+      const curShort = curModelRaw.replace(/^.*?::/, "");
+      const isCloudSelected = Boolean(curModelRaw) && (curModelRaw.startsWith("unsloth::") || !curModelRaw.includes("::"));
+      const fastCandidate = findDetectedFastCloudModel(curShort, detectedOverride);
+
+      if (warnBox && warnText) {
+        if (cloudOnly && isCloudSelected && isSlowReasoningCloudModel(curShort)) {
+          warnBox.style.display = "flex";
+          warnText.textContent = `⚠️ Модель «${curShort}» — reasoning/медленная (TTFT 35–70с): на больших пачках выше риск таймаутов и HTTP 429 шлюза. Для быстрого перевода лучше выбрать быструю модель без рассуждений.`;
+          if (btnFast) {
+            if (fastCandidate) {
+              btnFast.style.display = "inline-flex";
+              btnFast.textContent = `⚡ Переключить на ${fastCandidate}`;
+              btnFast.dataset.targetModel = fastCandidate;
+            } else {
+              btnFast.style.display = "none";
+              btnFast.dataset.targetModel = "";
+            }
+          }
+        } else {
+          warnBox.style.display = "none";
+          if (btnFast) btnFast.style.display = "none";
+        }
+      }
+      const hint = document.getElementById("cloud-fallback-auto-hint");
+      const selFb = document.getElementById("sel-cloud-fallback-model");
+      if (hint && selFb) {
+        const fbVal = selFb.value || "auto";
+        if (fbVal === "auto") {
+          const autoForCur = findDetectedFastCloudModel(curShort, detectedOverride) || fastCandidate;
+          hint.textContent = autoForCur
+            ? `Авто-резерв готов: при отказе или сбое подхватит «${autoForCur}» (без отката в Ollama).`
+            : "Авто-резерв выберет самую быструю non-reasoning модель из списка шлюза (нажмите «Проверить и обновить модели»).";
+        }
+      }
+    }
+
+    function switchToDetectedFastCloudModel() {
+      const btnFast = document.getElementById("btn-switch-fast-cloud-model");
+      const customInp = (document.getElementById("inp-custom-model")?.value || "").trim();
+      const selMod = (document.getElementById("sel-model")?.value || "").trim();
+      const curShort = (customInp || selMod).replace(/^.*?::/, "");
+      const targetId = (btnFast?.dataset?.targetModel || "").trim() || findDetectedFastCloudModel(curShort);
+      if (!targetId) return;
+      selectDetectedCloudModel(targetId);
+      updateCloudSlowModelWarningUi();
+    }
+
+    function onCloudFallbackModelChange() {
+      const hint = document.getElementById("cloud-fallback-auto-hint");
+      const selFb = document.getElementById("sel-cloud-fallback-model");
+      if (hint && selFb) {
+        const fbVal = selFb.value || "auto";
+        if (fbVal === "off") {
+          hint.textContent = "Резервный обход 18+ и сетевых сбоев отключён: при ошибке шлюза запросы не переключаются.";
+        } else if (fbVal !== "auto") {
+          hint.textContent = `Фиксированный облачный резерв: «${fbVal.replace(/^.*?::/, "")}» (без отката в Ollama).`;
+        }
+      }
+      updateCloudSlowModelWarningUi();
+      if (document.getElementById("settings-modal")?.classList.contains("open")) {
+        setSettingsDirty(true);
+      }
+    }
+
     function syncCloudOnlyUiState() {
       const cloudOnly = Boolean(document.getElementById("chk-cloud-only-no-local-fallback")?.checked);
       const rowPre = document.getElementById("row-preflight-nsfw-split");
@@ -6315,6 +6534,7 @@
           ? "Отключено, пока активен режим «Вся манга только в облаке» (все бабблы идут напрямую в Grok / облако)"
           : "Острые 18+ бабблы уходят в локальную модель с контекстом из облачных реплик — цензура не срывает всю пачку";
       }
+      updateCloudSlowModelWarningUi();
       updateSummaryChip();
     }
 
@@ -6411,6 +6631,7 @@
         banner.innerHTML = `✅ Выбрана модель <b>${escapeHtml(modelName)}</b>. Нажмите «Сохранить настройки» внизу окна!`;
       }
       renderCloudModelsPreview(window._lastUnslothStatus, null);
+      updateCloudSlowModelWarningUi();
       if (document.getElementById("settings-modal")?.classList.contains("open")) {
         setSettingsDirty(true);
       }
@@ -6732,6 +6953,8 @@
             const chkCloudOnly = document.getElementById("chk-cloud-only-no-local-fallback");
             if (chkCloudOnly) chkCloudOnly.checked = data.cloud_only_no_local_fallback;
           }
+          window._serverDetectedFastCloudModel = data.detected_fast_cloud_model || "";
+          populateCloudFallbackSelect(data.unsloth_status?.detected_models || [], data.cloud_fallback_model || "auto");
           syncCloudOnlyUiState();
           if (typeof data.ultra_proofread_mode === "string") {
             const selProof = document.getElementById("sel-ultra-proofread-mode");
@@ -6742,6 +6965,7 @@
         }
         const effectiveSelectedModel = (data.selected_model && data.selected_model !== "auto") ? data.selected_model : act;
         updateGrokPresetCardUi(data.unsloth_status?.detected_models || []);
+        updateCloudSlowModelWarningUi(data.unsloth_status?.detected_models || []);
         updateDeepSeekPresetCards(effectiveSelectedModel, data.unsloth_url || "");
 
         if (Array.isArray(data.recommended_models) && data.recommended_models.length > 0) {
@@ -7188,6 +7412,7 @@
       const mod = document.getElementById("sel-model").value;
       updateDeepSeekPresetCards(mod, document.getElementById("inp-unsloth-url")?.value || "");
       renderCloudModelsPreview(window._lastUnslothStatus, null);
+      updateCloudSlowModelWarningUi();
       // БЛОК 5: Если открыто модальное окно настроек, не сохраняем config.json дважды (при выборе в select и затем при нажатии «Сохранить настройки»)
       const modalOpen = document.getElementById("settings-modal")?.classList.contains("open");
       if (modalOpen) {
@@ -7358,6 +7583,7 @@
           anti_censorship_custom_prompt: (document.getElementById("inp-anti-censorship-custom-prompt")?.value || "").trim(),
           preflight_nsfw_split: Boolean(document.getElementById("chk-preflight-nsfw-split")?.checked ?? true),
           cloud_only_no_local_fallback: Boolean(document.getElementById("chk-cloud-only-no-local-fallback")?.checked),
+          cloud_fallback_model: document.getElementById("sel-cloud-fallback-model")?.value || "auto",
           ultra_proofread_mode: document.getElementById("sel-ultra-proofread-mode")?.value || "selective",
           ui_settings: uiSettings
         };
@@ -12395,7 +12621,10 @@
 
       const stepElSec = Number(live.step_elapsed_sec || 0);
       const tokAge = live.last_token_age_sec;
-      const isStalled = isActive && (stepElSec >= 90 || (tokAge !== null && tokAge !== undefined && Number(tokAge) >= 30));
+      const curStage = String(live.stage || "");
+      const isRateWait = curStage === "rate_limit_wait" || Number(live.rate_limit_remaining_sec || 0) > 0;
+      const isRatePaused = Boolean(live.rate_limit_paused) || curStage === "paused_429";
+      const isStalled = isActive && !isRateWait && !isRatePaused && (stepElSec >= 90 || (tokAge !== null && tokAge !== undefined && Number(tokAge) >= 30));
       card.classList.toggle("stalled", isStalled);
 
       const dotEl = document.getElementById("lm-dot");
@@ -12446,6 +12675,9 @@
         const flags = [];
         if (live.cloud_only) flags.push("Только облако");
         if (live.nsfw_mode || st.nsfw_mode) flags.push("NSFW-локально");
+        if (live.cloud_fallback_model_active) {
+          flags.push(`резерв ${String(live.cloud_fallback_model_active).replace(/^.*?::/, "")}`);
+        }
         const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
         modelEl.textContent = `Модель: ${live.model || "—"}${limTxt}${flagStr}`;
       }
@@ -12466,6 +12698,21 @@
 
       const stallEl = document.getElementById("lm-stall-banner");
       if (stallEl) stallEl.style.display = isStalled ? "block" : "none";
+      const rlEl = document.getElementById("lm-rate-limit-banner");
+      if (rlEl) {
+        const rlReasonTxt = String(live.rate_limit_reason || "").trim();
+        if (isRatePaused) {
+          rlEl.style.display = "block";
+          rlEl.textContent = `⏸ Авто-пауза (HTTP 429 шлюза): ${rlReasonTxt || "шлюз ограничил запросы"} — кэш сохранён, продолжите после разблокировки.`;
+        } else if (isActive && isRateWait) {
+          const waitRem = Math.ceil(Number(live.rate_limit_remaining_sec || 0));
+          rlEl.style.display = "block";
+          rlEl.textContent = `⏳ HTTP 429 шлюза: ожидание ~${waitRem}с перед повтором${rlReasonTxt ? " (" + rlReasonTxt + ")" : ""}`;
+        } else {
+          rlEl.style.display = "none";
+          rlEl.textContent = "";
+        }
+      }
 
       const ctrlBox = document.getElementById("lm-controls");
       if (ctrlBox) {

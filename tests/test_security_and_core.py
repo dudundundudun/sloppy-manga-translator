@@ -2051,6 +2051,7 @@ def test_cloud_sse_streaming_partial_recovery_and_max_tokens():
 def test_cloud_chunk_limits_timeout_retry_and_proofread_fixes():
     import logging
     import logging.handlers
+    import time
 
     tr_mod = _load_real_module("translator")
     _load_server_module()
@@ -2077,7 +2078,10 @@ def test_cloud_chunk_limits_timeout_retry_and_proofread_fixes():
             assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 45
             assert tr._get_effective_cloud_batch_limit("unsloth::grok-4-fast-non-reasoning") == 65
             tr._batch_cloud_timeouts_count = 1
-            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 22
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 45
+            tr._batch_cloud_timeouts_count = 2
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 31
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4-fast-non-reasoning") == 32
             tr._batch_cloud_timeouts_count = 0
 
             # 1. translate_blocks: для grok-4.7 параллелизм выключен и чанки <= 45, для deepseek-v4-flash чанки <= 65
@@ -2119,20 +2123,42 @@ def test_cloud_chunk_limits_timeout_retry_and_proofread_fixes():
             assert flash_chunk_sizes and max(flash_chunk_sizes) <= 65, f"deepseek чанки >65: {flash_chunk_sizes}"
             assert tr.diagnostics_stats["parallel_batches_count"] >= 1
 
-            # 2. После сетевого таймаута в 1-м проходе Доперевод режется по <=20, имеет max_attempts_override=1 и обрывается после 2 сбоев
+            # 2A. В строгом облаке при 0/50 переведённых из-за сетевого сбоя Доперевод пропускается (без шторма повторов)
             tr.cloud_only_no_local_fallback = True
-            retry_calls: list[tuple[int, int | None]] = []
+            zero_retry_calls: list[tuple[int, int | None]] = []
 
-            async def _fake_timeout_calls(*, user_prompt, max_attempts_override=None, **kwargs):
+            async def _fake_zero_timeout_calls(*, user_prompt, max_attempts_override=None, **kwargs):
                 parsed_in = tr._extract_last_json_dict_from_prompt(user_prompt) or {}
                 real_k = [k for k in parsed_in.keys() if not k.startswith("_anchor_")]
                 tr._last_call_was_network_error = True
                 if len(real_k) < 40:
-                    retry_calls.append((len(real_k), max_attempts_override))
+                    zero_retry_calls.append((len(real_k), max_attempts_override))
                 return {}
 
             blocks_50 = [{"id": str(i), "original_text": f"長い台詞テスト{i}"} for i in range(1, 51)]
-            with patch.object(tr, "_call_llm_json", side_effect=_fake_timeout_calls):
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_zero_timeout_calls):
+                await tr._translate_batch_chunk(
+                    client=tr._get_http_client(),
+                    chunk_blocks=blocks_50,
+                    source_lang="ja",
+                    target_lang="en",
+                    active_model="unsloth::grok-4.7",
+                )
+            assert zero_retry_calls == [], f"При 0/50 переведённых из-за сети micro_retry должен пропускаться: {zero_retry_calls}"
+
+            # 2B. При частичном успехе (5/50) и последующем сетевом таймауте Доперевод режется по <=20, имеет max_attempts_override=1 и обрывается после 2 сбоев
+            retry_calls: list[tuple[int, int | None]] = []
+
+            async def _fake_partial_timeout_calls(*, user_prompt, max_attempts_override=None, **kwargs):
+                parsed_in = tr._extract_last_json_dict_from_prompt(user_prompt) or {}
+                real_k = [k for k in parsed_in.keys() if not k.startswith("_anchor_")]
+                tr._last_call_was_network_error = True
+                if len(real_k) >= 48:
+                    return {str(i): f"OK {i}" for i in range(1, 6)}
+                retry_calls.append((len(real_k), max_attempts_override))
+                return {}
+
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_partial_timeout_calls):
                 await tr._translate_batch_chunk(
                     client=tr._get_http_client(),
                     chunk_blocks=blocks_50,
@@ -2149,6 +2175,7 @@ def test_cloud_chunk_limits_timeout_retry_and_proofread_fixes():
             tr._cached_models = [
                 {"id": "ollama::qwen3:14b", "provider": "ollama", "installed": "true"},
             ]
+            tr._cache_timestamp = time.monotonic()
             seen_proof_calls: list[tuple[str, int | None]] = []
 
             async def _fake_proof_llm(*, full_model_id, max_attempts_override=None, **kwargs):
@@ -2664,6 +2691,360 @@ def test_miko_meta_dir_migration_book_export_gating_and_diag_rotation():
             "saveChapterBookToMetaFolder",
         ):
             assert ui_marker in html_txt, f"Отсутствует UI-маркер этапа 2: {ui_marker}"
+
+
+def test_fast_cloud_only_overhaul_429_fallback_parallel_and_carryover():
+    """Проверяет адаптивные таймауты, HTTP 429 cooldown/auto-pause, cloud-to-cloud fallback, параллельность, anti-stub и carry-over."""
+    import asyncio
+    import tempfile
+    import time
+    from unittest.mock import patch
+    import httpx
+    from api.schemas import ServerSettingsRequest
+
+    tr_mod = _load_real_module("translator")
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-overhaul",
+            )
+            tr.cloud_only_no_local_fallback = True
+            tr.cloud_fallback_model = "auto"
+            tr._cache_timestamp = time.monotonic()
+
+            # (a) Адаптивные таймауты по классу модели и нижняя планка >= 95с для reasoning/slow моделей
+            seen_timeouts: list[tuple[str, float, bool]] = []
+
+            async def _capture_timeouts_chat(
+                client, url, headers, payload_cloud, req_timeout, t0_cloud, max_total_stream_sec, stream_chunks_out, expected_total_keys=0
+            ):
+                seen_timeouts.append((str(payload_cloud.get("model")), float(req_timeout.read), bool(payload_cloud.get("stream"))))
+                return 200, "", "stop", '{"1": "Привет"}', None, 0.2
+
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_capture_timeouts_chat):
+                await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "こんにちは"}',
+                    timeout_override_sec=35.0,
+                    use_stream=True,
+                )
+                await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "こんにちは"}',
+                    use_stream=True,
+                )
+                await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4-fast-non-reasoning",
+                    system_prompt="sys",
+                    user_prompt='{"1": "こんにちは"}',
+                    use_stream=True,
+                )
+            assert seen_timeouts[0][1] >= 95.0, f"Floor таймаута для grok-4.7 должен быть >=95с: {seen_timeouts}"
+            assert seen_timeouts[1][1] >= 110.0, f"Stream таймаут для grok-4.7 должен быть >=110с: {seen_timeouts}"
+            assert seen_timeouts[2][1] <= 58.0, f"Stream таймаут для быстрой модели должен быть <=58с: {seen_timeouts}"
+
+            # (b) Ранжирование, авто-детект без выдумки и сохранение cloud_fallback_model в config + ServerSettingsRequest
+            ranked = tr_mod.OllamaTranslator._rank_fast_cloud_models(
+                ["whisper-1", "grok-4.7", "deepseek-r1", "grok-4-fast-non-reasoning", "deepseek-v4-flash"],
+                exclude_model="grok-4.7",
+            )
+            assert ranked == ["grok-4-fast-non-reasoning", "deepseek-v4-flash"], f"Неверное ранжирование быстрых моделей: {ranked}"
+
+            tr.last_unsloth_status = {"detected_models": []}
+            tr._cached_cloud_probe = {}
+            tr._cached_models = [
+                {"id": "unsloth::deepseek-v4-flash", "name": "🤖 [DeepSeek API] deepseek-v4-flash", "provider": "unsloth"}
+            ]
+            assert tr._pick_fast_cloud_model_from_detected("unsloth::grok-4.7") is None
+
+            tr.last_unsloth_status = {"detected_models": ["grok-4.7", "grok-4-fast-non-reasoning"]}
+            assert await tr._resolve_fast_cloud_fallback_model("unsloth::grok-4.7", allow_probe=False) == "unsloth::grok-4-fast-non-reasoning"
+            tr.cloud_fallback_model = "off"
+            assert await tr._resolve_fast_cloud_fallback_model("unsloth::grok-4.7", allow_probe=False) is None
+            tr.cloud_fallback_model = "deepseek-chat"
+            assert await tr._resolve_fast_cloud_fallback_model("unsloth::grok-4.7", allow_probe=False) == "unsloth::deepseek-chat"
+
+            req_s = ServerSettingsRequest(cloud_fallback_model="deepseek-chat")
+            assert req_s.cloud_fallback_model == "deepseek-chat"
+            tr.save_config(cloud_fallback_model="unsloth::grok-4-fast-non-reasoning")
+            tr2 = tr_mod.OllamaTranslator(config_path=cfg_file)
+            assert tr2.cloud_fallback_model == "unsloth::grok-4-fast-non-reasoning"
+
+            # (c) HTTP 429: cooldown wait + восстановление, затем авто-пауза при затяжном 429
+            tr.cloud_fallback_model = "auto"
+            tr.reset_runtime_controls()
+            tr.reset_diagnostics()
+            sleep_waits: list[float] = []
+
+            async def _fake_sleep(sec: float) -> None:
+                sleep_waits.append(float(sec))
+
+            c429_step = 0
+
+            async def _fake_429_recover(*args, **kwargs):
+                nonlocal c429_step
+                c429_step += 1
+                if c429_step == 1:
+                    return 429, "Ожидается сверка расхода предыдущих запросов", "", "", None, None
+                return 200, "", "stop", '{"1": "Готово"}', None, 0.1
+
+            with patch.object(tr, "_cancellable_sleep", side_effect=_fake_sleep), patch.object(
+                tr, "_execute_cloud_chat_request", side_effect=_fake_429_recover
+            ):
+                res_ok = await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "てすと"}',
+                )
+            assert res_ok == {"1": "Готово"}
+            assert sleep_waits == [20.0], f"Ожидался первый cooldown 20с на сверку расхода: {sleep_waits}"
+            assert tr.diagnostics_stats["rate_limit_waits_count"] == 1
+            assert tr._cloud_rate_limit_paused is False
+
+            # Затяжной 429 должен активировать _cloud_rate_limit_paused и остановить оставшиеся чанки translate_blocks
+            tr.reset_runtime_controls()
+            live_events: list[dict] = []
+            tr.live_progress_cb = live_events.append
+            sleep_waits.clear()
+
+            async def _fake_429_forever(*args, **kwargs):
+                return 429, "Ожидается сверка расхода предыдущих запросов", "", "", None, None
+
+            blocks_90 = [{"id": str(i), "original_text": f"台詞長文{i}"} for i in range(1, 91)]
+            with patch.object(tr, "_cancellable_sleep", side_effect=_fake_sleep), patch.object(
+                tr, "_execute_cloud_chat_request", side_effect=_fake_429_forever
+            ):
+                await tr.translate_blocks(
+                    blocks=blocks_90,
+                    source_lang="ja",
+                    target_lang="ru",
+                    model="unsloth::grok-4.7",
+                    profile="balanced",
+                    use_cache=False,
+                )
+            assert tr._cloud_rate_limit_paused is True
+            assert sleep_waits == [20.0, 45.0, 90.0], f"Должны пройти 3 интервала cooldown (20, 45, 90): {sleep_waits}"
+            assert any(ev.get("event") == "rate_limit_paused" for ev in live_events)
+
+            # (d) Cloud-to-Cloud fallback (ReadTimeout + отказ 18+), продвижение на пачку после 2 сбоев и reset_batch_cloud_state()
+            tr.reset_runtime_controls()
+            tr.reset_diagnostics()
+            tr.reset_chapter_nsfw_mode()
+            tr.last_unsloth_status = {"detected_models": ["grok-4.7", "grok-4-fast-non-reasoning"]}
+            called_models: list[str] = []
+
+            async def _fake_timeout_then_fast(
+                client, url, headers, payload_cloud, req_timeout, t0_cloud, max_total_stream_sec, stream_chunks_out, expected_total_keys=0
+            ):
+                m_used = str(payload_cloud.get("model") or "")
+                called_models.append(m_used)
+                if m_used == "grok-4.7":
+                    raise httpx.ReadTimeout("simulated timeout")
+                return 200, "", "stop", '{"1": "Спасено резервом"}', None, 0.1
+
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_fake_timeout_then_fast):
+                fb_r1 = await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "助けて"}',
+                )
+                fb_r2 = await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "助けて2"}',
+                )
+            assert fb_r1 == {"1": "Спасено резервом"} and fb_r2 == {"1": "Спасено резервом"}
+            assert tr.diagnostics_stats["cloud_to_cloud_fallbacks_count"] >= 2
+            assert tr._batch_cloud_fallback_model == "unsloth::grok-4-fast-non-reasoning"
+            assert tr.nsfw_mode is False
+
+            # Цензурный отказ 403 тоже подхватывается облачным резервом, не Ollama
+            async def _fake_refusal_then_fast(
+                client, url, headers, payload_cloud, req_timeout, t0_cloud, max_total_stream_sec, stream_chunks_out, expected_total_keys=0
+            ):
+                m_used = str(payload_cloud.get("model") or "")
+                if m_used == "grok-4.7":
+                    return 403, "I cannot assist with this sexually explicit request", "", "", None, None
+                return 200, "", "stop", '{"1": "Обошли в облаке"}', None, 0.1
+
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_fake_refusal_then_fast):
+                ref_fb = await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "やめて"}',
+                )
+            assert ref_fb == {"1": "Обошли в облаке"}
+            assert tr.nsfw_mode is False
+
+            tr._batch_cloud_timeouts_count = 3
+            tr._consecutive_cloud_failures = 2
+            tr._consecutive_primary_cloud_failures = 2
+            tr._batch_cloud_fallback_model = "unsloth::grok-4-fast-non-reasoning"
+            tr.reset_batch_cloud_state()
+            assert tr._batch_cloud_timeouts_count == 0
+            assert tr._consecutive_cloud_failures == 0
+            assert tr._consecutive_primary_cloud_failures == 0
+            assert tr._batch_cloud_fallback_model is None
+
+            # (e) Восстановление лимита после 2 успехов + параллельность быстрой модели в strict cloud для eco_book (>=67 фраз)
+            tr._batch_cloud_timeouts_count = 2
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4-fast-non-reasoning") == 32
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_capture_timeouts_chat):
+                await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4-fast-non-reasoning",
+                    system_prompt="sys",
+                    user_prompt='{"1": "あ"}',
+                )
+                assert tr._batch_cloud_timeouts_count == 2
+                await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4-fast-non-reasoning",
+                    system_prompt="sys",
+                    user_prompt='{"1": "あ"}',
+                )
+            assert tr._batch_cloud_timeouts_count == 0
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4-fast-non-reasoning") == 65
+
+            tr.reset_diagnostics()
+            par_chunks_seen: list[int] = []
+
+            async def _fake_par_chunk(*, chunk_blocks, **kwargs):
+                par_chunks_seen.append(len(chunk_blocks))
+                return {str(b["id"]): f"P{b['id']}" for b in chunk_blocks}
+
+            blocks_80 = [{"id": str(i), "original_text": f"速いテスト{i}"} for i in range(1, 81)]
+            with patch.object(tr, "_translate_batch_chunk", side_effect=_fake_par_chunk):
+                await tr.translate_blocks(
+                    blocks=blocks_80,
+                    source_lang="ja",
+                    target_lang="ru",
+                    model="unsloth::grok-4-fast-non-reasoning",
+                    profile="eco_book",
+                    use_cache=False,
+                )
+            assert len(par_chunks_seen) >= 2 and tr.diagnostics_stats["parallel_batches_count"] == 1
+
+            # (f) Anti-stub bad_sublists (22 -> [22]) + carry-over 2 фраз в следующий чанк без micro_retry
+            tr.reset_diagnostics()
+            tr.reset_runtime_controls()
+            tr.reset_batch_cloud_state()
+            stub_calls: list[int] = []
+
+            async def _fake_22_retry(*, user_prompt, **kwargs):
+                parsed_in = tr._extract_last_json_dict_from_prompt(user_prompt) or {}
+                real_k = [k for k in parsed_in.keys() if not k.startswith("_anchor_")]
+                if len(real_k) == 35:
+                    tr._last_call_was_network_error = True
+                    return {str(i): f"Первые {i}" for i in range(1, 14)}
+                stub_calls.append(len(real_k))
+                tr._last_call_was_network_error = False
+                return {k: f"Добор {k}" for k in real_k}
+
+            blocks_35 = [{"id": str(i), "original_text": f"長い台詞{i}"} for i in range(1, 36)]
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_22_retry):
+                await tr._translate_batch_chunk(
+                    client=tr._get_http_client(),
+                    chunk_blocks=blocks_35,
+                    source_lang="ja",
+                    target_lang="ru",
+                    active_model="unsloth::grok-4.7",
+                )
+            assert stub_calls == [22], f"Ожидался 1 вызов на 22 фразы без огрызка 20+2: {stub_calls}"
+
+            # Carry-over: 80 блоков на grok-4.7 -> 2 чанка по 40 -> 2 пропуска из чанка #1 переносятся в чанк #2
+            tr.reset_diagnostics()
+            carry_calls: list[list[str]] = []
+
+            async def _fake_carryover_llm(*, user_prompt, **kwargs):
+                parsed_in = tr._extract_last_json_dict_from_prompt(user_prompt) or {}
+                real_k = [k for k in parsed_in.keys() if not k.startswith("_anchor_")]
+                carry_calls.append(real_k)
+                tr._last_call_was_network_error = False
+                tr._last_call_was_refusal = False
+                if len(carry_calls) == 1:
+                    return {k: f"Перевод {k}" for k in real_k[:-2]}
+                return {k: f"Перевод {k}" for k in real_k}
+
+            blocks_80_carry = [{"id": str(i), "original_text": f"会話テスト{i}"} for i in range(1, 81)]
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_carryover_llm):
+                out_carry = await tr.translate_blocks(
+                    blocks=blocks_80_carry,
+                    source_lang="ja",
+                    target_lang="ru",
+                    model="unsloth::grok-4.7",
+                    profile="balanced",
+                    use_cache=False,
+                )
+            assert len(carry_calls) == 2, f"Ожидалось ровно 2 запроса за счёт carry-over (без micro_retry): {len(carry_calls)}"
+            assert tr.diagnostics_stats["micro_retries_count"] == 0
+            assert tr.diagnostics_stats["untranslated_blocks_count"] == 0
+            assert all((b.get("translated_text") or "").startswith("Перевод ") for b in out_carry)
+
+            # (g) Pass 0 в strict cloud перенаправляет медленную grok-4.7 на быструю модель и пропускается при _cloud_rate_limit_paused
+            tr.last_unsloth_status = {"detected_models": ["grok-4.7", "grok-4-fast-non-reasoning"]}
+            tr.cloud_fallback_model = "auto"
+            pass0_models: list[str] = []
+
+            async def _fake_pass0_call(*, full_model_id, **kwargs):
+                pass0_models.append(full_model_id)
+                return {"田中": "Танака"}
+
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_pass0_call):
+                gl_entries = await tr.extract_chapter_glossary_prepass(
+                    blocks=[
+                        {"id": "1", "original_text": "田中さん、おはよう"},
+                        {"id": "2", "original_text": "美咲ちゃんも来たの？"},
+                        {"id": "3", "original_text": "今日は学校に行くよ"},
+                        {"id": "4", "original_text": "早く行こう、田中！"},
+                    ],
+                    source_lang="ja",
+                    target_lang="ru",
+                    model="unsloth::grok-4.7",
+                )
+            assert pass0_models == ["unsloth::grok-4-fast-non-reasoning"], f"Pass 0 должен уходить на быструю модель: {pass0_models}"
+            assert gl_entries and gl_entries[0]["dst"] == "Танака"
+
+            tr._cloud_rate_limit_paused = True
+            assert await tr.extract_chapter_glossary_prepass(
+                blocks=[
+                    {"id": "1", "original_text": "田中さん"},
+                    {"id": "2", "original_text": "美咲さん"},
+                    {"id": "3", "original_text": "おはよう"},
+                    {"id": "4", "original_text": "元気？"},
+                ],
+                source_lang="ja",
+                target_lang="ru",
+                model="unsloth::grok-4.7",
+            ) == []
+
+        # (h) Проверка UI-маркеров быстрого облачного режима в web_studio.html
+        html_txt = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+        for ui_marker in (
+            'id="lm-rate-limit-banner"',
+            'id="cloud-slow-model-warning"',
+            'id="btn-switch-fast-cloud-model"',
+            'id="sel-cloud-fallback-model"',
+            "switchToDetectedFastCloudModel",
+            "cloud_fallback_model",
+        ):
+            assert ui_marker in html_txt, f"Отсутствует UI-маркер облачного режима: {ui_marker}"
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

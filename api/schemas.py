@@ -393,6 +393,7 @@ class ServerSettingsRequest(BaseModel):
     anti_censorship_custom_prompt: str | None = Field(default=None)
     preflight_nsfw_split: bool | None = Field(default=None)
     cloud_only_no_local_fallback: bool | None = Field(default=None)
+    cloud_fallback_model: str | None = Field(default=None)
     ultra_proofread_mode: str | None = Field(default=None)
     auto_save_web_pages: bool | None = Field(default=None)
     auto_export_chapter_book: bool | None = Field(default=None)

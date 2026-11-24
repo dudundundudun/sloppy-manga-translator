@@ -671,6 +671,11 @@ def _make_empty_live_state() -> dict[str, Any]:
         "last_token_ts": 0.0,
         "step_elapsed_sec": 0.0,
         "last_token_age_sec": None,
+        "rate_limit_wait_until_ts": 0.0,
+        "rate_limit_remaining_sec": 0.0,
+        "rate_limit_reason": "",
+        "rate_limit_paused": False,
+        "cloud_fallback_model_active": "",
         "events": [],
     }
 
@@ -750,6 +755,12 @@ def _snapshot_folder_job_state() -> dict[str, Any]:
     live["step_elapsed_sec"] = round(max(0.0, now_wall - step_ts), 1) if (is_active and step_ts > 0) else 0.0
     tok_ts = float(live.get("last_token_ts") or 0.0)
     live["last_token_age_sec"] = round(max(0.0, now_wall - tok_ts), 1) if (is_active and tok_ts > 0) else None
+    rl_until = float(live.get("rate_limit_wait_until_ts") or 0.0)
+    live["rate_limit_remaining_sec"] = round(max(0.0, rl_until - now_wall), 1) if (is_active and rl_until > now_wall) else 0.0
+    if translator_engine is not None and bool(getattr(translator_engine, "_cloud_rate_limit_paused", False)):
+        live["rate_limit_paused"] = True
+        if not live.get("rate_limit_reason"):
+            live["rate_limit_reason"] = str(getattr(translator_engine, "_cloud_rate_limit_pause_reason", "") or "")
     ev_list = live.get("events")
     live["events"] = [dict(e) for e in ev_list] if isinstance(ev_list, list) else []
     snap["live"] = live
@@ -3395,6 +3406,10 @@ async def _run_folder_translation_job(
             live["received_chars"] = 0
             live["ttft_sec"] = None
             live["last_token_ts"] = 0.0
+            live["rate_limit_wait_until_ts"] = 0.0
+            live["rate_limit_remaining_sec"] = 0.0
+            live["rate_limit_reason"] = ""
+            live["rate_limit_paused"] = False
             live["step_started_ts"] = ev_ts
             _bump_folder_state_seq()
         elif ev_type == "stream_progress":
@@ -3414,6 +3429,11 @@ async def _run_folder_translation_job(
             el_s = ev.get("elapsed_sec")
             ttft_s = ev.get("ttft_sec")
             live["last_token_ts"] = 0.0
+            if st_status == "OK":
+                live["rate_limit_wait_until_ts"] = 0.0
+                live["rate_limit_remaining_sec"] = 0.0
+                live["rate_limit_reason"] = ""
+                live["rate_limit_paused"] = False
             ttft_txt = f", TTFT {ttft_s:.1f}с" if isinstance(ttft_s, (int, float)) else ""
             err_t = f" ({ev.get('error')})" if ev.get("error") else ""
             _push_live_event(
@@ -3421,6 +3441,52 @@ async def _run_folder_translation_job(
                 stage=st_n,
                 ts=ev_ts,
             )
+        elif ev_type == "rate_limit_wait":
+            wait_s = float(ev.get("wait_sec") or 0.0)
+            until_ts = float(ev.get("until_ts") or (ev_ts + wait_s))
+            rl_reason = str(ev.get("reason") or "HTTP 429 шлюза")
+            att_n = int(ev.get("attempt") or 1)
+            max_w = int(ev.get("max_waits") or 1)
+            live["stage"] = "rate_limit_wait"
+            live["rate_limit_wait_until_ts"] = until_ts
+            live["rate_limit_remaining_sec"] = round(max(0.0, until_ts - ev_ts), 1)
+            live["rate_limit_reason"] = rl_reason
+            live["rate_limit_paused"] = False
+            live["last_token_ts"] = 0.0
+            live["step_started_ts"] = ev_ts
+            _push_live_event(
+                f"⏳ HTTP 429 шлюза ({att_n}/{max_w}): ожидание {wait_s:.0f}с — {rl_reason[:80]}",
+                stage="rate_limit_wait",
+                ts=ev_ts,
+            )
+            _bump_folder_state_seq()
+        elif ev_type == "rate_limit_paused":
+            rl_reason = str(ev.get("reason") or "HTTP 429 шлюза")
+            live["stage"] = "paused_429"
+            live["rate_limit_wait_until_ts"] = 0.0
+            live["rate_limit_remaining_sec"] = 0.0
+            live["rate_limit_reason"] = rl_reason
+            live["rate_limit_paused"] = True
+            live["last_token_ts"] = 0.0
+            _push_live_event(
+                f"⏸ Авто-пауза прогона: шлюз продолжает возвращать HTTP 429 ({rl_reason[:80]})",
+                stage="paused_429",
+                ts=ev_ts,
+            )
+            _bump_folder_state_seq()
+        elif ev_type == "cloud_fallback":
+            from_m = str(ev.get("from_model") or "")
+            to_m = str(ev.get("to_model") or "")
+            fb_reason = str(ev.get("reason") or "")
+            fb_stage = str(ev.get("stage") or live.get("stage") or "llm")
+            live["cloud_fallback_model_active"] = to_m
+            _push_live_event(
+                f"⚡ Облачный резерв [{fb_stage}]: {from_m} -> {to_m}"
+                + (f" ({fb_reason[:70]})" if fb_reason else ""),
+                stage=fb_stage,
+                ts=ev_ts,
+            )
+            _bump_folder_state_seq()
         elif ev_type == "model_switched":
             rem_p = int(ev.get("remaining_phrases") or 0)
             ch_tot = int(ev.get("chunks_total") or live.get("chunks_total") or 0)
@@ -3464,6 +3530,21 @@ async def _run_folder_translation_job(
             target_lang=target_lang,
             profile=active_profile_id,
         )
+        if (
+            bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+            and active_mod.startswith("unsloth::")
+            and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+            and translator_engine._pick_fast_cloud_model_from_detected(active_mod) is None
+            and float(getattr(translator_engine, "_cache_timestamp", 0.0) or 0.0) == 0.0
+        ):
+            try:
+                _, probed_ids, _ = await translator_engine._probe_unsloth_url(
+                    translator_engine.unsloth_url, force_refresh=False
+                )
+                if probed_ids and isinstance(translator_engine.last_unsloth_status, dict):
+                    translator_engine.last_unsloth_status["detected_models"] = list(probed_ids)
+            except Exception as probe_exc:
+                logger.debug("Предварительный опрос шлюза для авто-подбора резервной модели пропущен: %s", probe_exc)
         eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params(
             detect_free_text=detect_free_text,
             text_filter_mode=text_filter_mode,
@@ -3761,7 +3842,9 @@ async def _run_folder_translation_job(
             # Шаг 2: ИИ-перевод пачки (в профиле eco_book — единым сценарием книги P01_01..P25_09 за 1 запрос!)
             _llm_t0 = time.perf_counter()
             if translator_engine is not None:
-                translator_engine._batch_cloud_timeouts_count = 0
+                translator_engine.reset_batch_cloud_state()
+            if isinstance(folder_job_state.get("live"), dict):
+                folder_job_state["live"]["cloud_fallback_model_active"] = ""
             translated_by_gid: dict[str, str] = {}
             source_by_gid: dict[str, str] = {}
             skip_reason_by_gid: dict[str, str] = {}
@@ -3841,10 +3924,26 @@ async def _run_folder_translation_job(
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
                     if phrase_cache and not force_retranslate:
                         translator_engine.phrase_cache.update(phrase_cache)
+                    _is_strict_cloud_run = (
+                        bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+                        and active_mod.startswith("unsloth::")
+                        and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+                    )
+                    _skip_slow_cloud_pass0 = (
+                        _is_strict_cloud_run
+                        and translator_engine._is_slow_or_reasoning_cloud_model(active_mod)
+                        and translator_engine._pick_fast_cloud_model_from_detected(active_mod) is None
+                    )
+                    _pass0_batch_ok = (
+                        (_batch_num == 1)
+                        if _is_strict_cloud_run
+                        else (_batch_num == 1 or (_batch_num <= 2 and len(folder_glossary_entries) < 4))
+                    )
                     if (
                         eff_pmode == "ultra"
                         and str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() != "pass0"
-                        and (_batch_num == 1 or (_batch_num <= 2 and len(folder_glossary_entries) < 4))
+                        and _pass0_batch_ok
+                        and not _skip_slow_cloud_pass0
                         and int(getattr(translator_engine, "_consecutive_cloud_failures", 0) or 0) < 2
                         and len(combined_blocks) >= 4
                         and target_lang.lower().strip() != "romaji"
@@ -3863,8 +3962,14 @@ async def _run_folder_translation_job(
                         if extracted_gloss:
                             folder_glossary_entries = merge_glossaries(extracted_gloss, folder_glossary_entries)
                             manifest["glossary"] = folder_glossary_entries
-                    elif str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "pass0":
-                        translator_engine._skip_current_stage = ""
+                    else:
+                        if _skip_slow_cloud_pass0 and eff_pmode == "ultra" and _batch_num == 1:
+                            logger.info(
+                                "⏭ [Pass 0 Pre-Scan] Пропущен в режиме «Только облако» для медленной модели '%s' (используется встроенный piggyback _glossary).",
+                                active_mod,
+                            )
+                        if str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "pass0":
+                            translator_engine._skip_current_stage = ""
                     valid_sp_list = [sp for sp in scanned_pages if sp.get("ok") and (sp.get("pil_img") is not None or sp.get("pil") is not None)]
                     first_valid_pil = (valid_sp_list[0].get("pil_img") or valid_sp_list[0].get("pil")) if len(valid_sp_list) == 1 else None
                     if getattr(translator_engine, "_runtime_model_override", None):
@@ -4094,6 +4199,47 @@ async def _run_folder_translation_job(
                     output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label="⏸ Остановлено на паузе"
                 )
                 return
+
+            _rl_paused_now = bool(getattr(translator_engine, "_cloud_rate_limit_paused", False))
+            _rl_pause_reason = str(getattr(translator_engine, "_cloud_rate_limit_pause_reason", "") or "HTTP 429 шлюза")
+            if _rl_paused_now:
+                if translator_engine.phrase_cache:
+                    phrase_cache.update(translator_engine.phrase_cache)
+                batch_trans_cnt_pre = sum(1 for v in translated_by_gid.values() if v and v.strip())
+                if batch_trans_cnt_pre == 0:
+                    manifest["rolling_context"] = rolling_context
+                    manifest["phrase_cache"] = phrase_cache
+                    folder_job_state["status"] = "stopped"
+                    folder_job_state["current_file"] = f"⏸ Авто-пауза (HTTP 429): {_rl_pause_reason[:90]}"
+                    if isinstance(folder_job_state.get("live"), dict):
+                        folder_job_state["live"].update(
+                            {
+                                "stage": "paused_429",
+                                "stage_label": folder_job_state["current_file"],
+                                "rate_limit_paused": True,
+                                "rate_limit_reason": _rl_pause_reason,
+                                "rate_limit_wait_until_ts": 0.0,
+                                "rate_limit_remaining_sec": 0.0,
+                                "last_token_ts": 0.0,
+                            }
+                        )
+                    _push_live_event(
+                        f"[RUN {run_id}] Авто-пауза из-за HTTP 429 (кэш {len(phrase_cache)} фраз сохранён)",
+                        stage="paused_429",
+                    )
+                    _save_folder_manifest(output_dir, manifest)
+                    _generate_and_save_folder_report(
+                        output_dir,
+                        manifest,
+                        source_dir=source_dir,
+                        target_lang=target_lang,
+                        run_status_label="⏸ Авто-пауза (HTTP 429 шлюза)",
+                    )
+                    return
+                _folder_pause_after_batch = True
+                if isinstance(folder_job_state.get("live"), dict):
+                    folder_job_state["live"]["rate_limit_paused"] = True
+                    folder_job_state["live"]["rate_limit_reason"] = _rl_pause_reason
 
             _batch_llm_sec = round(time.perf_counter() - _llm_t0, 2)
 
@@ -4422,24 +4568,44 @@ async def _run_folder_translation_job(
             _save_folder_manifest(output_dir, manifest)
 
             if _folder_stop_requested or _folder_pause_after_batch:
-                pause_reason = "после завершённой пачки" if _folder_pause_after_batch and not _folder_stop_requested else "по запросу"
+                is_rl_pause = bool(getattr(translator_engine, "_cloud_rate_limit_paused", False))
+                rl_pause_r = str(getattr(translator_engine, "_cloud_rate_limit_pause_reason", "") or "HTTP 429 шлюза")
+                pause_reason = (
+                    f"из-за HTTP 429 шлюза ({rl_pause_r[:60]})"
+                    if is_rl_pause
+                    else ("после завершённой пачки" if _folder_pause_after_batch and not _folder_stop_requested else "по запросу")
+                )
                 _folder_stop_requested = True
                 _folder_pause_after_batch = False
                 folder_job_state["status"] = "stopped"
-                folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                folder_job_state["current_file"] = (
+                    f"⏸ Авто-пауза (HTTP 429): {rl_pause_r[:90]}"
+                    if is_rl_pause
+                    else f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                )
                 if isinstance(folder_job_state.get("live"), dict):
-                    folder_job_state["live"]["stage"] = "stopped"
+                    folder_job_state["live"]["stage"] = "paused_429" if is_rl_pause else "stopped"
                     folder_job_state["live"]["stage_label"] = folder_job_state["current_file"]
                     folder_job_state["live"]["pause_after_batch"] = False
                     folder_job_state["live"]["last_token_ts"] = 0.0
-                _push_live_event(f"[RUN {run_id}] Пауза {pause_reason} ({folder_job_state['current']}/{len(image_paths)} стр.)", stage="stopped")
+                    if is_rl_pause:
+                        folder_job_state["live"]["rate_limit_paused"] = True
+                        folder_job_state["live"]["rate_limit_reason"] = rl_pause_r
+                _push_live_event(
+                    f"[RUN {run_id}] Пауза {pause_reason} ({folder_job_state['current']}/{len(image_paths)} стр.)",
+                    stage=("paused_429" if is_rl_pause else "stopped"),
+                )
                 logger.info("⏸ [RUN %s] Пауза %s (%d/%d стр. готово)", run_id, pause_reason, folder_job_state["current"], len(image_paths))
                 _generate_and_save_folder_report(
                     output_dir,
                     manifest,
                     source_dir=source_dir,
                     target_lang=target_lang,
-                    run_status_label=f"⏸ Остановлено на паузе ({folder_job_state['current']}/{len(image_paths)} стр. готово)",
+                    run_status_label=(
+                        f"⏸ Авто-пауза (HTTP 429 шлюза, {folder_job_state['current']}/{len(image_paths)} стр. готово)"
+                        if is_rl_pause
+                        else f"⏸ Остановлено на паузе ({folder_job_state['current']}/{len(image_paths)} стр. готово)"
+                    ),
                 )
                 return
 
@@ -4637,6 +4803,12 @@ async def health_check() -> dict[str, Any]:
         "anti_censorship_custom_prompt": getattr(translator_engine, "anti_censorship_custom_prompt", "") if translator_engine else "",
         "preflight_nsfw_split": bool(getattr(translator_engine, "preflight_nsfw_split", True)) if translator_engine else True,
         "cloud_only_no_local_fallback": bool(getattr(translator_engine, "cloud_only_no_local_fallback", False)) if translator_engine else False,
+        "cloud_fallback_model": getattr(translator_engine, "cloud_fallback_model", "auto") if translator_engine else "auto",
+        "detected_fast_cloud_model": (
+            translator_engine._pick_fast_cloud_model_from_detected(active_model)
+            if (translator_engine is not None and hasattr(translator_engine, "_pick_fast_cloud_model_from_detected"))
+            else None
+        ),
         "ultra_proofread_mode": getattr(translator_engine, "ultra_proofread_mode", "selective") if translator_engine else "selective",
         "default_anti_censorship_prompt_template": DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
@@ -4972,6 +5144,7 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
             anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
             preflight_nsfw_split=payload.preflight_nsfw_split,
             cloud_only_no_local_fallback=payload.cloud_only_no_local_fallback,
+            cloud_fallback_model=payload.cloud_fallback_model,
             ultra_proofread_mode=payload.ultra_proofread_mode,
             default_model_stack=payload.default_model_stack,
         )
@@ -5005,6 +5178,12 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "anti_censorship_custom_prompt": saved.get("anti_censorship_custom_prompt", ""),
         "preflight_nsfw_split": bool(saved.get("preflight_nsfw_split", True)),
         "cloud_only_no_local_fallback": bool(saved.get("cloud_only_no_local_fallback", False)),
+        "cloud_fallback_model": saved.get("cloud_fallback_model", "auto"),
+        "detected_fast_cloud_model": (
+            translator_engine._pick_fast_cloud_model_from_detected(active)
+            if hasattr(translator_engine, "_pick_fast_cloud_model_from_detected")
+            else None
+        ),
         "ultra_proofread_mode": saved.get("ultra_proofread_mode", "selective"),
         "unsloth_url": saved["unsloth_url"],
         "unsloth_api_key": "",

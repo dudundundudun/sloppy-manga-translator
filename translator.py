@@ -1563,6 +1563,10 @@ CLOUD_CENSORSHIP_ERROR_REGEX = re.compile(
     r"sensitive\s+content|violat(?:es|ion)\s+[^\n]{0,40}policy|unsafe\s+content)"
 )
 
+CLOUD_BILLING_RECONCILE_429_REGEX = re.compile(
+    r"(?i)(?:сверк\w*\s+расход|ожидается\s+сверк|pending\s+settlement|reconcil|unsettled|previous\s+requests|обратитесь\s+в\s+поддержку)"
+)
+
 # Известные галлюцинации OCR/LLM (например, «Taxi driver, take me to the best restaurant!» от MangaOCR/Sugoi на шумовых кропах)
 HALLUCINATION_TRANSLATION_REGEX = re.compile(
     r"(?i)(?:\btaxi\s*driver\b[^\n]{0,80}\b(?:best\s*restau?rant|take\s*me)\b|"
@@ -3062,6 +3066,7 @@ class OllamaTranslator:
         self.anti_censorship_custom_prompt: str = ""
         self.preflight_nsfw_split: bool = True
         self.cloud_only_no_local_fallback: bool = False
+        self.cloud_fallback_model: str = "auto"
         self.ultra_proofread_mode: str = "selective"
         self.default_model_stack: dict[str, str] = dict(DEFAULT_MODEL_STACK_TEMPLATE)
         self.saved_model_stacks: list[dict[str, Any]] = []
@@ -3088,12 +3093,20 @@ class OllamaTranslator:
         self.stop_requested: bool = False
         self._last_call_was_refusal: bool = False
         self._last_call_was_network_error: bool = False
+        self._last_call_was_rate_limited: bool = False
         self.last_refusal_message: str = ""
         self.last_local_fallback_model: str = ""
         self.nsfw_mode: bool = False
         self.nsfw_mode_reason: str = ""
         self._consecutive_cloud_failures: int = 0
         self._consecutive_cloud_refusals: int = 0
+        self._consecutive_cloud_429_count: int = 0
+        self._cloud_rate_limit_paused: bool = False
+        self._cloud_rate_limit_pause_reason: str = ""
+        self._cloud_rate_limit_cooldown_sec: tuple[float, ...] = (20.0, 45.0, 90.0)
+        self._cloud_generic_429_cooldown_sec: tuple[float, ...] = (5.0, 15.0, 35.0)
+        self._consecutive_cloud_successes: int = 0
+        self._batch_cloud_fallback_model: str | None = None
         self._batch_cloud_timeouts_count: int = 0
         self._cloud_disable_stream: bool = False
         self.live_progress_cb: Callable[[dict[str, Any]], None] | None = None
@@ -3119,6 +3132,8 @@ class OllamaTranslator:
             "micro_retries_count": 0,
             "network_retries_count": 0,
             "cloud_to_local_error_fallbacks_count": 0,
+            "cloud_to_cloud_fallbacks_count": 0,
+            "rate_limit_waits_count": 0,
             "romaji_leaks_caught_count": 0,
             "cjk_leaks_caught_count": 0,
             "dict_interjections_used_count": 0,
@@ -3155,18 +3170,165 @@ class OllamaTranslator:
             return True
         return bool(re.search(r"(?:^|[/:_-])o[134](?:$|[-._])", name))
 
-    def _get_effective_cloud_batch_limit(self, active_model: str | None = None) -> int:
-        """Возвращает адаптивный лимит бабблов на 1 облачный запрос с учётом скорости модели и недавних таймаутов."""
-        base = (
-            MAX_BUBBLES_PER_BATCH_CLOUD_SLOW
-            if self._is_slow_or_reasoning_cloud_model(active_model)
-            else MAX_BUBBLES_PER_BATCH_CLOUD
+    @staticmethod
+    def _normalize_cloud_fallback_model(value: str | None) -> str:
+        """Нормализует настройку резервной облачной модели ('auto', 'off' или 'unsloth::<id>')."""
+        raw = str(value or "").strip()
+        if not raw or raw.lower() == "auto":
+            return "auto"
+        if raw.lower() in ("off", "none", "disabled"):
+            return "off"
+        if raw.startswith("unsloth::"):
+            tail = raw.split("unsloth::", 1)[1].strip()
+            return f"unsloth::{tail}" if tail else "auto"
+        if "::" in raw:
+            return raw
+        return f"unsloth::{raw}"
+
+    @classmethod
+    def _rank_fast_cloud_models(
+        cls,
+        model_ids: list[str],
+        exclude_model: str | None = None,
+    ) -> list[str]:
+        """Сортирует быстрые non-reasoning чат-модели шлюза по приоритету скорости и качества перевода."""
+        excl_low = (exclude_model or "").strip().lower()
+        if excl_low.startswith("unsloth::"):
+            excl_low = excl_low.split("unsloth::", 1)[1].strip()
+        _non_chat_or_media = (
+            "whisper",
+            "tts-",
+            "dall-e",
+            "embedding",
+            "text-embedding",
+            "moderation",
+            "rerank",
+            "bge-",
+            "omni-moderation",
+            "image",
+            "vision-only",
+            "sora",
+            "veo",
+            "midjourney",
+            "flux",
+            "sdxl",
+            "stable-diffusion",
         )
+        seen_low: set[str] = set()
+        candidates: list[str] = []
+        for raw_m in model_ids or []:
+            clean = str(raw_m or "").strip()
+            if clean.startswith("unsloth::"):
+                clean = clean.split("unsloth::", 1)[1].strip()
+            if not clean or clean.lower() in ("auto", "default", "off", "none", "disabled"):
+                continue
+            low = clean.lower()
+            if low == excl_low or low in seen_low:
+                continue
+            if any(mk in low for mk in _non_chat_or_media):
+                continue
+            if cls._is_slow_or_reasoning_cloud_model(clean):
+                continue
+            seen_low.add(low)
+            candidates.append(clean)
+
+        def _score(m_id: str) -> tuple[int, int, str]:
+            low = m_id.lower()
+            for idx, pat in enumerate(("grok-4-fast-non-reasoning", "grok-4-fast", "grok-3-mini-fast", "grok-3-fast")):
+                if pat in low:
+                    return (0, idx, low)
+            for idx, pat in enumerate(("deepseek-v4-flash", "deepseek-chat", "deepseek-v3")):
+                if pat in low:
+                    return (1, idx, low)
+            if any(pat in low for pat in ("grok-4", "grok-3", "grok-2", "grok")):
+                return (2, 0, low)
+            if any(
+                pat in low
+                for pat in ("flash", "mini", "haiku", "nano", "lite", "fast", "turbo", "mistral-small", "qwen-turbo", "qwen-plus")
+            ):
+                return (3, 0, low)
+            if any(pat in low for pat in ("deepseek-v4-pro", "gpt-4o", "claude", "gemini", "qwen", "glm", "mistral", "llama")):
+                return (4, 0, low)
+            return (5, 0, low)
+
+        return sorted(candidates, key=_score)
+
+    def _pick_fast_cloud_model_from_detected(self, current_model: str | None = None) -> str | None:
+        """Выбирает быструю non-reasoning облачную модель строго из реально обнаруженных на шлюзе моделей (без сетевых вызовов)."""
+        pool: list[str] = []
+        st = self.last_unsloth_status if isinstance(self.last_unsloth_status, dict) else {}
+        det_models = st.get("detected_models")
+        if isinstance(det_models, list):
+            pool.extend(str(m) for m in det_models if m)
+        for c_val in (self._cached_cloud_probe or {}).values():
+            try:
+                _, f_ids, _ = c_val[1]
+                if isinstance(f_ids, list):
+                    pool.extend(str(m) for m in f_ids if m)
+            except Exception as _exc:
+                logger.debug("Ignored cached cloud probe entry: %s", _exc)
+        if not pool:
+            for item in self._cached_models or []:
+                if not isinstance(item, dict):
+                    continue
+                m_id = str(item.get("id") or "")
+                m_name = str(item.get("name") or "")
+                if not m_id.startswith("unsloth::"):
+                    continue
+                # Исключаем синтетические пресеты DeepSeek, добавленные без подтверждения от шлюза
+                if "[DeepSeek API]" in m_name:
+                    continue
+                pool.append(m_id)
+        ranked = self._rank_fast_cloud_models(pool, exclude_model=current_model)
+        return f"unsloth::{ranked[0]}" if ranked else None
+
+    async def _resolve_fast_cloud_fallback_model(
+        self,
+        current_model: str | None = None,
+        *,
+        allow_probe: bool = True,
+    ) -> str | None:
+        """Определяет резервную быструю облачную модель (без отката в Ollama)."""
+        if not self._is_remote_cloud_url(self.unsloth_url) or not (self.unsloth_api_key or "").strip():
+            return None
+        cur_clean = (current_model or "").strip()
+        if cur_clean.startswith("unsloth::"):
+            cur_clean = cur_clean.split("unsloth::", 1)[1].strip()
+        cfg_fb = self._normalize_cloud_fallback_model(getattr(self, "cloud_fallback_model", "auto"))
+        if cfg_fb == "off":
+            return None
+        if cfg_fb != "auto":
+            fb_clean = cfg_fb.split("unsloth::", 1)[1].strip() if cfg_fb.startswith("unsloth::") else cfg_fb
+            if not fb_clean or fb_clean.lower() == cur_clean.lower():
+                return None
+            return f"unsloth::{fb_clean}" if not cfg_fb.startswith("unsloth::") else cfg_fb
+
+        picked = self._pick_fast_cloud_model_from_detected(current_model=current_model)
+        if picked:
+            return picked
+        if allow_probe and self._cache_timestamp == 0.0:
+            try:
+                _, found_ids, _ = await self._probe_unsloth_url(self.unsloth_url, force_refresh=False)
+                ranked = self._rank_fast_cloud_models(found_ids or [], exclude_model=cur_clean)
+                if ranked:
+                    if isinstance(self.last_unsloth_status, dict) and not self.last_unsloth_status.get("detected_models"):
+                        self.last_unsloth_status["detected_models"] = list(found_ids)
+                    return f"unsloth::{ranked[0]}"
+            except Exception as exc:
+                logger.debug("Не удалось опросить шлюз для авто-подбора быстрой облачной модели: %s", exc)
+        return None
+
+    def _get_effective_cloud_batch_limit(self, active_model: str | None = None) -> int:
+        """Возвращает адаптивный лимит бабблов на 1 облачный запрос с учётом скорости модели и серии недавних таймаутов."""
+        is_slow = self._is_slow_or_reasoning_cloud_model(active_model)
+        base = MAX_BUBBLES_PER_BATCH_CLOUD_SLOW if is_slow else MAX_BUBBLES_PER_BATCH_CLOUD
         if (
-            int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) >= 1
-            or int(getattr(self, "_consecutive_cloud_failures", 0) or 0) >= 1
+            int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) >= 2
+            or int(getattr(self, "_consecutive_cloud_failures", 0) or 0) >= 2
         ):
-            return max(20, base // 2)
+            if is_slow:
+                return max(30, int(base * 0.7))
+            return max(32, base // 2)
         return base
 
     def enable_chapter_nsfw_mode(self, reason: str = "100% цензурный отказ облачного провайдера", is_network_outage: bool = False) -> None:
@@ -3220,7 +3382,22 @@ class OllamaTranslator:
         self._runtime_model_override = None
         self._skip_current_stage = ""
         self._current_stage_label = ""
+        self._last_call_was_rate_limited = False
+        self._consecutive_cloud_429_count = 0
+        self._cloud_rate_limit_paused = False
+        self._cloud_rate_limit_pause_reason = ""
+        self._consecutive_cloud_successes = 0
+        self._consecutive_primary_cloud_failures = 0
+        self._batch_cloud_fallback_model = None
         self._active_llm_tasks.clear()
+
+    def reset_batch_cloud_state(self) -> None:
+        """Сбрасывает преходящие счётчики сетевых сбоев облака перед новой пачкой, не сбрасывая nsfw_mode главы."""
+        self._batch_cloud_timeouts_count = 0
+        self._consecutive_cloud_failures = 0
+        self._consecutive_cloud_successes = 0
+        self._consecutive_primary_cloud_failures = 0
+        self._batch_cloud_fallback_model = None
 
     def _cancel_active_llm_tasks(self) -> int:
         cancelled = 0
@@ -3274,6 +3451,12 @@ class OllamaTranslator:
         self._consecutive_cloud_failures = 0
         self._consecutive_cloud_refusals = 0
         self._last_call_was_network_error = False
+        self._last_call_was_rate_limited = False
+        self._consecutive_cloud_429_count = 0
+        self._cloud_rate_limit_paused = False
+        self._cloud_rate_limit_pause_reason = ""
+        self._consecutive_cloud_successes = 0
+        self._batch_cloud_fallback_model = None
         self._batch_cloud_timeouts_count = 0
         self.diagnostics_stats["nsfw_mode_active"] = False
 
@@ -3283,6 +3466,12 @@ class OllamaTranslator:
         self._consecutive_cloud_failures = 0
         self._consecutive_cloud_refusals = 0
         self._last_call_was_network_error = False
+        self._last_call_was_rate_limited = False
+        self._consecutive_cloud_429_count = 0
+        self._cloud_rate_limit_paused = False
+        self._cloud_rate_limit_pause_reason = ""
+        self._consecutive_cloud_successes = 0
+        self._batch_cloud_fallback_model = None
         self._batch_cloud_timeouts_count = 0
         self.diagnostics_stats = {
             "nsfw_mode_active": False,
@@ -3301,6 +3490,8 @@ class OllamaTranslator:
             "micro_retries_count": 0,
             "network_retries_count": 0,
             "cloud_to_local_error_fallbacks_count": 0,
+            "cloud_to_cloud_fallbacks_count": 0,
+            "rate_limit_waits_count": 0,
             "romaji_leaks_caught_count": 0,
             "cjk_leaks_caught_count": 0,
             "dict_interjections_used_count": 0,
@@ -3404,6 +3595,7 @@ class OllamaTranslator:
             "anti_censorship_prompt": self.anti_censorship_prompt,
             "preflight_nsfw_split": self.preflight_nsfw_split,
             "cloud_only_no_local_fallback": self.cloud_only_no_local_fallback,
+            "cloud_fallback_model": self.cloud_fallback_model,
             "nsfw_mode": self.nsfw_mode,
             "nsfw_mode_reason": self.nsfw_mode_reason,
             "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
@@ -3619,6 +3811,8 @@ class OllamaTranslator:
                     self.preflight_nsfw_split = bool(data["preflight_nsfw_split"])
                 if "cloud_only_no_local_fallback" in data and data["cloud_only_no_local_fallback"] is not None:
                     self.cloud_only_no_local_fallback = bool(data["cloud_only_no_local_fallback"])
+                if "cloud_fallback_model" in data and data["cloud_fallback_model"] is not None:
+                    self.cloud_fallback_model = self._normalize_cloud_fallback_model(data["cloud_fallback_model"])
                 if data.get("ultra_proofread_mode") in ("off", "selective", "full"):
                     self.ultra_proofread_mode = str(data["ultra_proofread_mode"]).strip().lower()
                 if "anti_censorship_custom_prompt" in data and data["anti_censorship_custom_prompt"] is not None:
@@ -3694,6 +3888,7 @@ class OllamaTranslator:
         anti_censorship_custom_prompt: str | None = None,
         preflight_nsfw_split: bool | None = None,
         cloud_only_no_local_fallback: bool | None = None,
+        cloud_fallback_model: str | None = None,
         ultra_proofread_mode: str | None = None,
         default_model_stack: dict[str, str] | None = None,
         saved_model_stacks: list[dict[str, Any]] | None = None,
@@ -3799,6 +3994,9 @@ class OllamaTranslator:
             if self.cloud_only_no_local_fallback:
                 self.reset_chapter_nsfw_mode()
 
+        if cloud_fallback_model is not None:
+            self.cloud_fallback_model = self._normalize_cloud_fallback_model(cloud_fallback_model)
+
         if ultra_proofread_mode is not None:
             norm_upm = str(ultra_proofread_mode).strip().lower()
             if norm_upm in ("off", "selective", "full"):
@@ -3854,6 +4052,7 @@ class OllamaTranslator:
             "anti_censorship_custom_prompt": self.anti_censorship_custom_prompt,
             "preflight_nsfw_split": self.preflight_nsfw_split,
             "cloud_only_no_local_fallback": self.cloud_only_no_local_fallback,
+            "cloud_fallback_model": self.cloud_fallback_model,
             "ultra_proofread_mode": self.ultra_proofread_mode,
             "auto_save_web_pages": self.auto_save_web_pages,
             "auto_export_chapter_book": self.auto_export_chapter_book,
@@ -6991,6 +7190,103 @@ class OllamaTranslator:
         raw_output = str(msg_obj.get("content") or "{}")
         return status_code, "", finish_reason, raw_output, response, None
 
+    async def _cancellable_sleep(self, seconds: float) -> None:
+        """Сон с поддержкой мгновенной отмены через активные runtime-контролы."""
+        wait_s = max(0.0, float(seconds))
+        if wait_s <= 0.0:
+            return
+        sleep_task = asyncio.create_task(asyncio.sleep(wait_s))
+        self._active_llm_tasks.add(sleep_task)
+        try:
+            await sleep_task
+        finally:
+            self._active_llm_tasks.discard(sleep_task)
+
+    async def _try_strict_cloud_fallback(
+        self,
+        *,
+        client: httpx.AsyncClient,
+        current_model_id: str,
+        system_prompt: str,
+        user_prompt: str,
+        page_image_b64: str | None,
+        allow_mt_fallback: bool,
+        max_attempts_override: int | None,
+        timeout_override_sec: float | None,
+        use_stream: bool,
+        stage_label: str,
+        reason: str,
+        incident_type: str,
+        is_refusal: bool = False,
+        promote_on_streak: bool = False,
+    ) -> dict[str, str] | None:
+        """Пробует быструю резервную облачную модель (Cloud-to-Cloud) в строгом облачном режиме без отката в Ollama."""
+        if self.stop_requested or self._cloud_rate_limit_paused:
+            return None
+        fb_model = await self._resolve_fast_cloud_fallback_model(current_model=current_model_id)
+        if not fb_model:
+            return None
+        cur_short = current_model_id.split("::", 1)[-1]
+        fb_short = fb_model.split("::", 1)[-1]
+        self.diagnostics_stats["cloud_to_cloud_fallbacks_count"] = (
+            int(self.diagnostics_stats.get("cloud_to_cloud_fallbacks_count") or 0) + 1
+        )
+        self._record_incident(
+            incident_type,
+            cur_short,
+            f"Облачный резерв {fb_short} подхватил запрос после: {reason[:120]}",
+            details=reason[:220],
+        )
+        self._emit_live(
+            "cloud_fallback",
+            stage=stage_label,
+            from_model=current_model_id,
+            to_model=fb_model,
+            reason=reason[:140],
+        )
+        if is_refusal:
+            logger.warning(
+                "🛡 [ОБЛАЧНЫЙ РЕЗЕРВ 18+] Отказ '%s' — пробую быструю облачную модель '%s' (без Ollama)...",
+                cur_short,
+                fb_short,
+            )
+        else:
+            logger.warning(
+                "⚡ [ОБЛАЧНЫЙ РЕЗЕРВ] Сбой '%s' (%s) — мгновенно подхватываю чанк быстрой облачной моделью '%s' (без Ollama)!",
+                cur_short,
+                reason[:100],
+                fb_short,
+            )
+        fail_streak_before = int(getattr(self, "_consecutive_primary_cloud_failures", 0) or 0)
+        fb_res = await self._call_llm_json(
+            client=client,
+            full_model_id=fb_model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            page_image_b64=page_image_b64,
+            allow_mt_fallback=allow_mt_fallback,
+            max_attempts_override=max_attempts_override,
+            timeout_override_sec=timeout_override_sec,
+            use_stream=use_stream,
+            is_optional_pass=False,
+            stage_label=stage_label,
+            _allow_cloud_fallback=False,
+        )
+        usable_keys = [
+            k for k in (fb_res or {}).keys() if k not in ("__refusal__", "__partial_refusal__")
+        ]
+        if fb_res and not fb_res.get("__refusal__") and usable_keys:
+            if promote_on_streak and fail_streak_before >= 2:
+                self._batch_cloud_fallback_model = fb_model
+                logger.info(
+                    "🔀 [ПРОДВИЖЕНИЕ РЕЗЕРВА] После %d сбоев '%s' оставшиеся чанки пачки переключены на '%s'.",
+                    fail_streak_before,
+                    cur_short,
+                    fb_short,
+                )
+            return fb_res
+        return None
+
     async def _call_llm_json(
         self,
         client: httpx.AsyncClient,
@@ -7004,9 +7300,11 @@ class OllamaTranslator:
         use_stream: bool = True,
         is_optional_pass: bool = False,
         stage_label: str = "",
+        _allow_cloud_fallback: bool = True,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
         self._last_call_was_network_error = False
+        self._last_call_was_rate_limited = False
         eff_stage = (stage_label or getattr(self, "_current_stage_label", "") or "llm").strip()
         if not allow_mt_fallback and is_mt_only_local_model(full_model_id):
             logger.info("⏭ [allow_mt_fallback=False] Отменен вызов узкой MT-модели '%s' для JSON-задачи.", full_model_id)
@@ -7043,17 +7341,28 @@ class OllamaTranslator:
             )
             items_cnt = len(expected_keys_list) if expected_keys_list is not None else 20
             want_stream = bool(use_stream and not getattr(self, "_cloud_disable_stream", False))
+            is_slow_cloud_mod = self._is_slow_or_reasoning_cloud_model(model_name)
             if timeout_override_sec is not None:
-                idle_read_sec = max(5.0, float(timeout_override_sec))
-            elif want_stream:
-                # Межчанковый idle-таймаут: пока приходят SSE-токены (в т.ч. reasoning), соединение не рвётся
-                idle_read_sec = 45.0 if items_cnt <= 15 else (55.0 if items_cnt <= 50 else 65.0)
-            else:
                 idle_read_sec = (
-                    48.0 if items_cnt <= 15 else (68.0 if items_cnt <= 70 else max(85.0, float(self.timeout_sec)))
+                    max(95.0, float(timeout_override_sec))
+                    if is_slow_cloud_mod
+                    else max(5.0, float(timeout_override_sec))
                 )
+            elif want_stream:
+                # Межчанковый idle-таймаут: reasoning-моделям (grok-4.7, R1) нужно 110–125с до первого токена
+                if is_slow_cloud_mod:
+                    idle_read_sec = 110.0 if items_cnt <= 25 else 125.0
+                else:
+                    idle_read_sec = 38.0 if items_cnt <= 15 else (48.0 if items_cnt <= 50 else 58.0)
+            else:
+                if is_slow_cloud_mod:
+                    idle_read_sec = 120.0 if items_cnt <= 25 else max(145.0, float(self.timeout_sec))
+                else:
+                    idle_read_sec = (
+                        48.0 if items_cnt <= 15 else (68.0 if items_cnt <= 70 else max(85.0, float(self.timeout_sec)))
+                    )
             req_timeout = httpx.Timeout(connect=12.0, read=idle_read_sec, write=15.0, pool=10.0)
-            max_total_stream_sec = max(140.0, idle_read_sec * 2.5)
+            max_total_stream_sec = max(160.0, idle_read_sec * 2.5)
 
             # Для внешних облачных API (ModuleAPI, DeepSeek, OpenRouter) используем строго выбранную модель
             # и НИКОГДА не переключаем deepseek-v4-flash на дорогую deepseek-v4-pro!
@@ -7165,8 +7474,10 @@ class OllamaTranslator:
                 )
                 cloud_url = self._build_chat_completions_url(self.unsloth_url)
                 cloud_headers = self._unsloth_headers()
-                for attempt in range(max_attempts):
-                    if self.stop_requested:
+                attempt = 0
+                rate_limit_waits = 0
+                while attempt < max_attempts:
+                    if self.stop_requested or (self._cloud_rate_limit_paused and not is_optional_pass):
                         return {}
                     _t0_cloud = time.perf_counter()
                     stream_chunks: list[str] = []
@@ -7259,20 +7570,163 @@ class OllamaTranslator:
                                     expected_keys=items_cnt,
                                     error=self.last_refusal_message,
                                 )
+                                if strict_cloud and _allow_cloud_fallback and not is_optional_pass:
+                                    fb_ref_res = await self._try_strict_cloud_fallback(
+                                        client=client,
+                                        current_model_id=full_model_id,
+                                        system_prompt=system_prompt,
+                                        user_prompt=user_prompt,
+                                        page_image_b64=page_image_b64,
+                                        allow_mt_fallback=allow_mt_fallback,
+                                        max_attempts_override=max_attempts_override,
+                                        timeout_override_sec=timeout_override_sec,
+                                        use_stream=use_stream,
+                                        stage_label=eff_stage,
+                                        reason=self.last_refusal_message,
+                                        incident_type="CLOUD_TO_CLOUD_REFUSAL_FALLBACK",
+                                        is_refusal=True,
+                                    )
+                                    if fb_ref_res is not None:
+                                        return fb_ref_res
                                 self.enable_chapter_nsfw_mode(
                                     f"HTTP {status_code} цензурный отказ облачного шлюза {model_name}: {err_snippet[:90]}"
                                 )
                                 return {"__refusal__": self.last_refusal_message}
 
-                        if status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
-                            wait_s = 0.8 * (attempt + 1)
+                        if status_code == 429:
+                            self._last_call_was_rate_limited = True
+                            self._last_call_was_network_error = True
+                            err_sn = (err_body or "").strip()[:200]
+                            is_billing_lock = bool(CLOUD_BILLING_RECONCILE_429_REGEX.search(err_sn))
+                            if is_optional_pass:
+                                self._record_api_call(
+                                    "cloud",
+                                    model_name,
+                                    time.perf_counter() - _t0_cloud,
+                                    0,
+                                    "OPTIONAL_TIMEOUT",
+                                    f"HTTP 429: {err_sn[:140]}",
+                                )
+                                logger.warning("⏭ [%s] Необязательный проход '%s' получил HTTP 429 — пропуск.", eff_stage, model_name)
+                                return {}
+                            if not is_billing_lock and strict_cloud and _allow_cloud_fallback:
+                                fb_429_res = await self._try_strict_cloud_fallback(
+                                    client=client,
+                                    current_model_id=full_model_id,
+                                    system_prompt=system_prompt,
+                                    user_prompt=user_prompt,
+                                    page_image_b64=page_image_b64,
+                                    allow_mt_fallback=allow_mt_fallback,
+                                    max_attempts_override=max_attempts_override,
+                                    timeout_override_sec=timeout_override_sec,
+                                    use_stream=use_stream,
+                                    stage_label=eff_stage,
+                                    reason=f"HTTP 429 ({err_sn[:120]})",
+                                    incident_type="CLOUD_TO_CLOUD_FALLBACK_429",
+                                )
+                                if fb_429_res is not None:
+                                    return fb_429_res
+                                if self._cloud_rate_limit_paused:
+                                    return {}
+                            self._consecutive_cloud_429_count += 1
+                            schedule = (
+                                self._cloud_rate_limit_cooldown_sec
+                                if is_billing_lock
+                                else self._cloud_generic_429_cooldown_sec
+                            )
+                            if (
+                                self._consecutive_cloud_429_count <= len(schedule)
+                                and rate_limit_waits < len(schedule)
+                                and not self.stop_requested
+                            ):
+                                wait_s = float(schedule[min(self._consecutive_cloud_429_count - 1, len(schedule) - 1)])
+                                rate_limit_waits += 1
+                                self.diagnostics_stats["rate_limit_waits_count"] = (
+                                    int(self.diagnostics_stats.get("rate_limit_waits_count") or 0) + 1
+                                )
+                                self.diagnostics_stats["network_retries_count"] = (
+                                    int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
+                                )
+                                self._record_incident(
+                                    "CLOUD_HTTP_429_COOLDOWN",
+                                    model_name,
+                                    f"Шлюз вернул HTTP 429 ({'сверка расхода' if is_billing_lock else 'лимит'}), пауза {wait_s:.0f}с ({self._consecutive_cloud_429_count}/{len(schedule)})",
+                                    details=err_sn,
+                                )
+                                self._emit_live(
+                                    "rate_limit_wait",
+                                    stage="rate_limit_wait",
+                                    model=f"unsloth::{model_name}",
+                                    wait_sec=wait_s,
+                                    until_ts=time.time() + wait_s,
+                                    attempt=self._consecutive_cloud_429_count,
+                                    max_waits=len(schedule),
+                                    is_billing_lock=is_billing_lock,
+                                    reason=err_sn[:140],
+                                )
+                                logger.warning(
+                                    "⏳ [HTTP 429] Шлюз %s (%s) — пауза %.0fс перед проверкой (%d/%d)...",
+                                    self.unsloth_url,
+                                    err_sn[:120] or "rate limit",
+                                    wait_s,
+                                    self._consecutive_cloud_429_count,
+                                    len(schedule),
+                                )
+                                await self._cancellable_sleep(wait_s)
+                                continue
+                            has_local_fb = False
+                            if not strict_cloud:
+                                fb_check = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
+                                has_local_fb = bool(fb_check and (allow_mt_fallback or not is_mt_only_local_model(fb_check)))
+                            if strict_cloud or not has_local_fb:
+                                self._cloud_rate_limit_paused = True
+                                self._cloud_rate_limit_pause_reason = (
+                                    f"HTTP 429 ({'сверка расхода' if is_billing_lock else 'лимит шлюза'}): {err_sn[:140]}"
+                                )
+                                self._record_api_call(
+                                    "cloud",
+                                    model_name,
+                                    time.perf_counter() - _t0_cloud,
+                                    0,
+                                    "RATE_LIMIT_PAUSED",
+                                    self._cloud_rate_limit_pause_reason,
+                                )
+                                self._record_incident(
+                                    "CLOUD_RATE_LIMIT_PAUSED",
+                                    model_name,
+                                    "Авто-пауза прогона после повторных HTTP 429 от шлюза",
+                                    details=self._cloud_rate_limit_pause_reason,
+                                )
+                                self._emit_live(
+                                    "rate_limit_paused",
+                                    stage="paused_429",
+                                    model=f"unsloth::{model_name}",
+                                    reason=self._cloud_rate_limit_pause_reason,
+                                    is_billing_lock=is_billing_lock,
+                                )
+                                logger.warning(
+                                    "⏸ [АВТО-ПАУЗА HTTP 429] Шлюз %s продолжает возвращать 429 после ожидания — останавливаю запросы, чтобы не тратить пачки впустую (%s).",
+                                    self.unsloth_url,
+                                    self._cloud_rate_limit_pause_reason,
+                                )
+                                return {}
+                            req_obj = getattr(response_obj, "request", None) or httpx.Request("POST", cloud_url)
+                            raise httpx.HTTPStatusError(
+                                f"HTTP 429: {err_sn}",
+                                request=req_obj,
+                                response=response_obj,
+                            )
+
+                        if status_code in (500, 502, 503, 504) and attempt < max_attempts - 1:
+                            attempt += 1
+                            wait_s = 0.8 * attempt
                             self.diagnostics_stats["network_retries_count"] = (
                                 int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
                             )
                             self._record_incident(
                                 "CLOUD_HTTP_RETRY",
                                 model_name,
-                                f"Облачный шлюз вернул HTTP {status_code} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
+                                f"Облачный шлюз вернул HTTP {status_code} (попытка {attempt}/{max_attempts}), повтор через {wait_s:.1f}с",
                                 details=(err_body or "")[:180],
                             )
                             self._emit_live(
@@ -7290,11 +7744,11 @@ class OllamaTranslator:
                                 self.unsloth_url,
                                 status_code,
                                 model_name,
-                                attempt + 1,
+                                attempt,
                                 max_attempts,
                                 wait_s,
                             )
-                            await asyncio.sleep(wait_s)
+                            await self._cancellable_sleep(wait_s)
                             continue
                         if status_code >= 400:
                             req_obj = getattr(response_obj, "request", None) or httpx.Request("POST", cloud_url)
@@ -7325,6 +7779,24 @@ class OllamaTranslator:
                                 expected_keys=items_cnt,
                                 error=self.last_refusal_message,
                             )
+                            if strict_cloud and _allow_cloud_fallback and not is_optional_pass:
+                                fb_ref_res = await self._try_strict_cloud_fallback(
+                                    client=client,
+                                    current_model_id=full_model_id,
+                                    system_prompt=system_prompt,
+                                    user_prompt=user_prompt,
+                                    page_image_b64=page_image_b64,
+                                    allow_mt_fallback=allow_mt_fallback,
+                                    max_attempts_override=max_attempts_override,
+                                    timeout_override_sec=timeout_override_sec,
+                                    use_stream=use_stream,
+                                    stage_label=eff_stage,
+                                    reason=self.last_refusal_message,
+                                    incident_type="CLOUD_TO_CLOUD_REFUSAL_FALLBACK",
+                                    is_refusal=True,
+                                )
+                                if fb_ref_res is not None:
+                                    return fb_ref_res
                             if self._consecutive_cloud_refusals >= 2:
                                 self.enable_chapter_nsfw_mode(
                                     f"Повторный пустой ответ облака {model_name} ({self._consecutive_cloud_refusals} раза подряд на {items_cnt} блоках)"
@@ -7355,6 +7827,24 @@ class OllamaTranslator:
                                     expected_keys=items_cnt,
                                     error=self.last_refusal_message,
                                 )
+                                if strict_cloud and _allow_cloud_fallback and not is_optional_pass:
+                                    fb_ref_res = await self._try_strict_cloud_fallback(
+                                        client=client,
+                                        current_model_id=full_model_id,
+                                        system_prompt=system_prompt,
+                                        user_prompt=user_prompt,
+                                        page_image_b64=page_image_b64,
+                                        allow_mt_fallback=allow_mt_fallback,
+                                        max_attempts_override=max_attempts_override,
+                                        timeout_override_sec=timeout_override_sec,
+                                        use_stream=use_stream,
+                                        stage_label=eff_stage,
+                                        reason=self.last_refusal_message,
+                                        incident_type="CLOUD_TO_CLOUD_REFUSAL_FALLBACK",
+                                        is_refusal=True,
+                                    )
+                                    if fb_ref_res is not None:
+                                        return fb_ref_res
                                 self.enable_chapter_nsfw_mode(
                                     f"100% цензурный отказ облака {model_name} ({items_cnt}/{items_cnt} блоков: {self.last_refusal_message[:90]})"
                                 )
@@ -7377,7 +7867,16 @@ class OllamaTranslator:
                             )
                             return parsed
                         self._consecutive_cloud_failures = 0
+                        if _allow_cloud_fallback:
+                            self._consecutive_primary_cloud_failures = 0
+                        self._consecutive_cloud_429_count = 0
                         self._last_call_was_network_error = False
+                        self._last_call_was_rate_limited = False
+                        self._cloud_rate_limit_paused = False
+                        self._cloud_rate_limit_pause_reason = ""
+                        self._consecutive_cloud_successes = int(getattr(self, "_consecutive_cloud_successes", 0) or 0) + 1
+                        if self._consecutive_cloud_successes >= 2:
+                            self._batch_cloud_timeouts_count = 0
                         if len(parsed) >= max(1, items_cnt // 2):
                             self._consecutive_cloud_refusals = 0
                         logger.info(
@@ -7535,14 +8034,15 @@ class OllamaTranslator:
                         if not is_optional_pass:
                             self._batch_cloud_timeouts_count = int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) + 1
                         if attempt < max_attempts - 1:
-                            wait_s = 1.5 * (attempt + 1)
+                            attempt += 1
+                            wait_s = 1.5 * attempt
                             self.diagnostics_stats["network_retries_count"] = (
                                 int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
                             )
                             self._record_incident(
                                 "CLOUD_NETWORK_RETRY",
                                 model_name,
-                                f"Сетевой сбой {err_detail} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
+                                f"Сетевой сбой {err_detail} (попытка {attempt}/{max_attempts}), повтор через {wait_s:.1f}с",
                                 details=err_detail,
                             )
                             self._emit_live(
@@ -7564,12 +8064,12 @@ class OllamaTranslator:
                                 "Сбой соединения с '%s' (%s, попытка %d/%d) — повтор через %.1fс (%s)...",
                                 model_name,
                                 err_detail,
-                                attempt + 1,
+                                attempt,
                                 max_attempts,
                                 wait_s,
                                 retry_tag,
                             )
-                            await asyncio.sleep(wait_s)
+                            await self._cancellable_sleep(wait_s)
                             continue
                         break
                     except Exception as c_exc:
@@ -7598,8 +8098,31 @@ class OllamaTranslator:
                         )
                         return {}
                     self._consecutive_cloud_failures += 1
+                    self._consecutive_cloud_successes = 0
+                    if _allow_cloud_fallback:
+                        self._consecutive_primary_cloud_failures = int(getattr(self, "_consecutive_primary_cloud_failures", 0) or 0) + 1
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", err_last_detail)
                     if strict_cloud:
+                        if _allow_cloud_fallback and not self._cloud_rate_limit_paused and not self.stop_requested:
+                            fb_net_res = await self._try_strict_cloud_fallback(
+                                client=client,
+                                current_model_id=full_model_id,
+                                system_prompt=system_prompt,
+                                user_prompt=user_prompt,
+                                page_image_b64=page_image_b64,
+                                allow_mt_fallback=allow_mt_fallback,
+                                max_attempts_override=max_attempts_override,
+                                timeout_override_sec=timeout_override_sec,
+                                use_stream=use_stream,
+                                stage_label=eff_stage,
+                                reason=err_last_detail,
+                                incident_type="CLOUD_TO_CLOUD_FALLBACK",
+                                promote_on_streak=True,
+                            )
+                            if fb_net_res is not None:
+                                return fb_net_res
+                            if self._cloud_rate_limit_paused:
+                                return {}
                         self._record_incident(
                             "CLOUD_ERROR_STRICT_CLOUD",
                             model_name,
@@ -7611,8 +8134,8 @@ class OllamaTranslator:
                             err_last_detail,
                             model_name,
                         )
-                        if self._consecutive_cloud_failures >= 2:
-                            await asyncio.sleep(2.0)
+                        if not self._cloud_rate_limit_paused and self._consecutive_cloud_failures >= 2:
+                            await self._cancellable_sleep(1.0)
                         return {}
                     self._cloud_down_until_ts = time.time() + 60.0
                     if self._consecutive_cloud_failures >= 2:
@@ -7730,6 +8253,7 @@ class OllamaTranslator:
         page_image_b64: str | None = None,
         use_image_context: bool = False,
         stage_prefix: str = "llm",
+        carry_over_out: list[dict[str, Any]] | None = None,
     ) -> dict[str, str]:
         if self.stop_requested or not chunk_blocks:
             return {}
@@ -8146,6 +8670,7 @@ class OllamaTranslator:
         # СЦЕНАРИЙ 2: Гарантированный доперевод ВСЕХ пропущенных или ошибочно транслитерированных (Ромадзи) блоков!
         # Если доперевод через API натыкается на цензуру (или если это остатки после цензурного куска),
         # сразу переводим эти фразы через локальную модель Ollama и возвращаемся к API!
+        carried_over_keys: set[str] = set()
         if not self.stop_requested:
             bad_keys: list[str] = []
             for k in source_map:
@@ -8207,6 +8732,45 @@ class OllamaTranslator:
                             still_bad.append(bk_minor)
                 bad_keys = still_bad
 
+            valid_first_pass_cnt = sum(
+                1 for k in source_map if _is_valid_target_translation(translated_map.get(k, ""), source_map[k])
+            )
+            if self._cloud_rate_limit_paused:
+                bad_keys = []
+            elif (
+                bad_keys
+                and chunk_had_network_error
+                and valid_first_pass_cnt == 0
+                and active_model.startswith("unsloth::")
+                and self._is_strict_cloud_mode(active_model)
+            ):
+                logger.info(
+                    "⏭ [micro_retry] Пропущен: основной облачный запрос не вернул ни одной фразы из-за сетевого сбоя/429 (0/%d) — исключаю шторм повторов.",
+                    len(source_map),
+                )
+                bad_keys = []
+            elif (
+                bad_keys
+                and len(bad_keys) <= 3
+                and carry_over_out is not None
+                and active_model.startswith("unsloth::")
+                and self._is_strict_cloud_mode(active_model)
+                and not was_refusal
+                and not chunk_had_network_error
+                and not (set(bad_keys) & misaligned_keys_set)
+            ):
+                bad_set = set(bad_keys)
+                for cb_item in chunk_blocks:
+                    cb_id = str(cb_item["id"])
+                    if cb_id in bad_set:
+                        carry_over_out.append(cb_item)
+                        carried_over_keys.add(cb_id)
+                logger.info(
+                    "📎 [0 лишних запросов] %d пропущенных фраз перенесены в следующий чанк пачки.",
+                    len(carried_over_keys),
+                )
+                bad_keys = []
+
             if bad_keys:
                 sample_bad = "; ".join(
                     f"#{bk} «{source_map[bk][:16]}» ({bad_reason_by_k.get(bk, 'пропуск')})"
@@ -8219,7 +8783,7 @@ class OllamaTranslator:
                     details=sample_bad,
                     affected_count=len(bad_keys),
                 )
-                # Оптимизация размера батча доперевода (v5.4.0): исключаем «шторм» из >100 парных микро-запросов по <=2 шт.!
+                # Оптимизация размера батча доперевода (v5.4.0): исключаем «шторм» и микро-огрызки вроде 20+2!
                 if not active_model.startswith("unsloth::") or self.nsfw_mode:
                     retry_chunk_size = 8 if is_specialized_local_translator_model(active_model) else 12
                 elif (set(bad_keys) & misaligned_keys_set) and len(bad_keys) <= 6:
@@ -8230,15 +8794,20 @@ class OllamaTranslator:
                     retry_chunk_size = 20
                 else:
                     retry_chunk_size = 30
-                bad_sublists = [
-                    bad_keys[i : i + retry_chunk_size]
-                    for i in range(0, len(bad_keys), retry_chunk_size)
-                ]
+                if len(bad_keys) <= retry_chunk_size + 4:
+                    bad_sublists = [bad_keys]
+                else:
+                    n_sub = (len(bad_keys) + retry_chunk_size - 1) // max(1, retry_chunk_size)
+                    sub_sz = (len(bad_keys) + n_sub - 1) // n_sub
+                    bad_sublists = [
+                        bad_keys[i : i + sub_sz]
+                        for i in range(0, len(bad_keys), sub_sz)
+                    ]
                 logger.info(
                     "Доперевод %d пропущенных/невалидных блоков (%d подгрупп по <=%d шт., %s -> %s)...",
                     len(bad_keys),
                     len(bad_sublists),
-                    retry_chunk_size,
+                    max(len(s) for s in bad_sublists),
                     source_lang,
                     target_lang,
                 )
@@ -8254,7 +8823,11 @@ class OllamaTranslator:
                         model=active_model,
                     )
                 for b_sub in bad_sublists:
-                    if self.stop_requested or str(getattr(self, "_skip_current_stage", "") or "").lower() == "micro_retry":
+                    if (
+                        self.stop_requested
+                        or self._cloud_rate_limit_paused
+                        or str(getattr(self, "_skip_current_stage", "") or "").lower() == "micro_retry"
+                    ):
                         break
                     if getattr(self, "_runtime_model_override", None):
                         active_model = str(self._runtime_model_override)
@@ -8485,6 +9058,10 @@ class OllamaTranslator:
                 cleaned_val = ""
 
             if not cleaned_val:
+                if k in carried_over_keys:
+                    chunk_prov.pop(k, None)
+                    final_map[k] = ""
+                    continue
                 rescued_final = self._rescue_romaji_or_interjection(raw_val, orig_val, t_lang)
                 if rescued_final:
                     cleaned_val = rescued_final
@@ -8772,14 +9349,20 @@ class OllamaTranslator:
         min_per_stream = int(prof_cfg.get("min_phrases_per_stream", 55))
         par_trigger = int(prof_cfg.get("parallel_trigger_phrases", 110))
         is_slow_cloud = is_cloud_call and self._is_slow_or_reasoning_cloud_model(active_model)
+        strict_cloud_batch = is_cloud_call and self._is_strict_cloud_mode(active_model)
+        if strict_cloud_batch and not is_slow_cloud:
+            max_streams = max(max_streams, 2 if prof_cfg["id"] == "eco_book" else 3)
+            min_per_stream = min(min_per_stream, 35)
+            par_trigger = min(par_trigger, 66)
         cloud_degraded = (
-            int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) > 0
-            or int(getattr(self, "_consecutive_cloud_failures", 0) or 0) > 0
+            int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) >= 2
+            or int(getattr(self, "_consecutive_cloud_failures", 0) or 0) >= 2
         )
         allow_parallel = (
             is_cloud_call
             and not is_slow_cloud
             and not cloud_degraded
+            and not self._cloud_rate_limit_paused
             and max_streams > 1
             and len(unique_to_translate) > par_trigger
             and len(unique_to_translate) >= min_per_stream * 2
@@ -8859,9 +9442,13 @@ class OllamaTranslator:
                     await asyncio.sleep(idx * 0.35)
                 sub_prov: dict[str, dict[str, str]] = {}
                 async with sem:
-                    if self.stop_requested:
+                    if self.stop_requested or self._cloud_rate_limit_paused:
                         return {}, sub_prov
-                    sub_active_mod = str(getattr(self, "_runtime_model_override", None) or active_model)
+                    sub_active_mod = str(
+                        getattr(self, "_runtime_model_override", None)
+                        or getattr(self, "_batch_cloud_fallback_model", None)
+                        or active_model
+                    )
                     try:
                         sub_map = await self._translate_batch_chunk(
                             client=client,
@@ -8949,12 +9536,14 @@ class OllamaTranslator:
             chunk_idx = 0
             est_total_chunks = len(pending_chunks)
             while pending_chunks:
-                if self.stop_requested:
+                if self.stop_requested or self._cloud_rate_limit_paused:
                     break
                 override_m = getattr(self, "_runtime_model_override", None)
-                if override_m and override_m != active_model:
+                promoted_m = getattr(self, "_batch_cloud_fallback_model", None)
+                switch_target = override_m or (promoted_m if promoted_m and promoted_m != active_model else None)
+                if switch_target and switch_target != active_model:
                     active_model = await self.resolve_model(
-                        override_m,
+                        switch_target,
                         source_lang=source_lang,
                         target_lang=target_lang,
                         profile=prof_cfg["id"],
@@ -8998,6 +9587,7 @@ class OllamaTranslator:
                     batch_limit=batch_limit,
                 )
                 sub_prov: dict[str, dict[str, str]] = {}
+                carried_blocks: list[dict[str, Any]] = []
                 try:
                     chunk_map = await self._translate_batch_chunk(
                         client=client,
@@ -9011,6 +9601,7 @@ class OllamaTranslator:
                         page_image_b64=page_img_b64,
                         use_image_context=eff_use_img_ctx,
                         stage_prefix="llm",
+                        carry_over_out=(carried_blocks if pending_chunks else None),
                     )
                 except Exception as chunk_exc:
                     self._record_incident(
@@ -9031,6 +9622,12 @@ class OllamaTranslator:
                             "source": "untranslated_error",
                             "note": f"Ошибка подгруппы: {chunk_exc}",
                         }
+                if carried_blocks and pending_chunks:
+                    next_ch = pending_chunks[0]
+                    existing_next_ids = {str(nb["id"]) for nb in next_ch}
+                    to_prepend = [cb for cb in carried_blocks if str(cb["id"]) not in existing_next_ids]
+                    if to_prepend:
+                        pending_chunks[0] = to_prepend + next_ch
                 translated_map.update(chunk_map)
                 block_prov.update(sub_prov)
 
@@ -9214,7 +9811,7 @@ class OllamaTranslator:
         фиксирует каноническое чтение и пол персонажа (например, 心花 -> Kokona [female], 猫又 -> Nekomata [male]),
         чтобы исключить разнобой имен между чанками.
         """
-        if not blocks or self.stop_requested or target_lang.lower().strip() == "romaji":
+        if not blocks or self.stop_requested or self._cloud_rate_limit_paused or target_lang.lower().strip() == "romaji":
             return []
         cjk_lines: list[str] = []
         seen_s: set[str] = set()
@@ -9249,6 +9846,21 @@ class OllamaTranslator:
                 fb_pre = await self._resolve_local_fallback_model(target_lang=target_lang, source_lang=source_lang)
                 if fb_pre:
                     eff_pre_model = fb_pre
+        elif (
+            eff_pre_model.startswith("unsloth::")
+            and self._is_remote_cloud_url(self.unsloth_url)
+            and self._is_strict_cloud_mode(eff_pre_model)
+            and self._is_slow_or_reasoning_cloud_model(eff_pre_model)
+            and self._normalize_cloud_fallback_model(getattr(self, "cloud_fallback_model", "auto")) != "off"
+        ):
+            fast_p0 = self._pick_fast_cloud_model_from_detected(current_model=eff_pre_model)
+            if fast_p0:
+                logger.info(
+                    "💎 [Pass 0 Pre-Scan] Быстрый облачный авто-глоссарий через '%s' вместо медленной '%s'.",
+                    fast_p0,
+                    eff_pre_model,
+                )
+                eff_pre_model = fast_p0
         client = self._get_http_client()
         t_lang = (target_lang or "en").lower().strip()
         locked_entries = normalize_glossary_entries((existing_glossary or []) + (self.glossary or []))
@@ -9420,7 +10032,12 @@ class OllamaTranslator:
         Принимает словарь `{"P01_01": {"orig": "...", "trans": "..."}, ...}`, проверяет и улучшает связность диалогов,
         род местоимений, именные суффиксы и стиль реплик по всей главе целиком и возвращает `{"P01_01": "улучшенный перевод"}`.
         """
-        if not book_map or self.stop_requested or str(getattr(self, "_skip_current_stage", "") or "").lower() == "proofread":
+        if (
+            not book_map
+            or self.stop_requested
+            or self._cloud_rate_limit_paused
+            or str(getattr(self, "_skip_current_stage", "") or "").lower() == "proofread"
+        ):
             return {}
 
         active_model = await self.resolve_model(
