@@ -3165,6 +3165,14 @@
               </div>
               <input id="chk-use-image-context" type="checkbox" onchange="onUseImageContextToggle(this.checked)" />
             </label>
+            <div class="field-box" style="margin-top:6px;">
+              <label for="sel-ultra-proofread-mode">💎 Проход 2 в режиме «Максимум» (вычитка и сверка рода):</label>
+              <select id="sel-ultra-proofread-mode">
+                <option value="selective">🎯 Выборочно (стыки NSFW + длинные фразы, &lt;= 1 запрос — рекомендуем)</option>
+                <option value="off">⏭ Отключено (только Pass 0 глоссарий + основной перевод, минимум токенов)</option>
+                <option value="full">📚 Полная вычитка всех пачек (максимум токенов)</option>
+              </select>
+            </div>
           </div>
 
           <div class="section-box">
@@ -3179,12 +3187,15 @@
           </div>
 
           <div class="section-box">
-            <div class="section-title">🐋 Облачный API DeepSeek (ModuleAPI — Flash и Pro)</div>
-            <div class="section-desc">Быстрое переключение в 1 клик между скоростной моделью Flash и максимальным качеством Pro.</div>
+            <div class="section-title">🌐 Облачный API перевода (DeepSeek / OpenRouter / xAI Grok)</div>
+            <div class="section-desc">Быстрое переключение в 1 клик между шлюзами DeepSeek, OpenRouter (DeepSeek Chat / Mistral) и xAI Grok.</div>
             <div class="field-box" style="display:none;">
               <select id="sel-cloud-preset" onchange="onCloudPresetChange()">
                 <option value="https://moduleapi.pro/v1|deepseek-v4-flash">⚡ DeepSeek Flash</option>
                 <option value="https://moduleapi.pro/v1|deepseek-v4-pro">🧠 DeepSeek Pro</option>
+                <option value="https://openrouter.ai/api/v1|deepseek/deepseek-chat">🌐 OpenRouter — DeepSeek Chat</option>
+                <option value="https://api.x.ai/v1|grok-4-fast-non-reasoning">🚀 xAI Grok 4 Fast (18+)</option>
+                <option value="https://openrouter.ai/api/v1|mistralai/mistral-small-3.2-24b-instruct">🔓 OpenRouter — Mistral Small 3.2</option>
               </select>
             </div>
             <div class="choice-cards-grid">
@@ -3196,10 +3207,18 @@
                 <div class="choice-card-title">🧠 DeepSeek Pro</div>
                 <div class="choice-card-sub"><b>deepseek-v4-pro</b> — глубокое понимание контекста, сленга и сложной литературной речи.</div>
               </div>
+              <div class="choice-card" id="card-preset-openrouter" onclick="selectCloudProviderPreset('https://openrouter.ai/api/v1', 'deepseek/deepseek-chat', 'openrouter')">
+                <div class="choice-card-title">🌐 OpenRouter (DeepSeek)</div>
+                <div class="choice-card-sub"><b>deepseek/deepseek-chat</b> — стабильный шлюз с Prefix Cache и поддержкой 18+ манги.</div>
+              </div>
+              <div class="choice-card" id="card-preset-grok" onclick="selectCloudProviderPreset('https://api.x.ai/v1', 'grok-4-fast-non-reasoning', 'grok')">
+                <div class="choice-card-title">🚀 xAI Grok 4 Fast</div>
+                <div class="choice-card-sub"><b>grok-4-fast-non-reasoning</b> — огромный контекст и минимальные цензурные отказы.</div>
+              </div>
             </div>
             <div class="form-grid">
               <div class="field-box">
-                <label>Base URL шлюза DeepSeek:</label>
+                <label>Base URL шлюза API (OpenAI-совместимый):</label>
                 <input id="inp-unsloth-url" type="text" value="https://moduleapi.pro/v1" placeholder="https://moduleapi.pro/v1" />
               </div>
               <div class="field-box">
@@ -3229,6 +3248,14 @@
                   <span class="toggle-row-sub">Добавляет в начало системного промпта расширенный контекст литературной локализации: все персонажи — вымышленные взрослые герои фэнтези/художественной манги, переводить точно без сглаживания тона и примечаний.</span>
                 </div>
                 <input id="chk-anti-censorship-prompt" type="checkbox" onchange="onAntiCensorshipPromptToggle(this.checked)" />
+              </label>
+
+              <label class="toggle-row" style="border-color:rgba(52, 211, 153, 0.42); background:rgba(52, 211, 153, 0.08);">
+                <div class="toggle-row-text">
+                  <span class="toggle-row-title">🛡 Умное 18+ разделение до облака (Pre-Flight NSFW Split -&gt; Ollama)</span>
+                  <span class="toggle-row-sub">Автоматически направляет откровенные 18+ бабблы в локальную Ollama (с контекстом из облачных реплик), не давая цензуре заблокировать всю облачную пачку.</span>
+                </div>
+                <input id="chk-preflight-nsfw-split" type="checkbox" checked />
               </label>
 
               <details class="style-retouch-details" style="margin-top:0;">
@@ -5440,26 +5467,35 @@
       document.getElementById("settings-modal").classList.toggle("open", open);
     }
 
-    function updateDeepSeekPresetCards(modelName) {
+    function updateDeepSeekPresetCards(modelName, urlOverride) {
+      const mLow = String(modelName || "").toLowerCase();
+      const uLow = String(urlOverride || document.getElementById("inp-unsloth-url")?.value || "").toLowerCase();
       const cFlash = document.getElementById("card-preset-flash");
       const cPro = document.getElementById("card-preset-pro");
-      if (cFlash) cFlash.classList.toggle("selected", modelName.includes("flash"));
-      if (cPro) cPro.classList.toggle("selected", modelName.includes("pro"));
+      const cOpenRouter = document.getElementById("card-preset-openrouter");
+      const cGrok = document.getElementById("card-preset-grok");
+      const isOr = uLow.includes("openrouter.ai") || mLow.includes("deepseek/deepseek-chat") || mLow.includes("mistralai/");
+      const isGrok = uLow.includes("api.x.ai") || mLow.includes("grok-");
+      if (cFlash) cFlash.classList.toggle("selected", !isOr && !isGrok && mLow.includes("flash"));
+      if (cPro) cPro.classList.toggle("selected", !isOr && !isGrok && mLow.includes("pro"));
+      if (cOpenRouter) cOpenRouter.classList.toggle("selected", isOr);
+      if (cGrok) cGrok.classList.toggle("selected", isGrok);
     }
 
-    function selectDeepSeekPreset(modelName) {
+    function selectCloudProviderPreset(baseUrl, modelName, cardKey) {
       const urlInp = document.getElementById("inp-unsloth-url");
-      const curUrl = (urlInp.value || "").trim().replace(/\/+$/, "");
-      if (!curUrl || curUrl.includes("127.0.0.1") || curUrl.includes("localhost") || curUrl === "https://moduleapi.pro") {
-        urlInp.value = "https://moduleapi.pro/v1";
+      const cleanUrl = String(baseUrl || "").trim().replace(/\/+$/, "");
+      if (urlInp && cleanUrl) {
+        urlInp.value = cleanUrl;
       }
       const fullId = `unsloth::${modelName}`;
-      document.getElementById("inp-custom-model").value = fullId;
+      const custInp = document.getElementById("inp-custom-model");
+      if (custInp) custInp.value = fullId;
       const selPreset = document.getElementById("sel-cloud-preset");
       if (selPreset) {
-        selPreset.value = `https://moduleapi.pro/v1|${modelName}`;
+        selPreset.value = `${cleanUrl}|${modelName}`;
       }
-      updateDeepSeekPresetCards(modelName);
+      updateDeepSeekPresetCards(modelName, cleanUrl);
       const selMod = document.getElementById("sel-model");
       if (selMod) {
         let found = false;
@@ -5472,9 +5508,13 @@
         if (!found) {
           const opt = document.createElement("option");
           opt.value = fullId;
-          opt.textContent = modelName === "deepseek-v4-pro"
-            ? "🧠 [DeepSeek API] deepseek-v4-pro (Pro)"
-            : "⚡ [DeepSeek API] deepseek-v4-flash (Flash)";
+          if (modelName === "deepseek-v4-pro") {
+            opt.textContent = "🧠 [DeepSeek API] deepseek-v4-pro (Pro)";
+          } else if (modelName === "deepseek-v4-flash") {
+            opt.textContent = "⚡ [DeepSeek API] deepseek-v4-flash (Flash)";
+          } else {
+            opt.textContent = `🌐 [Cloud API] ${modelName}`;
+          }
           opt.selected = true;
           selMod.appendChild(opt);
         }
@@ -5486,11 +5526,29 @@
       }
     }
 
+    function selectDeepSeekPreset(modelName) {
+      const urlInp = document.getElementById("inp-unsloth-url");
+      const curUrl = (urlInp?.value || "").trim().replace(/\/+$/, "");
+      const targetUrl = (
+        !curUrl
+        || curUrl.includes("127.0.0.1")
+        || curUrl.includes("localhost")
+        || curUrl === "https://moduleapi.pro"
+        || curUrl.includes("openrouter.ai")
+        || curUrl.includes("api.x.ai")
+      )
+        ? "https://moduleapi.pro/v1"
+        : curUrl;
+      selectCloudProviderPreset(targetUrl, modelName, modelName.includes("pro") ? "pro" : "flash");
+    }
+
     function onCloudPresetChange() {
       const val = document.getElementById("sel-cloud-preset").value;
       if (!val) return;
-      const [, defMod] = val.split("|");
-      if (defMod) {
+      const [presetUrl, defMod] = val.split("|");
+      if (presetUrl && defMod) {
+        selectCloudProviderPreset(presetUrl, defMod, "");
+      } else if (defMod) {
         selectDeepSeekPreset(defMod);
       }
     }
@@ -5751,7 +5809,17 @@
             applyUiSettingsToDom();
           }
         }
-        updateDeepSeekPresetCards(act);
+        if (typeof data.preflight_nsfw_split === "boolean") {
+          const chkSplit = document.getElementById("chk-preflight-nsfw-split");
+          if (chkSplit) chkSplit.checked = data.preflight_nsfw_split;
+        }
+        if (typeof data.ultra_proofread_mode === "string") {
+          const selProof = document.getElementById("sel-ultra-proofread-mode");
+          if (selProof && ["off", "selective", "full"].includes(data.ultra_proofread_mode)) {
+            selProof.value = data.ultra_proofread_mode;
+          }
+        }
+        updateDeepSeekPresetCards(act, data.unsloth_url || "");
 
         if (Array.isArray(data.recommended_models) && data.recommended_models.length > 0) {
           const pullSel = document.getElementById("sel-recommended-pull");
@@ -6343,6 +6411,8 @@
           batch_pages: batchPages,
           anti_censorship_prompt: Boolean(document.getElementById("chk-anti-censorship-prompt")?.checked),
           anti_censorship_custom_prompt: (document.getElementById("inp-anti-censorship-custom-prompt")?.value || "").trim(),
+          preflight_nsfw_split: Boolean(document.getElementById("chk-preflight-nsfw-split")?.checked ?? true),
+          ultra_proofread_mode: document.getElementById("sel-ultra-proofread-mode")?.value || "selective",
           ui_settings: uiSettings
         };
 

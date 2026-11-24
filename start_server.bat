@@ -6,6 +6,8 @@ set PYTHONUTF8=1
 set PYTHONIOENCODING=utf-8
 set NO_PROXY=127.0.0.1,localhost
 set no_proxy=127.0.0.1,localhost
+if not defined OLLAMA_FLASH_ATTENTION set OLLAMA_FLASH_ATTENTION=1
+if not defined OLLAMA_KV_CACHE_TYPE set OLLAMA_KV_CACHE_TYPE=q8_0
 
 echo ===================================================
 echo   Starting Manga Translator Local Server v6.1.0...

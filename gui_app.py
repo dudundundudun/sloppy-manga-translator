@@ -85,6 +85,9 @@ RECOMMENDED_DOWNLOAD_MAP = {
 CLOUD_PRESET_MAP = {
     "⚡ DeepSeek Flash (deepseek-v4-flash — быстрая и экономная)": ("https://moduleapi.pro/v1", "unsloth::deepseek-v4-flash"),
     "🧠 DeepSeek Pro (deepseek-v4-pro — максимальное качество)": ("https://moduleapi.pro/v1", "unsloth::deepseek-v4-pro"),
+    "🌐 OpenRouter — DeepSeek Chat (18+ friendly)": ("https://openrouter.ai/api/v1", "unsloth::deepseek/deepseek-chat"),
+    "🚀 xAI Grok 4 Fast (2M контекст, 18+)": ("https://api.x.ai/v1", "unsloth::grok-4-fast-non-reasoning"),
+    "🔓 OpenRouter — Mistral Small 3.2 24B": ("https://openrouter.ai/api/v1", "unsloth::mistralai/mistral-small-3.2-24b-instruct"),
 }
 
 TEXT_FILTER_MODE_MAP = {

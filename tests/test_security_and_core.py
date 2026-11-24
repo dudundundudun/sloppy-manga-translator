@@ -1175,6 +1175,474 @@ def test_manga_localization_prompts_clean_fiction_context():
         assert tr.anti_censorship_custom_prompt == ""
 
 
+def test_neural_segmenter_furigana_and_residual_white_polish():
+    import numpy as np
+
+    cleaner_mod = _load_real_module("cleaner")
+    assert cleaner_mod.HF_YOLO_TEXT_SEG_REPO == "ogkalu/comic-text-segmenter-yolov8m"
+    assert cleaner_mod.HF_YOLO_TEXT_SEG_FILENAME == "comic-text-segmenter.pt"
+
+    seg_no_dl = cleaner_mod.ComicTextStrokeSegmenter(allow_download=False)
+    assert seg_no_dl.allow_download is False
+    bc = cleaner_mod.BubbleCleaner(use_lama=False)
+    assert bc.stroke_segmenter.allow_download is False
+
+    exp_bbox = cleaner_mod.HybridMangaCleaner.expand_box_for_furigana(
+        (100, 100, 160, 220), (400, 300), scale=1.0, is_vertical=True
+    )
+    assert exp_bbox[2] > 160
+    assert exp_bbox[0] <= 100
+    assert exp_bbox[3] <= 400
+
+    out_rgb = np.full((64, 64, 3), 255, dtype=np.uint8)
+    cavity = np.zeros((64, 64), dtype=np.uint8)
+    cavity[8:56, 8:56] = 255
+    wall = np.zeros((64, 64), dtype=np.uint8)
+    wall[4:8, 8:56] = 255
+    out_rgb[4:8, 8:56] = (40, 40, 40)
+    out_rgb[28:32, 28:32] = (110, 110, 110)
+    fill_col = np.array([255, 255, 255], dtype=np.uint8)
+    polished = cleaner_mod.BubbleCleaner._verify_and_polish_white_cavity(
+        out_rgb, cavity, wall, fill_col
+    )
+    assert int(polished[30, 30, 0]) >= 245, "Остаточные тёмные пиксели внутри белой чаши должны зачищаться"
+    assert int(polished[6, 30, 0]) <= 60, "Стенка баббла должна остаться нетронутой"
+
+
+def test_lama_wide_context_and_bubble_polygon_barrier():
+    import numpy as np
+    from PIL import Image
+
+    cleaner_mod = _load_real_module("cleaner")
+    bc = cleaner_mod.BubbleCleaner(use_lama=False)
+
+    # 1. Барьер bubble_polygon_rel в _inpaint_crop сохраняет текстуру снаружи контура баббла
+    crop_rgb = np.full((120, 120, 3), 70, dtype=np.uint8)
+    crop_rgb[20:100, 20:100] = (255, 255, 255)
+    crop_mask = np.zeros((120, 120), dtype=np.uint8)
+    crop_mask[14:70, 35:85] = 255
+    poly_rel = [[20, 20], [100, 20], [100, 100], [20, 100]]
+    out_crop = bc._inpaint_crop(
+        crop_rgb,
+        crop_mask,
+        is_free_text=False,
+        bubble_polygon_rel=poly_rel,
+    )
+    assert int(out_crop[16, 60, 0]) < 150, "Снаружи bubble_polygon_rel фон не должен заливаться белым"
+    assert int(out_crop[45, 60, 0]) >= 235, "Внутри bubble_polygon_rel маска должна быть очищена"
+
+    # 2. Батч LaMa получает расширенный context_pad=80
+    recorded_pads: list[int] = []
+
+    class _DummyBatchLama:
+        def inpaint_rois_batch(self, page_bgr, page_mask, roi_bboxes, context_pad=24, max_batch_size=16):
+            recorded_pads.append(int(context_pad))
+            return page_bgr.copy()
+
+    page_arr = np.full((320, 320, 3), 185, dtype=np.uint8)
+    page_arr[::4, :, :] = 95  # текстура/скринтон -> идёт в LaMa batch
+    page_arr[55:95, 70:75, :] = 10  # штрихи свободного текста #1
+    page_arr[70:75, 55:95, :] = 10
+    page_arr[205:245, 220:225, :] = 10  # штрихи свободного текста #2
+    page_arr[220:225, 205:245, :] = 10
+    page_pil = Image.fromarray(page_arr, mode="RGB")
+
+    bc.lama_model = _DummyBatchLama()
+    bc.inpaint_backend = "simple_lama"
+    blocks = [
+        {
+            "id": "1",
+            "bbox": [40, 40, 115, 115],
+            "clean_bbox": [38, 38, 117, 117],
+            "is_free_text": True,
+            "original_text": "テスト1",
+        },
+        {
+            "id": "2",
+            "bbox": [190, 190, 265, 265],
+            "clean_bbox": [188, 188, 267, 267],
+            "is_free_text": True,
+            "original_text": "テスト2",
+        },
+    ]
+    cleaned_img, _ = bc.clean_image(page_pil, blocks)
+    assert cleaned_img.size == (320, 320)
+    assert 80 in recorded_pads, f"Ожидался context_pad=80 в батче LaMa, получено: {recorded_pads}"
+
+
+def test_preflight_nsfw_triage_splits_cloud_and_local_and_static_system_prompt():
+    tr_mod = _load_real_module("translator")
+
+    # 1. Статичный system_prompt для Prefix Caching и корректное извлечение JSON при фигурных скобках в глоссарии
+    sys1, usr1, _ = tr_mod.OllamaTranslator._get_prompts(
+        "ja",
+        "ru",
+        '{"1":"おい"}',
+        context_lines=["彼 => Он"],
+        glossary_entries=[{"src": "美咲", "dst": "Мисаки", "note": "heroine {A}"}],
+        geometry_hints_map={"1": "spk=A, ~20ch"},
+        auto_glossary_header="[Names]: 美咲=Мисаки",
+        anti_censorship_prompt=True,
+    )
+    sys2, usr2, _ = tr_mod.OllamaTranslator._get_prompts(
+        "ja",
+        "ru",
+        '{"1":"a","2":"b","3":"c","4":"d","5":"e","6":"f"}',
+        context_lines=[],
+        glossary_entries=[],
+        geometry_hints_map=None,
+        auto_glossary_header="",
+        anti_censorship_prompt=True,
+    )
+    assert sys1 == sys2, "system_prompt должен быть побайтово статичным независимо от глоссария, контекста и размера пачки"
+    assert "Previous Context" in usr1 and "BUBBLE TAGS" in usr1 and "[Names]:" in usr1
+    assert "Previous Context" not in sys1 and "BUBBLE TAGS" not in sys1
+    assert tr_mod.OllamaTranslator._extract_last_json_dict_from_prompt(usr1) == {"1": "おい"}
+    assert "TRANSLATE_MANGA_BUBBLES_JSON" in usr1
+    assert "{" not in usr1.split("TRANSLATE_MANGA_BUBBLES_JSON", 1)[1].split("Переведи", 1)[0]
+    assert tr_mod.OllamaTranslator._extract_last_json_dict_from_prompt(usr2) == {
+        "1": "a", "2": "b", "3": "c", "4": "d", "5": "e", "6": "f"
+    }
+
+    # 2. Pre-Flight NSFW Split + мостик контекста + статичный system_prompt даже с VLM-контекстом
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(config_path=cfg_file)
+            tr.unsloth_url = "https://openrouter.ai/api/v1"
+            tr.preflight_nsfw_split = True
+            tr.nsfw_mode = False
+
+            cloud_keys_seen: list[set[str]] = []
+            cloud_sys_seen: list[str] = []
+            cloud_usr_seen: list[str] = []
+            local_maps_seen: list[dict[str, str]] = []
+            local_ctxs_seen: list[list[str] | None] = []
+
+            async def _fake_resolve_fb(*args, **kwargs):
+                return "ollama::shisa-v2.1-14b:Q4_K_M"
+
+            async def _fake_cloud_json(*, client, full_model_id, system_prompt, user_prompt, page_image_b64=None, **kwargs):
+                parsed = tr._extract_last_json_dict_from_prompt(user_prompt) or {}
+                cloud_keys_seen.append({k for k in parsed.keys() if not k.startswith("_anchor_")})
+                cloud_sys_seen.append(system_prompt)
+                cloud_usr_seen.append(user_prompt)
+                return {
+                    k: ("Привет!" if k == "1" else "Пойдем быстрее")
+                    for k in parsed.keys()
+                    if not k.startswith("_anchor_")
+                }
+
+            async def _fake_local_ollama(*, client, source_map, source_lang, target_lang, context_lines=None, **kwargs):
+                local_maps_seen.append(dict(source_map))
+                local_ctxs_seen.append(list(context_lines) if context_lines else None)
+                return {k: "Ах... так глубоко!" for k in source_map.keys()}
+
+            chunk_blocks = [
+                {"id": "1", "original_text": "こんにちは", "bbox": [10, 10, 90, 90]},
+                {"id": "2", "original_text": "早く行こう", "bbox": [100, 10, 200, 90]},
+                {"id": "3", "original_text": "チ○ポ…イグゥっ♡", "bbox": [220, 10, 320, 110]},
+            ]
+            with (
+                patch.object(tr, "_resolve_local_fallback_model", side_effect=_fake_resolve_fb),
+                patch.object(tr, "_call_llm_json", side_effect=_fake_cloud_json),
+                patch.object(tr, "_translate_map_via_local_ollama", side_effect=_fake_local_ollama),
+            ):
+                prov1: dict[str, dict[str, str]] = {}
+                res1 = await tr._translate_batch_chunk(
+                    client=tr._get_http_client(),
+                    chunk_blocks=chunk_blocks,
+                    source_lang="ja",
+                    target_lang="ru",
+                    active_model="unsloth::deepseek/deepseek-chat",
+                    provenance_out=prov1,
+                    page_image_b64=None,
+                    use_image_context=False,
+                )
+                prov2: dict[str, dict[str, str]] = {}
+                res2 = await tr._translate_batch_chunk(
+                    client=tr._get_http_client(),
+                    chunk_blocks=chunk_blocks,
+                    source_lang="ja",
+                    target_lang="ru",
+                    active_model="unsloth::deepseek/deepseek-chat",
+                    provenance_out=prov2,
+                    page_image_b64="ZmFrZV9iNjQ=",
+                    use_image_context=True,
+                )
+
+            assert cloud_keys_seen == [{"1", "2"}, {"1", "2"}], f"Острый 18+ блок не должен попадать в облако: {cloud_keys_seen}"
+            assert local_maps_seen[0] == {"3": "チ○ポ…イグゥっ♡"}
+            assert any("Привет!" in line for line in (local_ctxs_seen[0] or [])), "Локальная модель должна получать мостик контекста от облака"
+            assert prov1["3"]["source"] == "llm_preflight_local"
+            assert res1["3"] == "Ах... так глубоко!" and res2["1"] == "Привет!"
+            assert tr.diagnostics_stats["preflight_local_routed_count"] >= 2
+            assert cloud_sys_seen[0] == cloud_sys_seen[1], "VLM-заметка не должна ломать статичность system_prompt"
+            assert "[IMAGE-AWARE VLM CONTEXT" in cloud_usr_seen[1]
+
+    asyncio.run(_run())
+
+
+def test_zero_token_local_pass0_and_selective_proofread_settings():
+    tr_mod = _load_real_module("translator")
+    srv = _load_server_module()
+    from api.schemas import ServerSettingsRequest
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(config_path=cfg_file)
+            tr.unsloth_url = "https://openrouter.ai/api/v1"
+            tr._cached_models = [
+                {"id": "ollama::glm-ocr:latest", "provider": "ollama", "installed": "true"},
+                {"id": "ollama::sugoi-14b-ultra:Q4_K_M", "provider": "ollama", "installed": "true"},
+                {"id": "ollama::shisa-v2.1-14b:Q4_K_M", "provider": "ollama", "installed": "true"},
+                {"id": "ollama::qwen3:14b", "provider": "ollama", "installed": "true"},
+            ]
+            loc_non_mt = await tr._resolve_local_non_mt_llm()
+            assert loc_non_mt == "ollama::qwen3:14b"
+
+            pass0_models_used: list[str] = []
+
+            async def _fake_pass0_call(*, client, full_model_id, system_prompt, user_prompt, **kwargs):
+                pass0_models_used.append(full_model_id)
+                return {"美咲": "Мисаки (female)"}
+
+            blocks = [
+                {"id": "1", "original_text": "美咲ちゃん、おはよう！"},
+                {"id": "2", "original_text": "美咲は急いでいる"},
+                {"id": "3", "original_text": "本当に美咲なのか？"},
+                {"id": "4", "original_text": "美咲ちゃん待って！"},
+            ]
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_pass0_call):
+                gloss = await tr.extract_chapter_glossary_prepass(
+                    blocks=blocks,
+                    source_lang="ja",
+                    target_lang="ru",
+                    model="unsloth::deepseek/deepseek-chat",
+                )
+            assert pass0_models_used == ["ollama::qwen3:14b"], "Pass 0 должен бесплатно уходить на локальную LLM"
+            assert any(g.get("src") == "美咲" for g in gloss)
+
+            tr.save_config(preflight_nsfw_split=False, ultra_proofread_mode="off")
+            tr_reloaded = tr_mod.OllamaTranslator(config_path=cfg_file)
+            assert tr_reloaded.preflight_nsfw_split is False
+            assert tr_reloaded.ultra_proofread_mode == "off"
+            tr_reloaded.save_config(ultra_proofread_mode="bad_value")
+            assert tr_reloaded.ultra_proofread_mode == "off"
+
+    asyncio.run(_run())
+
+    req = ServerSettingsRequest(preflight_nsfw_split=True, ultra_proofread_mode="selective")
+    assert req.preflight_nsfw_split is True
+    assert req.ultra_proofread_mode == "selective"
+    srv_src = (REPO_ROOT / "server.py").read_text(encoding="utf-8")
+    assert "_batch_num == 1 or len(folder_glossary_entries) < 8" in srv_src
+    assert 'proof_mode == "selective"' in srv_src
+    assert '"llm_preflight_local", "llm_local_bypass"' in srv_src
+
+
+def test_openrouter_grok_presets_and_local_diffusion_hook():
+    import numpy as np
+
+    tr_mod = _load_real_module("translator")
+    cleaner_mod = _load_real_module("cleaner")
+
+    preset_ids = {p["id"] for p in tr_mod.CLOUD_API_PRESETS}
+    assert {"deepseek_flash", "deepseek_pro", "openrouter_deepseek", "xai_grok_fast", "openrouter_mistral"}.issubset(preset_ids)
+
+    gui_src = (REPO_ROOT / "gui_app.py").read_text(encoding="utf-8")
+    assert "https://openrouter.ai/api/v1" in gui_src
+    assert "https://api.x.ai/v1" in gui_src
+    assert "grok-4-fast-non-reasoning" in gui_src
+
+    html_src = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    for elem_id in ("card-preset-openrouter", "card-preset-grok", "chk-preflight-nsfw-split", "sel-ultra-proofread-mode"):
+        assert elem_id in html_src
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tr = tr_mod.OllamaTranslator(config_path=Path(tmp) / "cfg.json")
+        tr.unsloth_api_key = "sk-test-key"
+        tr.unsloth_url = "https://openrouter.ai/api/v1"
+        or_hdrs = tr._unsloth_headers()
+        assert or_hdrs.get("HTTP-Referer") == "http://127.0.0.1:5000"
+        assert or_hdrs.get("X-Title") == "Miko-chan Manga Studio"
+        tr.unsloth_url = "https://api.x.ai/v1"
+        xai_hdrs = tr._unsloth_headers()
+        assert "HTTP-Referer" not in xai_hdrs
+
+    bc = cleaner_mod.BubbleCleaner(use_lama=False)
+    crop = np.zeros((32, 32, 3), dtype=np.uint8)
+    mask = np.full((32, 32), 255, dtype=np.uint8)
+    bc.flux_klein_inpaint_fn = lambda img, msk: np.full_like(img, 123)
+    diff_out = bc._inpaint_with_flux_klein_4b(crop, mask)
+    assert diff_out is not None and int(diff_out[0, 0, 0]) == 123
+
+    bc.flux_klein_inpaint_fn = None
+    with patch.dict("os.environ", {"MIKO_DIFFUSION_INPAINT_URL": "https://evil.example.com:7860"}):
+        assert bc._inpaint_with_flux_klein_4b(crop, mask) is None
+
+
+def test_cuda_lama_tf32_safe_bf16_fallback_and_segmenter_fp16():
+    import numpy as np
+
+    cleaner_mod = _load_real_module("cleaner")
+    torch = cleaner_mod.torch
+    with patch.dict(sys.modules, {"torch": torch}):
+        inp = object.__new__(cleaner_mod.StandaloneLaMaInpainter)
+        inp.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        inp.pad_mod = 8
+        inp.use_bf16 = True
+
+        bf16_calls: list[bool] = []
+
+        def _fake_lama_model(img_t, mask_t):
+            bf16_calls.append(bool(inp.use_bf16))
+            if inp.use_bf16:
+                raise RuntimeError("Unsupported dtype BFloat16 in torch.fft_rfftn")
+            return img_t * 0.0 + 0.9
+
+        inp.model = _fake_lama_model
+        crop = np.full((32, 32, 3), 50, dtype=np.uint8)
+        mask = np.full((32, 32), 255, dtype=np.uint8)
+        out_single = inp.inpaint_rgb_crop(crop, mask)
+        assert out_single.shape == (32, 32, 3)
+        assert inp.use_bf16 is False
+        assert bf16_calls == [True, False]
+
+        inp.use_bf16 = True
+        bf16_calls.clear()
+        page_bgr = np.full((48, 48, 3), 40, dtype=np.uint8)
+        page_msk = np.zeros((48, 48), dtype=np.uint8)
+        page_msk[12:36, 12:36] = 255
+        out_batch = inp.inpaint_rois_batch(page_bgr, page_msk, [(12, 12, 36, 36)], context_pad=8)
+        assert out_batch.shape == (48, 48, 3)
+        assert inp.use_bf16 is False
+        assert bf16_calls == [True, False]
+
+        seg = cleaner_mod.ComicTextStrokeSegmenter(allow_download=False)
+        seg.device = torch.device("cuda")
+        seg._lazy_init = lambda *a, **kw: None
+        seg.backend_name = "yolo_text_seg"
+        seg._has_pretrained_weights = True
+        half_seen: list[bool] = []
+
+        class _FakeYoloSeg:
+            def predict(self, **kwargs):
+                half_seen.append(bool(kwargs.get("half")))
+                if kwargs.get("half"):
+                    raise RuntimeError("half unsupported in mock")
+                return []
+
+        seg._yolo_model = _FakeYoloSeg()
+        seg_out = seg.predict_page_stroke_mask(np.zeros((64, 64, 3), dtype=np.uint8))
+        assert seg_out is not None and seg_out.shape == (64, 64)
+        assert half_seen == [True, False]
+
+    bat_txt = (REPO_ROOT / "start_server.bat").read_text(encoding="ascii")
+    assert "OLLAMA_FLASH_ATTENTION=1" in bat_txt
+    assert "OLLAMA_KV_CACHE_TYPE=q8_0" in bat_txt
+
+
+def test_hallucination_free_manga_ocr_recognize_batch_with_beams():
+    import numpy as np
+    from PIL import Image, ImageDraw
+
+    ocr_mod = _load_real_module("ocr_engine")
+    torch = ocr_mod.torch
+    with patch.dict(sys.modules, {"torch": torch}):
+        hf = object.__new__(ocr_mod.HallucinationFreeMangaOCR)
+        hf.device = "cpu"
+        hf.eos_token_id = 3
+        hf.pad_token_id = 0
+        hf.min_seq_confidence = 0.25
+        hf.max_spatial_entropy = 0.99
+        hf.min_peak_spatial_attn = 0.01
+        hf.max_char_to_ink_ratio = 8.0
+        hf._post_process = hf._post_process_text
+        hf.post_process = hf._post_process_text
+
+        generate_batch_sizes: list[int] = []
+
+        class _FakeProc:
+            def __call__(self, imgs, return_tensors="pt"):
+                n = len(imgs) if isinstance(imgs, list) else 1
+                return types.SimpleNamespace(pixel_values=torch.zeros((n, 3, 224, 224), dtype=torch.float32))
+
+        class _FakeTok:
+            def decode(self, ids, skip_special_tokens=True):
+                return "テスト"
+
+        class _FakeModel:
+            def generate(self, pixel_values, max_length=300, output_scores=True, output_attentions=True, return_dict_in_generate=True):
+                bs = int(pixel_values.shape[0])
+                generate_batch_sizes.append(bs)
+                # bs=2, num_beams=4 -> 8 beam rows; item 1 uses winning beam row 5 on step 1!
+                sequences = torch.tensor(
+                    [[2, 10, 11, 12, 3], [2, 13, 3, 0, 0]],
+                    dtype=torch.long,
+                )[:bs]
+                beam_indices = torch.tensor(
+                    [[0, 0, 0, 0], [4, 5, 4, 4]],
+                    dtype=torch.long,
+                )[:bs]
+                scores_list = []
+                toks_per_step = [(10, 13), (11, 3), (12, 0), (3, 0)]
+                attn_rows = [(0, 4), (0, 5), (0, 4), (0, 4)]
+                for s_idx in range(4):
+                    sc = torch.full((bs * 4, 32), -20.0, dtype=torch.float32)
+                    sc[attn_rows[s_idx][0], toks_per_step[s_idx][0]] = 8.0
+                    if bs > 1:
+                        sc[attn_rows[s_idx][1], toks_per_step[s_idx][1]] = 8.0
+                    scores_list.append(sc)
+                cross_attns = []
+                for s_idx in range(4):
+                    att = torch.full((bs * 4, 12, 1, 197), 1e-4, dtype=torch.float32)
+                    att[:, :, :, 10] = 0.95
+                    cross_attns.append((att,))
+                return types.SimpleNamespace(
+                    sequences=sequences,
+                    beam_indices=beam_indices,
+                    scores=tuple(scores_list),
+                    cross_attentions=tuple(cross_attns),
+                )
+
+        hf.processor = _FakeProc()
+        hf.tokenizer = _FakeTok()
+        hf.model = _FakeModel()
+
+        blank_img = Image.new("RGB", (64, 64), (255, 255, 255))
+        crops = [blank_img]
+        for _ in range(2):
+            im = Image.new("RGB", (96, 96), (255, 255, 255))
+            dr = ImageDraw.Draw(im)
+            for dx in (20, 42, 66):
+                dr.rectangle([dx, 16, dx + 8, 80], fill=(10, 10, 10))
+            crops.append(im)
+
+        recs = hf.recognize_batch(crops, batch_size=8)
+        assert len(recs) == 3
+        assert generate_batch_sizes == [2]
+        assert (not recs[0].is_valid) and recs[0].reject_reason.startswith("pre_ocr:")
+        assert recs[1].is_valid and recs[2].is_valid and recs[1].text == "テスト" and recs[2].text == "テスト"
+
+        fake_eng = object.__new__(ocr_mod.MangaOCREngine)
+        fake_eng.device = "cuda"
+        yolo_half_calls: list[bool] = []
+
+        class _FakeYoloDet:
+            def predict(self, **kwargs):
+                yolo_half_calls.append(bool(kwargs.get("half")))
+                if kwargs.get("half"):
+                    raise RuntimeError("YOLO FP16 fail")
+                return ["ok"]
+
+        assert fake_eng._predict_yolo_cuda_fp16(_FakeYoloDet(), source="dummy") == ["ok"]
+        assert yolo_half_calls == [True, False]
+
+
 if __name__ == "__main__":
     test_funcs = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in test_funcs:

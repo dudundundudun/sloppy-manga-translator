@@ -34,9 +34,11 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
+import base64
 import gc
 import hashlib
 import importlib.util
+import io
 import json
 import logging
 import os
@@ -44,7 +46,13 @@ import time
 from pathlib import Path
 import threading
 from typing import Any, Callable, List, Optional, Tuple
+from urllib.parse import urlparse
 import warnings
+
+try:
+    import httpx
+except ImportError:
+    httpx = None  # type: ignore[assignment]
 
 warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="triton.*")
@@ -389,9 +397,16 @@ class StandaloneLaMaInpainter:
             else:
                 self.device = torch.device(dev_str)
 
-        # Плавный фоллбэк на базовый big-lama, если anime-manga-big-lama недоступен
+        # Плавный фоллбэк на базовый big-lama или anime-manga-big-lama, если выбранный чекпойнт недоступен или не TorchScript .pt
         try:
             self.model_path = ensure_lama_weights(model_variant=model_variant, models_dir=resolved_models_dir)
+            if self.model_path.suffix.lower() != ".pt":
+                logger.warning(
+                    "Веса '%s' (%s) не являются TorchScript .pt для torch.jit.load — переключаюсь на 'anime-manga-big-lama.pt'.",
+                    model_variant,
+                    self.model_path.name,
+                )
+                self.model_path = ensure_lama_weights(model_variant="anime-manga-big-lama", models_dir=resolved_models_dir)
         except Exception as e:
             if model_variant != "big-lama":
                 logger.warning("Переключение на базовый 'big-lama' из-за ошибки: %s", e)
@@ -404,13 +419,39 @@ class StandaloneLaMaInpainter:
         self.model = torch.jit.load(str(self.model_path), map_location="cpu").to(self.device)
         self.model.eval()
 
-        # Опциональный BF16 для ускорения на архитектурах NVIDIA Ampere+ / Blackwell
+        if self.device.type == "cuda":
+            try:
+                torch.backends.cuda.matmul.allow_tf32 = True
+                torch.backends.cudnn.allow_tf32 = True
+                torch.backends.cudnn.benchmark = True
+            except Exception as exc:
+                logger.debug("Не удалось включить TF32/cuDNN benchmark для LaMa: %s", exc)
+
+        # Опциональный BF16 (на TorchScript FFT LaMa может вызывать ошибку; при сбое сработает авто-откат на TF32/FP32)
         self.use_bf16 = (
             use_bfloat16
             and self.device.type == "cuda"
             and hasattr(torch.cuda, "is_bf16_supported")
             and torch.cuda.is_bf16_supported()
         )
+
+    def _run_model_safe(self, img_tensor: Any, mask_tensor: Any) -> Any:
+        """Запускает модель LaMa с авто-откатом на TF32/FP32, если TorchScript FFT не поддерживает BFloat16."""
+        if self.use_bf16:
+            try:
+                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
+                    return self.model(img_tensor, mask_tensor)
+            except RuntimeError as bf_exc:
+                err_low = str(bf_exc).lower()
+                if "bfloat16" in err_low or "fft" in err_low:
+                    logger.warning(
+                        "TorchScript LaMa не поддерживает BFloat16 (%s) — переключаюсь на TF32/FP32.",
+                        bf_exc,
+                    )
+                    self.use_bf16 = False
+                else:
+                    raise
+        return self.model(img_tensor, mask_tensor)
 
     @_torch_inference_mode()
     def inpaint_rgb_crop(self, img_rgb: np.ndarray, mask_gray: np.ndarray) -> np.ndarray:
@@ -435,14 +476,14 @@ class StandaloneLaMaInpainter:
             mode="symmetric",
         )
 
-        img_tensor = torch.from_numpy(pad_img.transpose(2, 0, 1)).float().div_(255.0).unsqueeze(0).to(self.device)
-        mask_tensor = torch.from_numpy((pad_mask > 0).astype(np.float32)).unsqueeze(0).unsqueeze(0).to(self.device)
+        img_tensor = torch.from_numpy(pad_img.transpose(2, 0, 1)).float().div_(255.0).unsqueeze(0).to(
+            self.device, non_blocking=True
+        )
+        mask_tensor = torch.from_numpy((pad_mask > 0).astype(np.float32)).unsqueeze(0).unsqueeze(0).to(
+            self.device, non_blocking=True
+        )
 
-        if self.use_bf16:
-            with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                pred = self.model(img_tensor, mask_tensor)
-        else:
-            pred = self.model(img_tensor, mask_tensor)
+        pred = self._run_model_safe(img_tensor, mask_tensor)
 
         res_rgb = (
             pred[0, :, :orig_h, :orig_w]
@@ -512,14 +553,10 @@ class StandaloneLaMaInpainter:
                 img_batch[idx] = pad_rgb.transpose(2, 0, 1).astype(np.float32) / 255.0
                 mask_batch[idx, 0] = (pad_msk > 0).astype(np.float32)
 
-            img_t = torch.from_numpy(img_batch).to(self.device)
-            mask_t = torch.from_numpy(mask_batch).to(self.device)
+            img_t = torch.from_numpy(img_batch).to(self.device, non_blocking=True)
+            mask_t = torch.from_numpy(mask_batch).to(self.device, non_blocking=True)
 
-            if self.use_bf16:
-                with torch.amp.autocast("cuda", dtype=torch.bfloat16):
-                    pred_t = self.model(img_t, mask_t)
-            else:
-                pred_t = self.model(img_t, mask_t)
+            pred_t = self._run_model_safe(img_t, mask_t)
 
             pred_np = pred_t.clamp_(0.0, 1.0).mul_(255.0).cpu().numpy().astype(np.uint8)
 
@@ -622,6 +659,9 @@ def hermite_wall_bridge(
     return np.round(pts).astype(np.int32)
 
 
+HF_YOLO_TEXT_SEG_REPO = "ogkalu/comic-text-segmenter-yolov8m"
+HF_YOLO_TEXT_SEG_FILENAME = "comic-text-segmenter.pt"
+HF_YOLO_TEXT_SEG_SUBDIR = "comic-text-segmenter"
 HF_SAM_TS_L_REPO = "mayocream/koharu-text-sam-ts-l"
 HF_SAM_TS_L_SUBDIR = "koharu-text-sam-ts-l"
 HF_CTD_ONNX_REPO = "mayocream/comic-text-detector"
@@ -644,10 +684,9 @@ def _is_invalid_translation_text(text: Any) -> bool:
 
 class ComicTextStrokeSegmenter:
     """
-    Нейросетевой попиксельный сегментатор штрихов текста и их обводки (Этап 2 рефакторинга
-    по архитектуре meangrinch/MangaTranslator):
-    1. Основной бэкенд: `mayocream/koharu-text-sam-ts-l` (Koharu Text SAM-TS-L, ONNX/PyTorch).
-    2. Легковесный фоллбэк: оригинальный ONNX `comictextdetector.pt.onnx` через `onnxruntime.InferenceSession`.
+    Нейросетевой попиксельный сегментатор штрихов текста и их обводки:
+    1. Нативный PyTorch/Ultralytics CUDA бэкенд: `ogkalu/comic-text-segmenter-yolov8m` (работает без onnxruntime на Python 3.14).
+    2. ONNX-резерв (если установлен `onnxruntime`): `mayocream/koharu-text-sam-ts-l` / `comictextdetector.pt.onnx`.
     3. Офлайн-фоллбэк: мультимасштабный BlackHat/TopHat с подавлением длинных линий лайнарта.
     """
 
@@ -655,11 +694,14 @@ class ComicTextStrokeSegmenter:
         self,
         models_dir: Union[str, Path] = "models",
         device: Optional[str] = None,
+        allow_download: bool = True,
     ) -> None:
         self.models_dir = Path(models_dir)
         has_cuda = bool(torch is not None and torch.cuda.is_available())
         self.device = torch.device(device or ("cuda" if has_cuda else "cpu")) if torch is not None else None
+        self.allow_download: bool = bool(allow_download)
         self.model: Optional[Any] = None
+        self._yolo_model: Optional[Any] = None
         self.backend_name: str = "uninitialized"
         self._input_name: str = ""
         self._input_size: Tuple[int, int] = (512, 512)
@@ -667,6 +709,40 @@ class ComicTextStrokeSegmenter:
         self._init_done: bool = False
         self._download_attempted: bool = False
         self._init_lock = threading.Lock()
+        self._page_mask_cache: OrderedDict[str, np.ndarray] = OrderedDict()
+
+    @staticmethod
+    def _fast_page_fingerprint(image_rgb: np.ndarray) -> str:
+        h, w = image_rgb.shape[:2]
+        stride_y = max(1, h // 48)
+        stride_x = max(1, w // 48)
+        sample = np.ascontiguousarray(image_rgb[::stride_y, ::stride_x])
+        h_digest = hashlib.blake2b(sample.tobytes(), digest_size=12).hexdigest()
+        return f"{h}x{w}:{h_digest}"
+
+    def _find_or_download_yolo_seg(self, allow_download: bool) -> Optional[Path]:
+        seg_dir = self.models_dir / HF_YOLO_TEXT_SEG_SUBDIR
+        local_pt = seg_dir / HF_YOLO_TEXT_SEG_FILENAME
+        if local_pt.is_file() and local_pt.stat().st_size > 1024 * 1024:
+            return local_pt
+        if not allow_download or self._download_attempted:
+            return None
+        self._download_attempted = True
+        try:
+            from huggingface_hub import hf_hub_download  # type: ignore
+
+            seg_dir.mkdir(parents=True, exist_ok=True)
+            dl = hf_hub_download(
+                repo_id=HF_YOLO_TEXT_SEG_REPO,
+                filename=HF_YOLO_TEXT_SEG_FILENAME,
+                local_dir=str(seg_dir),
+            )
+            dl_p = Path(dl)
+            if dl_p.is_file() and dl_p.stat().st_size > 1024 * 1024:
+                return dl_p
+        except Exception as exc:
+            logger.debug("YOLO text-segmenter недоступен онлайн (%s), пробую резервный сегментатор.", exc)
+        return None
 
     def _create_onnx_session(self, onnx_path: Path) -> Optional[Any]:
         try:
@@ -703,7 +779,6 @@ class ComicTextStrokeSegmenter:
         try:
             from huggingface_hub import hf_hub_download, list_repo_files  # type: ignore
 
-            # 1. Пробуем скачать ONNX-версию Koharu Text SAM-TS-L
             try:
                 repo_files = list_repo_files(HF_SAM_TS_L_REPO)
                 onnx_files = [f for f in repo_files if f.lower().endswith(".onnx")]
@@ -720,7 +795,6 @@ class ComicTextStrokeSegmenter:
             except Exception as sam_exc:
                 logger.debug("SAM-TS-L ONNX недоступен напрямую (%s), пробую ONNX comic-text-detector.", sam_exc)
 
-            # 2. Фоллбэк на оригинальный comictextdetector.pt.onnx
             try:
                 ctd_dir.mkdir(parents=True, exist_ok=True)
                 dl_ctd = hf_hub_download(
@@ -739,23 +813,43 @@ class ComicTextStrokeSegmenter:
         return None, "morph_fallback"
 
     def _lazy_init(self, allow_download: bool = True) -> None:
-        if self._init_done and (self.model is not None or not allow_download or self._download_attempted):
+        eff_allow_dl = bool(allow_download and self.allow_download)
+        if self._init_done and (self.model is not None or not eff_allow_dl or self._download_attempted):
             return
         with self._init_lock:
-            if self._init_done and (self.model is not None or not allow_download or self._download_attempted):
+            eff_allow_dl = bool(allow_download and self.allow_download)
+            if self._init_done and (self.model is not None or not eff_allow_dl or self._download_attempted):
                 return
             self._init_done = True
+
+            # 1. Нативный PyTorch/Ultralytics сегментатор текста (без onnxruntime!)
+            if torch is not None and importlib.util.find_spec("ultralytics") is not None:
+                try:
+                    yolo_pt = self._find_or_download_yolo_seg(allow_download=eff_allow_dl)
+                    if yolo_pt is not None:
+                        from ultralytics import YOLO  # type: ignore
+
+                        self._yolo_model = YOLO(str(yolo_pt))
+                        self.model = self._yolo_model
+                        self.backend_name = "yolo_text_seg"
+                        self._has_pretrained_weights = True
+                        logger.info("ComicTextStrokeSegmenter инициализирован (PyTorch CUDA/YOLO-seg): %s", yolo_pt.name)
+                        return
+                except Exception as y_exc:
+                    logger.debug("Ошибка инициализации YOLO text-segmenter (%s), пробую резерв.", y_exc)
+
+            # 2. Резервный ONNX-сегментатор (если установлен onnxruntime)
             if importlib.util.find_spec("onnxruntime") is None:
                 self._download_attempted = True
                 self.model = None
                 self.backend_name = "morph_fallback"
                 self._has_pretrained_weights = False
-                logger.debug("ComicTextStrokeSegmenter: onnxruntime не установлен, используется морфологический режим.")
+                logger.debug("ComicTextStrokeSegmenter: используется мультимасштабный морфологический режим.")
                 return
-            if allow_download:
+            if eff_allow_dl:
                 self._download_attempted = True
             try:
-                onnx_path, bname = self._find_or_download_onnx(allow_download=allow_download)
+                onnx_path, bname = self._find_or_download_onnx(allow_download=eff_allow_dl)
                 if onnx_path is not None:
                     sess = self._create_onnx_session(onnx_path)
                     if sess is not None:
@@ -770,8 +864,67 @@ class ComicTextStrokeSegmenter:
             self.backend_name = "morph_fallback"
             self._has_pretrained_weights = False
 
+    @_torch_inference_mode()
+    def predict_page_stroke_mask(self, image_rgb: np.ndarray) -> Optional[np.ndarray]:
+        """Строит полностраничную нейросетевую карту масок текста через PyTorch YOLO-seg с LRU-кэшем (1 вызов на страницу)."""
+        if image_rgb is None or image_rgb.size == 0:
+            return None
+        self._lazy_init(allow_download=self.allow_download)
+        if self.backend_name != "yolo_text_seg" or self._yolo_model is None:
+            return None
+
+        fp = self._fast_page_fingerprint(image_rgb)
+        if fp in self._page_mask_cache:
+            self._page_mask_cache.move_to_end(fp)
+            return self._page_mask_cache[fp]
+
+        H, W = image_rgb.shape[:2]
+        try:
+            src_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR) if image_rgb.ndim == 3 else image_rgb
+            dev_arg: Any = 0 if (self.device is not None and getattr(self.device, "type", "cpu") == "cuda") else "cpu"
+            use_half = dev_arg == 0
+            predict_kwargs: dict[str, Any] = {
+                "source": src_bgr,
+                "imgsz": 1024,
+                "conf": 0.18,
+                "iou": 0.45,
+                "retina_masks": True,
+                "verbose": False,
+                "device": dev_arg,
+                "half": use_half,
+            }
+            try:
+                res = self._yolo_model.predict(**predict_kwargs)
+            except Exception as half_exc:
+                if not use_half:
+                    raise
+                logger.debug("Сегментатор текста не принял half=True (%s), повторяю в FP32.", half_exc)
+                predict_kwargs["half"] = False
+                res = self._yolo_model.predict(**predict_kwargs)
+            mask_u8 = np.zeros((H, W), dtype=np.uint8)
+            if res and len(res) > 0:
+                r0 = res[0]
+                masks_obj = getattr(r0, "masks", None)
+                m_data = getattr(masks_obj, "data", None) if masks_obj is not None else None
+                if m_data is not None and len(m_data) > 0:
+                    if hasattr(m_data, "amax"):
+                        merged = m_data.amax(dim=0).clamp(0.0, 1.0).cpu().numpy()
+                    else:
+                        merged = np.clip(np.max(np.asarray(m_data, dtype=np.float32), axis=0), 0.0, 1.0)
+                    if merged.shape[:2] != (H, W):
+                        merged = cv2.resize(merged.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
+                    mask_u8 = np.clip(merged * 255.0, 0.0, 255.0).round().astype(np.uint8)
+        except Exception as exc:
+            logger.debug("Ошибка полностраничной нейросетевой сегментации текста: %s", exc)
+            return None
+
+        self._page_mask_cache[fp] = mask_u8
+        while len(self._page_mask_cache) > 4:
+            self._page_mask_cache.popitem(last=False)
+        return mask_u8
+
     def _run_onnx_mask(self, roi_rgb: np.ndarray) -> Optional[np.ndarray]:
-        if self.model is None or not self._has_pretrained_weights:
+        if self.model is None or self.backend_name == "yolo_text_seg" or not self._has_pretrained_weights:
             return None
         H, W = roi_rgb.shape[:2]
         in_h, in_w = self._input_size
@@ -802,13 +955,15 @@ class ComicTextStrokeSegmenter:
         self,
         roi_rgb: np.ndarray,
         text_bbox_rel: Optional[Tuple[int, int, int, int]] = None,
+        page_neural_crop: Optional[np.ndarray] = None,
     ) -> np.ndarray:
         """
         Возвращает попиксельную карту вероятностей штрихов `neural_stroke_mask`: uint8 [0..255] размера (H, W).
         """
         if roi_rgb is None or roi_rgb.size == 0:
             return np.zeros((1, 1), dtype=np.uint8)
-        self._lazy_init(allow_download=True)
+        if page_neural_crop is None:
+            self._lazy_init(allow_download=self.allow_download)
 
         H, W = roi_rgb.shape[:2]
         gray = cv2.cvtColor(roi_rgb, cv2.COLOR_RGB2GRAY) if roi_rgb.ndim == 3 else roi_rgb
@@ -844,7 +999,10 @@ class ComicTextStrokeSegmenter:
         p98 = max(25.0, float(np.percentile(ref_energy if ref_energy.size > 0 else stroke_energy, 98)))
         prob_morph = np.clip((stroke_energy - 10.0) / (p98 - 10.0 + 1e-5), 0.0, 1.0)
 
-        if self.model is not None and self._has_pretrained_weights:
+        if page_neural_crop is not None and page_neural_crop.shape[:2] == (H, W):
+            nn_prob = np.clip(page_neural_crop.astype(np.float32) / 255.0, 0.0, 1.0)
+            prob_morph = np.clip(0.78 * nn_prob + 0.22 * prob_morph, 0.0, 1.0)
+        elif self.model is not None and self.backend_name != "yolo_text_seg" and self._has_pretrained_weights:
             try:
                 nn_prob = self._run_onnx_mask(roi_rgb)
                 if nn_prob is not None:
@@ -2998,6 +3156,7 @@ class BubbleCleaner:
         self.stroke_segmenter = ComicTextStrokeSegmenter(
             models_dir=self.models_dir,
             device=self.device,
+            allow_download=bool(use_lama),
         )
         self.sota_cleaner = SotaMangaCleaner(
             config=self.cleaner_cfg,
@@ -3081,10 +3240,19 @@ class BubbleCleaner:
             },
             {
                 "id": "ctd_unet",
-                "title": "✒️ Попиксельный сегментатор штрихов Comic-Text-Detector (unet.safetensors)",
+                "title": "✒️ Нейросегментатор штрихов текста (comic-text-segmenter.pt)",
                 "role": "inpaint",
-                "path": self.models_dir / "comic-text-detector" / "unet.safetensors",
-                "loaded_in_vram": bool(self.stroke_segmenter is not None and getattr(self.stroke_segmenter, "model", None) is not None),
+                "path": (
+                    self.models_dir / HF_YOLO_TEXT_SEG_SUBDIR / HF_YOLO_TEXT_SEG_FILENAME
+                    if (self.models_dir / HF_YOLO_TEXT_SEG_SUBDIR / HF_YOLO_TEXT_SEG_FILENAME).is_file()
+                    or not (self.models_dir / "comic-text-detector" / "unet.safetensors").is_file()
+                    else self.models_dir / "comic-text-detector" / "unet.safetensors"
+                ),
+                "loaded_in_vram": bool(
+                    self.stroke_segmenter is not None
+                    and getattr(self.stroke_segmenter, "model", None) is not None
+                    and getattr(self.stroke_segmenter, "_has_pretrained_weights", False)
+                ),
                 "can_redownload": True,
             },
         ]
@@ -3111,29 +3279,37 @@ class BubbleCleaner:
 
     def delete_local_model_weights(self, model_key: str) -> dict[str, Any]:
         key = (model_key or "").strip().lower()
-        target_path: Path | None = None
+        target_paths: list[Path] = []
         if key == "anime_lama":
             if getattr(self, "active_lama_variant", "") == "anime-manga-big-lama":
                 self.lama_model = None
-            target_path = self.models_dir / "anime-manga-big-lama.pt"
+            target_paths.append(self.models_dir / "anime-manga-big-lama.pt")
         elif key == "big_lama":
             if getattr(self, "active_lama_variant", "") == "big-lama":
                 self.lama_model = None
-            target_path = self.models_dir / "big-lama.pt"
+            target_paths.append(self.models_dir / "big-lama.pt")
         elif key == "ctd_unet":
             if self.stroke_segmenter is not None:
                 self.stroke_segmenter.model = None
+                self.stroke_segmenter._yolo_model = None
+                self.stroke_segmenter.backend_name = "uninitialized"
+                self.stroke_segmenter._init_done = False
                 self.stroke_segmenter._has_pretrained_weights = False
-            target_path = self.models_dir / "comic-text-detector" / "unet.safetensors"
+                self.stroke_segmenter._page_mask_cache.clear()
+            target_paths.extend([
+                self.models_dir / HF_YOLO_TEXT_SEG_SUBDIR / HF_YOLO_TEXT_SEG_FILENAME,
+                self.models_dir / "comic-text-detector" / "unet.safetensors",
+            ])
         else:
             return {"ok": False, "error": f"Неизвестный ключ модели очистки: {model_key}"}
 
         freed_bytes = 0
         removed: list[str] = []
-        if target_path is not None and target_path.exists():
-            freed_bytes = target_path.stat().st_size
-            target_path.unlink(missing_ok=True)
-            removed.append(str(target_path))
+        for target_path in target_paths:
+            if target_path.exists():
+                freed_bytes += target_path.stat().st_size
+                target_path.unlink(missing_ok=True)
+                removed.append(str(target_path))
 
         if torch is not None and torch.cuda.is_available():
             try:
@@ -3162,6 +3338,10 @@ class BubbleCleaner:
                             and float(np.median(unmasked)) >= 225.0
                         )
                         if not is_flat_white_bg:
+                            if float(np.std(unmasked)) >= 24.0:
+                                diff_out = self._inpaint_with_flux_klein_4b(img_rgb, mask_u8)
+                                if diff_out is not None:
+                                    return diff_out
                             up_w = max(16, int(round(cw * 1.5)))
                             up_h = max(16, int(round(ch * 1.5)))
                             up_rgb = cv2.resize(img_rgb, (up_w, up_h), interpolation=cv2.INTER_LANCZOS4)
@@ -3643,9 +3823,10 @@ class BubbleCleaner:
         crop_mask: np.ndarray,
     ) -> Optional[np.ndarray]:
         """
-        Опциональный интерфейс подключения диффузионного бэкенда `FLUX.2 Klein 4B`
-        (через `sd.cpp` / `SDNQ`) для режима `ultra_deep_redraw` на RTX 5070 Ti 16 ГБ.
-        Если бэкенд не подключен, возвращает None (автоматический откат на LaMa Manga).
+        Опциональный интерфейс локального диффузионного инпейнтинга (`FLUX.2 Klein 4B` / SD Forge / A1111 WebUI):
+        1. Кастомный Python-хук `self.flux_klein_inpaint_fn(crop_rgb, crop_mask)`.
+        2. Локальный WebUI/Forge API по `MIKO_DIFFUSION_INPAINT_URL` (строго loopback `127.0.0.1`/`localhost`).
+        При отсутствии или ошибке возвращает None (мгновенный откат на Anime-Manga LaMa).
         """
         backend_fn = getattr(self, "flux_klein_inpaint_fn", None)
         if callable(backend_fn):
@@ -3654,8 +3835,93 @@ class BubbleCleaner:
                 if isinstance(out, np.ndarray) and out.shape == crop_rgb.shape:
                     return out.astype(np.uint8)
             except Exception as exc:
-                logger.debug("FLUX.2 Klein 4B бэкенд вернул ошибку, откат на LaMa Manga: %s", exc)
+                logger.debug("Локальный диффузионный хук вернул ошибку, откат на LaMa Manga: %s", exc)
+
+        diff_url = os.getenv("MIKO_DIFFUSION_INPAINT_URL", "").strip().rstrip("/")
+        if not diff_url or httpx is None:
+            return None
+        try:
+            parsed = urlparse(diff_url)
+            host = (parsed.hostname or "").strip().lower().rstrip(".")
+            if parsed.scheme not in ("http", "https") or host not in ("127.0.0.1", "localhost", "::1"):
+                logger.warning("Отклонён небезопасный MIKO_DIFFUSION_INPAINT_URL '%s': разрешён только localhost.", diff_url)
+                return None
+
+            ch, cw = crop_rgb.shape[:2]
+            buf_img = io.BytesIO()
+            Image.fromarray(crop_rgb, mode="RGB").save(buf_img, format="PNG")
+            b64_img = base64.b64encode(buf_img.getvalue()).decode("ascii")
+
+            buf_msk = io.BytesIO()
+            Image.fromarray((crop_mask > 0).astype(np.uint8) * 255, mode="L").save(buf_msk, format="PNG")
+            b64_msk = base64.b64encode(buf_msk.getvalue()).decode("ascii")
+
+            payload = {
+                "init_images": [f"data:image/png;base64,{b64_img}"],
+                "mask": f"data:image/png;base64,{b64_msk}",
+                "prompt": "clean manga artwork continuation, monochrome ink and screentone lineart, no text, no speech",
+                "negative_prompt": "text, letters, kanji, speech bubble, watermark, blurry smudge",
+                "inpainting_fill": 1,
+                "inpaint_full_res": True,
+                "inpaint_full_res_padding": 32,
+                "denoising_strength": 0.62,
+                "steps": 18,
+                "width": max(64, _ceil_modulo(cw, 8)),
+                "height": max(64, _ceil_modulo(ch, 8)),
+                "restore_faces": False,
+            }
+            with httpx.Client(trust_env=False, timeout=25.0) as client:
+                resp = client.post(f"{diff_url}/sdapi/v1/img2img", json=payload)
+                resp.raise_for_status()
+                imgs = (resp.json() or {}).get("images") or []
+                if imgs and isinstance(imgs[0], str):
+                    raw_b64 = imgs[0].split(",", 1)[-1]
+                    dec_img = Image.open(io.BytesIO(base64.b64decode(raw_b64))).convert("RGB")
+                    if dec_img.size != (cw, ch):
+                        dec_img = dec_img.resize((cw, ch), Image.Resampling.LANCZOS)
+                    return np.array(dec_img, dtype=np.uint8)
+        except Exception as exc:
+            logger.debug("Локальный диффузионный API (%s) недоступен, откат на LaMa: %s", diff_url, exc)
         return None
+
+    @staticmethod
+    def _verify_and_polish_white_cavity(
+        out_rgb: np.ndarray,
+        cavity_mask: np.ndarray,
+        wall_mask: np.ndarray,
+        fill_color: np.ndarray,
+    ) -> np.ndarray:
+        """Пост-проверка полости белого баббла по PanelCleaner: зачищает остаточные точки фуриганы/букв и серый ореол JPEG."""
+        k5 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+        safe_inner = cv2.erode((cavity_mask > 0).astype(np.uint8) * 255, k5, iterations=1)
+        wall_guard = cv2.dilate((wall_mask > 0).astype(np.uint8) * 255, k5, iterations=1)
+        safe_inner[wall_guard > 0] = 0
+        inner_nz = int(np.count_nonzero(safe_inner))
+        if inner_nz < 32:
+            return out_rgb
+        out_gray = cv2.cvtColor(out_rgb, cv2.COLOR_RGB2GRAY) if out_rgb.ndim == 3 else out_rgb
+        specks = ((out_gray < 236) & (safe_inner > 0)).astype(np.uint8) * 255
+        if np.count_nonzero(specks) == 0:
+            return out_rgb
+        max_speck_area = max(24, int(round(0.12 * inner_nz)))
+        n_cc, lbls, st, _ = cv2.connectedComponentsWithStats(specks, connectivity=8)
+        polish_mask = np.zeros_like(specks)
+        k3_sq = np.ones((3, 3), dtype=np.uint8)
+        for lbl_i in range(1, n_cc):
+            area_i = int(st[lbl_i, cv2.CC_STAT_AREA])
+            if 1 <= area_i <= max_speck_area:
+                comp_u8 = (lbls == lbl_i).astype(np.uint8) * 255
+                if not np.any((wall_guard > 0) & (cv2.dilate(comp_u8, k3_sq) > 0)):
+                    polish_mask[lbls == lbl_i] = 255
+        if np.count_nonzero(polish_mask) == 0:
+            return out_rgb
+        k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+        polish_mask = cv2.bitwise_and(cv2.dilate(polish_mask, k3, iterations=1), safe_inner)
+        if np.count_nonzero(polish_mask) == 0:
+            return out_rgb
+        res = out_rgb.copy()
+        res[polish_mask > 0] = fill_color
+        return res
 
     @staticmethod
     def _get_clean_bbox(block: dict[str, Any]) -> list[int]:
@@ -3717,6 +3983,13 @@ class BubbleCleaner:
             cv2.MORPH_ELLIPSE,
             (free_dilate, free_dilate),
         )
+        page_neural_mask: Optional[np.ndarray] = None
+        if self.stroke_segmenter is not None and any(not self._is_block_skipped(b) for b in blocks):
+            try:
+                page_neural_mask = self.stroke_segmenter.predict_page_stroke_mask(image_rgb)
+            except Exception as seg_exc:
+                logger.debug("Пропуск полностраничной нейросегментации текста: %s", seg_exc)
+                page_neural_mask = None
 
         for block in blocks:
             if self._is_block_skipped(block):
@@ -3749,7 +4022,22 @@ class BubbleCleaner:
                         tx1, ty1, tx2, ty2 = [int(round(float(c))) for c in raw_tb[:4]]
                         if (tx2 - tx1) >= 8 and (ty2 - ty1) >= 8 and [tx1, ty1, tx2, ty2] != [x1, y1, x2, y2]:
                             has_valid_tb = True
-                            tb_box = [tx1, ty1, tx2, ty2]
+                            if not is_free_text:
+                                proc_s_f = HybridMangaCleaner.compute_processing_scale(img_h, img_w)
+                                exp_tb = HybridMangaCleaner.expand_box_for_furigana(
+                                    (tx1, ty1, tx2, ty2),
+                                    (img_h, img_w),
+                                    proc_s_f,
+                                    is_vertical=((ty2 - ty1) >= (tx2 - tx1) * 1.05 or bh >= bw * 1.05),
+                                )
+                                tb_box = [
+                                    max(x1, min(tx1, exp_tb[0])),
+                                    max(y1, min(ty1, exp_tb[1])),
+                                    min(x2, max(tx2, exp_tb[2])),
+                                    min(y2, max(ty2, exp_tb[3])),
+                                ]
+                            else:
+                                tb_box = [tx1, ty1, tx2, ty2]
                     except Exception as exc:
                         logger.debug("Ignored invalid text_bbox in build_text_mask: %s", exc)
 
@@ -3774,6 +4062,7 @@ class BubbleCleaner:
 
             roi_rgb = image_rgb[iy1:iy2, ix1:ix2]
             roi_gray = gray_full[iy1:iy2, ix1:ix2]
+            page_neural_crop = page_neural_mask[iy1:iy2, ix1:ix2] if page_neural_mask is not None else None
             rh, rw = roi_gray.shape[:2]
             if rh < 6 or rw < 6:
                 continue
@@ -3863,6 +4152,7 @@ class BubbleCleaner:
                         stroke_prob = self.stroke_segmenter.predict_stroke_mask(
                             roi_rgb,
                             text_bbox_rel=(cx1_r, cy1_r, cx2_r, cy2_r),
+                            page_neural_crop=page_neural_crop,
                         )
                         nn_txt = (stroke_prob >= 110).astype(np.uint8) * 255
                         text_in_poly = cv2.bitwise_and(cv2.bitwise_or(bin_txt, nn_txt), shrunk_poly)
@@ -4005,7 +4295,11 @@ class BubbleCleaner:
                         if has_valid_tb
                         else (cx1_r, cy1_r, cx2_r, cy2_r)
                     )
-                    neural_prob = self.stroke_segmenter.predict_stroke_mask(roi_rgb, text_bbox_rel=tb_rel)
+                    neural_prob = self.stroke_segmenter.predict_stroke_mask(
+                        roi_rgb,
+                        text_bbox_rel=tb_rel,
+                        page_neural_crop=page_neural_crop,
+                    )
                     if neural_prob.shape == dark_all.shape and np.any(neural_prob >= 95):
                         neural_support = cv2.dilate(
                             (neural_prob >= 65).astype(np.uint8) * 255,
@@ -4219,7 +4513,10 @@ class BubbleCleaner:
                     roi_gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU
                 )
             if self.stroke_segmenter is not None:
-                neural_free = self.stroke_segmenter.predict_stroke_mask(roi_rgb)
+                neural_free = self.stroke_segmenter.predict_stroke_mask(
+                    roi_rgb,
+                    page_neural_crop=page_neural_crop,
+                )
                 if neural_free.shape == binary.shape and np.any(neural_free >= 95):
                     binary = fuse_neural_stroke_and_pcleaner_mask(
                         roi_gray=roi_gray,
@@ -4351,6 +4648,7 @@ class BubbleCleaner:
         crop_mask_np: np.ndarray,
         is_free_text: bool = False,
         inner_box_rel: tuple[int, int, int, int] | None = None,
+        bubble_polygon_rel: Optional[list[list[int]]] = None,
     ) -> np.ndarray:
         """
         Двухзонный SOTA инпейнтинг кропа блока (Zero Bleed Guarantee + Smart Inpaint Router):
@@ -4408,6 +4706,23 @@ class BubbleCleaner:
                 wall_mask = ((crop_gray < max(150, int(p75_core - 55))) & (cavity_mask == 0)).astype(np.uint8) * 255
                 if is_dashed_inpaint and np.any(dash_wall_inpaint > 0):
                     wall_mask = cv2.bitwise_or(wall_mask, dash_wall_inpaint)
+                if bubble_polygon_rel and len(bubble_polygon_rel) >= 3:
+                    try:
+                        pts_arr = np.array(
+                            [[int(round(float(p[0]))), int(round(float(p[1])))] for p in bubble_polygon_rel],
+                            dtype=np.int32,
+                        )
+                        poly_full = np.zeros((ch, cw), dtype=np.uint8)
+                        cv2.fillPoly(poly_full, [pts_arr], 255)
+                        if np.count_nonzero(poly_full) >= 48:
+                            k_p3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                            poly_cav = cv2.erode(poly_full, k_p3, iterations=1)
+                            if np.count_nonzero(poly_cav) >= 32:
+                                poly_border = cv2.subtract(cv2.dilate(poly_full, k_p3, iterations=1), poly_cav)
+                                cavity_mask = cv2.bitwise_and(cavity_mask, poly_cav)
+                                wall_mask = cv2.bitwise_or(wall_mask, poly_border)
+                    except Exception as poly_bar_exc:
+                        logger.debug("Пропуск полигонального барьера в _inpaint_crop: %s", poly_bar_exc)
 
                 mask_inside = cv2.bitwise_and(crop_mask_np, cavity_mask)
                 safe_cav_h, _, _, is_pure_h = self.hybrid_cleaner.extract_closed_bubble_cavity(
@@ -4462,6 +4777,8 @@ class BubbleCleaner:
                             out = self.sota_cleaner._route_inside_inpaint(
                                 out, mask_inside, cavity_mask, min(sigma_edge, 6.0), fill_color
                             )
+                            if sigma_edge <= 12.0 and p50 >= 230.0:
+                                out = self._verify_and_polish_white_cavity(out, cavity_mask, wall_mask, fill_color)
                         else:
                             # Проблема №4: Гетерогенный фон баббла (плавный градиент Режима B, скринтон Режима C или лайнарт Режима D)
                             # Отказываемся от «слепой белой замазки» и решаем краевую задачу Лапласа-Дирихле (Delta I = 0) + LaMa
@@ -4696,12 +5013,13 @@ class BubbleCleaner:
                         180,
                         max(
                             pad,
+                            64,
                             int(round(96 * proc_s_ci)),
                             int(round(0.75 * max(bw_f, bh_f))),
                         ),
                     )
                 else:
-                    eff_pad = pad
+                    eff_pad = max(pad, 48)
                 cx1 = max(0, x1 - eff_pad)
                 cy1 = max(0, y1 - eff_pad)
                 cx2 = min(orig_w, x2 + eff_pad)
@@ -4815,7 +5133,7 @@ class BubbleCleaner:
                                 page_bgr=page_bgr_in,
                                 page_mask=dil_page_mask,
                                 roi_bboxes=textured_rois,
-                                context_pad=24,
+                                context_pad=80,
                             )
                             pre_batched_lama_rgb = cv2.cvtColor(batch_bgr_out, cv2.COLOR_BGR2RGB)
                             textured_rois_set = set(textured_rois)
@@ -4863,14 +5181,16 @@ class BubbleCleaner:
                             inpainted_crop = pre_batched_lama_rgb[cy1:cy2, cx1:cx2].copy()
                         else:
                             inpainted_crop = None
+                            poly_rel_c: Optional[list[list[int]]] = None
                             # Тракт А: если есть bubble_polygon и фон внутри однородный (std <= 10.0) — мгновенная заливка
                             raw_poly_b = None if is_free_text else block.get("bubble_polygon")
                             if isinstance(raw_poly_b, (list, tuple)) and len(raw_poly_b) >= 3:
                                 try:
-                                    poly_c = np.array(
-                                        [[int(round(float(pt[0]))) - cx1, int(round(float(pt[1]))) - cy1] for pt in raw_poly_b],
-                                        dtype=np.int32,
-                                    )
+                                    poly_rel_c = [
+                                        [int(round(float(pt[0]))) - cx1, int(round(float(pt[1]))) - cy1]
+                                        for pt in raw_poly_b
+                                    ]
+                                    poly_c = np.array(poly_rel_c, dtype=np.int32)
                                     pmask_c = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
                                     cv2.fillPoly(pmask_c, [poly_c], 255)
                                     bg_ring = (pmask_c > 0) & (crop_mask == 0)
@@ -4882,7 +5202,7 @@ class BubbleCleaner:
                                             inpainted_crop[crop_mask > 0] = med_col
                                 except Exception:
                                     inpainted_crop = None
-                            if inpainted_crop is None and getattr(self, "ultra_deep_redraw", False):
+                            if inpainted_crop is None and getattr(self, "ultra_deep_redraw", False) and is_free_text:
                                 inpainted_crop = self._inpaint_with_flux_klein_4b(crop_rgb, crop_mask)
                             if inpainted_crop is None:
                                 inpainted_crop = self._inpaint_crop(
@@ -4890,6 +5210,7 @@ class BubbleCleaner:
                                     crop_mask,
                                     is_free_text=is_free_text,
                                     inner_box_rel=(x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1),
+                                    bubble_polygon_rel=poly_rel_c,
                                 )
                         with self._cache_lock:
                             self._block_crop_cache[block_crop_key] = (

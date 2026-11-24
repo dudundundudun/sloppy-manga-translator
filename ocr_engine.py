@@ -48,7 +48,7 @@ import warnings
 from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Set, Tuple, Union
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union
 from urllib.parse import urlparse
 
 warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
@@ -439,28 +439,16 @@ class HallucinationFreeMangaOCR:
             return jaconv.h2z(text, ascii=True, digit=True)
         return text.translate(cls._HALF_TO_FULL_TRANS)
 
-    @_torch_inference_mode()
-    def recognize(
-        self,
-        img_or_crop: Union[np.ndarray, Image.Image],
-        max_length: int = 300,
-        gate_crop: Optional[Union[np.ndarray, Image.Image]] = None,
-    ) -> MangaOCRRecognition:
-        # Этап 1: Pre-OCR Stroke Gate
-        gate = pre_ocr_stroke_gate(gate_crop if gate_crop is not None else img_or_crop)
-        if not gate.passed:
-            return MangaOCRRecognition(
-                text="",
-                is_valid=False,
-                reject_reason=f"pre_ocr:{gate.reason}",
-                seq_confidence=0.0,
-                spatial_attn_entropy=1.0,
-                peak_spatial_attn=0.0,
-                char_to_ink_ratio=0.0,
-                num_tokens=0,
-                truncated=False,
-            )
+    @staticmethod
+    def _cuda_autocast_dtype() -> Any:
+        if torch is None:
+            return None
+        if torch.cuda.is_available() and hasattr(torch.cuda, "is_bf16_supported") and torch.cuda.is_bf16_supported():
+            return torch.bfloat16
+        return torch.float16
 
+    @staticmethod
+    def _to_rgb_pil(img_or_crop: Union[np.ndarray, Image.Image]) -> Image.Image:
         if isinstance(img_or_crop, np.ndarray):
             if img_or_crop.ndim == 3:
                 pil_img = Image.fromarray(img_or_crop, mode="RGB")
@@ -468,47 +456,55 @@ class HallucinationFreeMangaOCR:
                 pil_img = Image.fromarray(img_or_crop)
         else:
             pil_img = img_or_crop
+        return pil_img.convert("L").convert("RGB")
 
-        pil_img = pil_img.convert("L").convert("RGB")
-        pixel_values = self.processor(pil_img, return_tensors="pt").pixel_values.to(self.device)
-
-        # Этап 2: Генерация с извлечением логитов и кросс-внимания декодера (с FP16 ускорением на CUDA Tensor Cores)
-        if str(self.device).startswith("cuda"):
-            with torch.autocast(device_type="cuda", dtype=torch.float16):
-                gen_out = self.model.generate(
-                    pixel_values,
-                    max_length=max_length,
-                    output_scores=True,
-                    output_attentions=True,
-                    return_dict_in_generate=True,
-                )
-        else:
-            gen_out = self.model.generate(
-                pixel_values,
-                max_length=max_length,
-                output_scores=True,
-                output_attentions=True,
-                return_dict_in_generate=True,
-            )
-
-        seq_ids = gen_out.sequences[0]  # [1 + T], начинается с decoder_start_token_id (2)
-        gen_tokens = seq_ids[1:]        # Сгенерированные токены шагов 1..T
-        num_steps = len(gen_out.scores)
+    def _score_generation_item(
+        self,
+        gen_out: Any,
+        gate: Any,
+        max_length: int,
+        batch_idx: int = 0,
+        batch_size: int = 1,
+    ) -> MangaOCRRecognition:
+        seq_ids = gen_out.sequences[batch_idx]  # [1 + T], начинается с decoder_start_token_id (2)
+        gen_tokens = seq_ids[1:]                # Сгенерированные токены шагов 1..T
+        scores_tuple = getattr(gen_out, "scores", None) or ()
+        num_steps = len(scores_tuple)
         if num_steps == 0:
             return MangaOCRRecognition("", False, "empty_generation", 0.0, 1.0, 0.0, 0.0, 0, False)
 
-        # Проверка на усечение (достигнут лимит шагов без генерации EOS=3)
-        truncated = (num_steps >= max_length - 1) and (int(gen_tokens[-1].item()) != self.eos_token_id)
+        last_tok = int(gen_tokens[-1].item()) if len(gen_tokens) > 0 else self.eos_token_id
+        # В батче короткая реплика завершается EOS и дополняется PAD до длины самой длинной строки батча
+        truncated = (num_steps >= max_length - 1) and (last_tok not in (self.eos_token_id, self.pad_token_id))
 
-        # Вычисление геометрического среднего вероятностей выбранных токенов (Sequence Confidence)
+        beam_indices = getattr(gen_out, "beam_indices", None)
+        cross_attns = getattr(gen_out, "cross_attentions", None)
+        eff_bs = max(1, int(batch_size))
+
+        def _row_for_step(step_idx: int, step_batch_len: int) -> int:
+            if beam_indices is not None and batch_idx < len(beam_indices) and step_idx < len(beam_indices[batch_idx]):
+                try:
+                    bi_val = int(beam_indices[batch_idx][step_idx].item())
+                    if 0 <= bi_val < step_batch_len:
+                        return bi_val
+                except Exception:
+                    pass
+            beam_stride = max(1, int(step_batch_len // eff_bs))
+            return min(max(0, step_batch_len - 1), batch_idx * beam_stride)
+
         log_probs_list: List[float] = []
         valid_steps = 0
-        for step_idx, step_logits in enumerate(gen_out.scores):
+        for step_idx, step_logits in enumerate(scores_tuple):
+            if step_idx >= len(gen_tokens):
+                break
             token_id = int(gen_tokens[step_idx].item())
             if token_id == self.pad_token_id:
                 break
-            step_log_probs = F.log_softmax(step_logits[0], dim=-1)
-            log_probs_list.append(float(step_log_probs[token_id].item()))
+            row_idx = _row_for_step(step_idx, int(step_logits.shape[0]))
+            step_log_probs = F.log_softmax(step_logits[row_idx].float(), dim=-1)
+            lp_val = float(step_log_probs[token_id].item())
+            if math.isfinite(lp_val):
+                log_probs_list.append(lp_val)
             valid_steps += 1
             if token_id == self.eos_token_id:
                 break
@@ -516,32 +512,30 @@ class HallucinationFreeMangaOCR:
         mean_log_prob = float(np.mean(log_probs_list)) if log_probs_list else -100.0
         seq_confidence = float(np.exp(mean_log_prob))
 
-        # Вычисление пространственной энтропии Шеннона кросс-внимания (по 196 патчам ViT, исключая токен CLS=0)
-        # Используем топ-3 наиболее сфокусированных голов внимания (positional glyph-tracking heads),
-        # чтобы контекстные головы с равномерным вниманием не размывали пик на реальных предложениях
         spatial_entropies: List[float] = []
         peak_attentions: List[float] = []
         content_steps = max(1, valid_steps - 1)  # Исключаем финальный шаг EOS
 
-        if getattr(gen_out, "cross_attentions", None) is not None:
+        if cross_attns is not None:
             num_patches = 196
             log_num_patches = float(np.log(num_patches))
-            for step_idx in range(min(content_steps, len(gen_out.cross_attentions))):
-                step_cross = gen_out.cross_attentions[step_idx]
+            for step_idx in range(min(content_steps, len(cross_attns))):
+                step_cross = cross_attns[step_idx]
                 if not step_cross or step_cross[-1] is None:
                     continue
-                # Берем последний (2-й) слой BERT-декодера: размерность [batch=1, heads=12, q_len=1, kv_len=197]
-                last_layer_attn = step_cross[-1][0, :, -1, :]  # [12, 197]
-                spatial_heads = last_layer_attn[:, 1:]         # [12, 196] без CLS
+                attn_tensor = step_cross[-1]
+                row_idx = _row_for_step(step_idx, int(attn_tensor.shape[0]))
+                # Берем последний (2-й) слой BERT-декодера: [heads=12, q_len=1, kv_len=197] -> [12, 197]
+                last_layer_attn = attn_tensor[row_idx, :, -1, :]
+                spatial_heads = last_layer_attn[:, 1:]  # [12, 196] без CLS
                 if spatial_heads.numel() == 0:
                     continue
-                head_peaks = spatial_heads.max(dim=-1).values  # [12]
+                head_peaks = spatial_heads.max(dim=-1).values
                 k_top = min(3, int(spatial_heads.shape[0]))
                 top_idx = torch.topk(head_peaks, k=k_top).indices
-                spatial_attn = spatial_heads[top_idx].mean(dim=0)  # [196]
+                spatial_attn = spatial_heads[top_idx].float().mean(dim=0)
                 peak_attentions.append(float(spatial_attn.max().item()))
 
-                # Перенормировка распределения по пространственным патчам для расчета энтропии
                 spatial_prob = spatial_attn / (spatial_attn.sum() + 1e-8)
                 entropy = -torch.sum(spatial_prob * torch.log(spatial_prob + 1e-10)).item() / log_num_patches
                 spatial_entropies.append(float(entropy))
@@ -554,7 +548,6 @@ class HallucinationFreeMangaOCR:
         cjk_chars = len(self._CJK_CONTENT_RE.findall(clean_text))
         char_to_ink_ratio = float(cjk_chars) / float(max(1, gate.valid_cc_count))
 
-        # Этап 3: Пороговая проверка Post-OCR Gate
         if truncated:
             return MangaOCRRecognition(
                 "", False, "post_ocr:truncated_loop_300",
@@ -587,6 +580,149 @@ class HallucinationFreeMangaOCR:
             num_tokens=valid_steps,
             truncated=False,
         )
+
+    @_torch_inference_mode()
+    def recognize(
+        self,
+        img_or_crop: Union[np.ndarray, Image.Image],
+        max_length: int = 300,
+        gate_crop: Optional[Union[np.ndarray, Image.Image]] = None,
+    ) -> MangaOCRRecognition:
+        # Этап 1: Pre-OCR Stroke Gate
+        gate = pre_ocr_stroke_gate(gate_crop if gate_crop is not None else img_or_crop)
+        if not gate.passed:
+            return MangaOCRRecognition(
+                text="",
+                is_valid=False,
+                reject_reason=f"pre_ocr:{gate.reason}",
+                seq_confidence=0.0,
+                spatial_attn_entropy=1.0,
+                peak_spatial_attn=0.0,
+                char_to_ink_ratio=0.0,
+                num_tokens=0,
+                truncated=False,
+            )
+
+        pil_img = self._to_rgb_pil(img_or_crop)
+        pixel_values = self.processor(pil_img, return_tensors="pt").pixel_values.to(self.device, non_blocking=True)
+
+        # Этап 2: Генерация с извлечением логитов и кросс-внимания декодера (BF16/FP16 на CUDA Tensor Cores)
+        if str(self.device).startswith("cuda"):
+            ac_dtype = self._cuda_autocast_dtype()
+            with torch.autocast(device_type="cuda", dtype=ac_dtype):
+                gen_out = self.model.generate(
+                    pixel_values,
+                    max_length=max_length,
+                    output_scores=True,
+                    output_attentions=True,
+                    return_dict_in_generate=True,
+                )
+        else:
+            gen_out = self.model.generate(
+                pixel_values,
+                max_length=max_length,
+                output_scores=True,
+                output_attentions=True,
+                return_dict_in_generate=True,
+            )
+
+        return self._score_generation_item(gen_out, gate, max_length=max_length, batch_idx=0, batch_size=1)
+
+    @_torch_inference_mode()
+    def recognize_batch(
+        self,
+        imgs_or_crops: Sequence[Union[np.ndarray, Image.Image]],
+        max_length: int = 300,
+        gate_crops: Optional[Sequence[Optional[Union[np.ndarray, Image.Image]]]] = None,
+        batch_size: int = 12,
+    ) -> List[MangaOCRRecognition]:
+        """Пакетное распознавание на CUDA (BF16/FP16) с Pre-OCR Stroke Gate и Post-OCR контролем кросс-внимания."""
+        if not imgs_or_crops:
+            return []
+
+        n_items = len(imgs_or_crops)
+        results: List[Optional[MangaOCRRecognition]] = [None] * n_items
+        valid_entries: List[tuple[int, Image.Image, Any, Union[np.ndarray, Image.Image], Optional[Union[np.ndarray, Image.Image]]]] = []
+
+        for idx, img_item in enumerate(imgs_or_crops):
+            g_crop = gate_crops[idx] if (gate_crops is not None and idx < len(gate_crops)) else None
+            gate = pre_ocr_stroke_gate(g_crop if g_crop is not None else img_item)
+            if not gate.passed:
+                results[idx] = MangaOCRRecognition(
+                    text="",
+                    is_valid=False,
+                    reject_reason=f"pre_ocr:{gate.reason}",
+                    seq_confidence=0.0,
+                    spatial_attn_entropy=1.0,
+                    peak_spatial_attn=0.0,
+                    char_to_ink_ratio=0.0,
+                    num_tokens=0,
+                    truncated=False,
+                )
+                continue
+            valid_entries.append((idx, self._to_rgb_pil(img_item), gate, img_item, g_crop))
+
+        if not valid_entries:
+            return [r for r in results if r is not None]
+
+        if len(valid_entries) == 1:
+            orig_i, _, _, raw_item, g_crop = valid_entries[0]
+            results[orig_i] = self.recognize(raw_item, max_length=max_length, gate_crop=g_crop)
+            return [r for r in results if r is not None]
+
+        step_bs = max(1, int(batch_size))
+        use_cuda = str(self.device).startswith("cuda")
+        ac_dtype = self._cuda_autocast_dtype() if use_cuda else None
+
+        for b_start in range(0, len(valid_entries), step_bs):
+            sub_valid = valid_entries[b_start : b_start + step_bs]
+            if len(sub_valid) == 1:
+                orig_i, _, _, raw_item, g_crop = sub_valid[0]
+                results[orig_i] = self.recognize(raw_item, max_length=max_length, gate_crop=g_crop)
+                continue
+
+            pil_batch = [entry[1] for entry in sub_valid]
+            try:
+                pixel_values = self.processor(pil_batch, return_tensors="pt").pixel_values.to(
+                    self.device, non_blocking=True
+                )
+                if use_cuda and ac_dtype is not None:
+                    with torch.autocast(device_type="cuda", dtype=ac_dtype):
+                        gen_out = self.model.generate(
+                            pixel_values,
+                            max_length=max_length,
+                            output_scores=True,
+                            output_attentions=True,
+                            return_dict_in_generate=True,
+                        )
+                else:
+                    gen_out = self.model.generate(
+                        pixel_values,
+                        max_length=max_length,
+                        output_scores=True,
+                        output_attentions=True,
+                        return_dict_in_generate=True,
+                    )
+                for b_i, (orig_i, _, gate_i, _, _) in enumerate(sub_valid):
+                    results[orig_i] = self._score_generation_item(
+                        gen_out,
+                        gate_i,
+                        max_length=max_length,
+                        batch_idx=b_i,
+                        batch_size=len(sub_valid),
+                    )
+            except Exception as batch_exc:
+                logger.debug(
+                    "Пакетная генерация HallucinationFreeMangaOCR дала сбой (%s) — поштучный фоллбэк.",
+                    batch_exc,
+                )
+                for orig_i, _, _, raw_item, g_crop in sub_valid:
+                    results[orig_i] = self.recognize(raw_item, max_length=max_length, gate_crop=g_crop)
+
+        return [
+            r if r is not None else MangaOCRRecognition("", False, "empty_generation", 0.0, 1.0, 0.0, 0.0, 0, False)
+            for r in results
+        ]
 
     def __call__(
         self,
@@ -3279,6 +3415,7 @@ class MangaOCREngine:
         if self.device.startswith("cuda"):
             torch.backends.cuda.matmul.allow_tf32 = True
             torch.backends.cudnn.allow_tf32 = True
+            torch.backends.cudnn.benchmark = True
 
         self.conf_threshold = conf_threshold
         self.iou_threshold = iou_threshold
@@ -4347,6 +4484,20 @@ class MangaOCREngine:
             pts_list = pts_list[::step][:max_points]
         return pts_list if len(pts_list) >= 3 else None
 
+    def _predict_yolo_cuda_fp16(self, yolo_model: Any, **predict_kwargs: Any) -> Any:
+        """Запускает Ultralytics predict в FP16 на CUDA с автоматическим откатом в FP32 при несовместимости."""
+        use_half = str(getattr(self, "device", "cpu")).startswith("cuda")
+        kwargs = dict(predict_kwargs)
+        kwargs.setdefault("half", use_half)
+        try:
+            return yolo_model.predict(**kwargs)
+        except Exception as half_exc:
+            if not kwargs.get("half"):
+                raise
+            logger.debug("YOLO predict не принял half=True (%s), повторяю в FP32.", half_exc)
+            kwargs["half"] = False
+            return yolo_model.predict(**kwargs)
+
     def _run_yolo26_seg_on_slice(
         self,
         slice_np: np.ndarray,
@@ -4364,7 +4515,8 @@ class MangaOCREngine:
         try:
             slice_bgr = cv2.cvtColor(slice_np, cv2.COLOR_RGB2BGR) if slice_np.ndim == 3 else slice_np
             with self._inference_lock:
-                res_list = seg_det.predict(
+                res_list = self._predict_yolo_cuda_fp16(
+                    seg_det,
                     source=slice_bgr,
                     conf=max(0.22, active_conf),
                     iou=self.iou_threshold,
@@ -7760,7 +7912,8 @@ class MangaOCREngine:
                 # 1. Прогон YOLOv8m (speech bubble detector; Ultralytics expects BGR numpy arrays)
                 slice_bgr = cv2.cvtColor(slice_np, cv2.COLOR_RGB2BGR) if slice_np.ndim == 3 else slice_np
                 with self._inference_lock:
-                    results = self.detector.predict(
+                    results = self._predict_yolo_cuda_fp16(
+                        self.detector,
                         source=slice_bgr,
                         conf=active_conf,
                         iou=self.iou_threshold,
@@ -8517,9 +8670,13 @@ class MangaOCREngine:
             return []
         balanced_crops = [self._pad_to_balanced_aspect_for_vit(c, max_aspect_ratio=2.0) for c in crops_pil]
         if isinstance(self.ja_recognizer, HallucinationFreeMangaOCR):
+            recs = self.ja_recognizer.recognize_batch(
+                balanced_crops,
+                gate_crops=crops_pil,
+                batch_size=min(max(1, batch_size), 12),
+            )
             results_hf: list[str] = []
-            for raw_c, bal_c in zip(crops_pil, balanced_crops):
-                rec = self.ja_recognizer.recognize(bal_c, gate_crop=raw_c)
+            for rec in recs:
                 if not rec.is_valid:
                     logger.debug("HallucinationFreeMangaOCR отклонил кроп: %s", rec.reject_reason)
                     results_hf.append("")

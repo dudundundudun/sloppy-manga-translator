@@ -1389,6 +1389,24 @@ CLOUD_API_PRESETS: list[dict[str, str]] = [
         "url": "https://moduleapi.pro/v1",
         "default_model": "deepseek-v4-pro",
     },
+    {
+        "id": "openrouter_deepseek",
+        "name": "🌐 OpenRouter — DeepSeek Chat (18+ friendly, Prefix Cache)",
+        "url": "https://openrouter.ai/api/v1",
+        "default_model": "deepseek/deepseek-chat",
+    },
+    {
+        "id": "xai_grok_fast",
+        "name": "🚀 xAI Grok 4 Fast (2M контекст, минимальная цензура 18+)",
+        "url": "https://api.x.ai/v1",
+        "default_model": "grok-4-fast-non-reasoning",
+    },
+    {
+        "id": "openrouter_mistral",
+        "name": "🔓 OpenRouter — Mistral Small 3.2 24B (мягкие фильтры)",
+        "url": "https://openrouter.ai/api/v1",
+        "default_model": "mistralai/mistral-small-3.2-24b-instruct",
+    },
 ]
 
 TRANSLATION_PROFILES: dict[str, dict[str, Any]] = {
@@ -3040,6 +3058,8 @@ class OllamaTranslator:
         self.local_fallback_model_multilang: str = "auto"
         self.anti_censorship_prompt: bool = False
         self.anti_censorship_custom_prompt: str = ""
+        self.preflight_nsfw_split: bool = True
+        self.ultra_proofread_mode: str = "selective"
         self.default_model_stack: dict[str, str] = dict(DEFAULT_MODEL_STACK_TEMPLATE)
         self.saved_model_stacks: list[dict[str, Any]] = []
         self.auto_glossary = AutoGlossaryTracker()
@@ -3092,6 +3112,7 @@ class OllamaTranslator:
             "dict_interjections_used_count": 0,
             "sighs_skipped_count": 0,
             "untranslated_blocks_count": 0,
+            "preflight_local_routed_count": 0,
             "errors_count": 0,
             "total_llm_time_sec": 0.0,
         }
@@ -3163,6 +3184,7 @@ class OllamaTranslator:
             "dict_interjections_used_count": 0,
             "sighs_skipped_count": 0,
             "untranslated_blocks_count": 0,
+            "preflight_local_routed_count": 0,
             "errors_count": 0,
             "total_llm_time_sec": 0.0,
         }
@@ -3467,6 +3489,10 @@ class OllamaTranslator:
                     self.local_fallback_model_multilang = str(data["local_fallback_model_multilang"]).strip()
                 if "anti_censorship_prompt" in data and data["anti_censorship_prompt"] is not None:
                     self.anti_censorship_prompt = bool(data["anti_censorship_prompt"])
+                if "preflight_nsfw_split" in data and data["preflight_nsfw_split"] is not None:
+                    self.preflight_nsfw_split = bool(data["preflight_nsfw_split"])
+                if data.get("ultra_proofread_mode") in ("off", "selective", "full"):
+                    self.ultra_proofread_mode = str(data["ultra_proofread_mode"]).strip().lower()
                 if "anti_censorship_custom_prompt" in data and data["anti_censorship_custom_prompt"] is not None:
                     raw_ac_tmpl = str(data["anti_censorship_custom_prompt"]).strip()
                     if (
@@ -3537,6 +3563,8 @@ class OllamaTranslator:
         glossary: list[dict[str, str]] | None = None,
         anti_censorship_prompt: bool | None = None,
         anti_censorship_custom_prompt: str | None = None,
+        preflight_nsfw_split: bool | None = None,
+        ultra_proofread_mode: str | None = None,
         default_model_stack: dict[str, str] | None = None,
         saved_model_stacks: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
@@ -3630,6 +3658,14 @@ class OllamaTranslator:
         if anti_censorship_prompt is not None:
             self.anti_censorship_prompt = bool(anti_censorship_prompt)
 
+        if preflight_nsfw_split is not None:
+            self.preflight_nsfw_split = bool(preflight_nsfw_split)
+
+        if ultra_proofread_mode is not None:
+            norm_upm = str(ultra_proofread_mode).strip().lower()
+            if norm_upm in ("off", "selective", "full"):
+                self.ultra_proofread_mode = norm_upm
+
         if anti_censorship_custom_prompt is not None:
             self.anti_censorship_custom_prompt = str(anti_censorship_custom_prompt).strip()
 
@@ -3678,6 +3714,8 @@ class OllamaTranslator:
             "local_fallback_model_multilang": self.local_fallback_model_multilang,
             "anti_censorship_prompt": self.anti_censorship_prompt,
             "anti_censorship_custom_prompt": self.anti_censorship_custom_prompt,
+            "preflight_nsfw_split": self.preflight_nsfw_split,
+            "ultra_proofread_mode": self.ultra_proofread_mode,
             "auto_save_web_pages": self.auto_save_web_pages,
             "web_save_dir": self.web_save_dir,
             "text_filter_mode": self.text_filter_mode,
@@ -3721,6 +3759,9 @@ class OllamaTranslator:
             "Accept": "application/json",
             "User-Agent": "MikoMangaStudio/6.1.0",
         }
+        if "openrouter.ai" in (self.unsloth_url or "").lower():
+            headers["HTTP-Referer"] = "http://127.0.0.1:5000"
+            headers["X-Title"] = "Miko-chan Manga Studio"
         if include_auth and self.unsloth_api_key:
             headers["Authorization"] = f"Bearer {self.unsloth_api_key}"
         return headers
@@ -5746,16 +5787,18 @@ class OllamaTranslator:
                 f"{joined_g}"
             )
 
-        context_block_ru = glossary_block_ru
-        context_block_en = glossary_block_en
+        # Динамические секции (глоссарий пачки, предыдущий контекст, компактная геометрия баблов, auto_glossary, micro-batch guard)
+        # переносим в user_prompt, чтобы system_prompt оставался 100% статическим и попадал в Prefix Cache облака (DeepSeek/OpenRouter/Grok).
+        dyn_block_ru = glossary_block_ru
+        dyn_block_en = glossary_block_en
         if context_lines:
             joined_ctx = "\n".join(f"- {line}" for line in context_lines[-8:])
-            context_block_ru += (
-                "\nPrevious Context (do not translate, for reference only — сохраняй связность диалога, пол персонажей и имена, не включай эти строки в ответ):\n"
+            dyn_block_ru += (
+                "\nPrevious Context (for continuity/gender only, do NOT include in output):\n"
                 f"{joined_ctx}"
             )
-            context_block_en += (
-                "\nPrevious Context (do not translate, for reference only — keep dialogue continuity, pronouns, and character name spelling, do NOT include in output):\n"
+            dyn_block_en += (
+                "\nPrevious Context (for continuity/gender only, do NOT include in output):\n"
                 f"{joined_ctx}"
             )
 
@@ -5765,34 +5808,36 @@ class OllamaTranslator:
             g_hint_lines = [f"- #{k}: {tag}" for k, tag in list(geometry_hints_map.items())[:60]]
             if g_hint_lines:
                 joined_hints = "\n".join(g_hint_lines)
-                context_block_ru += (
-                    "\nГЕОМЕТРИЯ И РОЛИ БАБЛОВ (Typesetting & Speaker Diarization — учитывай тег говорящего [Bubble: dialogue, speaker=A/B] или [Box: narration/monologue] для сохранения единого рода персонажа, подбирай длину фразы под форму и лимит символов бабла, НЕ включай теги [Bubble: ...], [Box: ...] или [shape: ...] в текст перевода):\n"
+                dyn_block_ru += (
+                    "\nBUBBLE TAGS (учитывай говорящего, форму и макс. символов; НЕ вставляй теги в ответ):\n"
                     f"{joined_hints}"
                 )
-                context_block_en += (
-                    "\nBUBBLE GEOMETRY & SPEAKER DIARIZATION (keep consistent speaker voice/gender per [Bubble: dialogue, speaker=A/B] or [Box: narration/monologue], fit translation length to bubble shape & max_chars, do NOT include [Bubble: ...], [Box: ...] or [shape: ...] tags in output values):\n"
+                dyn_block_en += (
+                    "\nBUBBLE TAGS (keep speaker voice/gender & fit length; NEVER include tags in output):\n"
                     f"{joined_hints}"
                 )
 
-        # БЛОК 4: Проверяем размер пачки. Для малых пачек (1–5 блоков) добавляем жесткую анти-чат инструкцию
+        # БЛОК 4: Проверяем размер пачки. Для малых пачек (1–5 блоков) добавляем жесткую анти-чат инструкцию в user_prompt
         try:
             parsed_cnt = len(json.loads(source_map_json))
         except Exception:
             parsed_cnt = 10
         is_small_batch = parsed_cnt <= 5
         small_batch_guard = (
-            "\nTRANSLATE_MANGA_BUBBLES_JSON: You are a strict JSON translation API, NOT a conversational assistant. "
-            "Even if the input contains only 1 short word, name, sound effect, or incomplete syllable, translate or romanize it "
-            "into the target language and return ONLY a valid JSON object {\"id\": \"translation\"}. "
-            "NEVER explain the meaning, NEVER ask questions, NEVER output markdown prose."
+            "TRANSLATE_MANGA_BUBBLES_JSON: Strict JSON translation API, NOT a chat assistant. "
+            "Even for 1 short word, name, or fragment, return ONLY a valid flat JSON object mapping each input key to its translation. "
+            "NEVER explain, ask questions, or output prose.\n"
             if is_small_batch
             else ""
         )
         usr_prefix_tag = "TRANSLATE_MANGA_BUBBLES_JSON:\n" if is_small_batch else ""
 
         if auto_glossary_header and not is_specialized_local:
-            context_block_ru += f"\n{auto_glossary_header}"
-            context_block_en += f"\n{auto_glossary_header}"
+            dyn_block_ru += f"\n{auto_glossary_header}"
+            dyn_block_en += f"\n{auto_glossary_header}"
+
+        dyn_prefix_ru = f"{dyn_block_ru.strip()}\n\n" if dyn_block_ru.strip() else ""
+        dyn_prefix_en = f"{dyn_block_en.strip()}\n\n" if dyn_block_en.strip() else ""
 
         typeset_rule_ru = "" if is_specialized_local else TYPESETTING_AWARE_RULE_RU
         typeset_rule_en = "" if is_specialized_local else TYPESETTING_AWARE_RULE_EN
@@ -5817,11 +5862,13 @@ class OllamaTranslator:
                 "1. Transliterate every JSON value into space-separated Hepburn Romaji using ONLY Latin letters (A-Z, a-z) and punctuation.\n"
                 "2. Do NOT translate meaning into English. Output zero Kanji/Kana/CJK characters.\n"
                 "3. Return ONLY a valid JSON object with the exact same string keys."
-                f"{small_batch_guard}{context_block_en}"
             )
             if anti_censorship_prompt:
                 sys_prompt = apply_deepseek_anti_censorship_prompt(sys_prompt, anti_censorship_custom_prompt)
-            usr_prompt = f"{usr_prefix_tag}Transliterate all JSON values into Hepburn Romaji (keep exact keys):\n{source_map_json}"
+            usr_prompt = (
+                f"{small_batch_guard}{dyn_prefix_en}{usr_prefix_tag}"
+                f"Transliterate all JSON values into Hepburn Romaji (keep exact keys):\n{source_map_json}"
+            )
             retry_prefix = "TRANSLATE_MANGA_BUBBLES_JSON: Transliterate into Hepburn Romaji (Latin letters ONLY, exact same JSON keys):\n"
             return sys_prompt, usr_prompt, retry_prefix
 
@@ -5836,11 +5883,13 @@ class OllamaTranslator:
                 "4. ИМЕНА, МЕЖДОМЕТИЯ И ПУНКТУАЦИЯ: Имена и прозвища передавай фонетически (Поливанов/Хэпбёрн), НЕ переводи их буквально (七香/ななか -> Нанака, 七ちゃん -> Нана-тян, НЕ «Семь-тян»; 一 -> Ити/Кадзу; 双葉 -> Футаба; 三玖 -> Мику; 四葉 -> Ёцуба; 五月 -> Ицуки), сохраняй суффиксы (-сан, -тян, -кун, -сэмпай, -сэнсэй). Переводи все реплики и междометия по смыслу. Сохраняй многоточия ('...'), заминки, тире и '?!' (пиши '...Ты так думаешь?', 'Ого...?!', НИКОГДА не сокращай многоточие до одной точки вроде '.Ты так думаешь?' или '.?!').\n"
                 "5. КРАТКОСТЬ ПОД БАББЛЫ И СТРОГИЙ JSON: Формулируй ёмко под размер облачков. Запрещены японские/корейские/китайские символы, пропуск ключей, теги <think> и любые вступления — верни ТОЛЬКО валидный плоский JSON-объект {\"ключ\": \"строка перевода\"} с теми же ключами (без вложенных словарей).\n"
                 f"{typeset_rule_ru}"
-                f"{small_batch_guard}{context_block_ru}"
-            )
+            ).rstrip()
             if anti_censorship_prompt:
                 sys_prompt = apply_deepseek_anti_censorship_prompt(sys_prompt, anti_censorship_custom_prompt)
-            usr_prompt = f"{usr_prefix_tag}Переведи все значения JSON с {src_ru} на русский язык (только кириллицей, сохрани ключи):\n{source_map_json}"
+            usr_prompt = (
+                f"{small_batch_guard}{dyn_prefix_ru}{usr_prefix_tag}"
+                f"Переведи все значения JSON с {src_ru} на русский язык (только кириллицей, сохрани ключи):\n{source_map_json}"
+            )
             retry_prefix = "TRANSLATE_MANGA_BUBBLES_JSON: Переведи на русский язык (только кириллицей, верни JSON с теми же ключами):\n"
             return sys_prompt, usr_prompt, retry_prefix
 
@@ -5854,11 +5903,13 @@ class OllamaTranslator:
             "4. NAMES, NUANCE & PUNCTUATION: Translate the MEANING of all dialogue, exclamations, and interjections—NEVER leave sentences or phrases in Japanese Romaji (e.g., write 'Stop it!', NEVER 'Yamete!'; write 'Wait!', NEVER 'Chotto matte!'; write 'Feels so good...', NEVER 'Kimochiii'). Romanize ONLY personal character names phonetically (e.g., 七香 -> Nanaka, 七ちゃん -> Nana-chan) with honorifics (-san, -chan, -kun, -senpai, -sensei). Preserve ellipses ('...') at the start, middle, and end whenever the original has '…' or '．．．', along with stammering and emotional punctuation ('?!', '—')—NEVER collapse '...' into a single dot.\n"
             "5. CONCISE BUBBLE FIT & STRICT JSON: Keep lines concise for speech bubbles, output zero Japanese/Korean/Chinese characters, NEVER skip any JSON key, output zero <think> tags or preambles, and return ONLY a valid flat JSON object {\"key\": \"string\"} with the exact same keys.\n"
             f"{typeset_rule_en}"
-            f"{small_batch_guard}{context_block_en}"
-        )
+        ).rstrip()
         if anti_censorship_prompt:
             sys_prompt = apply_deepseek_anti_censorship_prompt(sys_prompt, anti_censorship_custom_prompt)
-        usr_prompt = f"{usr_prefix_tag}Translate all JSON values from {src_en} into natural English (translate meaning, do NOT output Romaji, keep exact keys):\n{source_map_json}"
+        usr_prompt = (
+            f"{small_batch_guard}{dyn_prefix_en}{usr_prefix_tag}"
+            f"Translate all JSON values from {src_en} into natural English (translate meaning, do NOT output Romaji, keep exact keys):\n{source_map_json}"
+        )
         retry_prefix = "TRANSLATE_MANGA_BUBBLES_JSON: Translate meaning into natural English (NO Romaji, NO CJK, return JSON with exact same keys):\n"
         return sys_prompt, usr_prompt, retry_prefix
 
@@ -6068,6 +6119,56 @@ class OllamaTranslator:
             return installed_ollama[0]
 
         return None
+
+    async def _resolve_local_non_mt_llm(self) -> str | None:
+        """
+        Подбирает установленную локальную универсальную LLM в Ollama (исключая узкие MT-модели
+        вроде Sugoi / TranslateGemma и OCR-модель glm-ocr) для бесплатного Pass 0 Pre-Scan глоссария.
+        """
+        installed_ollama = [
+            m["id"]
+            for m in (self._cached_models or [])
+            if m.get("provider") == "ollama" and m.get("installed") == "true"
+        ]
+        if not installed_ollama:
+            try:
+                available = await self.list_available_models(force_refresh=False)
+                installed_ollama = [
+                    m["id"]
+                    for m in available
+                    if m.get("provider") == "ollama" and m.get("installed") == "true"
+                ]
+            except Exception as exc:
+                logger.debug("Не удалось обновить список моделей Ollama для локального Pass 0: %s", exc)
+
+        if not installed_ollama:
+            cli_tags = await asyncio.to_thread(self._list_ollama_cli_models)
+            installed_ollama = [f"ollama::{t}" for t in cli_tags if t]
+
+        candidates = [
+            m_id
+            for m_id in installed_ollama
+            if "glm-ocr" not in m_id.lower() and not is_mt_only_local_model(m_id)
+        ]
+        if not candidates:
+            return None
+
+        priority_tuple = (
+            "qwen3:14b",
+            "qwen3",
+            "shisa",
+            "qwen2.5:14b",
+            "qwen2.5",
+            "gemma3",
+            "aya-expanse",
+            "llama3",
+            "qwen",
+        )
+        for priority_kw in priority_tuple:
+            for m_id in candidates:
+                if priority_kw in m_id.lower():
+                    return m_id
+        return candidates[0]
 
     async def _translate_map_via_local_ollama(
         self,
@@ -6295,6 +6396,31 @@ class OllamaTranslator:
                 logger.debug("Ошибка построчного вызова Sugoi для ключа %s: %s", norm_k, exc)
         return out_map
 
+    @staticmethod
+    def _extract_last_json_dict_from_prompt(prompt: str) -> dict[str, Any] | None:
+        """Извлекает последний плоский JSON-словарь из user_prompt, не цепляясь за {...} в инструкциях или контексте."""
+        if not prompt:
+            return None
+        s_trim = prompt.rstrip()
+        idx_nl = s_trim.rfind("\n{")
+        if idx_nl != -1:
+            try:
+                parsed = json.loads(s_trim[idx_nl + 1 :])
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+        pos = s_trim.rfind("{")
+        while pos != -1:
+            try:
+                parsed = json.loads(s_trim[pos:])
+                if isinstance(parsed, dict):
+                    return parsed
+            except Exception:
+                pass
+            pos = s_trim.rfind("{", 0, pos)
+        return None
+
     async def _call_ollama_direct(
         self,
         client: httpx.AsyncClient,
@@ -6315,18 +6441,13 @@ class OllamaTranslator:
         is_sugoi = "sugoi" in clean_name.lower()
         is_spec_local = is_specialized_local_translator_model(clean_name)
         extracted_input_dict: dict[str, str] = {}
-        m_json_any = re.search(r"\{.*\}", user_prompt, flags=re.DOTALL)
-        if m_json_any:
-            try:
-                raw_d = json.loads(m_json_any.group(0))
-                if isinstance(raw_d, dict):
-                    extracted_input_dict = {
-                        str(k): self._strip_metadata_and_prompt_leaks(self._extract_str_from_json_value(v)) or str(v)
-                        for k, v in raw_d.items()
-                        if v is not None and str(k) not in ("_anchor_1", "_anchor_2")
-                    }
-            except Exception:
-                pass
+        raw_d = self._extract_last_json_dict_from_prompt(user_prompt)
+        if raw_d:
+            extracted_input_dict = {
+                str(k): self._strip_metadata_and_prompt_leaks(self._extract_str_from_json_value(v)) or str(v)
+                for k, v in raw_d.items()
+                if v is not None and str(k) not in ("_anchor_1", "_anchor_2")
+            }
         expected_keys_list = list(extracted_input_dict.keys()) if extracted_input_dict else None
         if is_sugoi:
             # Защита Блока 3: проверяем ТОЛЬКО первую строку system_prompt, чтобы слова в диалогах/контексте не отменяли вызов Sugoi!
@@ -6534,15 +6655,10 @@ class OllamaTranslator:
                     else:
                         model_name = "default"
 
-            m_cloud_json = re.search(r"\{.*\}", user_prompt, flags=re.DOTALL)
-            expected_keys_list: list[str] | None = None
-            if m_cloud_json:
-                try:
-                    raw_cd = json.loads(m_cloud_json.group(0))
-                    if isinstance(raw_cd, dict):
-                        expected_keys_list = [str(k) for k in raw_cd.keys()]
-                except Exception:
-                    pass
+            raw_cd = self._extract_last_json_dict_from_prompt(user_prompt)
+            expected_keys_list: list[str] | None = (
+                [str(k) for k in raw_cd.keys()] if isinstance(raw_cd, dict) else None
+            )
             items_cnt = len(expected_keys_list) if expected_keys_list is not None else 20
             # Адаптивные таймауты с запасом (<=15 фраз -> 48с, 16..70 фраз -> 68с, >70 фраз -> 90с),
             # чтобы не обрывать почти готовый ответ облачного ИИ по ReadTimeout на 22-й секунде!
@@ -6574,7 +6690,19 @@ class OllamaTranslator:
                     page_image_b64
                     and any(
                         vk in model_name.lower()
-                        for vk in ("vl", "vision", "gpt-4", "gemini", "claude", "gemma-3", "pixtral", "omni")
+                        for vk in (
+                            "vl",
+                            "vision",
+                            "gpt-4",
+                            "gemini",
+                            "claude",
+                            "gemma-3",
+                            "pixtral",
+                            "omni",
+                            "grok-4",
+                            "grok-2",
+                            "deepseek-v4",
+                        )
                     )
                 )
                 user_msg_content: Any = (
@@ -6594,7 +6722,7 @@ class OllamaTranslator:
                         {"role": "system", "content": eff_sys_cloud},
                         {"role": "user", "content": user_msg_content},
                     ],
-                    "temperature": 0.1,
+                    "temperature": 0.3 if items_cnt >= 3 else 0.15,
                     "max_tokens": 4096 if (omit_resp_fmt or items_cnt <= 80) else 8192,
                     "stream": False,
                 }
@@ -6933,71 +7061,114 @@ class OllamaTranslator:
                 or g_budget["shape_hint"] == "narrow_vertical"
                 or g_budget["recommended_max_chars"] <= 55
             ):
-                geometry_hints_map[b_key] = g_budget["meta_tag"]
+                compact_parts: list[str] = []
+                spk_tag = str(g_budget.get("speaker_tag") or "")
+                if "Box:" in spk_tag:
+                    compact_parts.append("Box")
+                elif "speaker=" in spk_tag:
+                    compact_parts.append("spk=" + spk_tag.split("speaker=", 1)[1].rstrip("]"))
+                if g_budget["shape_hint"] == "narrow_vertical":
+                    compact_parts.append("nv")
+                if g_budget["recommended_max_chars"] <= 55:
+                    compact_parts.append(f"~{g_budget['recommended_max_chars']}ch")
+                geometry_hints_map[b_key] = ", ".join(compact_parts) if compact_parts else g_budget["meta_tag"]
 
-        # БЛОК 1.1 и БЛОК 2: Упреждающая оценка риска триггеров (<4 мс) и синтетические якоря для микро-пачек (1-3 реплики)
+        # БЛОК 1.1 и БЛОК 2: Упреждающий Pre-Flight NSFW Triage (<4 мс) + синтетические якоря для микро-пачек (1-3 реплики)
         triage_info = preflight_nsfw_triage(source_map, threshold=0.65)
         is_cloud_active = (
             active_model.startswith("unsloth::")
             and self._is_remote_cloud_url(self.unsloth_url)
             and not self.nsfw_mode
         )
-        padded_source_map, anchor_keys = (
-            apply_micro_batch_anchors(source_map, source_lang)
-            if (len(source_map) <= 3 and not is_spec_local_active)
-            else (source_map, set())
-        )
-        auto_gloss_hdr = (
-            ""
-            if is_spec_local_active
-            else await self.auto_glossary.build_compact_prompt_header(source_map)
-        )
-
-        # Компактный JSON без отступов экономит 150-300 входных токенов на каждой пачке
-        source_map_json = json.dumps(padded_source_map, ensure_ascii=False, separators=(",", ":"))
-        eff_glossary = merge_glossaries(self.glossary, glossary_entries)
-        system_prompt, user_prompt, _ = self._get_prompts(
-            source_lang=source_lang,
-            target_lang=target_lang,
-            source_map_json=source_map_json,
-            context_lines=None if is_spec_local_active else context_lines,
-            glossary_entries=eff_glossary,
-            geometry_hints_map=geometry_hints_map if (geometry_hints_map and not is_spec_local_active) else None,
-            anti_censorship_prompt=(self.anti_censorship_prompt and is_cloud_active),
-            anti_censorship_custom_prompt=self.anti_censorship_custom_prompt,
-            auto_glossary_header=auto_gloss_hdr,
-            is_specialized_local=is_spec_local_active,
-        )
-
-        if use_image_context and page_image_b64:
-            img_ctx_note = (
-                "\n[IMAGE-AWARE VLM CONTEXT (arXiv:2610.17908)]: Use the visual scene, speaker tags, bubble coordinates, "
-                "and attached page image (with numbered bubbles #1..#N when supported by the model) to determine "
-                "each speaker's gender (e.g. Russian past tense '-л'/'-ла'), emotional tone, and addressee accurately."
+        preflight_local_model: str | None = None
+        cloud_source_map: dict[str, str] = source_map
+        local_nsfw_map: dict[str, str] = {}
+        if is_cloud_active and self.preflight_nsfw_split and triage_info.flagged_blocks:
+            preflight_local_model = await self._resolve_local_fallback_model(
+                target_lang=target_lang,
+                source_lang=source_lang,
             )
-            if img_ctx_note not in system_prompt:
-                system_prompt = system_prompt + img_ctx_note
+            if preflight_local_model:
+                cloud_source_map = dict(triage_info.safe_blocks)
+                local_nsfw_map = dict(triage_info.flagged_blocks)
+                self.last_local_fallback_model = preflight_local_model
+                self.diagnostics_stats["preflight_local_routed_count"] = (
+                    int(self.diagnostics_stats.get("preflight_local_routed_count") or 0) + len(local_nsfw_map)
+                )
+                logger.info(
+                    "🛡 [PRE-FLIGHT NSFW SPLIT] %d безопасных реплик -> %s, %d острых 18+ реплик -> локально %s (сохраняем контекст, без риска блокировки пачки!)",
+                    len(cloud_source_map),
+                    active_model,
+                    len(local_nsfw_map),
+                    preflight_local_model,
+                )
 
-        translated_map = await self._call_llm_json(
-            client=client,
-            full_model_id=active_model,
-            system_prompt=system_prompt,
-            user_prompt=user_prompt,
-            page_image_b64=(page_image_b64 if use_image_context else None),
-        )
-        for ak in anchor_keys:
-            translated_map.pop(ak, None)
-        piggy_gloss = translated_map.pop("_glossary", None) or translated_map.pop("_meta", None)
-        if piggy_gloss and isinstance(piggy_gloss, str):
-            await self.auto_glossary.ingest_piggybacked_meta([piggy_gloss])
-        full_refusal = bool(translated_map.pop("__refusal__", None))
-        partial_refusal = bool(translated_map.pop("__partial_refusal__", None))
-        # Дополнительно вычищаем любые бабблы, где модель написала "unable to translate" и т.п.
-        inline_refusal_keys = [
-            k for k, v in list(translated_map.items()) if self._is_bubble_refusal_value(v)
-        ]
-        for rk in inline_refusal_keys:
-            translated_map.pop(rk, None)
+        eff_glossary = merge_glossaries(self.glossary, glossary_entries)
+        translated_map: dict[str, str] = {}
+        anchor_keys: set[str] = set()
+        full_refusal = False
+        partial_refusal = False
+        inline_refusal_keys: list[str] = []
+
+        if cloud_source_map:
+            padded_source_map, anchor_keys = (
+                apply_micro_batch_anchors(cloud_source_map, source_lang)
+                if (len(cloud_source_map) <= 3 and not is_spec_local_active)
+                else (cloud_source_map, set())
+            )
+            auto_gloss_hdr = (
+                ""
+                if is_spec_local_active
+                else await self.auto_glossary.build_compact_prompt_header(cloud_source_map)
+            )
+            cloud_geom_hints = {k: v for k, v in geometry_hints_map.items() if k in cloud_source_map}
+
+            # Компактный JSON без отступов экономит 150-300 входных токенов на каждой пачке
+            source_map_json = json.dumps(padded_source_map, ensure_ascii=False, separators=(",", ":"))
+            system_prompt, user_prompt, _ = self._get_prompts(
+                source_lang=source_lang,
+                target_lang=target_lang,
+                source_map_json=source_map_json,
+                context_lines=None if is_spec_local_active else context_lines,
+                glossary_entries=eff_glossary,
+                geometry_hints_map=cloud_geom_hints if (cloud_geom_hints and not is_spec_local_active) else None,
+                anti_censorship_prompt=(self.anti_censorship_prompt and is_cloud_active),
+                anti_censorship_custom_prompt=self.anti_censorship_custom_prompt,
+                auto_glossary_header=auto_gloss_hdr,
+                is_specialized_local=is_spec_local_active,
+            )
+
+            # Держим system_prompt 100% статическим ради Prefix Caching — динамическую инструкцию VLM крепим в user_prompt
+            if use_image_context and page_image_b64:
+                img_ctx_note = (
+                    "[IMAGE-AWARE VLM CONTEXT (arXiv:2610.17908)]: Use the visual scene, speaker tags, bubble coordinates, "
+                    "and attached page image (with numbered bubbles #1..#N when supported by the model) to determine "
+                    "each speaker's gender (e.g. Russian past tense '-л'/'-ла'), emotional tone, and addressee accurately."
+                )
+                if img_ctx_note not in user_prompt:
+                    user_prompt = f"{img_ctx_note}\n\n{user_prompt}"
+
+            translated_map = await self._call_llm_json(
+                client=client,
+                full_model_id=active_model,
+                system_prompt=system_prompt,
+                user_prompt=user_prompt,
+                page_image_b64=(page_image_b64 if use_image_context else None),
+            )
+            for ak in anchor_keys:
+                translated_map.pop(ak, None)
+            piggy_gloss = translated_map.pop("_glossary", None) or translated_map.pop("_meta", None)
+            if piggy_gloss and isinstance(piggy_gloss, str):
+                await self.auto_glossary.ingest_piggybacked_meta([piggy_gloss])
+            full_refusal = bool(translated_map.pop("__refusal__", None))
+            partial_refusal = bool(translated_map.pop("__partial_refusal__", None))
+            # Дополнительно вычищаем любые бабблы, где модель написала "unable to translate" и т.п.
+            inline_refusal_keys = [
+                k for k, v in list(translated_map.items()) if self._is_bubble_refusal_value(v)
+            ]
+            for rk in inline_refusal_keys:
+                translated_map.pop(rk, None)
+
         was_refusal = full_refusal or partial_refusal or bool(inline_refusal_keys)
         refusal_reason_snapshot = (
             self.last_refusal_message
@@ -7036,11 +7207,43 @@ class OllamaTranslator:
 
         chunk_prov: dict[str, dict[str, str]] = {}
         for k_init, v_init in translated_map.items():
-            if v_init and _is_valid_target_translation(v_init, source_map.get(k_init, "")):
+            if k_init in cloud_source_map and v_init and _is_valid_target_translation(v_init, cloud_source_map.get(k_init, "")):
                 chunk_prov[k_init] = {
                     "source": "llm",
                     "note": f"Переведено основной моделью ({active_model})",
                 }
+
+        # БЛОК 1.1: Переводим отсеченные острые 18+ реплики через локальную Ollama с мостиком контекста из безопасного ответа облака
+        if local_nsfw_map and preflight_local_model and not self.stop_requested:
+            bridge_ctx = list((context_lines or [])[-6:])
+            added_bridge = 0
+            for ck, cv in translated_map.items():
+                orig_c = str(cloud_source_map.get(ck) or "").strip()
+                if cv and orig_c and _is_valid_target_translation(cv, orig_c):
+                    pair_b = f"{orig_c} => {cv.strip()}"
+                    if pair_b not in bridge_ctx:
+                        bridge_ctx.append(pair_b)
+                        added_bridge += 1
+                        if added_bridge >= 4:
+                            break
+            bridge_ctx = bridge_ctx[-8:]
+            loc_pre_map = await self._translate_map_via_local_ollama(
+                client=client,
+                source_map=local_nsfw_map,
+                source_lang=source_lang,
+                target_lang=t_lang,
+                context_lines=bridge_ctx or None,
+                glossary_entries=eff_glossary,
+                local_model_id=preflight_local_model,
+            )
+            for k_pre, v_pre in (loc_pre_map or {}).items():
+                orig_pre = str(local_nsfw_map.get(k_pre) or "")
+                if v_pre and _is_valid_target_translation(v_pre, orig_pre):
+                    translated_map[k_pre] = v_pre
+                    chunk_prov[k_pre] = {
+                        "source": "llm_preflight_local",
+                        "note": f"Упреждающий NSFW-роутинг -> локально ({preflight_local_model})",
+                    }
 
         # СЦЕНАРИЙ 1: Если при работе через облачный API модель наткнулась на цензуру (was_refusal=True —
         # либо весь ответ заблокирован, либо в отдельных бабблах вернулось "unable to translate"),
@@ -7048,23 +7251,23 @@ class OllamaTranslator:
         # (с сохранением глоссария и контекста) и затем автоматически возвращаемся к переводу следующих кусков через API!
         refused_sub_map = {
             k: orig_v
-            for k, orig_v in source_map.items()
+            for k, orig_v in cloud_source_map.items()
             if not _is_valid_target_translation(translated_map.get(k, ""), orig_v)
         }
         if was_refusal and refused_sub_map and not self.stop_requested:
             if (
                 active_model.startswith("unsloth::")
                 and self._is_remote_cloud_url(self.unsloth_url)
-                and len(refused_sub_map) >= max(1, int(len(source_map) * 0.85))
+                and len(refused_sub_map) >= max(1, int(len(cloud_source_map) * 0.85))
             ):
                 self.enable_chapter_nsfw_mode(
-                    f"100% отказ цензуры облачного API {active_model} на пачке ({len(refused_sub_map)}/{len(source_map)} блоков)"
+                    f"100% отказ цензуры облачного API {active_model} на пачке ({len(refused_sub_map)}/{len(cloud_source_map)} блоков)"
                 )
             sample_phrases = ", ".join(f"«{v[:18]}»" for v in list(refused_sub_map.values())[:3])
             self._record_incident(
                 "CLOUD_CENSORSHIP_REFUSAL",
                 active_model,
-                f"Облачная модель отклонила {len(refused_sub_map)}/{len(source_map)} фраз из-за цензуры/фильтра ({sample_phrases})",
+                f"Облачная модель отклонила {len(refused_sub_map)}/{len(cloud_source_map)} фраз из-за цензуры/фильтра ({sample_phrases})",
                 details=refusal_reason_snapshot,
                 affected_count=len(refused_sub_map),
             )
@@ -7121,21 +7324,21 @@ class OllamaTranslator:
                         active_model,
                     )
 
-            # Резервный вариант (только если локальный Ollama вообще не запущен или не вернул перевод, и в пачке > 2 фраз):
-            if not translated_map and not self.stop_requested and len(source_map) > 2:
-                items_list = list(source_map.items())
+            # Резервный вариант (только если локальный Ollama вообще не запущен или не вернул перевод, и в безопасной пачке > 2 фраз):
+            if not any(k in translated_map for k in cloud_source_map) and not self.stop_requested and len(cloud_source_map) > 2:
+                items_list = list(cloud_source_map.items())
                 sub_size = max(10, (len(items_list) + 1) // 2) if len(items_list) <= 30 else max(12, (len(items_list) + 2) // 3)
                 sub_chunks = [dict(items_list[i : i + sub_size]) for i in range(0, len(items_list), sub_size)]
                 self._record_incident(
                     "SANITIZED_CLOUD_RETRY",
                     active_model,
-                    f"Локальный Ollama недоступен для обхода цензуры — пачка ({len(source_map)} фраз) разбита на {len(sub_chunks)} подгруппы с санитизацией триггеров",
+                    f"Локальный Ollama недоступен для обхода цензуры — пачка ({len(cloud_source_map)} фраз) разбита на {len(sub_chunks)} подгруппы с санитизацией триггеров",
                     details=refusal_reason_snapshot,
-                    affected_count=len(source_map),
+                    affected_count=len(cloud_source_map),
                 )
                 logger.warning(
                     "Локальная модель недоступна для обхода цензуры — делю пакет (%d блоков) на %d подгруппы с санитизацией триггеров...",
-                    len(source_map),
+                    len(cloud_source_map),
                     len(sub_chunks),
                 )
                 for sc_idx, sub_map in enumerate(sub_chunks, start=1):
@@ -8163,10 +8366,19 @@ class OllamaTranslator:
 
         active_model = await self.resolve_model(model, source_lang=source_lang, target_lang=target_lang)
         eff_pre_model = active_model
-        if self.nsfw_mode and eff_pre_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url):
-            fb_pre = await self._resolve_local_fallback_model(target_lang=target_lang, source_lang=source_lang)
-            if fb_pre:
-                eff_pre_model = fb_pre
+        if eff_pre_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url):
+            loc_non_mt = await self._resolve_local_non_mt_llm()
+            if loc_non_mt:
+                eff_pre_model = loc_non_mt
+                logger.info(
+                    "💎 [Pass 0 Pre-Scan] Нулевой расход облачных токенов: использую локальную LLM '%s' вместо '%s' для извлечения имён и глоссария.",
+                    loc_non_mt,
+                    active_model,
+                )
+            elif self.nsfw_mode:
+                fb_pre = await self._resolve_local_fallback_model(target_lang=target_lang, source_lang=source_lang)
+                if fb_pre:
+                    eff_pre_model = fb_pre
         client = self._get_http_client()
         t_lang = (target_lang or "en").lower().strip()
         locked_entries = normalize_glossary_entries((existing_glossary or []) + (self.glossary or []))
@@ -8244,7 +8456,7 @@ class OllamaTranslator:
         try:
             raw_map = await self._call_llm_json(
                 client=client,
-                full_model_id=active_model,
+                full_model_id=eff_pre_model,
                 system_prompt=sys_p,
                 user_prompt=usr_p,
                 allow_mt_fallback=False,

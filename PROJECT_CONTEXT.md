@@ -271,4 +271,31 @@
 - **Автотесты (`tests/test_security_and_core.py`)**:
   - Набор расширен до **33 автотестов** (добавлены 5 новых тестов для проверки 2 режимов и UI, пропуска Pass 0/2 и отсутствия `8+4` дробления для Sugoi, стоп-листа родства и аудита японских вопросов, фильтра/спасения SFX на хирагане, отключения SAM 2.1 по умолчанию, лимита кэша и пропуска 1.5× апскейла LaMa на белом фоне).
 
+---
+
+## 14. Обновление v6.1.2 (Качество очистки клинера SOTA, Pre-Flight NSFW Split, Prefix Caching и OpenRouter/xAI Grok)
+
+### ✅ 1. Улучшение качества очистки от старого текста (`cleaner.py`)
+- **Нативный CUDA сегментатор штрихов (`ComicTextStrokeSegmenter`)**:
+  - В приоритете загрузка PyTorch/Ultralytics сегментатора (`ogkalu/comic-text-segmenter-yolov8m` -> `comic-text-segmenter.pt`) на GPU с LRU-кэшем по странице (`predict_page_stroke_mask`), с сохранением резервного пути `comic-text-detector` и `allow_download=bool(use_lama)`.
+- **Захват фуриганы и финишная полировка белых бабблов**:
+  - В `BubbleCleaner.build_text_mask` подключён `HybridMangaCleaner.expand_box_for_furigana` (ограничен чашей баббла) и кроп нейронной маски страницы `page_neural_crop`.
+  - В `_inpaint_crop` добавлена постобработка `_verify_and_polish_white_cavity`, дозачищающая остаточные серые штрихи внутри белых чаш без касания контура стенки, а также жёсткий барьер по `bubble_polygon_rel`.
+- **Широкий контекст Anime-Manga LaMa и опциональный локальный Diffusion-хук**:
+  - В `clean_image` батчевый инпейнтинг переведён на `context_pad=80` (и поблочный `eff_pad >= 48` / `64..96`), защищены не-`.pt` веса в `StandaloneLaMaInpainter`, а `_inpaint_with_flux_klein_4b` получил рабочий хук + loopback-клиент (`/sdapi/v1/img2img`) для сложных текстурных перерисовок.
+
+### ✅ 2. Минимум отказов облачного API на манге 18+, Prefix Caching и экономия токенов (`translator.py`, `server.py`, `api/schemas.py`)
+- **Pre-Flight NSFW Split (`preflight_nsfw_split`, по умолчанию `true`)**:
+  - В `_translate_batch_chunk` острые 18+ реплики (`preflight_nsfw_triage`) до обращения к облаку отщепляются в локальную Ollama (`llm_preflight_local`) с передачей мостика контекста из безопасных переведённых реплик — облачная пачка не блокируется целиком.
+- **100% статичный `system_prompt` для Prefix Caching и сжатые теги бабблов**:
+  - Динамический глоссарий, контекст диалога, компактные теги бабблов (`spk=A, nv, ~Nch`), `[IMAGE-AWARE VLM CONTEXT]` и `small_batch_guard` вынесены в `user_prompt` (плюс надёжный `_extract_last_json_dict_from_prompt`), повышена живость диалогов (`temperature = 0.3` при `>= 3` репликах).
+- **Бесплатный локальный Pass 0 и режимы вычитки Pass 2 (`ultra_proofread_mode`)**:
+  - Добавлен `_resolve_local_non_mt_llm()`: Pass 0 авто-глоссария (`extract_chapter_glossary_prepass`) приоритетно запускается на локальной LLM без траты облачных токенов и только для батча `#1` или при `< 8` записях глоссария.
+  - В `server.py` Pass 2 поддерживает `"off" | "selective" | "full"` (по умолчанию `"selective"` — 1 запрос `<= 90` строк на стыки NSFW/локального обхода и реплики от 16+ символов, без возврата `llm_preflight_local` в облако).
+- **Пресеты OpenRouter и xAI Grok (`translator.py`, `web_studio.html`, `gui_app.py`, `config.json`)**:
+  - Добавлены пресеты `openrouter_deepseek` (`deepseek/deepseek-chat`), `xai_grok_fast` (`grok-4-fast-non-reasoning`), `openrouter_mistral` (`mistralai/mistral-small-3.2-24b-instruct`), заголовки `HTTP-Referer`/`X-Title` для OpenRouter и локальный фоллбэк в `config.json` обновлён на установленную `ollama::shisa-v2.1-14b:Q4_K_M`.
+- **Автотесты (`tests/test_security_and_core.py`)**:
+  - Набор расширен до **44 автотестов**, подтверждающих все новые модули очистки, NSFW-сплиттинга, Prefix Caching, локального Pass 0, пресетов OpenRouter/Grok, Diffusion-хука, а также RTX 5070 Ti CUDA-оптимизации (`HallucinationFreeMangaOCR.recognize_batch` с `BF16`/`beam_indices`, `YOLO FP16` с фоллбэком, `LaMa TF32 + cuDNN benchmark` с безопасным откатом `BF16 -> FP32` для FFT-слоёв и флаги `OLLAMA_FLASH_ATTENTION=1` / `OLLAMA_KV_CACHE_TYPE=q8_0` в `start_server.bat`).
+
+
 

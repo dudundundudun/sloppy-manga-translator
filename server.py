@@ -3463,6 +3463,7 @@ async def _run_folder_translation_job(
                         translator_engine.phrase_cache.update(phrase_cache)
                     if (
                         eff_pmode == "ultra"
+                        and (_batch_num == 1 or len(folder_glossary_entries) < 8)
                         and len(combined_blocks) >= 4
                         and target_lang.lower().strip() != "romaji"
                         and not is_mt_only_local_model(active_mod)
@@ -3512,27 +3513,72 @@ async def _run_folder_translation_job(
                         )
                         if fb_pr:
                             eff_proof_mod = fb_pr
+                    proof_mode = str(
+                        getattr(translator_engine, "ultra_proofread_mode", "selective") or "selective"
+                    ).strip().lower()
                     if (
                         eff_pmode == "ultra"
+                        and proof_mode != "off"
                         and not _folder_stop_requested
                         and target_lang.lower().strip() in ("en", "ru")
                         and not is_mt_only_local_model(eff_proof_mod)
                     ):
+                        is_cloud_proof = (
+                            eff_proof_mod.startswith("unsloth::")
+                            and not getattr(translator_engine, "nsfw_mode", False)
+                            and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+                        )
+                        proof_chunk_size = 90 if is_cloud_proof else 40
                         book_for_proof: dict[str, dict[str, str]] = {}
-                        for eb in enriched_combined:
-                            gid_p = str(eb["id"])
-                            tr_p = translated_by_gid.get(gid_p, "").strip()
-                            orig_p = str(eb.get("original_text") or "").strip()
-                            if tr_p and orig_p and source_by_gid.get(gid_p) == "llm":
-                                book_for_proof[gid_p] = {"orig": orig_p, "trans": tr_p}
+                        seam_indices = {
+                            idx_s
+                            for idx_s, eb_s in enumerate(enriched_combined)
+                            if source_by_gid.get(str(eb_s["id"])) in ("llm_preflight_local", "llm_local_bypass")
+                        }
+                        if proof_mode == "selective":
+                            seam_window_gids: set[str] = set()
+                            long_gids: set[str] = set()
+                            for idx_e, eb in enumerate(enriched_combined):
+                                gid_p = str(eb["id"])
+                                tr_p = translated_by_gid.get(gid_p, "").strip()
+                                orig_p = str(eb.get("original_text") or "").strip()
+                                if not (tr_p and orig_p and source_by_gid.get(gid_p) == "llm"):
+                                    continue
+                                if any(abs(idx_e - s_idx) <= 2 for s_idx in seam_indices):
+                                    seam_window_gids.add(gid_p)
+                                elif len(orig_p) >= 16:
+                                    long_gids.add(gid_p)
+                            selected_gids: set[str] = set()
+                            for eb in enriched_combined:
+                                gid_p = str(eb["id"])
+                                if gid_p in seam_window_gids and len(selected_gids) < proof_chunk_size:
+                                    selected_gids.add(gid_p)
+                            for eb in enriched_combined:
+                                gid_p = str(eb["id"])
+                                if gid_p in long_gids and len(selected_gids) < proof_chunk_size:
+                                    selected_gids.add(gid_p)
+                            for eb in enriched_combined:
+                                gid_p = str(eb["id"])
+                                if gid_p in selected_gids:
+                                    book_for_proof[gid_p] = {
+                                        "orig": str(eb.get("original_text") or "").strip(),
+                                        "trans": translated_by_gid.get(gid_p, "").strip(),
+                                    }
+                        else:
+                            for eb in enriched_combined:
+                                gid_p = str(eb["id"])
+                                tr_p = translated_by_gid.get(gid_p, "").strip()
+                                orig_p = str(eb.get("original_text") or "").strip()
+                                src_p = source_by_gid.get(gid_p)
+                                allow_src = (
+                                    (src_p == "llm")
+                                    if is_cloud_proof
+                                    else (src_p in ("llm", "llm_preflight_local", "llm_local_bypass"))
+                                )
+                                if tr_p and orig_p and allow_src:
+                                    book_for_proof[gid_p] = {"orig": orig_p, "trans": tr_p}
                         if len(book_for_proof) >= 3:
-                            folder_job_state["current_file"] = f"💎 [Ультра Проход 2/2: Литературная вычитка и сверка рода ({len(book_for_proof)} реплик)]..."
-                            is_cloud_proof = (
-                                eff_proof_mod.startswith("unsloth::")
-                                and not getattr(translator_engine, "nsfw_mode", False)
-                                and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
-                            )
-                            proof_chunk_size = 90 if is_cloud_proof else 40
+                            folder_job_state["current_file"] = f"💎 [Ультра Проход 2/2: Литературная вычитка ({proof_mode}, {len(book_for_proof)} реплик)]..."
                             proof_keys = list(book_for_proof.keys())
                             proof_sub_books = [
                                 {k: book_for_proof[k] for k in proof_keys[p_start : p_start + proof_chunk_size]}
@@ -4083,6 +4129,8 @@ async def health_check() -> dict[str, Any]:
         "local_fallback_model_multilang": getattr(translator_engine, "local_fallback_model_multilang", "auto") if translator_engine else "auto",
         "anti_censorship_prompt": bool(getattr(translator_engine, "anti_censorship_prompt", False)) if translator_engine else False,
         "anti_censorship_custom_prompt": getattr(translator_engine, "anti_censorship_custom_prompt", "") if translator_engine else "",
+        "preflight_nsfw_split": bool(getattr(translator_engine, "preflight_nsfw_split", True)) if translator_engine else True,
+        "ultra_proofread_mode": getattr(translator_engine, "ultra_proofread_mode", "selective") if translator_engine else "selective",
         "default_anti_censorship_prompt_template": DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
         "glossary": translator_engine.glossary if translator_engine else [],
@@ -4414,6 +4462,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
             ui_settings=payload.ui_settings,
             anti_censorship_prompt=payload.anti_censorship_prompt,
             anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
+            preflight_nsfw_split=payload.preflight_nsfw_split,
+            ultra_proofread_mode=payload.ultra_proofread_mode,
             default_model_stack=payload.default_model_stack,
         )
     except ValueError as exc:
@@ -4444,6 +4494,8 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "local_fallback_model_multilang": saved.get("local_fallback_model_multilang", "auto"),
         "anti_censorship_prompt": bool(saved.get("anti_censorship_prompt", False)),
         "anti_censorship_custom_prompt": saved.get("anti_censorship_custom_prompt", ""),
+        "preflight_nsfw_split": bool(saved.get("preflight_nsfw_split", True)),
+        "ultra_proofread_mode": saved.get("ultra_proofread_mode", "selective"),
         "unsloth_url": saved["unsloth_url"],
         "unsloth_api_key": "",
         "masked_api_key": _mask_api_key(saved["unsloth_api_key"]),
