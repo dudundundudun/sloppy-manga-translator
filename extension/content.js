@@ -39,7 +39,11 @@
     model: "auto",
     lastLocalModel: "",
     pipelineMode: "balanced",
+    translationProfile: "balanced",
     useImageContext: false,
+    antiCensorshipPrompt: false,
+    preflightNsfwSplit: true,
+    cloudOnlyNoLocalFallback: false,
     uppercase: false,
     minFontSize: 12,
     maxFontSize: 32,
@@ -52,6 +56,7 @@
     autoSaveWeb: true,
     webSaveDir: "",
     unslothUrl: "https://moduleapi.pro/v1",
+    hideFab: false,
     minimized: false,
     panelPos: null,
   };
@@ -61,6 +66,7 @@
   let resolvedServerModel = "";
   let serverHasApiKey = false;
   let serverMaskedApiKey = "";
+  let activeServerBaseUrl = "http://127.0.0.1:5000";
   let showingOriginal = false;
   let folderPollTimer = null;
   let pullPollTimer = null;
@@ -70,6 +76,63 @@
   let isModelSwitching = false;
   let pageBatchRunning = false;
   let pageStopRequested = false;
+  let activeTranslateRequestId = null;
+
+  const imgStateMap = new WeakMap();
+  const activeObjectUrls = new Set();
+
+  function getMediaState(el) {
+    let st = imgStateMap.get(el);
+    if (!st) {
+      st = {
+        originalSrc: "",
+        originalSrcset: "",
+        originalBase64: "",
+        originalBlobUrl: "",
+        translatedDataUrl: "",
+        translatedObjectUrl: "",
+        translated: false,
+        busy: false,
+        pageIndex: 0,
+        isCanvas: el?.tagName === "CANVAS",
+        pictureSrcsets: null,
+        listeners: [],
+      };
+      imgStateMap.set(el, st);
+    }
+    return st;
+  }
+
+  function revokeManagedUrl(url) {
+    if (!url || typeof url !== "string" || !url.startsWith("blob:")) return;
+    if (activeObjectUrls.has(url)) {
+      activeObjectUrls.delete(url);
+    }
+    try {
+      URL.revokeObjectURL(url);
+    } catch (_) {}
+  }
+
+  function dataUrlToBlobUrl(dataUrl) {
+    if (!dataUrl || typeof dataUrl !== "string") return "";
+    try {
+      const commaIdx = dataUrl.indexOf(",");
+      if (commaIdx === -1) return dataUrl;
+      const meta = dataUrl.slice(5, commaIdx);
+      const mime = (meta.split(";")[0] || "image/webp").trim() || "image/webp";
+      const binStr = atob(dataUrl.slice(commaIdx + 1));
+      const bytes = new Uint8Array(binStr.length);
+      for (let i = 0; i < binStr.length; i++) {
+        bytes[i] = binStr.charCodeAt(i);
+      }
+      const blob = new Blob([bytes], { type: mime });
+      const objUrl = URL.createObjectURL(blob);
+      activeObjectUrls.add(objUrl);
+      return objUrl;
+    } catch (_) {
+      return dataUrl;
+    }
+  }
 
   function normalizePipelineMode(mode) {
     const m = String(mode || "balanced").trim().toLowerCase();
@@ -88,7 +151,11 @@
           "mt_model_v8",
           "mt_last_local_model",
           "mt_pipeline_mode",
+          "mt_translation_profile",
           "mt_use_image_context",
+          "mt_anti_censorship_prompt",
+          "mt_preflight_nsfw_split",
+          "mt_cloud_only_no_local_fallback",
           "mt_uppercase",
           "mt_min_font_size",
           "mt_max_font_size",
@@ -101,6 +168,7 @@
           "mt_auto_save_web",
           "mt_web_save_dir",
           "mt_unsloth_url",
+          "mt_hide_fab",
           "mt_minimized",
           "mt_panel_pos",
         ],
@@ -111,8 +179,17 @@
           settings.model = s.mt_model_v8 || DEFAULT_SETTINGS.model;
           settings.lastLocalModel = s.mt_last_local_model || "";
           settings.pipelineMode = normalizePipelineMode(s.mt_pipeline_mode || DEFAULT_SETTINGS.pipelineMode);
+          settings.translationProfile = ["eco_book", "balanced", "turbo", "local_only"].includes(s.mt_translation_profile)
+            ? s.mt_translation_profile
+            : DEFAULT_SETTINGS.translationProfile;
           settings.useImageContext =
             s.mt_use_image_context !== undefined ? Boolean(s.mt_use_image_context) : false;
+          settings.antiCensorshipPrompt =
+            s.mt_anti_censorship_prompt !== undefined ? Boolean(s.mt_anti_censorship_prompt) : false;
+          settings.preflightNsfwSplit =
+            s.mt_preflight_nsfw_split !== undefined ? Boolean(s.mt_preflight_nsfw_split) : true;
+          settings.cloudOnlyNoLocalFallback =
+            s.mt_cloud_only_no_local_fallback !== undefined ? Boolean(s.mt_cloud_only_no_local_fallback) : false;
           settings.uppercase =
             s.mt_uppercase !== undefined ? Boolean(s.mt_uppercase) : DEFAULT_SETTINGS.uppercase;
           settings.minFontSize =
@@ -130,6 +207,7 @@
             s.mt_auto_save_web !== undefined ? Boolean(s.mt_auto_save_web) : true;
           settings.webSaveDir = s.mt_web_save_dir || "";
           settings.unslothUrl = s.mt_unsloth_url || DEFAULT_SETTINGS.unslothUrl;
+          settings.hideFab = Boolean(s.mt_hide_fab);
           settings.minimized = Boolean(s.mt_minimized);
           settings.panelPos = s.mt_panel_pos || null;
           if (typeof onLoaded === "function") onLoaded();
@@ -149,7 +227,11 @@
           mt_model_v8: settings.model,
           mt_last_local_model: settings.lastLocalModel || "",
           mt_pipeline_mode: settings.pipelineMode || "balanced",
+          mt_translation_profile: settings.translationProfile || "balanced",
           mt_use_image_context: Boolean(settings.useImageContext),
+          mt_anti_censorship_prompt: Boolean(settings.antiCensorshipPrompt),
+          mt_preflight_nsfw_split: Boolean(settings.preflightNsfwSplit),
+          mt_cloud_only_no_local_fallback: Boolean(settings.cloudOnlyNoLocalFallback),
           mt_uppercase: Boolean(settings.uppercase),
           mt_min_font_size: Number(settings.minFontSize) || 12,
           mt_max_font_size: Number(settings.maxFontSize) || 32,
@@ -162,6 +244,7 @@
           mt_auto_save_web: Boolean(settings.autoSaveWeb),
           mt_web_save_dir: settings.webSaveDir || "",
           mt_unsloth_url: settings.unslothUrl,
+          mt_hide_fab: Boolean(settings.hideFab),
           mt_minimized: Boolean(settings.minimized),
           mt_panel_pos: settings.panelPos || null,
         });
@@ -436,8 +519,8 @@
     /* Быстрые пресет-кнопки */
     .mt-provider-pills {
       display: grid;
-      grid-template-columns: repeat(4, 1fr);
-      gap: 5px;
+      grid-template-columns: repeat(5, 1fr);
+      gap: 4px;
       width: 100%;
     }
     .mt-pill-btn {
@@ -445,8 +528,8 @@
       color: #d1d5db;
       border: 1px solid rgba(255, 255, 255, 0.14);
       border-radius: 7px;
-      padding: 5px 4px;
-      font-size: 11px;
+      padding: 5px 3px;
+      font-size: 10.5px;
       font-weight: 600;
       cursor: pointer;
       text-align: center;
@@ -480,6 +563,12 @@
       border-color: #34d399;
       color: #ffffff;
       box-shadow: 0 0 10px rgba(52, 211, 153, 0.28);
+    }
+    .mt-pill-btn.grok.active {
+      background: rgba(236, 72, 153, 0.38);
+      border-color: #f472b6;
+      color: #ffffff;
+      box-shadow: 0 0 10px rgba(244, 114, 182, 0.28);
     }
     .mt-pill-btn.local.active {
       background: rgba(217, 119, 6, 0.42);
@@ -771,12 +860,13 @@
         <span id="mt-model-chevron" class="mt-model-bar-chevron">📋 ▾</span>
       </div>
 
-      <!-- 4 четкие кнопки быстрого переключения без конфликтов подсветки -->
+      <!-- 5 четких кнопок быстрого переключения без конфликтов подсветки -->
       <div class="mt-provider-pills">
         <button id="mt-pill-auto" type="button" class="mt-pill-btn" title="Автоматический выбор лучшей доступной модели">✨ Авто</button>
         <button id="mt-pill-flash" type="button" class="mt-pill-btn flash" title="DeepSeek V4 Flash — быстрый и экономный облачный перевод">⚡ Flash</button>
         <button id="mt-pill-pro" type="button" class="mt-pill-btn pro" title="DeepSeek V4 Pro — максимальное литературное качество">🧠 Pro</button>
-        <button id="mt-pill-local" type="button" class="mt-pill-btn local" title="Локальная модель Ollama (100% на вашей видеокарте без цензуры)">🦙 Локальная</button>
+        <button id="mt-pill-grok" type="button" class="mt-pill-btn grok" title="Grok 18+ (вся манга только в облаке без Ollama)">🚀 Grok</button>
+        <button id="mt-pill-local" type="button" class="mt-pill-btn local" title="Локальная модель Ollama (100% на вашей видеокарте без цензуры)">🦙 Лок.</button>
       </div>
 
       <!-- Выпадающий список всех моделей с поиском и категориями -->
@@ -899,16 +989,46 @@
           </label>
         </div>
         <div class="mt-row">
+          <span class="mt-label">Профиль:</span>
+          <select id="mt-translation-profile-sel" class="mt-select" title="Профиль пакетного перевода папки">
+            <option value="eco_book">💎 Эконом + Книга (1–2 запроса)</option>
+            <option value="balanced">⚖️ Баланс (пачки по 15 стр.)</option>
+            <option value="turbo">🚀 Турбо (до 3 потоков)</option>
+            <option value="local_only">🏠 Локальный 100% (Ollama)</option>
+          </select>
+        </div>
+        <div class="mt-row">
           <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#60a5fa; font-weight:600;" title="Передавать уменьшенное превью страницы с номерами бабблов #1..#N в мультимодальную модель">
             <input id="mt-image-context-chk" type="checkbox" />
             👁 Визуальный контекст страницы (VLM)
           </label>
         </div>
         <div class="mt-row">
-          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#f472b6; font-weight:600;" title="Добавляет в начало системного промпта DeepSeek анти-цензурный блок ('Certainly! Here is...')">
-            <input id="mt-anti-censorship-chk" type="checkbox" />
-            🛡 Анти-цензурный промпт DeepSeek
+          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#f472b6; font-weight:600; white-space:normal;" title="Не перекидывает 18+ бабблы, Pass 0, доперевод и ошибки в локальную Ollama">
+            <input id="mt-cloud-only-chk" type="checkbox" />
+            🚀 Вся манга только в облаке (без Ollama — для Grok 18+)
           </label>
+        </div>
+        <div class="mt-row" id="mt-preflight-row">
+          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#e5e7eb; white-space:normal;" title="Отправляет острые 18+ бабблы в локальную Ollama, чтобы цензура не срывала всю пачку">
+            <input id="mt-preflight-nsfw-chk" type="checkbox" checked />
+            <span id="mt-preflight-label-text">🛡 Pre-Flight 18+ разделение в локальную Ollama</span>
+          </label>
+        </div>
+        <div class="mt-row">
+          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#f472b6; font-weight:600; white-space:normal;" title="Добавляет в начало системного промпта контекст взрослой художественной локализации манги">
+            <input id="mt-anti-censorship-chk" type="checkbox" />
+            📜 Расширенный контекст взрослой художественной манги
+          </label>
+        </div>
+        <div class="mt-row">
+          <label class="mt-label" style="cursor:pointer; display:flex; align-items:center; gap:6px; color:#d1d5db; white-space:normal;" title="Скрывает круглую кнопку в углу страницы (панель всегда доступна по иконке расширения в тулбаре или Alt+T)">
+            <input id="mt-hide-fab-chk" type="checkbox" />
+            🙈 Скрыть плавающую кнопку «Переводчик»
+          </label>
+        </div>
+        <div class="mt-row">
+          <button id="mt-grant-cors-btn" type="button" class="mt-btn secondary" style="flex:1; padding:5px 8px; font-size:11.5px;" title="Выдать расширению временное/постоянное право скачивать картинки с CDN текущего сайта">🔓 Разрешить CORS для этого сайта</button>
         </div>
         <div class="mt-row" style="margin-top:2px;">
           <button id="mt-save-settings-btn" class="mt-btn secondary" style="flex:1; padding:6px;">💾 Сохранить настройки</button>
@@ -930,7 +1050,7 @@
 
   function setPanelOpenState(openState) {
     panel.classList.toggle("mt-open", Boolean(openState));
-    fabLauncher.classList.toggle("mt-hidden", Boolean(openState));
+    fabLauncher.classList.toggle("mt-hidden", Boolean(openState) || Boolean(settings.hideFab));
     if (openState) {
       applySavedPanelPosition();
       checkServerAndLoadModels(false, false);
@@ -959,7 +1079,15 @@
   const sourceLangSelect = $mt("mt-source-lang");
   const targetLangSelect = $mt("mt-target-lang");
   const pipelineModeSelect = $mt("mt-pipeline-mode");
+  const translationProfileSelect = $mt("mt-translation-profile-sel");
   const imageContextChk = $mt("mt-image-context-chk");
+  const cloudOnlyChk = $mt("mt-cloud-only-chk");
+  const preflightRow = $mt("mt-preflight-row");
+  const preflightNsfwChk = $mt("mt-preflight-nsfw-chk");
+  const preflightLabelText = $mt("mt-preflight-label-text");
+  const antiCensorshipChk = $mt("mt-anti-censorship-chk");
+  const hideFabChk = $mt("mt-hide-fab-chk");
+  const grantCorsBtn = $mt("mt-grant-cors-btn");
   const activeModelBar = $mt("mt-active-model-bar");
   const providerBadge = $mt("mt-provider-badge");
   const activeModelTitle = $mt("mt-active-model-title");
@@ -968,6 +1096,7 @@
   const pillAuto = $mt("mt-pill-auto");
   const pillFlash = $mt("mt-pill-flash");
   const pillPro = $mt("mt-pill-pro");
+  const pillGrok = $mt("mt-pill-grok");
   const pillLocal = $mt("mt-pill-local");
   const customModelPicker = $mt("mt-custom-model-picker");
   const modelSearchInput = $mt("mt-model-search-input");
@@ -1096,30 +1225,65 @@
     return null;
   }
 
+  function findBestGrokModelInCache() {
+    const cloudGroks = availableModelsCache
+      .filter((m) => m && String(m.id || "").startsWith("unsloth::") && String(m.id || "").toLowerCase().includes("grok"))
+      .map((m) => String(m.id));
+    if (cloudGroks.length === 0) {
+      return "unsloth::grok-4.7";
+    }
+    const nonImg = cloudGroks.filter((id) => !id.toLowerCase().includes("image") && !id.toLowerCase().includes("vision-only"));
+    const pool = nonImg.length > 0 ? nonImg : cloudGroks;
+    const prefs = ["grok-4.7", "grok-4-fast-non-reasoning", "grok-4-fast", "grok-4"];
+    for (const p of prefs) {
+      const hit = pool.find((id) => id.toLowerCase().includes(p));
+      if (hit) return hit;
+    }
+    return pool[0];
+  }
+
+  function syncCloudOnlyExtensionUi() {
+    const cloudOnly = Boolean(cloudOnlyChk ? cloudOnlyChk.checked : settings.cloudOnlyNoLocalFallback);
+    if (preflightRow) preflightRow.style.opacity = cloudOnly ? "0.55" : "1";
+    if (preflightNsfwChk) preflightNsfwChk.disabled = cloudOnly;
+    if (preflightLabelText) {
+      preflightLabelText.textContent = cloudOnly
+        ? "🛡 Pre-Flight 18+ (отключён режимом «Вся манга только в облаке»)"
+        : "🛡 Pre-Flight 18+ разделение в локальную Ollama";
+    }
+  }
+
   function updateProviderPillsUI() {
     const sel = String(settings.model || "auto").trim();
+    const selLow = sel.toLowerCase();
     const eff = sel === "auto" ? String(resolvedServerModel || "auto") : sel;
 
     const isAuto = !sel || sel === "auto";
+    const isLocal = !isAuto && sel.startsWith("ollama::");
+    const isGrok = !isAuto && !isLocal && selLow.includes("grok");
     const isFlash =
       !isAuto &&
+      !isLocal &&
+      !isGrok &&
       (sel === "unsloth::deepseek-v4-flash" ||
         sel.endsWith("/deepseek-v4-flash") ||
         sel.endsWith("::deepseek-chat"));
     const isPro =
       !isAuto &&
+      !isLocal &&
+      !isGrok &&
       (sel === "unsloth::deepseek-v4-pro" ||
         sel.endsWith("/deepseek-v4-pro") ||
         sel.endsWith("::deepseek-reasoner"));
-    const isLocal = !isAuto && sel.startsWith("ollama::");
 
     pillAuto.classList.toggle("active", isAuto);
     pillFlash.classList.toggle("active", isFlash);
     pillPro.classList.toggle("active", isPro);
+    if (pillGrok) pillGrok.classList.toggle("active", isGrok);
     pillLocal.classList.toggle("active", isLocal);
 
-    [pillAuto, pillFlash, pillPro, pillLocal].forEach((b) => {
-      b.disabled = isModelSwitching;
+    [pillAuto, pillFlash, pillPro, pillGrok, pillLocal].forEach((b) => {
+      if (b) b.disabled = isModelSwitching;
     });
 
     const shortResolved = (eff || "qwen3.5").replace(/^(?:unsloth|ollama)::/, "");
@@ -1128,13 +1292,15 @@
       providerBadge.textContent = "✨ АВТО";
       activeModelTitle.textContent = `Авто (${shortResolved})`;
       activeModelSub.textContent = eff.startsWith("unsloth::")
-        ? "Активен облачный API + локальный резерв Ollama"
+        ? (settings.cloudOnlyNoLocalFallback ? "Облачный API (без Ollama)" : "Активен облачный API + локальный резерв Ollama")
         : "Активна локальная модель Ollama (на GPU)";
     } else if (sel.startsWith("unsloth::")) {
       providerBadge.className = "mt-provider-badge cloud";
-      providerBadge.textContent = "☁️ CLOUD";
+      providerBadge.textContent = settings.cloudOnlyNoLocalFallback ? "🚀 CLOUD 18+" : "☁️ CLOUD";
       activeModelTitle.textContent = formatModelDisplayName(sel);
-      activeModelSub.textContent = `ID: ${sel.replace(/^unsloth::/, "")}`;
+      activeModelSub.textContent = settings.cloudOnlyNoLocalFallback
+        ? `ID: ${sel.replace(/^unsloth::/, "")} · только облако`
+        : `ID: ${sel.replace(/^unsloth::/, "")}`;
     } else if (sel.startsWith("ollama::")) {
       providerBadge.className = "mt-provider-badge ollama";
       providerBadge.textContent = "🦙 OLLAMA";
@@ -1154,9 +1320,19 @@
     if (pipelineModeSelect) {
       pipelineModeSelect.value = settings.pipelineMode || "balanced";
     }
+    if (translationProfileSelect) {
+      translationProfileSelect.value = settings.translationProfile || "balanced";
+    }
     if (imageContextChk) {
       imageContextChk.checked = Boolean(settings.useImageContext);
     }
+    if (cloudOnlyChk) {
+      cloudOnlyChk.checked = Boolean(settings.cloudOnlyNoLocalFallback);
+    }
+    if (preflightNsfwChk) {
+      preflightNsfwChk.checked = settings.preflightNsfwSplit !== false;
+    }
+    syncCloudOnlyExtensionUi();
     unslothUrlInput.value = settings.unslothUrl;
     unslothKeyInput.value = "";
     if (serverHasApiKey) {
@@ -1178,8 +1354,9 @@
     skipSfxChk.checked = settings.skipSfx !== false;
     freeTextChk.checked = Boolean(settings.detectFreeText);
     uppercaseChk.checked = settings.uppercase;
-    const antiCensorChk = $mt("mt-anti-censorship-chk");
-    if (antiCensorChk) antiCensorChk.checked = Boolean(settings.antiCensorshipPrompt);
+    if (antiCensorshipChk) antiCensorshipChk.checked = Boolean(settings.antiCensorshipPrompt);
+    if (hideFabChk) hideFabChk.checked = Boolean(settings.hideFab);
+    fabLauncher.classList.toggle("mt-hidden", panel.classList.contains("mt-open") || Boolean(settings.hideFab));
     panel.classList.toggle("mt-minimized", Boolean(settings.minimized));
     minimizeBtn.textContent = settings.minimized ? "▢" : "—";
     applySavedPanelPosition();
@@ -1192,9 +1369,14 @@
     setPanelOpenState(false);
   });
 
-  $mt("mt-web-ui-btn").addEventListener("click", (e) => {
+  $mt("mt-web-ui-btn").addEventListener("click", async (e) => {
     if (!e.isTrusted) return;
-    window.open("http://127.0.0.1:5000/", "_blank");
+    const baseRes = await safeSendMessage({ action: "GET_ACTIVE_SERVER_BASE" });
+    const base = (baseRes && baseRes.ok && baseRes.data && baseRes.data.baseUrl)
+      ? baseRes.data.baseUrl
+      : activeServerBaseUrl;
+    activeServerBaseUrl = base;
+    window.open(`${base}/`, "_blank");
   });
 
   sourceLangSelect.addEventListener("change", () => {
@@ -1223,6 +1405,17 @@
     });
   }
 
+  if (translationProfileSelect) {
+    translationProfileSelect.addEventListener("change", () => {
+      settings.translationProfile = translationProfileSelect.value || "balanced";
+      saveLocalSettings();
+      safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        translationProfile: settings.translationProfile,
+      });
+    });
+  }
+
   if (imageContextChk) {
     imageContextChk.addEventListener("change", () => {
       settings.useImageContext = imageContextChk.checked;
@@ -1231,6 +1424,69 @@
         action: "SAVE_SERVER_SETTINGS",
         useImageContext: settings.useImageContext,
       });
+    });
+  }
+
+  if (cloudOnlyChk) {
+    cloudOnlyChk.addEventListener("change", () => {
+      settings.cloudOnlyNoLocalFallback = cloudOnlyChk.checked;
+      syncCloudOnlyExtensionUi();
+      updateProviderPillsUI();
+      saveLocalSettings();
+      safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        cloudOnlyNoLocalFallback: settings.cloudOnlyNoLocalFallback,
+      });
+    });
+  }
+
+  if (preflightNsfwChk) {
+    preflightNsfwChk.addEventListener("change", () => {
+      settings.preflightNsfwSplit = preflightNsfwChk.checked;
+      saveLocalSettings();
+      safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        preflightNsfwSplit: settings.preflightNsfwSplit,
+      });
+    });
+  }
+
+  if (antiCensorshipChk) {
+    antiCensorshipChk.addEventListener("change", () => {
+      settings.antiCensorshipPrompt = antiCensorshipChk.checked;
+      saveLocalSettings();
+      safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        antiCensorshipPrompt: settings.antiCensorshipPrompt,
+      });
+    });
+  }
+
+  if (hideFabChk) {
+    hideFabChk.addEventListener("change", () => {
+      settings.hideFab = hideFabChk.checked;
+      saveLocalSettings();
+      fabLauncher.classList.toggle("mt-hidden", panel.classList.contains("mt-open") || Boolean(settings.hideFab));
+    });
+  }
+
+  if (grantCorsBtn) {
+    grantCorsBtn.addEventListener("click", async (e) => {
+      if (!e.isTrusted) return;
+      const pageOrigin = location.origin && location.origin.startsWith("http") ? `${location.origin}/*` : "";
+      if (!pageOrigin) {
+        statusText.textContent = "⚠️ На этой странице нельзя выдать CORS-доступ.";
+        return;
+      }
+      const res = await safeSendMessage({
+        action: "REQUEST_HOST_PERMISSION",
+        originPattern: pageOrigin,
+      });
+      if (res && res.ok && res.data && res.data.granted) {
+        statusText.textContent = `🔓 Доступ CORS разрешён для ${location.host}!`;
+      } else {
+        statusText.textContent = `⚠️ ${(res && res.error) || "Доступ не выдан пользователем"}`;
+      }
     });
   }
 
@@ -1362,6 +1618,28 @@
     applySelectedModel("unsloth::deepseek-v4-pro");
   });
 
+  if (pillGrok) {
+    pillGrok.addEventListener("click", async () => {
+      const targetGrok = findBestGrokModelInCache();
+      settings.cloudOnlyNoLocalFallback = true;
+      if (cloudOnlyChk) cloudOnlyChk.checked = true;
+      if (settings.translationProfile === "local_only") {
+        settings.translationProfile = normalizePipelineMode(settings.pipelineMode) === "ultra" ? "eco_book" : "balanced";
+        if (translationProfileSelect) translationProfileSelect.value = settings.translationProfile;
+      }
+      syncCloudOnlyExtensionUi();
+      await applySelectedModel(targetGrok);
+      await safeSendMessage({
+        action: "SAVE_SERVER_SETTINGS",
+        selectedModel: targetGrok,
+        cloudOnlyNoLocalFallback: true,
+        translationProfile: settings.translationProfile,
+      });
+      syncUiFromSettings();
+      statusText.textContent = `🚀 Активен ${targetGrok.replace(/^.*?::/, "")} (вся манга в облаке без Ollama)`;
+    });
+  }
+
   pillLocal.addEventListener("click", () => {
     const bestLocal = getBestInstalledLocalModel();
     if (bestLocal) {
@@ -1428,6 +1706,8 @@
       webSaveDirInput.value = settings.webSaveDir;
       saveLocalSettings();
       statusText.textContent = `💾 Папка сохранений: ${settings.webSaveDir}`;
+    } else if (res && res.ok && res.data && res.data.status === "busy") {
+      statusText.textContent = `⏳ ${res.data.message || "Диалог выбора папки уже открыт."}`;
     } else {
       statusText.textContent = "Выбор папки отменен.";
     }
@@ -1547,6 +1827,16 @@
     settings.autoSaveWeb = autoSaveChk.checked;
     settings.webSaveDir = webSaveDirInput.value.trim();
     settings.overflowMode = overflowModeSel.value || "shrink";
+    settings.useImageContext = Boolean(imageContextChk ? imageContextChk.checked : settings.useImageContext);
+    settings.antiCensorshipPrompt = Boolean(antiCensorshipChk ? antiCensorshipChk.checked : settings.antiCensorshipPrompt);
+    settings.preflightNsfwSplit = Boolean(preflightNsfwChk ? preflightNsfwChk.checked : settings.preflightNsfwSplit);
+    settings.cloudOnlyNoLocalFallback = Boolean(cloudOnlyChk ? cloudOnlyChk.checked : settings.cloudOnlyNoLocalFallback);
+    if (translationProfileSelect) {
+      settings.translationProfile = translationProfileSelect.value || "balanced";
+    }
+    if (hideFabChk) {
+      settings.hideFab = hideFabChk.checked;
+    }
     const manualMod = manualModelInput.value.trim();
     if (manualMod) {
       settings.model = manualMod;
@@ -1562,7 +1852,8 @@
       unslothUrl: settings.unslothUrl,
       selectedModel: settings.model,
       pipelineMode: settings.pipelineMode,
-      useImageContext: Boolean(imageContextChk ? imageContextChk.checked : settings.useImageContext),
+      translationProfile: settings.translationProfile,
+      useImageContext: settings.useImageContext,
       autoSaveWeb: settings.autoSaveWeb,
       webSaveDir: settings.webSaveDir,
       textFilterMode: settings.textFilterMode,
@@ -1574,7 +1865,9 @@
       maxFontSize: settings.maxFontSize,
       uppercase: settings.uppercase,
       overflowMode: settings.overflowMode,
-      antiCensorshipPrompt: Boolean($mt("mt-anti-censorship-chk")?.checked),
+      antiCensorshipPrompt: settings.antiCensorshipPrompt,
+      preflightNsfwSplit: settings.preflightNsfwSplit,
+      cloudOnlyNoLocalFallback: settings.cloudOnlyNoLocalFallback,
     };
     if (enteredKey) {
       savePayload.unslothApiKey = enteredKey;
@@ -1588,8 +1881,20 @@
       serverMaskedApiKey = String(res.data.masked_api_key || "");
       if (res.data.unsloth_url) {
         settings.unslothUrl = res.data.unsloth_url;
-        saveLocalSettings();
       }
+      if (typeof res.data.anti_censorship_prompt === "boolean") {
+        settings.antiCensorshipPrompt = res.data.anti_censorship_prompt;
+      }
+      if (typeof res.data.preflight_nsfw_split === "boolean") {
+        settings.preflightNsfwSplit = res.data.preflight_nsfw_split;
+      }
+      if (typeof res.data.cloud_only_no_local_fallback === "boolean") {
+        settings.cloudOnlyNoLocalFallback = res.data.cloud_only_no_local_fallback;
+      }
+      if (res.data.translation_profile) {
+        settings.translationProfile = res.data.translation_profile;
+      }
+      saveLocalSettings();
       unslothKeyInput.value = "";
       syncUiFromSettings();
       renderCustomModelList(availableModelsCache, resolvedServerModel);
@@ -1772,6 +2077,10 @@
       startServerBtn.style.display = "none";
 
       const hd = healthRes.data || {};
+      const baseRes = await safeSendMessage({ action: "GET_ACTIVE_SERVER_BASE" });
+      if (baseRes && baseRes.ok && baseRes.data && baseRes.data.baseUrl) {
+        activeServerBaseUrl = baseRes.data.baseUrl;
+      }
       serverHasApiKey = Boolean(hd.has_unsloth_key);
       serverMaskedApiKey = String(hd.masked_api_key || "");
       if (hd.unsloth_url) {
@@ -1783,7 +2092,10 @@
           settings.lastLocalModel = hd.selected_model;
         }
       }
-      if (hd.web_save_dir && !settings.webSaveDir) {
+      if (typeof hd.auto_save_web_pages === "boolean") {
+        settings.autoSaveWeb = hd.auto_save_web_pages;
+      }
+      if (hd.web_save_dir) {
         settings.webSaveDir = hd.web_save_dir;
       }
       if (hd.overflow_mode) {
@@ -1791,6 +2103,9 @@
       }
       if (hd.pipeline_mode) {
         settings.pipelineMode = normalizePipelineMode(hd.pipeline_mode);
+      }
+      if (hd.translation_profile && ["eco_book", "balanced", "turbo", "local_only"].includes(hd.translation_profile)) {
+        settings.translationProfile = hd.translation_profile;
       }
       if (typeof hd.use_image_context === "boolean") {
         settings.useImageContext = hd.use_image_context;
@@ -1807,6 +2122,9 @@
       if (typeof hd.detect_free_text === "boolean") {
         settings.detectFreeText = hd.detect_free_text;
       }
+      if (typeof hd.min_text_length === "number" && hd.min_text_length >= 1) {
+        settings.minTextLength = hd.min_text_length;
+      }
       if (typeof hd.min_font_size === "number" && hd.min_font_size >= 6) {
         settings.minFontSize = hd.min_font_size;
       }
@@ -1819,7 +2137,16 @@
       if (typeof hd.anti_censorship_prompt === "boolean") {
         settings.antiCensorshipPrompt = hd.anti_censorship_prompt;
       }
+      if (typeof hd.preflight_nsfw_split === "boolean") {
+        settings.preflightNsfwSplit = hd.preflight_nsfw_split;
+      }
+      if (typeof hd.cloud_only_no_local_fallback === "boolean") {
+        settings.cloudOnlyNoLocalFallback = hd.cloud_only_no_local_fallback;
+      }
       saveLocalSettings();
+      if (hd.folder_job && hd.folder_job.status === "running" && !folderPollTimer) {
+        pollFolderStatus();
+      }
 
       let activeMod = hd.active_model || hd.ollama_model || "qwen3.5";
       const easyOcrOk = hd.easyocr_installed;
@@ -1860,38 +2187,117 @@
     }
   }
 
-  function isMangaCandidate(img) {
-    if (!img || !img.isConnected) return false;
-    if (img.closest(".gallery, .thumb-container, #thumbnail-container, #mt-floating-panel")) {
+  function isMangaCandidate(el) {
+    if (!el || !el.isConnected) return false;
+    if (el.closest(".gallery, .thumb-container, #thumbnail-container, #mt-floating-panel, #mt-studio-shadow-host")) {
       return false;
     }
-    const rect = img.getBoundingClientRect();
+    if (el.tagName === "CANVAS") {
+      if (el.closest(".video-js, video, [data-player]")) return false;
+      if (!el.width || !el.height) return false;
+      const rect = el.getBoundingClientRect();
+      if (rect.width > 0 && rect.height > 0) {
+        return rect.width >= MIN_WIDTH && rect.height >= MIN_HEIGHT;
+      }
+      return el.width >= MIN_WIDTH && el.height >= MIN_HEIGHT;
+    }
+    if (el.tagName !== "IMG") return false;
+    const rect = el.getBoundingClientRect();
     if (rect.width > 0 && rect.height > 0) {
       return rect.width >= MIN_WIDTH && rect.height >= MIN_HEIGHT;
     }
-    const w = img.naturalWidth || 0;
-    const h = img.naturalHeight || 0;
+    const w = el.naturalWidth || 0;
+    const h = el.naturalHeight || 0;
     return w >= MIN_WIDTH && h >= MIN_HEIGHT;
   }
 
-  function isImageInViewport(img) {
-    if (!isMangaCandidate(img)) return false;
-    const rect = img.getBoundingClientRect();
+  function isImageInViewport(el) {
+    if (!isMangaCandidate(el)) return false;
+    const rect = el.getBoundingClientRect();
     const vh = window.innerHeight || document.documentElement.clientHeight;
     const visibleTop = Math.max(0, rect.top);
     const visibleBottom = Math.min(vh, rect.bottom);
     return visibleBottom - visibleTop >= Math.min(180, rect.height * 0.25);
   }
 
-  function resolveImageUrl(img) {
+  function isSafeFetchUrl(urlStr) {
+    try {
+      const parsed = new URL(urlStr, location.href);
+      if (parsed.protocol !== "http:" && parsed.protocol !== "https:") return false;
+      const host = (parsed.hostname || "").trim().toLowerCase().replace(/^\[|\]$/g, "").replace(/\.+$/, "");
+      if (!host || host === "localhost" || host.endsWith(".localhost") || host.endsWith(".local")) return false;
+      if (/^\d+$/.test(host) || /^0x[0-9a-f]+$/i.test(host)) return false;
+      if (
+        host === "0.0.0.0" ||
+        /^127\./.test(host) ||
+        /^10\./.test(host) ||
+        /^192\.168\./.test(host) ||
+        /^169\.254\./.test(host) ||
+        /^0\./.test(host) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(host) ||
+        /^100\.(6[4-9]|[7-9]\d|1([01]\d|2[0-7]))\./.test(host)
+      ) {
+        return false;
+      }
+      if (host === "::1" || host === "::" || host.startsWith("fe80:") || host.startsWith("fc") || host.startsWith("fd") || host.includes("::ffff:")) {
+        return false;
+      }
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  function resetElementStateIfSrcChanged(el) {
+    if (!el || el.tagName !== "IMG") return false;
+    const st = imgStateMap.get(el);
+    if (!st || !st.translated) return false;
+    const curSrc = (el.getAttribute("src") || el.currentSrc || el.src || "").trim();
+    if (!curSrc) return false;
+    if (
+      curSrc === st.translatedObjectUrl ||
+      curSrc === st.translatedDataUrl ||
+      curSrc === st.originalSrc
+    ) {
+      return false;
+    }
+    if (st.translatedObjectUrl) {
+      revokeManagedUrl(st.translatedObjectUrl);
+    }
+    if (st.originalBlobUrl) {
+      revokeManagedUrl(st.originalBlobUrl);
+    }
+    st.translated = false;
+    st.busy = false;
+    st.originalSrc = "";
+    st.originalSrcset = "";
+    st.originalBase64 = "";
+    st.originalBlobUrl = "";
+    st.translatedDataUrl = "";
+    st.translatedObjectUrl = "";
+    st.pictureSrcsets = null;
+    const badge = imgBadgeMap.get(el);
+    if (badge) {
+      badge.classList.remove("mt-loading", "mt-error");
+      badge.textContent = "🉐 Перевести";
+      badge.title = "";
+      updateBadgePosition(el, badge);
+    }
+    return true;
+  }
+
+  function resolveImageUrl(el) {
+    if (!el || el.tagName === "CANVAS") return "";
+    resetElementStateIfSrcChanged(el);
+    const st = imgStateMap.get(el);
     const candidates = [
-      img.dataset.mtOriginalSrc,
-      img.currentSrc,
-      img.src,
-      img.dataset.src,
-      img.dataset.lazySrc,
-      img.dataset.original,
-      img.dataset.url,
+      st && st.translated ? st.originalSrc : "",
+      el.currentSrc,
+      el.src,
+      el.dataset ? el.dataset.src : "",
+      el.dataset ? el.dataset.lazySrc : "",
+      el.dataset ? el.dataset.original : "",
+      el.dataset ? el.dataset.url : "",
     ];
     for (const c of candidates) {
       if (typeof c === "string" && c.trim() && !c.startsWith("data:image/gif") && !c.startsWith("data:image/svg")) {
@@ -1901,104 +2307,144 @@
     return "";
   }
 
-  function clearPictureSources(img) {
+  function clearPictureSources(img, st) {
     const pic = img.parentElement;
     if (pic && pic.tagName === "PICTURE") {
+      if (!st.pictureSrcsets) st.pictureSrcsets = new Map();
       pic.querySelectorAll("source").forEach((sourceEl) => {
-        if (sourceEl.srcset && !sourceEl.dataset.mtOriginalSrcset) {
-          sourceEl.dataset.mtOriginalSrcset = sourceEl.srcset;
+        if (sourceEl.srcset && !st.pictureSrcsets.has(sourceEl)) {
+          st.pictureSrcsets.set(sourceEl, sourceEl.srcset);
         }
         sourceEl.removeAttribute("srcset");
       });
     }
   }
 
-  function restorePictureSources(img) {
-    const pic = img.parentElement;
-    if (pic && pic.tagName === "PICTURE") {
-      pic.querySelectorAll("source").forEach((sourceEl) => {
-        if (sourceEl.dataset.mtOriginalSrcset) {
-          sourceEl.setAttribute("srcset", sourceEl.dataset.mtOriginalSrcset);
-        }
-      });
-    }
+  function restorePictureSources(img, st) {
+    if (!st || !st.pictureSrcsets) return;
+    st.pictureSrcsets.forEach((origSrcset, sourceEl) => {
+      if (sourceEl && sourceEl.isConnected && origSrcset) {
+        sourceEl.setAttribute("srcset", origSrcset);
+      }
+    });
   }
 
-  function tryExtractCanvasBase64(img) {
+  function tryExtractCanvasBase64(el) {
     try {
-      if (!img.complete || !img.naturalWidth || !img.naturalHeight) return null;
+      if (!el) return null;
+      if (el.tagName === "CANVAS") {
+        if (!el.width || !el.height) return null;
+        return el.toDataURL("image/webp", 0.92);
+      }
+      if (!el.complete || !el.naturalWidth || !el.naturalHeight) return null;
       const canvas = document.createElement("canvas");
-      canvas.width = img.naturalWidth;
-      canvas.height = img.naturalHeight;
+      canvas.width = el.naturalWidth;
+      canvas.height = el.naturalHeight;
       const ctx = canvas.getContext("2d");
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(el, 0, 0);
       return canvas.toDataURL("image/webp", 0.92);
     } catch (_) {
       return null;
     }
   }
 
+  function drawObjectUrlToCanvas(canvas, url) {
+    return new Promise((resolve, reject) => {
+      if (!canvas || canvas.tagName !== "CANVAS" || !url) {
+        reject(new Error("Invalid canvas draw target"));
+        return;
+      }
+      const ctx = canvas.getContext("2d");
+      if (!ctx) {
+        reject(new Error("Canvas 2D context unavailable"));
+        return;
+      }
+      const tmpImg = new Image();
+      tmpImg.onload = () => {
+        try {
+          ctx.clearRect(0, 0, canvas.width, canvas.height);
+          ctx.drawImage(tmpImg, 0, 0, canvas.width, canvas.height);
+          resolve();
+        } catch (err) {
+          reject(err);
+        }
+      };
+      tmpImg.onerror = () => reject(new Error("Не удалось отрисовать переведённое изображение на canvas"));
+      tmpImg.src = url;
+    });
+  }
+
   async function tryFetchInPageContext(url) {
-    for (const cred of ["omit", "include"]) {
-      try {
-        const res = await fetch(url, { credentials: cred });
-        if (!res.ok) continue;
-        const blob = await res.blob();
-        if (!blob || blob.size < 100) continue;
-        const dataUrl = await new Promise((resolve) => {
-          const reader = new FileReader();
-          reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : null);
-          reader.onerror = () => resolve(null);
-          reader.readAsDataURL(blob);
-        });
-        if (dataUrl) return dataUrl;
-      } catch (_) {}
-    }
+    if (!isSafeFetchUrl(url)) return null;
+    try {
+      const parsed = new URL(url, location.href);
+      const credMode = parsed.origin === location.origin ? "include" : "omit";
+      const res = await fetch(parsed.href, { credentials: credMode });
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      if (!blob || blob.size < 100 || blob.size > 25 * 1024 * 1024) return null;
+      const dataUrl = await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+      if (dataUrl) return dataUrl;
+    } catch (_) {}
     return null;
   }
 
-  function resolveCandidatePageIndex(targetImg) {
-    if (targetImg.dataset.mtPageIndex) {
-      return parseInt(targetImg.dataset.mtPageIndex, 10) || 1;
+  function resolveCandidatePageIndex(targetEl) {
+    const st = getMediaState(targetEl);
+    if (st.pageIndex > 0) {
+      return st.pageIndex;
     }
-    const allCandidates = Array.from(document.querySelectorAll("img")).filter((el) => isMangaCandidate(el));
-    const idx = allCandidates.indexOf(targetImg);
+    const allCandidates = Array.from(document.querySelectorAll("img, canvas")).filter((el) => isMangaCandidate(el));
+    const idx = allCandidates.indexOf(targetEl);
     const pageNum = idx >= 0 ? idx + 1 : 1;
-    targetImg.dataset.mtPageIndex = String(pageNum);
+    st.pageIndex = pageNum;
     return pageNum;
   }
 
-  async function translateSingleImage(img, badge, explicitPageIndex = null) {
-    if (img.dataset.mtBusy === "true") return { ok: false, skipped: true };
-    const srcUrl = resolveImageUrl(img);
-    if (!srcUrl) return { ok: false, error: "Пустой URL картинки" };
+  async function translateSingleImage(el, badge, explicitPageIndex = null) {
+    resetElementStateIfSrcChanged(el);
+    const st = getMediaState(el);
+    if (st.busy) return { ok: false, skipped: true };
+    const srcUrl = st.isCanvas ? location.href : resolveImageUrl(el);
+    if (!srcUrl && !st.isCanvas) return { ok: false, error: "Пустой URL картинки" };
 
-    const pageIndex = explicitPageIndex || resolveCandidatePageIndex(img);
+    const pageIndex = explicitPageIndex || resolveCandidatePageIndex(el);
 
-    img.dataset.mtBusy = "true";
+    st.busy = true;
     if (badge) {
       badge.classList.remove("mt-error");
       badge.classList.add("mt-loading");
       badge.textContent = "⏳ Перевод...";
-      updateBadgePosition(img, badge);
+      updateBadgePosition(el, badge);
     }
 
+    const reqId = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+    activeTranslateRequestId = reqId;
     try {
-      const isRetranslate = img.dataset.mtTranslated === "true";
-      let imageB64 = isRetranslate ? (img.dataset.mtOriginalBase64 || null) : tryExtractCanvasBase64(img);
-      if (imageB64 && !img.dataset.mtOriginalBase64 && !isRetranslate) {
-        img.dataset.mtOriginalBase64 = imageB64;
+      const isRetranslate = Boolean(st.translated);
+      let imageB64 = isRetranslate ? (st.originalBase64 || null) : tryExtractCanvasBase64(el);
+      if (imageB64 && !st.originalBase64 && !isRetranslate) {
+        st.originalBase64 = imageB64;
       }
-      if (!imageB64 && srcUrl) {
+      if (st.isCanvas && imageB64 && !st.originalBlobUrl) {
+        st.originalBlobUrl = dataUrlToBlobUrl(imageB64);
+      }
+      if (!imageB64 && !st.isCanvas && srcUrl) {
         imageB64 = await tryFetchInPageContext(srcUrl);
-        if (imageB64 && !img.dataset.mtOriginalBase64) {
-          img.dataset.mtOriginalBase64 = imageB64;
+        if (imageB64 && !st.originalBase64) {
+          st.originalBase64 = imageB64;
         }
       }
 
       const response = await safeSendMessage({
         action: "TRANSLATE_IMAGE",
-        imageUrl: srcUrl,
+        requestId: reqId,
+        imageUrl: st.isCanvas ? null : srcUrl,
         imageBase64: imageB64,
         lang: settings.lang,
         targetLang: settings.targetLang,
@@ -2032,22 +2478,32 @@
         return { ok: true, empty: true };
       }
 
-      if (!img.dataset.mtOriginalSrc) {
-        img.dataset.mtOriginalSrc = srcUrl;
-      }
-      if (img.srcset) {
-        img.dataset.mtOriginalSrcset = img.srcset;
-        img.removeAttribute("srcset");
-      }
-      clearPictureSources(img);
-
-      const finalImgSrc = result.translated_image.startsWith("data:")
+      const finalDataUrl = result.translated_image.startsWith("data:")
         ? result.translated_image
         : `data:image/webp;base64,${result.translated_image}`;
 
-      img.src = finalImgSrc;
-      img.dataset.mtTranslatedSrc = finalImgSrc;
-      img.dataset.mtTranslated = "true";
+      const nextObjUrl = dataUrlToBlobUrl(finalDataUrl);
+      if (st.translatedObjectUrl) {
+        revokeManagedUrl(st.translatedObjectUrl);
+      }
+      st.translatedDataUrl = finalDataUrl;
+      st.translatedObjectUrl = nextObjUrl;
+      st.translated = true;
+
+      if (st.isCanvas) {
+        await drawObjectUrlToCanvas(el, nextObjUrl);
+      } else {
+        if (!st.originalSrc) {
+          st.originalSrc = srcUrl;
+        }
+        if (el.srcset && !st.originalSrcset) {
+          st.originalSrcset = el.srcset;
+          el.removeAttribute("srcset");
+        }
+        clearPictureSources(el, st);
+        el.src = nextObjUrl;
+      }
+
       showingOriginal = false;
       toggleOrigBtn.textContent = "👁 Показать оригинал";
 
@@ -2070,10 +2526,13 @@
       statusText.textContent = `❌ ${err.message}`;
       return { ok: false, error: err.message };
     } finally {
-      img.dataset.mtBusy = "false";
+      if (activeTranslateRequestId === reqId) {
+        activeTranslateRequestId = null;
+      }
+      st.busy = false;
       if (badge) {
         badge.classList.remove("mt-loading");
-        updateBadgePosition(img, badge);
+        updateBadgePosition(el, badge);
       }
     }
   }
@@ -2086,12 +2545,37 @@
   }
 
   const trackedImages = new Set();
+  const visibleTrackedImages = new Set();
+  const hookedLoadTargets = new Set();
   const imgBadgeMap = new WeakMap();
   const hookedLoadImages = new WeakSet();
 
-  function updateBadgePosition(img, badge) {
-    if (!img || !img.isConnected || !badge) return;
-    const rect = img.getBoundingClientRect();
+  const intersectionObserver = typeof IntersectionObserver !== "undefined"
+    ? new IntersectionObserver((entries) => {
+        entries.forEach((entry) => {
+          const target = entry.target;
+          if (!target.isConnected) {
+            visibleTrackedImages.delete(target);
+            trackedImages.delete(target);
+            return;
+          }
+          if (entry.isIntersecting) {
+            visibleTrackedImages.add(target);
+          } else {
+            visibleTrackedImages.delete(target);
+            const b = imgBadgeMap.get(target);
+            if (b && !b.classList.contains("mt-loading") && !b.classList.contains("mt-error")) {
+              b.classList.remove("mt-visible");
+              updateBadgePosition(target, b);
+            }
+          }
+        });
+      }, { rootMargin: "150px 0px" })
+    : null;
+
+  function updateBadgePosition(el, badge) {
+    if (!el || !el.isConnected || !badge) return;
+    const rect = el.getBoundingClientRect();
     const isVisibleInViewport =
       rect.width >= MIN_WIDTH &&
       rect.height >= MIN_HEIGHT &&
@@ -2117,17 +2601,37 @@
     badge.style.right = `${Math.round(rightOffset)}px`;
   }
 
+  function cleanupDisconnectedElement(el) {
+    visibleTrackedImages.delete(el);
+    trackedImages.delete(el);
+    if (intersectionObserver) {
+      try { intersectionObserver.unobserve(el); } catch (_) {}
+    }
+    const badge = imgBadgeMap.get(el);
+    if (badge) badge.remove();
+    imgBadgeMap.delete(el);
+    const st = imgStateMap.get(el);
+    if (st) {
+      if (st.translatedObjectUrl) revokeManagedUrl(st.translatedObjectUrl);
+      if (st.originalBlobUrl) revokeManagedUrl(st.originalBlobUrl);
+      if (Array.isArray(st.listeners)) {
+        st.listeners.forEach(([target, evt, fn, opts]) => {
+          try { target.removeEventListener(evt, fn, opts); } catch (_) {}
+        });
+        st.listeners = [];
+      }
+    }
+  }
+
   function refreshActiveBadgePositions() {
-    trackedImages.forEach((img) => {
-      const badge = imgBadgeMap.get(img);
-      if (!img.isConnected) {
-        if (badge) badge.remove();
-        imgBadgeMap.delete(img);
-        trackedImages.delete(img);
+    visibleTrackedImages.forEach((el) => {
+      if (!el.isConnected) {
+        cleanupDisconnectedElement(el);
         return;
       }
+      const badge = imgBadgeMap.get(el);
       if (badge) {
-        updateBadgePosition(img, badge);
+        updateBadgePosition(el, badge);
       }
     });
   }
@@ -2152,7 +2656,7 @@
   window.addEventListener("scroll", onWindowScroll, { passive: true });
   window.addEventListener("resize", onWindowResize, { passive: true });
 
-  /* Отслеживание наведения по координатам курсора — работает даже если поверх <img> лежит оверлей читалки */
+  /* Отслеживание наведения по координатам курсора — только среди видимых в viewport кандидатов */
   let pointerRafPending = false;
   let lastPointerX = -1;
   let lastPointerY = -1;
@@ -2174,10 +2678,14 @@
           return;
         }
       }
-      trackedImages.forEach((img) => {
-        const badge = imgBadgeMap.get(img);
-        if (!badge || !img.isConnected) return;
-        const r = img.getBoundingClientRect();
+      visibleTrackedImages.forEach((el) => {
+        if (!el.isConnected) {
+          cleanupDisconnectedElement(el);
+          return;
+        }
+        const badge = imgBadgeMap.get(el);
+        if (!badge) return;
+        const r = el.getBoundingClientRect();
         const inside =
           r.width >= MIN_WIDTH &&
           r.height >= MIN_HEIGHT &&
@@ -2189,19 +2697,19 @@
           if (!badge.classList.contains("mt-visible")) {
             badge.classList.add("mt-visible");
           }
-          updateBadgePosition(img, badge);
+          updateBadgePosition(el, badge);
         } else if (!badge.matches(":hover") && badge.classList.contains("mt-visible")) {
           badge.classList.remove("mt-visible");
-          updateBadgePosition(img, badge);
+          updateBadgePosition(el, badge);
         }
       });
     });
   };
   window.addEventListener("mousemove", onGlobalPointerMove, { passive: true });
 
-  function attachBadgeToImage(img) {
-    if (imgBadgeMap.has(img)) return;
-    if (!isMangaCandidate(img)) return;
+  function attachBadgeToImage(el) {
+    if (imgBadgeMap.has(el)) return;
+    if (!isMangaCandidate(el)) return;
 
     if (!badgesLayer || !badgesLayer.isConnected) {
       badgesLayer = $mt("mt-badges-layer");
@@ -2212,55 +2720,76 @@
       }
     }
 
+    const st = getMediaState(el);
     const badge = document.createElement("button");
     badge.type = "button";
     badge.className = "mt-translate-badge";
     badge.textContent = "🉐 Перевести";
 
     const showBadge = () => {
-      if (!isMangaCandidate(img)) return;
+      if (!isMangaCandidate(el)) return;
       badge.classList.add("mt-visible");
-      updateBadgePosition(img, badge);
+      updateBadgePosition(el, badge);
     };
 
     const hideBadge = () => {
       badge.classList.remove("mt-visible");
       setTimeout(() => {
         if (!badge.matches(":hover") && !badge.classList.contains("mt-visible")) {
-          updateBadgePosition(img, badge);
+          updateBadgePosition(el, badge);
         }
       }, 60);
     };
 
-    img.addEventListener("mouseenter", showBadge);
-    img.addEventListener("mousemove", showBadge);
-    img.addEventListener("mouseleave", hideBadge);
-    badge.addEventListener("mouseenter", () => {
+    const onBadgeEnter = () => {
       badge.classList.add("mt-visible");
-      updateBadgePosition(img, badge);
-    });
-    badge.addEventListener("mouseleave", hideBadge);
+      updateBadgePosition(el, badge);
+    };
 
-    badge.addEventListener("click", (e) => {
+    const onBadgeClick = (e) => {
       if (!e.isTrusted) return;
       e.preventDefault();
       e.stopPropagation();
-      translateSingleImage(img, badge);
-    });
+      translateSingleImage(el, badge);
+    };
+
+    el.addEventListener("mouseenter", showBadge);
+    el.addEventListener("mouseleave", hideBadge);
+    badge.addEventListener("mouseenter", onBadgeEnter);
+    badge.addEventListener("mouseleave", hideBadge);
+    badge.addEventListener("click", onBadgeClick);
+    st.listeners.push(
+      [el, "mouseenter", showBadge, false],
+      [el, "mouseleave", hideBadge, false],
+      [badge, "mouseenter", onBadgeEnter, false],
+      [badge, "mouseleave", hideBadge, false],
+      [badge, "click", onBadgeClick, false]
+    );
 
     badgesLayer.appendChild(badge);
-    imgBadgeMap.set(img, badge);
-    trackedImages.add(img);
+    imgBadgeMap.set(el, badge);
+    trackedImages.add(el);
+    if (intersectionObserver) {
+      intersectionObserver.observe(el);
+    }
+    if (isImageInViewport(el)) {
+      visibleTrackedImages.add(el);
+    }
   }
 
   function scanPageImages() {
-    document.querySelectorAll("img").forEach((img) => {
-      if (imgBadgeMap.has(img)) return;
-      if (isMangaCandidate(img)) {
-        attachBadgeToImage(img);
-      } else if (!hookedLoadImages.has(img)) {
-        hookedLoadImages.add(img);
-        img.addEventListener("load", () => attachBadgeToImage(img));
+    document.querySelectorAll("img, canvas").forEach((el) => {
+      resetElementStateIfSrcChanged(el);
+      if (imgBadgeMap.has(el)) return;
+      if (isMangaCandidate(el)) {
+        attachBadgeToImage(el);
+      } else if (el.tagName === "IMG" && !hookedLoadImages.has(el)) {
+        hookedLoadImages.add(el);
+        hookedLoadTargets.add(el);
+        const onImgLoad = () => attachBadgeToImage(el);
+        const st = getMediaState(el);
+        el.addEventListener("load", onImgLoad);
+        st.listeners.push([el, "load", onImgLoad, false]);
       }
     });
   }
@@ -2294,6 +2823,9 @@
       statusText.textContent = `⏳ Перевод ${modeLabel}: ${i + 1} из ${candidates.length}...`;
 
       const res = await translateSingleImage(candidates[i], imgBadgeMap.get(candidates[i]));
+      if (pageStopRequested) {
+        break;
+      }
       if (res && res.ok) {
         okCount++;
       } else if (!res?.skipped) {
@@ -2324,10 +2856,11 @@
 
   async function translateAllVisibleImages() {
     scanPageImages();
-    const allMangaImgs = Array.from(document.querySelectorAll("img")).filter((img) =>
-      isMangaCandidate(img)
-    );
-    let candidates = allMangaImgs.filter((img) => img.dataset.mtTranslated !== "true");
+    const allMangaImgs = Array.from(document.querySelectorAll("img, canvas")).filter((el) => {
+      resetElementStateIfSrcChanged(el);
+      return isMangaCandidate(el);
+    });
+    let candidates = allMangaImgs.filter((el) => !imgStateMap.get(el)?.translated);
     if (candidates.length === 0 && allMangaImgs.length > 0) {
       candidates = allMangaImgs;
     }
@@ -2336,9 +2869,10 @@
 
   async function translateViewportImagesOnly() {
     scanPageImages();
-    const viewportImgs = Array.from(document.querySelectorAll("img")).filter((img) =>
-      isImageInViewport(img)
-    );
+    const viewportImgs = Array.from(document.querySelectorAll("img, canvas")).filter((el) => {
+      resetElementStateIfSrcChanged(el);
+      return isImageInViewport(el);
+    });
     if (viewportImgs.length === 0) {
       statusText.textContent = "На текущем экране не найдено кадров манги.";
       return;
@@ -2348,29 +2882,43 @@
 
   stopPageBtn.addEventListener("click", () => {
     pageStopRequested = true;
-    statusText.textContent = "⏸ Остановка после текущей страницы...";
+    statusText.textContent = "⏹ Прерывание перевода...";
+    safeSendMessage({
+      action: "CANCEL_TRANSLATE",
+      requestId: activeTranslateRequestId || null,
+    });
   });
 
-  function toggleOriginalAll() {
-    const translatedImgs = Array.from(
-      document.querySelectorAll('img[data-mt-translated="true"]')
-    );
-    if (translatedImgs.length === 0) return;
+  async function toggleOriginalAll() {
+    const translatedEls = Array.from(trackedImages).filter((el) => {
+      const st = imgStateMap.get(el);
+      return Boolean(el.isConnected && st && st.translated);
+    });
+    if (translatedEls.length === 0) return;
 
     showingOriginal = !showingOriginal;
-    translatedImgs.forEach((img) => {
-      if (showingOriginal) {
-        img.src = img.dataset.mtOriginalSrc;
-        if (img.dataset.mtOriginalSrcset) {
-          img.setAttribute("srcset", img.dataset.mtOriginalSrcset);
+    for (const el of translatedEls) {
+      const st = imgStateMap.get(el);
+      if (!st) continue;
+      if (st.isCanvas) {
+        const targetUrl = showingOriginal ? st.originalBlobUrl : st.translatedObjectUrl;
+        if (targetUrl) {
+          try { await drawObjectUrlToCanvas(el, targetUrl); } catch (_) {}
         }
-        restorePictureSources(img);
-      } else {
-        if (img.srcset) img.removeAttribute("srcset");
-        clearPictureSources(img);
-        img.src = img.dataset.mtTranslatedSrc;
+        continue;
       }
-    });
+      if (showingOriginal) {
+        el.src = st.originalSrc;
+        if (st.originalSrcset) {
+          el.setAttribute("srcset", st.originalSrcset);
+        }
+        restorePictureSources(el, st);
+      } else {
+        if (el.srcset) el.removeAttribute("srcset");
+        clearPictureSources(el, st);
+        el.src = st.translatedObjectUrl || st.translatedDataUrl;
+      }
+    }
     toggleOrigBtn.textContent = showingOriginal ? "👁 Вернуть перевод" : "👁 Показать оригинал";
   }
 
@@ -2432,7 +2980,9 @@
       targetLang: settings.targetLang,
       model: settings.model,
       pipelineMode: settings.pipelineMode,
+      translationProfile: settings.translationProfile,
       useImageContext: settings.useImageContext,
+      antiCensorshipPrompt: settings.antiCensorshipPrompt,
       uppercase: settings.uppercase,
       minFontSize: settings.minFontSize,
       maxFontSize: settings.maxFontSize,
@@ -2444,7 +2994,7 @@
       minTextLength: settings.minTextLength,
     });
 
-    if (!res || !res.ok) {
+    if (!res || !res.ok || !res.data) {
       statusText.textContent = `Ошибка: ${(res && res.error) || "Сервер недоступен"}`;
       folderBtn.disabled = false;
       return;
@@ -2452,6 +3002,18 @@
 
     if (res.data.status === "cancelled") {
       statusText.textContent = "Выбор папки отменен.";
+      folderBtn.disabled = false;
+      return;
+    }
+
+    if (res.data.status === "busy") {
+      statusText.textContent = `⏳ ${res.data.message || "Диалог выбора папки уже открыт."}`;
+      folderBtn.disabled = false;
+      return;
+    }
+
+    if (typeof res.data.total_images !== "number") {
+      statusText.textContent = `ℹ️ ${res.data.message || "Перевод папки не запущен."}`;
       folderBtn.disabled = false;
       return;
     }
@@ -2474,6 +3036,9 @@
   });
 
   const onRuntimeMessage = (msg, _sender, sendResponse) => {
+    if (_sender && _sender.id && _sender.id !== chrome.runtime.id) {
+      return false;
+    }
     if (msg && msg.action === "TOGGLE_PANEL") {
       const willOpen = !panel.classList.contains("mt-open");
       setPanelOpenState(willOpen);
@@ -2492,8 +3057,16 @@
   };
   chrome.runtime.onMessage.addListener(onRuntimeMessage);
 
+  function isEditableTarget(target) {
+    if (!target || target.nodeType !== 1) return false;
+    const tag = target.tagName;
+    if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return true;
+    return Boolean(target.isContentEditable);
+  }
+
   const onKeyDown = (e) => {
     if (!e.isTrusted) return;
+    if (isEditableTarget(e.target)) return;
     if (e.altKey && !e.ctrlKey && !e.metaKey && (e.code === "KeyT" || e.key === "t" || e.key === "T")) {
       e.preventDefault();
       if (!panel.classList.contains("mt-open")) {
@@ -2505,7 +3078,12 @@
   window.addEventListener("keydown", onKeyDown);
 
   scanPageImages();
-  const observer = new MutationObserver(() => {
+  const observer = new MutationObserver((mutations) => {
+    for (const m of mutations) {
+      if (m.type === "attributes" && m.target && m.target.tagName === "IMG") {
+        resetElementStateIfSrcChanged(m.target);
+      }
+    }
     if (mutationScanTimer) return;
     mutationScanTimer = setTimeout(() => {
       mutationScanTimer = null;
@@ -2517,19 +3095,42 @@
       childList: true,
       subtree: true,
       attributes: true,
-      attributeFilter: ["src", "srcset", "data-src", "data-lazy-src", "data-original"],
+      attributeFilter: ["src", "srcset", "data-src", "data-lazy-src", "data-original", "width", "height"],
     });
   }
 
   window.__mtCleanup = () => {
     const wasOpen = panel.classList.contains("mt-open");
+    pageStopRequested = true;
+    if (activeTranslateRequestId) {
+      safeSendMessage({ action: "CANCEL_TRANSLATE", requestId: activeTranslateRequestId });
+      activeTranslateRequestId = null;
+    }
     observer.disconnect();
+    if (intersectionObserver) {
+      try { intersectionObserver.disconnect(); } catch (_) {}
+    }
     window.removeEventListener("keydown", onKeyDown);
     window.removeEventListener("scroll", onWindowScroll);
     window.removeEventListener("resize", onWindowResize);
     window.removeEventListener("mousemove", onGlobalPointerMove);
     window.removeEventListener("mousemove", onWindowMouseMove);
     window.removeEventListener("mouseup", onWindowMouseUp);
+    trackedImages.forEach((el) => cleanupDisconnectedElement(el));
+    hookedLoadTargets.forEach((el) => {
+      const st = imgStateMap.get(el);
+      if (st && Array.isArray(st.listeners)) {
+        st.listeners.forEach(([target, evt, fn, opts]) => {
+          try { target.removeEventListener(evt, fn, opts); } catch (_) {}
+        });
+        st.listeners = [];
+      }
+    });
+    hookedLoadTargets.clear();
+    visibleTrackedImages.clear();
+    trackedImages.clear();
+    Array.from(activeObjectUrls).forEach((url) => revokeManagedUrl(url));
+    activeObjectUrls.clear();
     if (scrollScanTimer) clearTimeout(scrollScanTimer);
     if (mutationScanTimer) clearTimeout(mutationScanTimer);
     if (folderPollTimer) clearInterval(folderPollTimer);

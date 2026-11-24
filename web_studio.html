@@ -5973,7 +5973,7 @@
       if (groks.length === 0) return "";
       const nonImgGroks = groks.filter(m => !m.toLowerCase().includes("image") && !m.toLowerCase().includes("vision-only"));
       const pool = nonImgGroks.length > 0 ? nonImgGroks : groks;
-      const prefs = ["grok-4.7", "grok-4-fast-non-reasoning", "grok-4-fast", "grok-4"];
+      const prefs = ["grok-4-fast-non-reasoning", "grok-4-fast", "grok-4.7", "grok-4"];
       for (const p of prefs) {
         const hit = pool.find(m => m.toLowerCase() === p || m.toLowerCase().includes(p));
         if (hit) return hit;

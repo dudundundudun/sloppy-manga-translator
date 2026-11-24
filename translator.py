@@ -1417,11 +1417,11 @@ TRANSLATION_PROFILES: dict[str, dict[str, Any]] = {
         "pages_per_batch": 25,
         "tail_merge_pages": 10,
         "max_parallel_streams": 1,
-        "min_phrases_per_stream": 150,
+        "min_phrases_per_stream": 65,
         "parallel_trigger_phrases": 9999,
         "two_phase_book_mode": True,
         "local_only": False,
-        "description": "Двухфазный режим: сначала локальный OCR пачки (до 25–35 стр.), затем перевод единым сценарием книги (по <=150 фраз без обрезки JSON и таймаутов).",
+        "description": "Двухфазный режим: сначала локальный OCR пачки (до 25–35 стр.), затем перевод единым сценарием книги (по <=65 фраз без обрезки JSON и таймаутов).",
     },
     "balanced": {
         "id": "balanced",
@@ -1430,11 +1430,11 @@ TRANSLATION_PROFILES: dict[str, dict[str, Any]] = {
         "pages_per_batch": 15,
         "tail_merge_pages": 5,
         "max_parallel_streams": 2,
-        "min_phrases_per_stream": 90,
-        "parallel_trigger_phrases": 120,
+        "min_phrases_per_stream": 55,
+        "parallel_trigger_phrases": 110,
         "two_phase_book_mode": False,
         "local_only": False,
-        "description": "Пачки по 15 страниц со слиянием хвостов (<= 5 стр.), параллельное дробление только при > 120 уникальных фраз (~2 запроса на 25 стр.).",
+        "description": "Пачки по 15 страниц со слиянием хвостов (<= 5 стр.), параллельное дробление только при > 110 уникальных фраз (<=65 фраз на чанк).",
     },
     "turbo": {
         "id": "turbo",
@@ -1525,7 +1525,8 @@ SOURCE_LANG_NAMES_RU = {
 }
 
 MAX_BUBBLES_PER_BATCH_LOCAL = 12
-MAX_BUBBLES_PER_BATCH_CLOUD = 150
+MAX_BUBBLES_PER_BATCH_CLOUD = 65
+MAX_BUBBLES_PER_BATCH_CLOUD_SLOW = 45
 CLOUD_PARALLEL_CHUNK_SIZE = 42
 MAX_CONCURRENT_CLOUD_REQUESTS = 3
 
@@ -3085,12 +3086,15 @@ class OllamaTranslator:
         self.glossary: list[dict[str, str]] = []
         self.stop_requested: bool = False
         self._last_call_was_refusal: bool = False
+        self._last_call_was_network_error: bool = False
         self.last_refusal_message: str = ""
         self.last_local_fallback_model: str = ""
         self.nsfw_mode: bool = False
         self.nsfw_mode_reason: str = ""
         self._consecutive_cloud_failures: int = 0
         self._consecutive_cloud_refusals: int = 0
+        self._batch_cloud_timeouts_count: int = 0
+        self._cloud_disable_stream: bool = False
         self.diagnostics_stats: dict[str, Any] = {
             "nsfw_mode_active": False,
             "nsfw_mode_switches_count": 0,
@@ -3131,6 +3135,32 @@ class OllamaTranslator:
         if mod and not mod.startswith("unsloth::") and mod != "auto":
             return False
         return self._is_remote_cloud_url(self.unsloth_url)
+
+    @staticmethod
+    def _is_slow_or_reasoning_cloud_model(model_id: str | None) -> bool:
+        """Определяет медленные/reasoning облачные модели, требующие компактных чанков без агрессивной параллельности."""
+        name = (model_id or "").strip().lower()
+        if name.startswith("unsloth::"):
+            name = name.split("unsloth::", 1)[1].strip()
+        if not name or "non-reasoning" in name:
+            return False
+        if any(m in name for m in ("grok-4.7", "deepseek-r1", "deepseek-reasoner", "reasoning", "thinking")):
+            return True
+        return bool(re.search(r"(?:^|[/:_-])o[134](?:$|[-._])", name))
+
+    def _get_effective_cloud_batch_limit(self, active_model: str | None = None) -> int:
+        """Возвращает адаптивный лимит бабблов на 1 облачный запрос с учётом скорости модели и недавних таймаутов."""
+        base = (
+            MAX_BUBBLES_PER_BATCH_CLOUD_SLOW
+            if self._is_slow_or_reasoning_cloud_model(active_model)
+            else MAX_BUBBLES_PER_BATCH_CLOUD
+        )
+        if (
+            int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) >= 1
+            or int(getattr(self, "_consecutive_cloud_failures", 0) or 0) >= 1
+        ):
+            return max(20, base // 2)
+        return base
 
     def enable_chapter_nsfw_mode(self, reason: str = "100% цензурный отказ облачного провайдера", is_network_outage: bool = False) -> None:
         """
@@ -3174,6 +3204,8 @@ class OllamaTranslator:
         self.nsfw_mode_reason = ""
         self._consecutive_cloud_failures = 0
         self._consecutive_cloud_refusals = 0
+        self._last_call_was_network_error = False
+        self._batch_cloud_timeouts_count = 0
         self.diagnostics_stats["nsfw_mode_active"] = False
 
     def reset_diagnostics(self) -> None:
@@ -3181,6 +3213,8 @@ class OllamaTranslator:
         self.nsfw_mode_reason = ""
         self._consecutive_cloud_failures = 0
         self._consecutive_cloud_refusals = 0
+        self._last_call_was_network_error = False
+        self._batch_cloud_timeouts_count = 0
         self.diagnostics_stats = {
             "nsfw_mode_active": False,
             "nsfw_mode_switches_count": 0,
@@ -6648,6 +6682,138 @@ class OllamaTranslator:
         self._record_api_call("ollama", clean_name, _el_ol, len(parsed), "OK")
         return parsed
 
+    @staticmethod
+    def _extract_sse_chunk_fields(
+        data_str: str,
+    ) -> tuple[str, str, str | None]:
+        """Разбирает одну JSON-строку SSE-чанка OpenAI-формата: (finish_reason, delta_content, error_message)."""
+        try:
+            chunk_obj = json.loads(data_str)
+        except Exception:
+            return "", "", None
+        if not isinstance(chunk_obj, dict):
+            return "", "", None
+        c_list = chunk_obj.get("choices") or []
+        if not c_list or not isinstance(c_list[0], dict):
+            err_obj = chunk_obj.get("error")
+            if isinstance(err_obj, dict):
+                return "", "", str(err_obj.get("message") or err_obj)
+            if isinstance(err_obj, str) and err_obj.strip():
+                return "", "", err_obj.strip()
+            return "", "", None
+        c0 = c_list[0]
+        fr = str(c0.get("finish_reason") or "").lower().strip()
+        delta_obj = (
+            c0.get("delta")
+            if isinstance(c0.get("delta"), dict)
+            else (c0.get("message") if isinstance(c0.get("message"), dict) else {})
+        )
+        delta_content = delta_obj.get("content")
+        content_str = delta_content if isinstance(delta_content, str) and delta_content else ""
+        return fr, content_str, None
+
+    async def _execute_cloud_chat_request(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: dict[str, str],
+        payload_cloud: dict[str, Any],
+        req_timeout: httpx.Timeout,
+        t0_cloud: float,
+        max_total_stream_sec: float,
+        stream_chunks_out: list[str],
+    ) -> tuple[int, str, str, str, Any]:
+        """Выполняет один облачный запрос (SSE streaming или обычный JSON POST) с защитой от вечного зависания."""
+        if payload_cloud.get("stream"):
+            async with client.stream(
+                "POST",
+                url,
+                headers=headers,
+                json=payload_cloud,
+                timeout=req_timeout,
+            ) as response:
+                status_code = int(response.status_code)
+                if status_code >= 400:
+                    err_bytes = await response.aread()
+                    return status_code, err_bytes.decode("utf-8", errors="replace"), "", "", response
+
+                content_type = (response.headers.get("content-type") or "").lower()
+                if "event-stream" in content_type:
+                    finish_reason = ""
+                    sse_error_msg: str | None = None
+                    async for raw_line in response.aiter_lines():
+                        if self.stop_requested:
+                            break
+                        if (time.perf_counter() - t0_cloud) > max_total_stream_sec:
+                            raise httpx.ReadTimeout(
+                                f"SSE stream exceeded {max_total_stream_sec:.0f}s wall-clock cap"
+                            )
+                        line_s = raw_line.strip()
+                        if not line_s or line_s.startswith(":") or not line_s.startswith("data:"):
+                            continue
+                        data_str = line_s[5:].strip()
+                        if data_str == "[DONE]":
+                            break
+                        fr, content_piece, err_msg = self._extract_sse_chunk_fields(data_str)
+                        if fr:
+                            finish_reason = fr
+                        if content_piece:
+                            stream_chunks_out.append(content_piece)
+                        elif err_msg and not sse_error_msg:
+                            sse_error_msg = err_msg
+                    if not stream_chunks_out and sse_error_msg:
+                        if CLOUD_CENSORSHIP_ERROR_REGEX.search(sse_error_msg) or self._is_refusal_response(sse_error_msg):
+                            return status_code, "", "content_filter", sse_error_msg, response
+                        raise httpx.RemoteProtocolError(f"SSE upstream error: {sse_error_msg[:180]}")
+                    raw_output = "".join(stream_chunks_out) or "{}"
+                    return status_code, "", finish_reason, raw_output, response
+
+                body_bytes = await response.aread()
+                body_text = body_bytes.decode("utf-8", errors="replace")
+                if body_text.lstrip().startswith("data:"):
+                    try:
+                        data = json.loads(body_text)
+                    except Exception:
+                        finish_reason = ""
+                        for raw_line in body_text.splitlines():
+                            line_s = raw_line.strip()
+                            if not line_s.startswith("data:"):
+                                continue
+                            data_str = line_s[5:].strip()
+                            if data_str == "[DONE]":
+                                break
+                            fr, content_piece, _ = self._extract_sse_chunk_fields(data_str)
+                            if fr:
+                                finish_reason = fr
+                            if content_piece:
+                                stream_chunks_out.append(content_piece)
+                        return status_code, "", finish_reason, ("".join(stream_chunks_out) or "{}"), response
+                else:
+                    data = json.loads(body_text) if body_text.strip() else {}
+                choices = data.get("choices", []) if isinstance(data, dict) else []
+                first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+                finish_reason = str(first_choice.get("finish_reason") or "").lower().strip()
+                msg_obj = first_choice.get("message", {}) if isinstance(first_choice.get("message"), dict) else {}
+                raw_output = str(msg_obj.get("content") or "{}")
+                return status_code, "", finish_reason, raw_output, response
+
+        response = await client.post(
+            url,
+            headers=headers,
+            json=payload_cloud,
+            timeout=req_timeout,
+        )
+        status_code = int(response.status_code)
+        if status_code >= 400:
+            return status_code, (response.text or ""), "", "", response
+        data = response.json()
+        choices = data.get("choices", []) if isinstance(data, dict) else []
+        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
+        finish_reason = str(first_choice.get("finish_reason") or "").lower().strip()
+        msg_obj = first_choice.get("message", {}) if isinstance(first_choice.get("message"), dict) else {}
+        raw_output = str(msg_obj.get("content") or "{}")
+        return status_code, "", finish_reason, raw_output, response
+
     async def _call_llm_json(
         self,
         client: httpx.AsyncClient,
@@ -6656,8 +6822,12 @@ class OllamaTranslator:
         user_prompt: str,
         page_image_b64: str | None = None,
         allow_mt_fallback: bool = True,
+        max_attempts_override: int | None = None,
+        timeout_override_sec: float | None = None,
+        use_stream: bool = True,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
+        self._last_call_was_network_error = False
         if not allow_mt_fallback and is_mt_only_local_model(full_model_id):
             logger.info("⏭ [allow_mt_fallback=False] Отменен вызов узкой MT-модели '%s' для JSON-задачи.", full_model_id)
             return {}
@@ -6692,14 +6862,18 @@ class OllamaTranslator:
                 [str(k) for k in raw_cd.keys()] if isinstance(raw_cd, dict) else None
             )
             items_cnt = len(expected_keys_list) if expected_keys_list is not None else 20
-            # Адаптивные таймауты с запасом (<=15 фраз -> 48с, 16..70 фраз -> 68с, >70 фраз -> 90с),
-            # чтобы не обрывать почти готовый ответ облачного ИИ по ReadTimeout на 22-й секунде!
-            if items_cnt <= 15:
-                req_timeout = httpx.Timeout(48.0, connect=10.0)
-            elif items_cnt <= 70:
-                req_timeout = httpx.Timeout(68.0, connect=12.0)
+            want_stream = bool(use_stream and not getattr(self, "_cloud_disable_stream", False))
+            if timeout_override_sec is not None:
+                idle_read_sec = max(5.0, float(timeout_override_sec))
+            elif want_stream:
+                # Межчанковый idle-таймаут: пока приходят SSE-токены (в т.ч. reasoning), соединение не рвётся
+                idle_read_sec = 45.0 if items_cnt <= 15 else (55.0 if items_cnt <= 50 else 65.0)
             else:
-                req_timeout = httpx.Timeout(max(85.0, float(self.timeout_sec)), connect=15.0)
+                idle_read_sec = (
+                    48.0 if items_cnt <= 15 else (68.0 if items_cnt <= 70 else max(85.0, float(self.timeout_sec)))
+                )
+            req_timeout = httpx.Timeout(connect=12.0, read=idle_read_sec, write=15.0, pool=10.0)
+            max_total_stream_sec = max(140.0, idle_read_sec * 2.5)
 
             # Для внешних облачных API (ModuleAPI, DeepSeek, OpenRouter) используем строго выбранную модель
             # и НИКОГДА не переключаем deepseek-v4-flash на дорогую deepseek-v4-pro!
@@ -6755,8 +6929,8 @@ class OllamaTranslator:
                         {"role": "user", "content": user_msg_content},
                     ],
                     "temperature": 0.3 if items_cnt >= 3 else 0.15,
-                    "max_tokens": 4096 if (omit_resp_fmt or items_cnt <= 80) else 8192,
-                    "stream": False,
+                    "max_tokens": 4096 if items_cnt <= 45 else 8192,
+                    "stream": want_stream,
                 }
                 if not omit_resp_fmt:
                     payload_cloud["response_format"] = {"type": "json_object"}
@@ -6804,45 +6978,67 @@ class OllamaTranslator:
                             persist_as_default=False,
                             page_image_b64=page_image_b64,
                         )
-                max_attempts = 3 if strict_cloud else 2
+                max_attempts = (
+                    max(1, int(max_attempts_override))
+                    if max_attempts_override is not None
+                    else 2
+                )
+                cloud_url = self._build_chat_completions_url(self.unsloth_url)
+                cloud_headers = self._unsloth_headers()
                 for attempt in range(max_attempts):
                     if self.stop_requested:
                         return {}
                     _t0_cloud = time.perf_counter()
+                    stream_chunks: list[str] = []
                     try:
-                        response = await client.post(
-                            self._build_chat_completions_url(self.unsloth_url),
-                            headers=self._unsloth_headers(),
-                            json=payload_cloud,
-                            timeout=req_timeout,
-                        )
-                        if response.status_code in (400, 403, 422, 451):
-                            err_body = (response.text or "")[:500]
-                            if CLOUD_CENSORSHIP_ERROR_REGEX.search(err_body) or self._is_refusal_response(err_body):
-                                _el_cloud = time.perf_counter() - _t0_cloud
-                                self._last_call_was_refusal = True
-                                self.last_refusal_message = f"HTTP {response.status_code} Censorship: {err_body[:180]}"
-                                self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
-                                self.enable_chapter_nsfw_mode(
-                                    f"HTTP {response.status_code} цензурный отказ облачного шлюза {model_name}: {err_body[:90]}"
+                        status_code = 0
+                        err_body = ""
+                        finish_reason = ""
+                        raw_output = "{}"
+                        response_obj: Any = None
+                        for _compat_try in range(3):
+                            stream_chunks.clear()
+                            status_code, err_body, finish_reason, raw_output, response_obj = (
+                                await self._execute_cloud_chat_request(
+                                    client=client,
+                                    url=cloud_url,
+                                    headers=cloud_headers,
+                                    payload_cloud=payload_cloud,
+                                    req_timeout=req_timeout,
+                                    t0_cloud=_t0_cloud,
+                                    max_total_stream_sec=max_total_stream_sec,
+                                    stream_chunks_out=stream_chunks,
                                 )
-                                return {"__refusal__": self.last_refusal_message}
-                            if response.status_code in (400, 422) and (
-                                "response_format" in payload_cloud
-                                or payload_cloud.get("max_tokens", 4096) > 4096
-                                or isinstance(payload_cloud["messages"][-1].get("content"), list)
-                            ):
-                                self._cloud_omit_response_format = True
-                                payload_cloud.pop("response_format", None)
-                                payload_cloud["max_tokens"] = 4096
-                                payload_cloud["messages"][-1]["content"] = user_prompt
-                                response = await client.post(
-                                    self._build_chat_completions_url(self.unsloth_url),
-                                    headers=self._unsloth_headers(),
-                                    json=payload_cloud,
-                                    timeout=req_timeout,
-                                )
-                        if response.status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
+                            )
+                            if status_code in (400, 403, 422, 451):
+                                err_snippet = (err_body or "")[:500]
+                                if CLOUD_CENSORSHIP_ERROR_REGEX.search(err_snippet) or self._is_refusal_response(err_snippet):
+                                    _el_cloud = time.perf_counter() - _t0_cloud
+                                    self._last_call_was_refusal = True
+                                    self.last_refusal_message = f"HTTP {status_code} Censorship: {err_snippet[:180]}"
+                                    self._record_api_call("cloud", model_name, _el_cloud, 0, "REFUSAL", self.last_refusal_message)
+                                    self.enable_chapter_nsfw_mode(
+                                        f"HTTP {status_code} цензурный отказ облачного шлюза {model_name}: {err_snippet[:90]}"
+                                    )
+                                    return {"__refusal__": self.last_refusal_message}
+                                if status_code in (400, 422):
+                                    if (
+                                        "response_format" in payload_cloud
+                                        or payload_cloud.get("max_tokens", 4096) > 4096
+                                        or isinstance(payload_cloud["messages"][-1].get("content"), list)
+                                    ):
+                                        self._cloud_omit_response_format = True
+                                        payload_cloud.pop("response_format", None)
+                                        payload_cloud["max_tokens"] = 4096
+                                        payload_cloud["messages"][-1]["content"] = user_prompt
+                                        continue
+                                    if payload_cloud.get("stream"):
+                                        payload_cloud["stream"] = False
+                                        self._cloud_disable_stream = True
+                                        continue
+                            break
+
+                        if status_code in (429, 500, 502, 503, 504) and attempt < max_attempts - 1:
                             wait_s = 0.8 * (attempt + 1)
                             self.diagnostics_stats["network_retries_count"] = (
                                 int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
@@ -6850,13 +7046,13 @@ class OllamaTranslator:
                             self._record_incident(
                                 "CLOUD_HTTP_RETRY",
                                 model_name,
-                                f"Облачный шлюз вернул HTTP {response.status_code} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
-                                details=(response.text or "")[:180],
+                                f"Облачный шлюз вернул HTTP {status_code} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
+                                details=(err_body or "")[:180],
                             )
                             logger.warning(
                                 "Облачный шлюз (%s) вернул HTTP %s для '%s' (попытка %d/%d) — повтор через %.1fс...",
                                 self.unsloth_url,
-                                response.status_code,
+                                status_code,
                                 model_name,
                                 attempt + 1,
                                 max_attempts,
@@ -6864,13 +7060,13 @@ class OllamaTranslator:
                             )
                             await asyncio.sleep(wait_s)
                             continue
-                        response.raise_for_status()
-                        data = response.json()
-                        choices = data.get("choices", [])
-                        first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
-                        finish_reason = str(first_choice.get("finish_reason") or "").lower().strip()
-                        msg_obj = first_choice.get("message", {}) if isinstance(first_choice.get("message"), dict) else {}
-                        raw_output = str(msg_obj.get("content") or "{}")
+                        if status_code >= 400:
+                            req_obj = getattr(response_obj, "request", None) or httpx.Request("POST", cloud_url)
+                            raise httpx.HTTPStatusError(
+                                f"HTTP {status_code}: {(err_body or '')[:200]}",
+                                request=req_obj,
+                                response=response_obj,
+                            )
                         _el_cloud = time.perf_counter() - _t0_cloud
                         parsed = self._parse_json_response(raw_output, expected_keys=expected_keys_list)
                         refusal_keys = [k for k, v in parsed.items() if self._is_bubble_refusal_value(v)]
@@ -6913,6 +7109,7 @@ class OllamaTranslator:
                             self._record_api_call("cloud", model_name, _el_cloud, len(parsed) - 1, "PARTIAL_REFUSAL", self.last_refusal_message)
                             return parsed
                         self._consecutive_cloud_failures = 0
+                        self._last_call_was_network_error = False
                         if len(parsed) >= max(1, items_cnt // 2):
                             self._consecutive_cloud_refusals = 0
                         self._record_api_call("cloud", model_name, _el_cloud, len(parsed), "OK")
@@ -6927,8 +7124,36 @@ class OllamaTranslator:
                         httpx.ReadError,
                         httpx.WriteError,
                     ) as net_exc:
-                        last_cloud_err = net_exc
                         err_detail = self._format_network_error(net_exc)
+                        if stream_chunks:
+                            partial_raw = "".join(stream_chunks)
+                            partial_parsed = self._parse_json_response(partial_raw, expected_keys=expected_keys_list)
+                            for rk_p in [kp for kp, vp in list(partial_parsed.items()) if self._is_bubble_refusal_value(vp)]:
+                                partial_parsed.pop(rk_p, None)
+                            if partial_parsed and not self._is_refusal_response(partial_raw):
+                                self._last_call_was_network_error = True
+                                self._batch_cloud_timeouts_count = int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) + 1
+                                _el_partial = time.perf_counter() - _t0_cloud
+                                self._record_api_call(
+                                    "cloud",
+                                    model_name,
+                                    _el_partial,
+                                    len(partial_parsed),
+                                    "PARTIAL_STREAM",
+                                    err_detail,
+                                )
+                                logger.warning(
+                                    "⚡ [SSE-СПАСЕНИЕ] Поток '%s' оборвался (%s), но сохранено %d/%d готовых реплик — допереводим только хвост!",
+                                    model_name,
+                                    err_detail,
+                                    len(partial_parsed),
+                                    items_cnt,
+                                )
+                                return partial_parsed
+
+                        last_cloud_err = net_exc
+                        self._last_call_was_network_error = True
+                        self._batch_cloud_timeouts_count = int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) + 1
                         if attempt < max_attempts - 1:
                             wait_s = 1.5 * (attempt + 1)
                             self.diagnostics_stats["network_retries_count"] = (
@@ -6940,13 +7165,19 @@ class OllamaTranslator:
                                 f"Сетевой сбой {err_detail} (попытка {attempt + 1}/{max_attempts}), повтор через {wait_s:.1f}с",
                                 details=err_detail,
                             )
+                            retry_tag = (
+                                "сетевой повтор"
+                                if isinstance(net_exc, (httpx.ReadTimeout, httpx.ReadError, httpx.RemoteProtocolError))
+                                else "0 лишних токенов"
+                            )
                             logger.warning(
-                                "Сбой соединения с '%s' (%s, попытка %d/%d) — повтор через %.1fс (0 лишних токенов)...",
+                                "Сбой соединения с '%s' (%s, попытка %d/%d) — повтор через %.1fс (%s)...",
                                 model_name,
                                 err_detail,
                                 attempt + 1,
                                 max_attempts,
                                 wait_s,
+                                retry_tag,
                             )
                             await asyncio.sleep(wait_s)
                             continue
@@ -6956,6 +7187,7 @@ class OllamaTranslator:
                         break
                 if last_cloud_err is not None:
                     err_last_detail = self._format_network_error(last_cloud_err)
+                    self._last_call_was_network_error = True
                     self._consecutive_cloud_failures += 1
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", err_last_detail)
                     if strict_cloud:
@@ -6970,6 +7202,8 @@ class OllamaTranslator:
                             err_last_detail,
                             model_name,
                         )
+                        if self._consecutive_cloud_failures >= 2:
+                            await asyncio.sleep(2.0)
                         return {}
                     self._cloud_down_until_ts = time.time() + 60.0
                     if self._consecutive_cloud_failures >= 2:
@@ -7161,6 +7395,7 @@ class OllamaTranslator:
         full_refusal = False
         partial_refusal = False
         inline_refusal_keys: list[str] = []
+        chunk_had_network_error = False
 
         if cloud_source_map:
             padded_source_map, anchor_keys = (
@@ -7207,6 +7442,7 @@ class OllamaTranslator:
                 user_prompt=user_prompt,
                 page_image_b64=(page_image_b64 if use_image_context else None),
             )
+            chunk_had_network_error = bool(getattr(self, "_last_call_was_network_error", False))
             for ak in anchor_keys:
                 translated_map.pop(ak, None)
             piggy_gloss = translated_map.pop("_glossary", None) or translated_map.pop("_meta", None)
@@ -7572,8 +7808,12 @@ class OllamaTranslator:
                     retry_chunk_size = 8 if is_specialized_local_translator_model(active_model) else 12
                 elif (set(bad_keys) & misaligned_keys_set) and len(bad_keys) <= 6:
                     retry_chunk_size = 4
+                elif was_refusal:
+                    retry_chunk_size = 14
+                elif chunk_had_network_error:
+                    retry_chunk_size = 20
                 else:
-                    retry_chunk_size = 14 if was_refusal else 80
+                    retry_chunk_size = 30
                 bad_sublists = [
                     bad_keys[i : i + retry_chunk_size]
                     for i in range(0, len(bad_keys), retry_chunk_size)
@@ -7586,6 +7826,7 @@ class OllamaTranslator:
                     source_lang,
                     target_lang,
                 )
+                consec_retry_net_errors = 0
                 for b_sub in bad_sublists:
                     if self.stop_requested:
                         break
@@ -7656,7 +7897,12 @@ class OllamaTranslator:
                                 full_model_id=active_model,
                                 system_prompt=min_sys,
                                 user_prompt=min_usr,
+                                max_attempts_override=(1 if chunk_had_network_error else None),
                             )
+                            if not retry_map and getattr(self, "_last_call_was_network_error", False):
+                                consec_retry_net_errors += 1
+                            elif retry_map:
+                                consec_retry_net_errors = 0
                             retry_refused = bool(retry_map.pop("__refusal__", None)) or bool(retry_map.pop("__partial_refusal__", None))
                             for rk_r in [kr for kr, vr in list(retry_map.items()) if self._is_bubble_refusal_value(vr)]:
                                 retry_map.pop(rk_r, None)
@@ -7708,6 +7954,20 @@ class OllamaTranslator:
                                             if vr_l and not self._is_bubble_refusal_value(vr_l):
                                                 retry_map[kr_l] = vr_l
                         except Exception as retry_exc:
+                            if isinstance(
+                                retry_exc,
+                                (
+                                    httpx.ConnectError,
+                                    httpx.ConnectTimeout,
+                                    httpx.ReadTimeout,
+                                    httpx.WriteTimeout,
+                                    httpx.PoolTimeout,
+                                    httpx.RemoteProtocolError,
+                                    httpx.ReadError,
+                                    httpx.WriteError,
+                                ),
+                            ):
+                                consec_retry_net_errors += 1
                             logger.warning("Подгруппа доперевода (%d блоков) не удалась: %s", len(b_sub), retry_exc)
 
                     for k in b_sub:
@@ -7730,6 +7990,13 @@ class OllamaTranslator:
                                     "source": "romaji_rescue_dict",
                                     "note": f"Спасено словарем частых фраз манги (после: {bad_reason_by_k.get(k, 'пропуск')})",
                                 }
+                    if consec_retry_net_errors >= 2:
+                        logger.warning(
+                            "⛔ [ДОПЕРЕВОД ОСТАНОВЛЕН] %d подряд сетевых таймаутов облака (%s) — прерываю шторм повторов в этой пачке.",
+                            consec_retry_net_errors,
+                            active_model,
+                        )
+                        break
 
         # Если была выбрана локальная модель Ollama (например, Sugoi), но какие-то фразы остались непереведенными
         # или отсеяны как галлюцинация («Twitch»), автоматически допереводим их через облачный API (если есть ключ)!
@@ -8065,12 +8332,23 @@ class OllamaTranslator:
             unique_to_translate.append(block)
 
         is_cloud_call = active_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url)
-        batch_limit = MAX_BUBBLES_PER_BATCH_CLOUD if is_cloud_call else MAX_BUBBLES_PER_BATCH_LOCAL
+        batch_limit = (
+            self._get_effective_cloud_batch_limit(active_model)
+            if is_cloud_call
+            else MAX_BUBBLES_PER_BATCH_LOCAL
+        )
         max_streams = int(prof_cfg.get("max_parallel_streams", 2)) if is_cloud_call else 1
-        min_per_stream = int(prof_cfg.get("min_phrases_per_stream", 90))
-        par_trigger = int(prof_cfg.get("parallel_trigger_phrases", 120))
+        min_per_stream = int(prof_cfg.get("min_phrases_per_stream", 55))
+        par_trigger = int(prof_cfg.get("parallel_trigger_phrases", 110))
+        is_slow_cloud = is_cloud_call and self._is_slow_or_reasoning_cloud_model(active_model)
+        cloud_degraded = (
+            int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) > 0
+            or int(getattr(self, "_consecutive_cloud_failures", 0) or 0) > 0
+        )
         allow_parallel = (
             is_cloud_call
+            and not is_slow_cloud
+            and not cloud_degraded
             and max_streams > 1
             and len(unique_to_translate) > par_trigger
             and len(unique_to_translate) >= min_per_stream * 2
@@ -8110,23 +8388,27 @@ class OllamaTranslator:
 
         # БЛОК 1: Управляемое параллельное дробление строго по выбранному профилю перевода (eco_book / balanced / turbo)
         if allow_parallel:
-            num_parallel = min(
-                max_streams,
-                max(2, len(unique_to_translate) // max(1, min_per_stream)),
+            num_chunks = max(
+                min(
+                    max_streams,
+                    max(2, len(unique_to_translate) // max(1, min_per_stream)),
+                ),
+                (len(unique_to_translate) + batch_limit - 1) // max(1, batch_limit),
             )
-            sub_chunk_size = (len(unique_to_translate) + num_parallel - 1) // num_parallel
+            sub_chunk_size = (len(unique_to_translate) + num_chunks - 1) // num_chunks
             parallel_chunks = [
                 unique_to_translate[i : i + sub_chunk_size]
                 for i in range(0, len(unique_to_translate), sub_chunk_size)
             ]
+            max_conc = min(MAX_CONCURRENT_CLOUD_REQUESTS, max_streams)
             logger.info(
-                "⚡ Параллельный облачный перевод: %d уникальных фраз разделены на %d одновременных потока (по ~%d фраз) для ускорения в %dx раза!",
+                "⚡ Параллельный облачный перевод: %d уникальных фраз разделены на %d чанков (по ~%d фраз, до %d одновременных потоков)!",
                 len(unique_to_translate),
                 len(parallel_chunks),
                 sub_chunk_size,
-                len(parallel_chunks),
+                max_conc,
             )
-            sem = asyncio.Semaphore(MAX_CONCURRENT_CLOUD_REQUESTS)
+            sem = asyncio.Semaphore(max_conc)
             ctx_snapshot = list(running_context) if running_context else None
 
             async def _run_sub(idx: int, sub_c: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
@@ -8529,6 +8811,8 @@ class OllamaTranslator:
                 system_prompt=sys_p,
                 user_prompt=usr_p,
                 allow_mt_fallback=False,
+                max_attempts_override=1,
+                timeout_override_sec=35.0,
             )
             extracted: list[dict[str, str]] = list(pre_locked)
             for k_raw, v_raw in (raw_map or {}).items():
@@ -8668,10 +8952,12 @@ class OllamaTranslator:
 
         res_map = await self._call_llm_json(
             client=client,
-            full_model_id=active_model,
+            full_model_id=eff_proof_model,
             system_prompt=sys_p,
             user_prompt=usr_p,
             allow_mt_fallback=False,
+            max_attempts_override=1,
+            timeout_override_sec=45.0,
         )
         res_map.pop("__refusal__", None)
         res_map.pop("__partial_refusal__", None)

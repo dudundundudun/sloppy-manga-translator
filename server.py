@@ -283,17 +283,18 @@ logging.basicConfig(
     format="%(asctime)s | %(levelname)-8s | %(name)s | %(message)s",
 )
 _root_logger = logging.getLogger()
-try:
-    _file_handler = RotatingFileHandler(
-        MAIN_LOG_FILE,
-        maxBytes=5 * 1024 * 1024,
-        backupCount=3,
-        encoding="utf-8",
-    )
-    _file_handler.setFormatter(_log_formatter)
-    _root_logger.addHandler(_file_handler)
-except Exception:
-    pass
+if os.environ.get("MIKO_DISABLE_FILE_LOG", "").strip().lower() not in ("1", "true", "yes"):
+    try:
+        _file_handler = RotatingFileHandler(
+            MAIN_LOG_FILE,
+            maxBytes=5 * 1024 * 1024,
+            backupCount=3,
+            encoding="utf-8",
+        )
+        _file_handler.setFormatter(_log_formatter)
+        _root_logger.addHandler(_file_handler)
+    except Exception:
+        pass
 
 _ring_handler = RingBufferLogHandler()
 _ring_handler.setFormatter(_log_formatter)
@@ -3398,6 +3399,8 @@ async def _run_folder_translation_job(
 
             # Шаг 2: ИИ-перевод пачки (в профиле eco_book — единым сценарием книги P01_01..P25_09 за 1 запрос!)
             _llm_t0 = time.perf_counter()
+            if translator_engine is not None:
+                translator_engine._batch_cloud_timeouts_count = 0
             translated_by_gid: dict[str, str] = {}
             source_by_gid: dict[str, str] = {}
             skip_reason_by_gid: dict[str, str] = {}
@@ -3473,7 +3476,8 @@ async def _run_folder_translation_job(
                         translator_engine.phrase_cache.update(phrase_cache)
                     if (
                         eff_pmode == "ultra"
-                        and (_batch_num == 1 or len(folder_glossary_entries) < 8)
+                        and (_batch_num == 1 or (_batch_num <= 2 and len(folder_glossary_entries) < 4))
+                        and int(getattr(translator_engine, "_consecutive_cloud_failures", 0) or 0) < 2
                         and len(combined_blocks) >= 4
                         and target_lang.lower().strip() != "romaji"
                         and not is_mt_only_local_model(active_mod)
@@ -3530,19 +3534,36 @@ async def _run_folder_translation_job(
                     proof_mode = str(
                         getattr(translator_engine, "ultra_proofread_mode", "selective") or "selective"
                     ).strip().lower()
+                    is_cloud_proof = (
+                        eff_proof_mod.startswith("unsloth::")
+                        and not getattr(translator_engine, "nsfw_mode", False)
+                        and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+                    )
+                    _batch_had_cloud_issues = is_cloud_proof and (
+                        int(getattr(translator_engine, "_batch_cloud_timeouts_count", 0) or 0) > 0
+                        or int(getattr(translator_engine, "_consecutive_cloud_failures", 0) or 0) > 0
+                        or any(api_failed_by_gid.values())
+                    )
                     if (
+                        eff_pmode == "ultra"
+                        and proof_mode != "off"
+                        and _batch_had_cloud_issues
+                        and not _folder_stop_requested
+                        and target_lang.lower().strip() in ("en", "ru")
+                        and not is_mt_only_local_model(eff_proof_mod)
+                    ):
+                        logger.info(
+                            "⏭ [2-Pass Proofread] Пропущен на пачке #%d из-за сетевых таймаутов/сбоев облака на 1-м проходе.",
+                            _batch_num,
+                        )
+                    elif (
                         eff_pmode == "ultra"
                         and proof_mode != "off"
                         and not _folder_stop_requested
                         and target_lang.lower().strip() in ("en", "ru")
                         and not is_mt_only_local_model(eff_proof_mod)
                     ):
-                        is_cloud_proof = (
-                            eff_proof_mod.startswith("unsloth::")
-                            and not getattr(translator_engine, "nsfw_mode", False)
-                            and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
-                        )
-                        proof_chunk_size = 90 if is_cloud_proof else 40
+                        proof_chunk_size = 45 if is_cloud_proof else 30
                         book_for_proof: dict[str, dict[str, str]] = {}
                         seam_indices = {
                             idx_s

@@ -317,5 +317,13 @@
 - **Умная карточка `🚀 Grok 18+ (вся манга)` (`selectGrokPreset`, `findDetectedGrokModel`)**:
   - Если в текущем удалённом шлюзе (например, `https://moduleapi.pro/v1`) обнаружена модель семейства Grok (`grok-4.7` и др.), выбирает её без перезатирания Base URL/ключа, иначе ставит `https://api.x.ai/v1` + `grok-4-fast-non-reasoning`, и сразу включает «Вся манга только в облаке (без Ollama)».
 
+### ✅ 3. Аудит и апгрейд Chrome-расширения (`extension/manifest.json`, `extension/background.js`, `extension/content.js`)
+- **Исправлены баги и утечки (`content.js`, `background.js`)**:
+  - Состояние картинок и `Blob URL` переведены из атрибутов Light DOM `data-mt-*` в приватный `WeakMap` (`imgStateMap`) с `URL.createObjectURL` / `URL.revokeObjectURL` и авто-сбросом при SPA-перелистывании `src` (`resetElementStateIfSrcChanged`).
+  - Добавлена поддержка `<canvas>`-читалок, `IntersectionObserver` (`visibleTrackedImages`) против forced reflow на `mousemove`, полный cleanup всех навешанных DOM-листенеров в `__mtCleanup()`, обработка `status === "busy"` для пикера папок, мгновенная отмена перевода (`CANCEL_TRANSLATE`) и защита `Alt+T` в полях ввода (`isEditableTarget` / `isContentEditable`).
+  - В `callLocalServer()` убраны повторные `POST`-ретраи при `4xx/5xx` и ложная подмена JSON `503` ошибкой VPN, удалён лишний двойной fetch в `fetchImageAsDataUrl()`, добавлен запрос `REQUEST_HOST_PERMISSION` для CORS и проверка `sender.id` в `onRuntimeMessage`.
+- **Паритет настроек с v6.1.3**:
+  - Добавлены быстрая кнопка `🚀 Grok`, профиль перевода (`#mt-translation-profile-sel`), тумблеры `#mt-cloud-only-chk` и `#mt-preflight-nsfw-chk`, синхронизация `#mt-anti-censorship-chk` без отката, кнопка скрытия FAB (`#mt-hide-fab-chk`), кнопка разрешения CORS (`#mt-grant-cors-btn`) и полная синхронизация настроек/текущей задачи папки с `GET /health` + **47 автотестов** (`test_chrome_extension_syntax_and_contracts`).
+
 
 

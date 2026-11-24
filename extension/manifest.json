@@ -3,7 +3,7 @@
   "minimum_chrome_version": "116",
   "name": "Local Manga / Manhwa / Manhua Translator",
   "version": "6.1.0",
-  "description": "Локальный и облачный AI-переводчик манги, манхвы и маньхуа v6.1.0 (YOLO26-seg/SAM 2.1 + Baberu/HayaiOCR + DeepSeek/Ollama + LaMa)",
+  "description": "Локальный и облачный AI-переводчик манги, манхвы и маньхуа v6.1.0 (RT-DETR/YOLO26-seg + MangaOCR/HayaiOCR + DeepSeek/Grok/Ollama + LaMa)",
   "permissions": [
     "activeTab",
     "scripting",

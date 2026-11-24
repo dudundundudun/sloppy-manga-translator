@@ -9,6 +9,7 @@ import ast
 import asyncio
 import importlib.util
 import json
+import os
 import sys
 import tempfile
 import types
@@ -18,6 +19,7 @@ from unittest.mock import patch
 import httpx
 from fastapi import HTTPException
 
+os.environ.setdefault("MIKO_DISABLE_FILE_LOG", "1")
 REPO_ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -1439,7 +1441,8 @@ def test_zero_token_local_pass0_and_selective_proofread_settings():
     assert req.preflight_nsfw_split is True
     assert req.ultra_proofread_mode == "selective"
     srv_src = (REPO_ROOT / "server.py").read_text(encoding="utf-8")
-    assert "_batch_num == 1 or len(folder_glossary_entries) < 8" in srv_src
+    assert "(_batch_num == 1 or (_batch_num <= 2 and len(folder_glossary_entries) < 4))" in srv_src
+    assert "_batch_had_cloud_issues" in srv_src
     assert 'proof_mode == "selective"' in srv_src
     assert '"llm_preflight_local", "llm_local_bypass"' in srv_src
 
@@ -1865,6 +1868,325 @@ def test_health_lazy_idle_ready_and_cloud_only_grok_mode():
         'shortLow.includes("deepseek") && shortLow.includes("flash")',
     ):
         assert marker in html_src, f"Отсутствует ожидаемый маркер в web_studio.html: {marker}"
+
+
+def test_chrome_extension_syntax_and_contracts():
+    import shutil
+    import subprocess
+
+    ext_dir = REPO_ROOT / "extension"
+    bg_path = ext_dir / "background.js"
+    content_path = ext_dir / "content.js"
+    bg_src = bg_path.read_text(encoding="utf-8")
+    content_src = content_path.read_text(encoding="utf-8")
+
+    node_bin = shutil.which("node")
+    if node_bin:
+        for js_path in (bg_path, content_path):
+            res = subprocess.run([node_bin, "--check", str(js_path)], capture_output=True, text=True)
+            assert res.returncode == 0, f"Ошибка синтаксиса в {js_path.name}: {res.stderr}"
+
+    for bg_marker in (
+        "noRetry",
+        "activeTranslateControllers",
+        "CANCEL_TRANSLATE",
+        "REQUEST_HOST_PERMISSION",
+        "GET_ACTIVE_SERVER_BASE",
+        "cloud_only_no_local_fallback",
+        "preflight_nsfw_split",
+        "translation_profile",
+    ):
+        assert bg_marker in bg_src, f"Отсутствует ожидаемый контракт в background.js: {bg_marker}"
+    assert '["omit", "same-origin"]' not in bg_src, "Лишний двойной fetch из SW должен быть удалён"
+
+    for ct_marker in (
+        "imgStateMap = new WeakMap()",
+        "URL.createObjectURL",
+        "URL.revokeObjectURL",
+        "IntersectionObserver",
+        "visibleTrackedImages",
+        "resetElementStateIfSrcChanged",
+        'status === "busy"',
+        "mt-cloud-only-chk",
+        "mt-preflight-nsfw-chk",
+        "mt-pill-grok",
+        "mt-translation-profile-sel",
+        "mt-hide-fab-chk",
+        "mt-grant-cors-btn",
+        "isContentEditable",
+    ):
+        assert ct_marker in content_src, f"Отсутствует ожидаемый элемент в content.js: {ct_marker}"
+
+    for forbidden in (
+        "dataset.mtOriginalBase64",
+        "dataset.mtTranslatedSrc",
+        "dataset.mtOriginalSrc",
+    ):
+        assert forbidden not in content_src, f"Утечка/Light DOM хранение запрещено: {forbidden}"
+
+
+def test_cloud_sse_streaming_partial_recovery_and_max_tokens():
+    tr_mod = _load_real_module("translator")
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-sse",
+            )
+            tr.cloud_only_no_local_fallback = True
+            big_payload = json.dumps({str(i): "あ" for i in range(1, 51)}, ensure_ascii=False, separators=(",", ":"))
+
+            # (a) SSE stream с reasoning_content + раздробленным content и >45 фраз (max_tokens=8192)
+            recorded_payloads: list[dict] = []
+
+            class _FakeStreamResp:
+                def __init__(self, status_code=200, headers=None, sse_lines=None, body_bytes=b"", raise_after=False):
+                    self.status_code = status_code
+                    self.headers = headers or {}
+                    self._sse_lines = sse_lines or []
+                    self._body_bytes = body_bytes
+                    self._raise_after = raise_after
+                    self.request = httpx.Request("POST", "https://moduleapi.pro/v1/chat/completions")
+
+                async def __aenter__(self):
+                    return self
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return False
+
+                async def aread(self):
+                    return self._body_bytes
+
+                async def aiter_lines(self):
+                    for ln in self._sse_lines:
+                        yield ln
+                    if self._raise_after:
+                        raise httpx.ReadTimeout("stream stalled mid-response")
+
+            sse_ok_lines = [
+                'data: {"choices":[{"delta":{"reasoning_content":"thinking step..."},"finish_reason":null}]}',
+                'data: {"choices":[{"delta":{"content":"{\\"1\\":\\"One\\","},"finish_reason":null}]}',
+                'data: {"choices":[{"delta":{"content":"\\"2\\":\\"Two\\"}"},"finish_reason":"stop"}]}',
+                "data: [DONE]",
+            ]
+
+            class _FakeClient:
+                def __init__(self, resp_factory):
+                    self.resp_factory = resp_factory
+                    self.calls = 0
+
+                def stream(self, method, url, headers=None, json=None, timeout=None):
+                    self.calls += 1
+                    recorded_payloads.append(dict(json or {}))
+                    return self.resp_factory(self.calls)
+
+            c_ok = _FakeClient(
+                lambda _: _FakeStreamResp(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream; charset=utf-8"},
+                    sse_lines=sse_ok_lines,
+                )
+            )
+            res_ok = await tr._call_llm_json(
+                client=c_ok,
+                full_model_id="unsloth::grok-4.7",
+                system_prompt="System prompt",
+                user_prompt=big_payload,
+            )
+            assert recorded_payloads[0]["stream"] is True
+            assert recorded_payloads[0]["max_tokens"] == 8192, f"moduleapi не должен резать >45 фраз до 4096: {recorded_payloads[0]}"
+            assert "response_format" not in recorded_payloads[0]
+            assert res_ok == {"1": "One", "2": "Two"}
+
+            # (b) Не-SSE application/json ответ при stream=True корректно читается через aread()
+            json_body = json.dumps(
+                {"choices": [{"finish_reason": "stop", "message": {"content": '{"1":"Alpha"}'}}]}
+            ).encode("utf-8")
+            c_non_sse = _FakeClient(
+                lambda _: _FakeStreamResp(
+                    status_code=200,
+                    headers={"content-type": "application/json"},
+                    body_bytes=json_body,
+                )
+            )
+            res_non_sse = await tr._call_llm_json(
+                client=c_non_sse,
+                full_model_id="unsloth::grok-4.7",
+                system_prompt="System prompt",
+                user_prompt='{"1":"あ"}',
+            )
+            assert res_non_sse == {"1": "Alpha"}
+
+            # (c) Обрыв ReadTimeout посреди SSE спасает готовые ключи без полного повтора пачки
+            tr._batch_cloud_timeouts_count = 0
+            c_partial = _FakeClient(
+                lambda _: _FakeStreamResp(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream"},
+                    sse_lines=[
+                        'data: {"choices":[{"delta":{"content":"{\\"1\\":\\"First\\",\\"2\\":\\"Second\\","},"finish_reason":null}]}',
+                    ],
+                    raise_after=True,
+                )
+            )
+            res_partial = await tr._call_llm_json(
+                client=c_partial,
+                full_model_id="unsloth::grok-4.7",
+                system_prompt="System prompt",
+                user_prompt=big_payload,
+            )
+            assert c_partial.calls == 1, "При спасении частичного SSE не должно быть повторных вызовов всего чанка"
+            assert res_partial == {"1": "First", "2": "Second"}
+            assert tr._last_call_was_network_error is True
+            assert tr._batch_cloud_timeouts_count >= 1
+            assert tr.recent_api_calls[-1]["status"] == "PARTIAL_STREAM"
+
+    asyncio.run(_run())
+
+
+def test_cloud_chunk_limits_timeout_retry_and_proofread_fixes():
+    import logging
+    import logging.handlers
+
+    tr_mod = _load_real_module("translator")
+    _load_server_module()
+
+    # Проверка, что при MIKO_DISABLE_FILE_LOG=1 тесты не пишут в logs/miko_studio.log
+    assert not any(
+        isinstance(h, logging.handlers.RotatingFileHandler)
+        and str(getattr(h, "baseFilename", "")).endswith("miko_studio.log")
+        for h in logging.getLogger().handlers
+    ), "Файловый лог miko_studio.log не должен подключаться при MIKO_DISABLE_FILE_LOG=1"
+
+    assert tr_mod.MAX_BUBBLES_PER_BATCH_CLOUD == 65
+    assert tr_mod.MAX_BUBBLES_PER_BATCH_CLOUD_SLOW == 45
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-limits",
+            )
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 45
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4-fast-non-reasoning") == 65
+            tr._batch_cloud_timeouts_count = 1
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 22
+            tr._batch_cloud_timeouts_count = 0
+
+            # 1. translate_blocks: для grok-4.7 параллелизм выключен и чанки <= 45, для deepseek-v4-flash чанки <= 65
+            grok_chunk_sizes: list[int] = []
+
+            async def _fake_chunk_grok(*, chunk_blocks, **kwargs):
+                grok_chunk_sizes.append(len(chunk_blocks))
+                return {str(b["id"]): f"T{b['id']}" for b in chunk_blocks}
+
+            blocks_100 = [{"id": str(i), "original_text": f"台詞{i}"} for i in range(1, 101)]
+            with patch.object(tr, "_translate_batch_chunk", side_effect=_fake_chunk_grok):
+                await tr.translate_blocks(
+                    blocks=blocks_100,
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::grok-4.7",
+                    profile="balanced",
+                    use_cache=False,
+                )
+            assert grok_chunk_sizes and max(grok_chunk_sizes) <= 45, f"grok-4.7 чанки >45: {grok_chunk_sizes}"
+            assert tr.diagnostics_stats["parallel_batches_count"] == 0
+
+            flash_chunk_sizes: list[int] = []
+
+            async def _fake_chunk_flash(*, chunk_blocks, **kwargs):
+                flash_chunk_sizes.append(len(chunk_blocks))
+                return {str(b["id"]): f"F{b['id']}" for b in chunk_blocks}
+
+            blocks_150 = [{"id": str(i), "original_text": f"別台詞{i}"} for i in range(1, 151)]
+            with patch.object(tr, "_translate_batch_chunk", side_effect=_fake_chunk_flash):
+                await tr.translate_blocks(
+                    blocks=blocks_150,
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::deepseek-v4-flash",
+                    profile="balanced",
+                    use_cache=False,
+                )
+            assert flash_chunk_sizes and max(flash_chunk_sizes) <= 65, f"deepseek чанки >65: {flash_chunk_sizes}"
+            assert tr.diagnostics_stats["parallel_batches_count"] >= 1
+
+            # 2. После сетевого таймаута в 1-м проходе Доперевод режется по <=20, имеет max_attempts_override=1 и обрывается после 2 сбоев
+            tr.cloud_only_no_local_fallback = True
+            retry_calls: list[tuple[int, int | None]] = []
+
+            async def _fake_timeout_calls(*, user_prompt, max_attempts_override=None, **kwargs):
+                parsed_in = tr._extract_last_json_dict_from_prompt(user_prompt) or {}
+                real_k = [k for k in parsed_in.keys() if not k.startswith("_anchor_")]
+                tr._last_call_was_network_error = True
+                if len(real_k) < 40:
+                    retry_calls.append((len(real_k), max_attempts_override))
+                return {}
+
+            blocks_50 = [{"id": str(i), "original_text": f"長い台詞テスト{i}"} for i in range(1, 51)]
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_timeout_calls):
+                await tr._translate_batch_chunk(
+                    client=tr._get_http_client(),
+                    chunk_blocks=blocks_50,
+                    source_lang="ja",
+                    target_lang="en",
+                    active_model="unsloth::grok-4.7",
+                )
+            assert len(retry_calls) == 2, f"Доперевод должен остановиться после 2 подряд таймаутов: {retry_calls}"
+            assert all(cnt <= 20 and ma == 1 for cnt, ma in retry_calls), f"Ожидались подгруппы <=20 и 1 попытка: {retry_calls}"
+
+            # 3. Pass 2 (proofread_chapter_book_script) использует eff_proof_model при nsfw_mode и 1 попытку; Pass 0 -> 1 попытка
+            tr.cloud_only_no_local_fallback = False
+            tr.nsfw_mode = True
+            tr._cached_models = [
+                {"id": "ollama::qwen3:14b", "provider": "ollama", "installed": "true"},
+            ]
+            seen_proof_calls: list[tuple[str, int | None]] = []
+
+            async def _fake_proof_llm(*, full_model_id, max_attempts_override=None, **kwargs):
+                seen_proof_calls.append((full_model_id, max_attempts_override))
+                return {"P01_01": "Polished"}
+
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_proof_llm):
+                res_pr = await tr.proofread_chapter_book_script(
+                    book_map={"P01_01": {"orig": "こんにちは", "trans": "Hello"}},
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::deepseek-v4-flash",
+                )
+            assert res_pr == {"P01_01": "Polished"}
+            assert seen_proof_calls == [("ollama::qwen3:14b", 1)], f"Ожидался eff_proof_model и max_attempts=1: {seen_proof_calls}"
+
+            seen_pass0_calls: list[int | None] = []
+
+            async def _fake_pass0_llm(*, max_attempts_override=None, **kwargs):
+                seen_pass0_calls.append(max_attempts_override)
+                return {"美咲": "Misaki (female)"}
+
+            pass0_blocks = [
+                {"id": "1", "original_text": "美咲ちゃん、おはよう！"},
+                {"id": "2", "original_text": "美咲は急いでいる"},
+                {"id": "3", "original_text": "本当に美咲なのか？"},
+                {"id": "4", "original_text": "美咲ちゃん待って！"},
+            ]
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_pass0_llm):
+                await tr.extract_chapter_glossary_prepass(
+                    blocks=pass0_blocks,
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::grok-4.7",
+                )
+            assert seen_pass0_calls == [1]
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@
 const SERVER_URLS = ["http://127.0.0.1:5000", "http://localhost:5000"];
 const MAX_REMOTE_IMAGE_BYTES = 25 * 1024 * 1024;
 let activeServerBase = SERVER_URLS[0];
+const activeTranslateControllers = new Map();
 
 async function getActiveServerBase() {
   try {
@@ -115,15 +116,25 @@ async function blobToDataUrl(blob) {
   return `data:${mime};base64,${arrayBufferToBase64(buffer)}`;
 }
 
-async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
+async function callLocalServer(endpoint, options = {}, timeoutMs = 180000, externalSignal = null) {
   let lastError = null;
   const method = String(options.method || "GET").toUpperCase();
   const hasBody = options.body !== undefined && options.body !== null;
   const currentBase = await getActiveServerBase();
 
   for (const baseUrl of [currentBase, ...SERVER_URLS.filter((u) => u !== currentBase)]) {
+    if (externalSignal && externalSignal.aborted) {
+      const cancelErr = new Error("Перевод остановлен пользователем");
+      cancelErr.noRetry = true;
+      throw cancelErr;
+    }
+
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
+    const onExternalAbort = () => controller.abort();
+    if (externalSignal && typeof externalSignal.addEventListener === "function") {
+      externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+    }
 
     try {
       const reqHeaders = { ...(options.headers || {}) };
@@ -138,34 +149,56 @@ async function callLocalServer(endpoint, options = {}, timeoutMs = 180000) {
         signal: controller.signal,
         headers: reqHeaders,
       });
-      clearTimeout(timer);
+
+      const contentType = res.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await res.json();
+        if (!res.ok) {
+          const httpErr = new Error(data.detail || data.error || `Ошибка сервера HTTP ${res.status}`);
+          httpErr.noRetry = true;
+          throw httpErr;
+        }
+        await setActiveServerBase(baseUrl);
+        return data;
+      }
 
       if (res.status === 502 || res.status === 503) {
         lastError = new Error(
           `HTTP ${res.status}: VPN или прокси перехватывает локальный адрес ${baseUrl}. Отключите прокси для 127.0.0.1.`
         );
-        continue;
+        if (method === "GET") {
+          continue;
+        }
+        lastError.noRetry = true;
+        throw lastError;
       }
 
-      const contentType = res.headers.get("content-type") || "";
-      if (!contentType.includes("application/json")) {
-        const text = await res.text();
-        throw new Error(`Некорректный ответ сервера (${res.status}): ${text.slice(0, 120)}`);
-      }
-
-      const data = await res.json();
-      if (!res.ok) {
-        throw new Error(data.detail || data.error || `Ошибка сервера HTTP ${res.status}`);
-      }
-
-      await setActiveServerBase(baseUrl);
-      return data;
+      const text = await res.text();
+      const nonJsonErr = new Error(`Некорректный ответ сервера (${res.status}): ${text.slice(0, 120)}`);
+      nonJsonErr.noRetry = true;
+      throw nonJsonErr;
     } catch (err) {
-      clearTimeout(timer);
+      if (err && err.noRetry) {
+        throw err;
+      }
       if (err && err.name === "AbortError") {
+        if (externalSignal && externalSignal.aborted) {
+          const cancelErr = new Error("Перевод остановлен пользователем");
+          cancelErr.noRetry = true;
+          throw cancelErr;
+        }
         lastError = new Error(`Превышен таймаут ожидания ответа от ${baseUrl}${endpoint}`);
+        if (method !== "GET") {
+          lastError.noRetry = true;
+          throw lastError;
+        }
       } else {
         lastError = err;
+      }
+    } finally {
+      clearTimeout(timer);
+      if (externalSignal && typeof externalSignal.removeEventListener === "function") {
+        externalSignal.removeEventListener("abort", onExternalAbort);
       }
     }
   }
@@ -184,42 +217,37 @@ async function fetchImageAsDataUrl(imageUrl) {
     throw new Error("Запрещенный URL изображения");
   }
 
-  let lastErr = null;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 30000);
+  try {
+    const res = await fetch(imageUrl, {
+      method: "GET",
+      credentials: "omit",
+      cache: "no-cache",
+      signal: controller.signal,
+    });
 
-  for (const credMode of ["omit", "same-origin"]) {
-    const controller = new AbortController();
-    const timer = setTimeout(() => controller.abort(), 30000);
-    try {
-      const res = await fetch(imageUrl, {
-        method: "GET",
-        credentials: credMode,
-        cache: "no-cache",
-        signal: controller.signal,
-      });
-
-      if (!res.ok) {
-        lastErr = new Error(`HTTP ${res.status} при скачивании картинки`);
-        continue;
-      }
-
-      const blob = await res.blob();
-      if (!blob || blob.size < 100) {
-        lastErr = new Error("Скачан пустой файл изображения");
-        continue;
-      }
-      if (blob.size > MAX_REMOTE_IMAGE_BYTES) {
-        throw new Error("Размер изображения превышает допустимый лимит 25 МБ");
-      }
-
-      return await blobToDataUrl(blob);
-    } catch (err) {
-      lastErr = err;
-    } finally {
-      clearTimeout(timer);
+    if (!res.ok) {
+      throw new Error(`HTTP ${res.status} при скачивании картинки`);
     }
-  }
 
-  throw lastErr || new Error("Не удалось скачать изображение со страницы");
+    const rawLen = res.headers.get("content-length");
+    if (rawLen !== null && Number(rawLen) > MAX_REMOTE_IMAGE_BYTES) {
+      throw new Error("Размер изображения превышает допустимый лимит 25 МБ");
+    }
+
+    const blob = await res.blob();
+    if (!blob || blob.size < 100) {
+      throw new Error("Скачан пустой файл изображения");
+    }
+    if (blob.size > MAX_REMOTE_IMAGE_BYTES) {
+      throw new Error("Размер изображения превышает допустимый лимит 25 МБ");
+    }
+
+    return await blobToDataUrl(blob);
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function sendMessageToTab(tabId, payload) {
@@ -275,6 +303,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         case "CHECK_HEALTH": {
           const data = await callLocalServer("/health", { method: "GET" }, 25000);
           sendResponse({ ok: true, data });
+          break;
+        }
+
+        case "GET_ACTIVE_SERVER_BASE": {
+          const baseUrl = await getActiveServerBase();
+          sendResponse({ ok: true, data: { baseUrl } });
+          break;
+        }
+
+        case "REQUEST_HOST_PERMISSION": {
+          let pattern = String(msg.originPattern || "").trim();
+          if (!pattern && typeof msg.url === "string" && msg.url.trim()) {
+            try {
+              const parsed = new URL(msg.url.trim());
+              if (parsed.protocol === "https:" || parsed.protocol === "http:") {
+                pattern = `${parsed.protocol}//${parsed.host}/*`;
+              }
+            } catch (_) {}
+          }
+          if (!/^https?:\/\/[^/\s]+\/\*$/.test(pattern) || !isSafeRemoteImageUrl(pattern.slice(0, -1))) {
+            sendResponse({ ok: false, error: "Некорректный origin для разрешения CORS" });
+            break;
+          }
+          let granted = await chrome.permissions.contains({ origins: [pattern] });
+          if (!granted) {
+            granted = await chrome.permissions.request({ origins: [pattern] });
+          }
+          sendResponse({ ok: true, data: { granted: Boolean(granted), originPattern: pattern } });
+          break;
+        }
+
+        case "CANCEL_TRANSLATE": {
+          const tabPrefix = `${sender?.tab?.id ?? 0}:`;
+          let cancelled = 0;
+          if (msg.requestId) {
+            const exactKey = `${tabPrefix}${String(msg.requestId)}`;
+            const ac = activeTranslateControllers.get(exactKey);
+            if (ac) {
+              ac.abort();
+              activeTranslateControllers.delete(exactKey);
+              cancelled += 1;
+            }
+          } else {
+            for (const [key, ac] of activeTranslateControllers.entries()) {
+              if (key.startsWith(tabPrefix)) {
+                ac.abort();
+                activeTranslateControllers.delete(key);
+                cancelled += 1;
+              }
+            }
+          }
+          sendResponse({ ok: true, data: { cancelled } });
           break;
         }
 
@@ -355,6 +435,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           if (msg.antiCensorshipPrompt !== undefined) {
             payload.anti_censorship_prompt = Boolean(msg.antiCensorshipPrompt);
           }
+          if (msg.preflightNsfwSplit !== undefined) {
+            payload.preflight_nsfw_split = Boolean(msg.preflightNsfwSplit);
+          }
+          if (msg.cloudOnlyNoLocalFallback !== undefined) {
+            payload.cloud_only_no_local_fallback = Boolean(msg.cloudOnlyNoLocalFallback);
+          }
+          if (typeof msg.translationProfile === "string" && msg.translationProfile.trim()) {
+            payload.translation_profile = msg.translationProfile.trim();
+          }
+          if (typeof msg.ultraProofreadMode === "string" && msg.ultraProofreadMode.trim()) {
+            payload.ultra_proofread_mode = msg.ultraProofreadMode.trim();
+          }
 
           const data = await callLocalServer(
             "/settings",
@@ -410,61 +502,72 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         case "TRANSLATE_IMAGE": {
-          let base64Image = msg.imageBase64 || null;
-          if (!base64Image && msg.imageUrl) {
-            try {
-              base64Image = await fetchImageAsDataUrl(msg.imageUrl);
-            } catch (dlErr) {
-              console.warn(
-                "[MangaTranslator] Скачивание в браузере не удалось, передаем URL на локальный сервер:",
-                dlErr
-              );
-              base64Image = null;
+          const reqKey = `${sender?.tab?.id ?? 0}:${String(msg.requestId || Date.now())}`;
+          const translateAc = new AbortController();
+          activeTranslateControllers.set(reqKey, translateAc);
+          try {
+            let base64Image = msg.imageBase64 || null;
+            if (!base64Image && msg.imageUrl) {
+              try {
+                base64Image = await fetchImageAsDataUrl(msg.imageUrl);
+              } catch (dlErr) {
+                console.warn(
+                  "[MangaTranslator] Скачивание в браузере не удалось, передаем URL на локальный сервер:",
+                  dlErr
+                );
+                base64Image = null;
+              }
             }
-          }
-          if (!base64Image && !msg.imageUrl) {
-            throw new Error("Не найден URL или данные картинки");
-          }
+            if (translateAc.signal.aborted) {
+              throw new Error("Перевод остановлен пользователем");
+            }
+            if (!base64Image && !msg.imageUrl) {
+              throw new Error("Не найден URL или данные картинки");
+            }
 
-          const cleanModel = msg.model && msg.model !== "auto" ? msg.model : null;
+            const cleanModel = msg.model && msg.model !== "auto" ? msg.model : null;
 
-          const data = await callLocalServer(
-            "/translate",
-            {
-              method: "POST",
-              body: JSON.stringify({
-                image: base64Image,
-                lang: msg.lang || "auto",
-                target_lang: msg.targetLang || "en",
-                ollama_model: cleanModel,
-                model: cleanModel,
-                pipeline_mode: msg.pipelineMode || null,
-                use_image_context:
-                  msg.useImageContext !== undefined ? Boolean(msg.useImageContext) : null,
-                uppercase: Boolean(msg.uppercase),
-                min_font_size: msg.minFontSize || 12,
-                max_font_size: msg.maxFontSize || 32,
-                overflow_mode: msg.overflowMode || "shrink",
-                detect_free_text: Boolean(msg.detectFreeText),
-                text_filter_mode: msg.textFilterMode || "dialogue_only",
-                skip_sighs: msg.skipSighs !== false,
-                skip_sfx: msg.skipSfx !== false,
-                min_text_length: msg.minTextLength || 2,
-                force_retranslate: Boolean(msg.forceRetranslate),
-                return_image: true,
-                image_format: "webp",
-                save_debug: false,
-                auto_save: msg.autoSave !== false,
-                save_dir: msg.saveDir || null,
-                chapter_title: msg.chapterTitle || null,
-                page_url: msg.pageUrl || null,
-                image_url: msg.imageUrl || null,
-                page_index: msg.pageIndex || null,
-              }),
-            },
-            240000
-          );
-          sendResponse({ ok: true, data });
+            const data = await callLocalServer(
+              "/translate",
+              {
+                method: "POST",
+                body: JSON.stringify({
+                  image: base64Image,
+                  lang: msg.lang || "auto",
+                  target_lang: msg.targetLang || "en",
+                  ollama_model: cleanModel,
+                  model: cleanModel,
+                  pipeline_mode: msg.pipelineMode || null,
+                  use_image_context:
+                    msg.useImageContext !== undefined ? Boolean(msg.useImageContext) : null,
+                  uppercase: Boolean(msg.uppercase),
+                  min_font_size: msg.minFontSize || 12,
+                  max_font_size: msg.maxFontSize || 32,
+                  overflow_mode: msg.overflowMode || "shrink",
+                  detect_free_text: Boolean(msg.detectFreeText),
+                  text_filter_mode: msg.textFilterMode || "dialogue_only",
+                  skip_sighs: msg.skipSighs !== false,
+                  skip_sfx: msg.skipSfx !== false,
+                  min_text_length: msg.minTextLength || 2,
+                  force_retranslate: Boolean(msg.forceRetranslate),
+                  return_image: true,
+                  image_format: "webp",
+                  save_debug: false,
+                  auto_save: msg.autoSave !== false,
+                  save_dir: msg.saveDir || null,
+                  chapter_title: msg.chapterTitle || null,
+                  page_url: msg.pageUrl || null,
+                  image_url: msg.imageUrl || null,
+                  page_index: msg.pageIndex || null,
+                }),
+              },
+              240000,
+              translateAc.signal
+            );
+            sendResponse({ ok: true, data });
+          } finally {
+            activeTranslateControllers.delete(reqKey);
+          }
           break;
         }
 
@@ -480,8 +583,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 ollama_model: cleanModel,
                 model: cleanModel,
                 pipeline_mode: msg.pipelineMode || null,
+                translation_profile: msg.translationProfile || null,
                 use_image_context:
                   msg.useImageContext !== undefined ? Boolean(msg.useImageContext) : null,
+                anti_censorship_prompt:
+                  msg.antiCensorshipPrompt !== undefined ? Boolean(msg.antiCensorshipPrompt) : null,
                 uppercase: Boolean(msg.uppercase),
                 min_font_size: msg.minFontSize || 12,
                 max_font_size: msg.maxFontSize || 32,
