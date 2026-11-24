@@ -294,8 +294,28 @@
   - В `server.py` Pass 2 поддерживает `"off" | "selective" | "full"` (по умолчанию `"selective"` — 1 запрос `<= 90` строк на стыки NSFW/локального обхода и реплики от 16+ символов, без возврата `llm_preflight_local` в облако).
 - **Пресеты OpenRouter и xAI Grok (`translator.py`, `web_studio.html`, `gui_app.py`, `config.json`)**:
   - Добавлены пресеты `openrouter_deepseek` (`deepseek/deepseek-chat`), `xai_grok_fast` (`grok-4-fast-non-reasoning`), `openrouter_mistral` (`mistralai/mistral-small-3.2-24b-instruct`), заголовки `HTTP-Referer`/`X-Title` для OpenRouter и локальный фоллбэк в `config.json` обновлён на установленную `ollama::shisa-v2.1-14b:Q4_K_M`.
+- **UI студии (`web_studio.html`)**:
+  - Модальное окно настроек переработано в **Master-Detail 2-колонный макет** (боковая панель с 4 группами и мгновенным поиском с синонимами `filterSettingsModal`, вынесена отдельная вкладка `tab-models` для пресетов/загрузки/хранилища, скрыт дублирующий `<select id="sel-overflow-mode">`, исправлена вложенность `tab-ui` с переносом UX-телеметрии в аккордеон `tab-diag`, добавлены pill-переключатели, единые спокойные границы секций, индикатор несохранённых изменений `settings-dirty-indicator`).
 - **Автотесты (`tests/test_security_and_core.py`)**:
-  - Набор расширен до **44 автотестов**, подтверждающих все новые модули очистки, NSFW-сплиттинга, Prefix Caching, локального Pass 0, пресетов OpenRouter/Grok, Diffusion-хука, а также RTX 5070 Ti CUDA-оптимизации (`HallucinationFreeMangaOCR.recognize_batch` с `BF16`/`beam_indices`, `YOLO FP16` с фоллбэком, `LaMa TF32 + cuDNN benchmark` с безопасным откатом `BF16 -> FP32` для FFT-слоёв и флаги `OLLAMA_FLASH_ATTENTION=1` / `OLLAMA_KV_CACHE_TYPE=q8_0` в `start_server.bat`).
+  - Набор расширен до **45 автотестов**, подтверждающих все новые модули очистки, NSFW-сплиттинга, Prefix Caching, локального Pass 0, пресетов OpenRouter/Grok, Diffusion-хука, RTX 5070 Ti CUDA-оптимизаций, а также HTML/JS-структуру переработанного меню настроек.
+
+---
+
+## 15. Обновление v6.1.3 (Фикс циклического сброса настроек + Полный облачный режим Grok 18+)
+
+### ✅ 1. Устранение циклического перезатирания настроек и выделения карточек (`server.py`, `web_studio.html`)
+- **Исправлен статус `GET /health` при ленивом старте (`server.py`)**:
+  - Когда `ocr_engine` и `cleaner_engine` ещё не загружены в ожидании первого перевода (`_engines_ready_event is None` и `translator_engine is not None`), `GET /health` возвращает `status = "ready"` (при `engines_ready = False`), прекращая бесконечный 1.5-секундный цикл опроса `loadHealth(false)` на фронтенде.
+- **Защита открытого окна настроек и точная синхронизация карточек (`web_studio.html`)**:
+  - `loadHealth(force, options)` не перезаписывает поля и чекбоксы при открытом несохранённом окне настроек (`isBackgroundRetry` / `_settingsDirty`) и при кнопке «Обновить модели» (`syncModelsOnly: true`), пока не нажато «Сохранить настройки» (`forceFormSync: true`).
+  - Отмена закрытием окна со сбросом несохранённых правок откатывает форму через `loadHealth(false, { forceFormSync: true })`.
+  - В `updateDeepSeekPresetCards` выделение `DeepSeek Flash` / `DeepSeek Pro` больше не срабатывает ложно на сторонние `*-flash`/`*-pro` модели (`gemini-3.8-flash` и др.), а `loadHealth` гарантирует наличие `option` для `selected_model` в `#sel-model`.
+
+### ✅ 2. Полный облачный режим 18+ без локальной Ollama (`translator.py`, `server.py`, `api/schemas.py`, `web_studio.html`)
+- **Настройка `cloud_only_no_local_fallback` (`chk-cloud-only-no-local-fallback`)**:
+  - При включении блокирует все отводы в локальную Ollama для облачных моделей: `enable_chapter_nsfw_mode()`, упреждающее 18+ разделение `preflight_nsfw_split`, Pass 0 локальный перехват глоссария (`_resolve_local_non_mt_llm`), локальный откат при отказах/микро-допереводе/сбоях в `_call_llm_json` и восстановление `nsfw_mode` из манифеста главы.
+- **Умная карточка `🚀 Grok 18+ (вся манга)` (`selectGrokPreset`, `findDetectedGrokModel`)**:
+  - Если в текущем удалённом шлюзе (например, `https://moduleapi.pro/v1`) обнаружена модель семейства Grok (`grok-4.7` и др.), выбирает её без перезатирания Base URL/ключа, иначе ставит `https://api.x.ai/v1` + `grok-4-fast-non-reasoning`, и сразу включает «Вся манга только в облаке (без Ollama)».
 
 
 

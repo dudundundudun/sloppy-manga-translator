@@ -1643,6 +1643,230 @@ def test_hallucination_free_manga_ocr_recognize_batch_with_beams():
         assert yolo_half_calls == [True, False]
 
 
+def test_settings_modal_sidebar_search_and_clean_structure():
+    import html.parser
+
+    html_src = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    for marker in (
+        'class="settings-shell"',
+        'class="settings-sidebar"',
+        'id="inp-settings-search"',
+        'id="stab-btn-models"',
+        'id="tab-models"',
+        'id="settings-dirty-indicator"',
+        "function filterSettingsModal(",
+        "function setSettingsDirty(",
+    ):
+        assert marker in html_src, f"Не найден обязательный элемент редизайна настроек: {marker}"
+
+    start_idx = html_src.index('<div class="modal-backdrop" id="settings-modal"')
+    end_idx = html_src.index("<!-- ==================== APPLICATION SCRIPT ====================", start_idx)
+    modal_html = html_src[start_idx:end_idx]
+
+    # UX-телеметрия должна находиться внутри tab-diag, а не быть вложенной в tab-ui
+    tab_ui_pos = modal_html.index('id="tab-ui"')
+    tab_glossary_pos = modal_html.index('id="tab-glossary"')
+    tab_diag_pos = modal_html.index('id="tab-diag"')
+    ux_pos = modal_html.index('id="ux-mini-counter-badge"')
+    assert tab_diag_pos < ux_pos, "UX-телеметрия должна находиться в разделе Диагностики, а не в tab-ui"
+    assert not (tab_ui_pos < ux_pos < tab_glossary_pos)
+
+    # Проверка баланса ключевых тегов и уникальности id внутри #settings-modal
+    tracked_tags = {"div", "details", "label", "aside", "nav", "select", "table"}
+
+    class _ModalAuditParser(html.parser.HTMLParser):
+        def __init__(self):
+            super().__init__(convert_charrefs=False)
+            self.stack: list[str] = []
+            self.ids: list[str] = []
+            self.errors: list[str] = []
+
+        def handle_starttag(self, tag, attrs):
+            t_low = tag.lower()
+            for k, v in attrs:
+                if k.lower() == "id" and v:
+                    self.ids.append(v)
+            if t_low in tracked_tags:
+                self.stack.append(t_low)
+
+        def handle_endtag(self, tag):
+            t_low = tag.lower()
+            if t_low in tracked_tags:
+                if not self.stack:
+                    self.errors.append(f"Extra closing tag </{t_low}>")
+                elif self.stack[-1] != t_low:
+                    self.errors.append(f"Mismatched closing </{t_low}> while open <{self.stack[-1]}>")
+                else:
+                    self.stack.pop()
+
+    parser = _ModalAuditParser()
+    parser.feed(modal_html)
+    parser.close()
+    assert not parser.errors, f"Ошибки вёрстки в #settings-modal: {parser.errors}"
+    assert not parser.stack, f"Незакрытые теги в #settings-modal: {parser.stack}"
+
+    dup_ids = [item for item in set(parser.ids) if parser.ids.count(item) > 1]
+    assert not dup_ids, f"Найдены дублирующиеся ID в #settings-modal: {dup_ids}"
+
+    required_ids = {
+        "sel-model", "inp-unsloth-url", "inp-api-key", "sel-cloud-preset",
+        "card-preset-flash", "card-preset-pro", "card-preset-openrouter", "card-preset-grok",
+        "sel-settings-translation-profile", "sel-ultra-proofread-mode",
+        "chk-preflight-nsfw-split", "chk-cloud-only-no-local-fallback",
+        "chk-anti-censorship-prompt", "chk-use-image-context",
+        "inp-anti-censorship-custom-prompt", "model-stacks-cards-grid",
+        "stack-sel-translation", "stack-sel-fallback", "stack-sel-vlm",
+        "stack-sel-ocr", "stack-sel-detector", "stack-sel-inpaint",
+        "sel-recommended-pull", "storage-ollama-list", "storage-local-list",
+        "inp-min-font", "inp-max-font", "chk-uppercase", "sel-overflow-mode",
+        "chk-skip-existing", "chk-autosave-web", "inp-web-save-dir",
+        "sel-text-filter-mode", "chk-skip-sighs", "chk-skip-sfx", "chk-free-text",
+        "inp-min-text-len", "inp-batch-pages", "chk-ui-inline-popup",
+        "chk-ui-always-pins", "chk-ui-auto-scroll", "chk-ui-floating-fade",
+        "chk-ui-auto-collapse", "chk-ui-enable-mask-tools", "chk-ui-compact-mascot",
+        "chk-ui-auto-save-box", "rng-ui-autosave-sec", "inp-ui-autosave-sec",
+        "inp-find-text", "inp-replace-text", "glossary-table-body",
+        "chapter-book-textarea", "diag-summary-cards", "diag-report-textarea",
+        "ux-mini-counter-badge",
+    }
+    missing = sorted(required_ids - set(parser.ids))
+    assert not missing, f"Отсутствуют обязательные ID элементов управления: {missing}"
+
+
+def test_health_lazy_idle_ready_and_cloud_only_grok_mode():
+    tr_mod = _load_real_module("translator")
+    srv = _load_server_module()
+    from api.schemas import ServerSettingsRequest
+
+    class _FakeCuda:
+        @staticmethod
+        def is_available():
+            return False
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(config_path=cfg_file)
+            tr.save_config(
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-grok-key",
+                selected_model="unsloth::grok-4.7",
+                preflight_nsfw_split=False,
+                cloud_only_no_local_fallback=True,
+            )
+
+            tr_reloaded = tr_mod.OllamaTranslator(config_path=cfg_file)
+            assert tr_reloaded.preflight_nsfw_split is False
+            assert tr_reloaded.cloud_only_no_local_fallback is True
+            assert tr_reloaded._resolved_model == "unsloth::grok-4.7"
+
+            async def _fake_list_models(force_refresh=False):
+                return [{"id": "unsloth::grok-4.7", "name": "Cloud grok-4.7", "provider": "unsloth", "installed": "true"}]
+
+            async def _fake_resolve():
+                return "unsloth::grok-4.7"
+
+            with (
+                patch.object(srv, "ocr_engine", None),
+                patch.object(srv, "cleaner_engine", None),
+                patch.object(srv, "translator_engine", tr_reloaded),
+                patch.object(srv, "renderer_engine", None),
+                patch.object(srv, "_engines_ready_event", None),
+                patch.object(srv.torch, "cuda", _FakeCuda, create=True),
+                patch.object(tr_reloaded, "list_available_models", side_effect=_fake_list_models),
+                patch.object(tr_reloaded, "resolve_model", side_effect=_fake_resolve),
+            ):
+                health = await srv.health_check()
+                assert health["status"] == "ready", f"Ленивый простой не должен возвращать initializing: {health['status']}"
+                assert health["engines_ready"] is False
+                assert health["cloud_only_no_local_fallback"] is True
+                assert health["preflight_nsfw_split"] is False
+
+            # В строгом облачном режиме enable_chapter_nsfw_mode не переключает главу на Ollama
+            tr_reloaded.enable_chapter_nsfw_mode("test censorship trigger")
+            assert tr_reloaded.nsfw_mode is False
+
+            # Даже при включенном preflight_nsfw_split все 18+ бабблы и Pass 0 идут строго в grok-4.7
+            tr_reloaded.preflight_nsfw_split = True
+            tr_reloaded._cached_models = [
+                {"id": "ollama::qwen3:14b", "provider": "ollama", "installed": "true"},
+                {"id": "ollama::shisa-v2.1-14b:Q4_K_M", "provider": "ollama", "installed": "true"},
+            ]
+
+            cloud_models_seen: list[str] = []
+            cloud_keys_seen: list[set[str]] = []
+            local_calls: list[dict[str, str]] = []
+
+            async def _fake_cloud_call(*, client, full_model_id, system_prompt, user_prompt, **kwargs):
+                cloud_models_seen.append(full_model_id)
+                parsed = tr_reloaded._extract_last_json_dict_from_prompt(user_prompt)
+                if parsed:
+                    real_keys = {k for k in parsed.keys() if not k.startswith("_anchor_")}
+                    cloud_keys_seen.append(real_keys)
+                    return {k: f"Перевод {k}" for k in parsed.keys()}
+                return {"美咲": "Мисаки (female)"}
+
+            async def _fake_local_ollama(**kwargs):
+                local_calls.append(kwargs)
+                return {}
+
+            chunk_blocks = [
+                {"id": "1", "original_text": "こんにちは", "bbox": [10, 10, 90, 90]},
+                {"id": "2", "original_text": "早く行こう", "bbox": [100, 10, 200, 90]},
+                {"id": "3", "original_text": "チ○ポ…イグゥっ♡", "bbox": [220, 10, 320, 110]},
+            ]
+            pass0_blocks = [
+                {"id": "1", "original_text": "美咲ちゃん、おはよう！"},
+                {"id": "2", "original_text": "美咲は急いでいる"},
+                {"id": "3", "original_text": "本当に美咲なのか？"},
+                {"id": "4", "original_text": "美咲ちゃん待って！"},
+            ]
+            with (
+                patch.object(tr_reloaded, "_call_llm_json", side_effect=_fake_cloud_call),
+                patch.object(tr_reloaded, "_translate_map_via_local_ollama", side_effect=_fake_local_ollama),
+            ):
+                prov: dict[str, dict[str, str]] = {}
+                res_chunk = await tr_reloaded._translate_batch_chunk(
+                    client=tr_reloaded._get_http_client(),
+                    chunk_blocks=chunk_blocks,
+                    source_lang="ja",
+                    target_lang="ru",
+                    active_model="unsloth::grok-4.7",
+                    provenance_out=prov,
+                )
+                gloss = await tr_reloaded.extract_chapter_glossary_prepass(
+                    blocks=pass0_blocks,
+                    source_lang="ja",
+                    target_lang="ru",
+                    model="unsloth::grok-4.7",
+                )
+
+            assert local_calls == [], f"В режиме только-облако Ollama не должна вызываться: {local_calls}"
+            assert cloud_keys_seen == [{"1", "2", "3"}], f"Все 3 блока включая 18+ должны идти в Grok: {cloud_keys_seen}"
+            assert cloud_models_seen == ["unsloth::grok-4.7", "unsloth::grok-4.7"]
+            assert res_chunk == {"1": "Перевод 1", "2": "Перевод 2", "3": "Перевод 3"}
+            assert any(g.get("src") == "美咲" for g in gloss)
+
+    asyncio.run(_run())
+
+    req = ServerSettingsRequest(preflight_nsfw_split=False, cloud_only_no_local_fallback=True)
+    assert req.preflight_nsfw_split is False
+    assert req.cloud_only_no_local_fallback is True
+
+    html_src = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    for marker in (
+        "function selectGrokPreset(",
+        "function findDetectedGrokModel(",
+        "function syncCloudOnlyUiState(",
+        "forceFormSync",
+        "syncModelsOnly",
+        "isBackgroundRetry",
+        'shortLow.includes("deepseek") && shortLow.includes("flash")',
+    ):
+        assert marker in html_src, f"Отсутствует ожидаемый маркер в web_studio.html: {marker}"
+
+
 if __name__ == "__main__":
     test_funcs = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in test_funcs:

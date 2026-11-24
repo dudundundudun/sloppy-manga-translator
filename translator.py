@@ -3059,6 +3059,7 @@ class OllamaTranslator:
         self.anti_censorship_prompt: bool = False
         self.anti_censorship_custom_prompt: str = ""
         self.preflight_nsfw_split: bool = True
+        self.cloud_only_no_local_fallback: bool = False
         self.ultra_proofread_mode: str = "selective"
         self.default_model_stack: dict[str, str] = dict(DEFAULT_MODEL_STACK_TEMPLATE)
         self.saved_model_stacks: list[dict[str, Any]] = []
@@ -3120,11 +3121,29 @@ class OllamaTranslator:
         self.recent_translation_incidents: list[dict[str, Any]] = []
         self._load_saved_config()
 
+    def _is_strict_cloud_mode(self, active_model: str | None = None) -> bool:
+        """Возвращает True, если включён строгий облачный режим без отката в локальную Ollama."""
+        if not bool(getattr(self, "cloud_only_no_local_fallback", False)):
+            return False
+        if (self.translation_profile or "").strip().lower() == "local_only":
+            return False
+        mod = (active_model or self._resolved_model or "").strip()
+        if mod and not mod.startswith("unsloth::") and mod != "auto":
+            return False
+        return self._is_remote_cloud_url(self.unsloth_url)
+
     def enable_chapter_nsfw_mode(self, reason: str = "100% цензурный отказ облачного провайдера", is_network_outage: bool = False) -> None:
         """
         Автоматически включает режим обхода облака (nsfw_mode = True) на всю текущую папку/главу
         при первом же 100%-м отказе цензуры или серии сетевых сбоев облачного шлюза (v5.4.0).
         """
+        if self._is_strict_cloud_mode():
+            logger.info(
+                "☁️ [ТОЛЬКО ОБЛАКО] Пропуск переключения главы в локальный nsfw_mode (причина: %s) — продолжаем в облаке (%s).",
+                reason,
+                self._resolved_model or self.unsloth_url,
+            )
+            return
         self.nsfw_mode_reason = (reason or ("Cloud gateway network outage" if is_network_outage else "NSFW chapter bypass")).strip()
         if not self.nsfw_mode:
             self.nsfw_mode = True
@@ -3280,6 +3299,8 @@ class OllamaTranslator:
             "use_image_context": self.use_image_context,
             "local_fallback_model_multilang": self.local_fallback_model_multilang,
             "anti_censorship_prompt": self.anti_censorship_prompt,
+            "preflight_nsfw_split": self.preflight_nsfw_split,
+            "cloud_only_no_local_fallback": self.cloud_only_no_local_fallback,
             "nsfw_mode": self.nsfw_mode,
             "nsfw_mode_reason": self.nsfw_mode_reason,
             "cloud_batch_limit": MAX_BUBBLES_PER_BATCH_CLOUD,
@@ -3491,6 +3512,8 @@ class OllamaTranslator:
                     self.anti_censorship_prompt = bool(data["anti_censorship_prompt"])
                 if "preflight_nsfw_split" in data and data["preflight_nsfw_split"] is not None:
                     self.preflight_nsfw_split = bool(data["preflight_nsfw_split"])
+                if "cloud_only_no_local_fallback" in data and data["cloud_only_no_local_fallback"] is not None:
+                    self.cloud_only_no_local_fallback = bool(data["cloud_only_no_local_fallback"])
                 if data.get("ultra_proofread_mode") in ("off", "selective", "full"):
                     self.ultra_proofread_mode = str(data["ultra_proofread_mode"]).strip().lower()
                 if "anti_censorship_custom_prompt" in data and data["anti_censorship_custom_prompt"] is not None:
@@ -3564,6 +3587,7 @@ class OllamaTranslator:
         anti_censorship_prompt: bool | None = None,
         anti_censorship_custom_prompt: str | None = None,
         preflight_nsfw_split: bool | None = None,
+        cloud_only_no_local_fallback: bool | None = None,
         ultra_proofread_mode: str | None = None,
         default_model_stack: dict[str, str] | None = None,
         saved_model_stacks: list[dict[str, Any]] | None = None,
@@ -3661,6 +3685,11 @@ class OllamaTranslator:
         if preflight_nsfw_split is not None:
             self.preflight_nsfw_split = bool(preflight_nsfw_split)
 
+        if cloud_only_no_local_fallback is not None:
+            self.cloud_only_no_local_fallback = bool(cloud_only_no_local_fallback)
+            if self.cloud_only_no_local_fallback:
+                self.reset_chapter_nsfw_mode()
+
         if ultra_proofread_mode is not None:
             norm_upm = str(ultra_proofread_mode).strip().lower()
             if norm_upm in ("off", "selective", "full"):
@@ -3715,6 +3744,7 @@ class OllamaTranslator:
             "anti_censorship_prompt": self.anti_censorship_prompt,
             "anti_censorship_custom_prompt": self.anti_censorship_custom_prompt,
             "preflight_nsfw_split": self.preflight_nsfw_split,
+            "cloud_only_no_local_fallback": self.cloud_only_no_local_fallback,
             "ultra_proofread_mode": self.ultra_proofread_mode,
             "auto_save_web_pages": self.auto_save_web_pages,
             "web_save_dir": self.web_save_dir,
@@ -3743,9 +3773,11 @@ class OllamaTranslator:
                     os.fsync(f_cfg.fileno())
                 os.replace(tmp_cfg, self.config_path)
             logger.info(
-                "Настройки сохранены в config.json: selected_model=%s, api_url=%s, auto_save_web=%s, web_save_dir=%s",
+                "Настройки сохранены в config.json: selected_model=%s, api_url=%s, preflight_nsfw_split=%s, cloud_only=%s, auto_save_web=%s, web_save_dir=%s",
                 cfg["selected_model"],
                 cfg["unsloth_url"],
+                cfg["preflight_nsfw_split"],
+                cfg["cloud_only_no_local_fallback"],
                 cfg["auto_save_web_pages"],
                 cfg["web_save_dir"],
             )
@@ -6734,8 +6766,10 @@ class OllamaTranslator:
                 hint_tgt = "ru" if "русск" in low_sys_hint else "en"
 
                 # БЛОК 2 (v5.4.0): Если на текущей главе уже сработал флаг nsfw_mode = True,
-                # мгновенно маршрутизируем запрос в локальную модель Ollama без ожидания облака!
-                if self.nsfw_mode:
+                # мгновенно маршрутизируем запрос в локальную модель Ollama без ожидания облака
+                # (если не включен строгий облачный режим cloud_only_no_local_fallback)!
+                strict_cloud = self._is_strict_cloud_mode(full_model_id)
+                if self.nsfw_mode and not strict_cloud:
                     fb_nsfw = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                     if fb_nsfw:
                         if not allow_mt_fallback and is_mt_only_local_model(fb_nsfw):
@@ -6756,7 +6790,7 @@ class OllamaTranslator:
                         )
 
                 cloud_cooldown_until = float(getattr(self, "_cloud_down_until_ts", 0.0) or 0.0)
-                if cloud_cooldown_until > time.time():
+                if cloud_cooldown_until > time.time() and not strict_cloud:
                     fb_fast = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                     if fb_fast:
                         if not allow_mt_fallback and is_mt_only_local_model(fb_fast):
@@ -6770,7 +6804,7 @@ class OllamaTranslator:
                             persist_as_default=False,
                             page_image_b64=page_image_b64,
                         )
-                max_attempts = 2
+                max_attempts = 3 if strict_cloud else 2
                 for attempt in range(max_attempts):
                     if self.stop_requested:
                         return {}
@@ -6923,8 +6957,21 @@ class OllamaTranslator:
                 if last_cloud_err is not None:
                     err_last_detail = self._format_network_error(last_cloud_err)
                     self._consecutive_cloud_failures += 1
-                    self._cloud_down_until_ts = time.time() + 60.0
                     self._record_api_call("cloud", model_name, 0.0, 0, "ERROR", err_last_detail)
+                    if strict_cloud:
+                        self._record_incident(
+                            "CLOUD_ERROR_STRICT_CLOUD",
+                            model_name,
+                            f"Сбой облачного API ({err_last_detail}) в режиме «Только облако» — откат в Ollama отключён",
+                            details=err_last_detail,
+                        )
+                        logger.warning(
+                            "☁️ [ТОЛЬКО ОБЛАКО] Сбой облачного API (%s) для '%s' — локальный фоллбэк Ollama отключён настройкой cloud_only_no_local_fallback.",
+                            err_last_detail,
+                            model_name,
+                        )
+                        return {}
+                    self._cloud_down_until_ts = time.time() + 60.0
                     if self._consecutive_cloud_failures >= 2:
                         self.enable_chapter_nsfw_mode(
                             f"Серия сетевых сбоев облачного шлюза {self.unsloth_url} ({err_last_detail}, {self._consecutive_cloud_failures} пачки подряд)",
@@ -7078,12 +7125,17 @@ class OllamaTranslator:
         is_cloud_active = (
             active_model.startswith("unsloth::")
             and self._is_remote_cloud_url(self.unsloth_url)
-            and not self.nsfw_mode
+            and (not self.nsfw_mode or self._is_strict_cloud_mode(active_model))
         )
         preflight_local_model: str | None = None
         cloud_source_map: dict[str, str] = source_map
         local_nsfw_map: dict[str, str] = {}
-        if is_cloud_active and self.preflight_nsfw_split and triage_info.flagged_blocks:
+        if (
+            is_cloud_active
+            and self.preflight_nsfw_split
+            and not self._is_strict_cloud_mode(active_model)
+            and triage_info.flagged_blocks
+        ):
             preflight_local_model = await self._resolve_local_fallback_model(
                 target_lang=target_lang,
                 source_lang=source_lang,
@@ -7273,7 +7325,7 @@ class OllamaTranslator:
             )
             local_fallback_model = (
                 await self._resolve_local_fallback_model(target_lang=t_lang, source_lang=source_lang)
-                if active_model.startswith("unsloth::")
+                if (active_model.startswith("unsloth::") and not self._is_strict_cloud_mode(active_model))
                 else None
             )
             if local_fallback_model and active_model.startswith("unsloth::"):
@@ -7546,8 +7598,12 @@ class OllamaTranslator:
                     # БЛОК 3.2: Запрет облачного доперевода ради 1–2 мелких фраз (или если пачка уже ловила цензуру API)!
                     # Сразу передаем 1–2 непереведенных блока в локальный фоллбэк (с учетом языка source_lang) или словарь междометий,
                     # не делая новый HTTP-запрос к облачному API и исключая 90-секундные ReadTimeout!
-                    skip_cloud_micro_retry = active_model.startswith("unsloth::") and (
-                        self.nsfw_mode or was_refusal or (len(b_sub) <= 2 and not (set(b_sub) & misaligned_keys_set))
+                    skip_cloud_micro_retry = (
+                        active_model.startswith("unsloth::")
+                        and not self._is_strict_cloud_mode(active_model)
+                        and (
+                            self.nsfw_mode or was_refusal or (len(b_sub) <= 2 and not (set(b_sub) & misaligned_keys_set))
+                        )
                     )
                     if skip_cloud_micro_retry:
                         loc_model = await self._resolve_local_fallback_model(
@@ -7610,7 +7666,11 @@ class OllamaTranslator:
                             missing_after_cloud_retry = [
                                 kr for kr in b_sub if not _is_valid_target_translation(retry_map.get(kr, ""), source_map[kr])
                             ]
-                            if (retry_refused or not retry_map or missing_after_cloud_retry) and active_model.startswith("unsloth::"):
+                            if (
+                                (retry_refused or not retry_map or missing_after_cloud_retry)
+                                and active_model.startswith("unsloth::")
+                                and not self._is_strict_cloud_mode(active_model)
+                            ):
                                 loc_model = await self._resolve_local_fallback_model(
                                     target_lang=t_lang,
                                     source_lang=source_lang,
@@ -7815,7 +7875,12 @@ class OllamaTranslator:
         t_lang = target_lang.lower().strip()
 
         # БЛОК 2 (v5.4.0): Если на главе активирован nsfw_mode = True, сразу переключаем пачку на локальную модель Ollama без ожидания облака!
-        if self.nsfw_mode and active_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url):
+        if (
+            self.nsfw_mode
+            and active_model.startswith("unsloth::")
+            and self._is_remote_cloud_url(self.unsloth_url)
+            and not self._is_strict_cloud_mode(active_model)
+        ):
             loc_nsfw_model = await self._resolve_local_fallback_model(
                 target_lang=t_lang,
                 source_lang=source_lang,
@@ -8366,7 +8431,11 @@ class OllamaTranslator:
 
         active_model = await self.resolve_model(model, source_lang=source_lang, target_lang=target_lang)
         eff_pre_model = active_model
-        if eff_pre_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url):
+        if (
+            eff_pre_model.startswith("unsloth::")
+            and self._is_remote_cloud_url(self.unsloth_url)
+            and not self._is_strict_cloud_mode(eff_pre_model)
+        ):
             loc_non_mt = await self._resolve_local_non_mt_llm()
             if loc_non_mt:
                 eff_pre_model = loc_non_mt
@@ -8543,7 +8612,12 @@ class OllamaTranslator:
             target_lang=target_lang,
         )
         eff_proof_model = active_model
-        if self.nsfw_mode and eff_proof_model.startswith("unsloth::") and self._is_remote_cloud_url(self.unsloth_url):
+        if (
+            self.nsfw_mode
+            and eff_proof_model.startswith("unsloth::")
+            and self._is_remote_cloud_url(self.unsloth_url)
+            and not self._is_strict_cloud_mode(eff_proof_model)
+        ):
             fb_proof = await self._resolve_local_fallback_model(target_lang=target_lang, source_lang=source_lang)
             if fb_proof:
                 eff_proof_model = fb_proof

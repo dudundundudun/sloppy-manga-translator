@@ -3064,10 +3064,16 @@ async def _run_folder_translation_job(
     manifest = _load_folder_manifest(output_dir)
     manifest["source_dir"] = str(source_dir)
     manifest["target_lang"] = target_lang
-    if not force_retranslate and bool(manifest.get("nsfw_mode", False)):
+    if (
+        not force_retranslate
+        and bool(manifest.get("nsfw_mode", False))
+        and not bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+    ):
         translator_engine.enable_chapter_nsfw_mode("Восстановлен nsfw_mode=True из манифеста текущей главы")
     else:
         translator_engine.reset_chapter_nsfw_mode()
+        if bool(getattr(translator_engine, "cloud_only_no_local_fallback", False)):
+            manifest["nsfw_mode"] = False
     if not isinstance(manifest.get("pages"), dict):
         manifest["pages"] = {}
     if not isinstance(manifest.get("phrase_cache"), dict):
@@ -3377,7 +3383,11 @@ async def _run_folder_translation_job(
 
             # БЛОК 2 (v5.4.0): Если активирован флаг nsfw_mode = True, сразу переключаем активную модель пачки
             # на локальную Ollama, чтобы не делать холостых запросов в цензурное облако и не запускать параллельный LaMa!
-            if getattr(translator_engine, "nsfw_mode", False) and active_mod.startswith("unsloth::"):
+            if (
+                getattr(translator_engine, "nsfw_mode", False)
+                and active_mod.startswith("unsloth::")
+                and not bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+            ):
                 loc_nsfw_mod = await translator_engine._resolve_local_fallback_model(
                     target_lang=target_lang,
                     source_lang=batch_detected_lang,
@@ -3507,7 +3517,11 @@ async def _run_folder_translation_job(
                     # В режиме 💎 Максимум (2-Pass AI) выполняем автоматическую литературную вычитку пачки (Проход 2/2)
                     # только на универсальных LLM (на узких MT-моделях вроде Sugoi / TranslateGemma вычитка пропускается).
                     eff_proof_mod = active_mod
-                    if getattr(translator_engine, "nsfw_mode", False) and eff_proof_mod.startswith("unsloth::"):
+                    if (
+                        getattr(translator_engine, "nsfw_mode", False)
+                        and eff_proof_mod.startswith("unsloth::")
+                        and not bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+                    ):
                         fb_pr = await translator_engine._resolve_local_fallback_model(
                             target_lang=target_lang, source_lang=batch_detected_lang
                         )
@@ -4092,9 +4106,13 @@ async def health_check() -> dict[str, Any]:
         and cleaner_engine is not None
         and (_engines_ready_event is None or _engines_ready_event.is_set())
     )
+    is_actively_initializing = (
+        translator_engine is None
+        or (_engines_ready_event is not None and not _engines_ready_event.is_set())
+    )
 
     return {
-        "status": "ready" if engines_ready else "initializing",
+        "status": "initializing" if is_actively_initializing else "ready",
         "engines_ready": engines_ready,
         "version": APP_VERSION,
         "gpu": gpu_info,
@@ -4130,6 +4148,7 @@ async def health_check() -> dict[str, Any]:
         "anti_censorship_prompt": bool(getattr(translator_engine, "anti_censorship_prompt", False)) if translator_engine else False,
         "anti_censorship_custom_prompt": getattr(translator_engine, "anti_censorship_custom_prompt", "") if translator_engine else "",
         "preflight_nsfw_split": bool(getattr(translator_engine, "preflight_nsfw_split", True)) if translator_engine else True,
+        "cloud_only_no_local_fallback": bool(getattr(translator_engine, "cloud_only_no_local_fallback", False)) if translator_engine else False,
         "ultra_proofread_mode": getattr(translator_engine, "ultra_proofread_mode", "selective") if translator_engine else "selective",
         "default_anti_censorship_prompt_template": DEEPSEEK_ANTI_CENSORSHIP_PROMPT_TEMPLATE,
         "ui_settings": translator_engine.ui_settings if translator_engine else {},
@@ -4463,6 +4482,7 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
             anti_censorship_prompt=payload.anti_censorship_prompt,
             anti_censorship_custom_prompt=payload.anti_censorship_custom_prompt,
             preflight_nsfw_split=payload.preflight_nsfw_split,
+            cloud_only_no_local_fallback=payload.cloud_only_no_local_fallback,
             ultra_proofread_mode=payload.ultra_proofread_mode,
             default_model_stack=payload.default_model_stack,
         )
@@ -4495,6 +4515,7 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "anti_censorship_prompt": bool(saved.get("anti_censorship_prompt", False)),
         "anti_censorship_custom_prompt": saved.get("anti_censorship_custom_prompt", ""),
         "preflight_nsfw_split": bool(saved.get("preflight_nsfw_split", True)),
+        "cloud_only_no_local_fallback": bool(saved.get("cloud_only_no_local_fallback", False)),
         "ultra_proofread_mode": saved.get("ultra_proofread_mode", "selective"),
         "unsloth_url": saved["unsloth_url"],
         "unsloth_api_key": "",

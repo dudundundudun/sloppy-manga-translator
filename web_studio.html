@@ -1804,15 +1804,16 @@
     }
 
     .settings-modal {
-      width: min(96vw, 940px);
+      width: min(95vw, 1060px);
+      height: min(88dvh, 760px);
       max-width: 98vw;
       max-height: min(94dvh, calc(100vh - 16px));
-      min-width: min(320px, 95vw);
-      min-height: min(360px, 86vh);
-      background: #191528;
-      border: 1px solid rgba(244, 114, 182, 0.34);
-      border-radius: 20px;
-      box-shadow: 0 26px 70px rgba(0, 0, 0, 0.85);
+      min-width: min(340px, 95vw);
+      min-height: min(380px, 86vh);
+      background: #151222;
+      border: 1px solid rgba(255, 255, 255, 0.11);
+      border-radius: 18px;
+      box-shadow: 0 28px 80px rgba(0, 0, 0, 0.85);
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -1822,8 +1823,8 @@
       transition: width 0.18s ease, height 0.18s ease;
     }
     .settings-modal.wide-modal {
-      width: min(98vw, 1220px);
-      height: min(95dvh, calc(100vh - 14px));
+      width: min(98vw, 1320px);
+      height: min(94dvh, 900px);
     }
 
     .modal-header {
@@ -1832,13 +1833,13 @@
       align-items: center;
       flex-wrap: wrap;
       gap: 8px;
-      padding: clamp(10px, 1.5vh, 15px) clamp(12px, 2vw, 22px);
-      border-bottom: 1px solid var(--border-subtle);
-      background: rgba(15, 13, 24, 0.72);
+      padding: 12px 20px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.07);
+      background: rgba(12, 10, 20, 0.88);
       flex-shrink: 0;
     }
     .modal-header-title {
-      font-size: clamp(13.5px, 1.5vw, 16px);
+      font-size: 15px;
       font-weight: 700;
       color: var(--text-primary);
       display: flex;
@@ -1848,44 +1849,151 @@
       min-width: 0;
     }
 
-    .settings-tabs-nav {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(142px, 1fr));
-      gap: 6px;
-      padding: clamp(7px, 1.2vh, 10px) clamp(12px, 2vw, 20px);
-      background: rgba(13, 11, 21, 0.78);
-      border-bottom: 1px solid var(--border-subtle);
+    .settings-shell {
+      display: flex;
+      flex: 1;
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .settings-sidebar {
+      width: 242px;
       flex-shrink: 0;
+      background: rgba(10, 8, 18, 0.64);
+      border-right: 1px solid rgba(255, 255, 255, 0.07);
+      padding: 12px 10px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      overflow-y: auto;
+    }
+
+    .settings-search-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      flex-shrink: 0;
+    }
+    .settings-search-wrap input {
+      width: 100%;
+      min-width: 0;
+      box-sizing: border-box;
+      background: rgba(255, 255, 255, 0.045);
+      color: var(--text-primary);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 10px;
+      padding: 7px 28px 7px 10px;
+      font-size: 12px;
+      outline: none;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .settings-search-wrap input::placeholder {
+      color: var(--text-muted);
+    }
+    .settings-search-wrap input:focus {
+      border-color: var(--sakura);
+      background: rgba(255, 255, 255, 0.07);
+    }
+    .settings-search-clear {
+      position: absolute;
+      right: 6px;
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 12px;
+      cursor: pointer;
+      padding: 2px 5px;
+      border-radius: 6px;
+      display: none;
+    }
+    .settings-search-clear:hover {
+      color: #fff;
+      background: rgba(255, 255, 255, 0.1);
+    }
+
+    .settings-tabs-nav {
+      display: flex;
+      flex-direction: column;
+      gap: 2px;
+      padding: 0;
+      background: transparent;
+      border: none;
+      flex: 1;
+    }
+    .settings-nav-group-label {
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding: 10px 10px 4px;
+      user-select: none;
+    }
+    .settings-nav-group-label:first-child {
+      padding-top: 2px;
     }
 
     .settings-tab-btn {
-      background: rgba(255, 255, 255, 0.045);
+      width: 100%;
+      background: transparent;
       color: var(--text-secondary);
-      border: 1px solid rgba(255, 255, 255, 0.06);
-      border-radius: 10px;
-      padding: 7px 10px;
-      font-size: 12px;
-      font-weight: 700;
+      border: 1px solid transparent;
+      border-left: 3px solid transparent;
+      border-radius: 9px;
+      padding: 8px 10px;
+      font-size: 12.4px;
+      font-weight: 600;
       cursor: pointer;
       display: flex;
       align-items: center;
-      justify-content: center;
-      gap: 6px;
+      justify-content: flex-start;
+      gap: 8px;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
       min-width: 0;
-      transition: all 0.14s ease;
+      text-align: left;
+      transition: background 0.14s ease, color 0.14s ease, border-color 0.14s ease;
     }
     .settings-tab-btn:hover {
-      background: rgba(255, 255, 255, 0.09);
+      background: rgba(255, 255, 255, 0.055);
       color: #fff;
     }
     .settings-tab-btn.active {
-      background: linear-gradient(135deg, rgba(244, 114, 182, 0.28), rgba(129, 140, 248, 0.28));
+      background: rgba(244, 114, 182, 0.13);
       color: #fff;
-      border-color: var(--sakura);
-      box-shadow: 0 3px 12px rgba(244, 114, 182, 0.22);
+      border-color: rgba(244, 114, 182, 0.22);
+      border-left-color: var(--sakura);
+    }
+
+    .settings-content-col {
+      flex: 1;
+      min-width: 0;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      background: rgba(21, 18, 34, 0.55);
+    }
+    .settings-pane-header {
+      padding: 13px 24px 11px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+      background: rgba(15, 13, 24, 0.48);
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .settings-pane-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text-primary);
+    }
+    .settings-pane-subtitle {
+      font-size: 11.8px;
+      color: var(--text-muted);
+      margin-top: 2px;
     }
 
     .settings-body {
@@ -1893,49 +2001,93 @@
       min-height: 0;
       overflow-y: auto;
       overflow-x: hidden;
-      padding: clamp(12px, 1.8vh, 18px) clamp(12px, 2vw, 22px);
+      padding: 16px 24px 24px;
       display: flex;
       flex-direction: column;
-      gap: 12px;
+      gap: 14px;
     }
 
     .settings-tab-pane {
       display: none;
       flex-direction: column;
-      gap: 12px;
+      gap: 14px;
       min-width: 0;
     }
     .settings-tab-pane.active {
       display: flex;
+    }
+    .settings-body.is-searching .settings-tab-pane {
+      display: flex;
+    }
+    .settings-search-hidden {
+      display: none !important;
+    }
+    .search-section-badge {
+      display: inline-flex;
+      align-items: center;
+      font-size: 10.5px;
+      font-weight: 600;
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.06);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      border-radius: 999px;
+      padding: 2px 8px;
+      margin-right: 6px;
+    }
+    .settings-empty-state {
+      display: none;
+      padding: 36px 20px;
+      text-align: center;
+      color: var(--text-muted);
+      font-size: 13px;
+      border: 1px dashed rgba(255, 255, 255, 0.12);
+      border-radius: 14px;
+      background: rgba(255, 255, 255, 0.02);
     }
 
     .modal-footer {
       display: flex;
       justify-content: space-between;
       align-items: center;
-      gap: 8px;
-      padding: clamp(9px, 1.4vh, 13px) clamp(12px, 2vw, 22px);
-      border-top: 1px solid var(--border-subtle);
-      background: rgba(15, 13, 24, 0.85);
+      gap: 10px;
+      padding: 11px 22px;
+      border-top: 1px solid rgba(255, 255, 255, 0.08);
+      background: rgba(12, 10, 20, 0.92);
       flex-shrink: 0;
       flex-wrap: wrap;
     }
+    .settings-dirty-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11.5px;
+      font-weight: 600;
+      color: var(--amber);
+      background: rgba(251, 191, 36, 0.12);
+      border: 1px solid rgba(251, 191, 36, 0.32);
+      border-radius: 999px;
+      padding: 4px 10px;
+    }
 
     .section-box {
-      background: rgba(15, 13, 24, 0.58);
-      border: 1px solid rgba(244, 114, 182, 0.18);
+      background: rgba(255, 255, 255, 0.025);
+      border: 1px solid rgba(255, 255, 255, 0.08);
       border-radius: 14px;
-      padding: clamp(10px, 1.5vw, 14px) clamp(12px, 1.8vw, 16px);
+      padding: 15px 18px;
       display: flex;
       flex-direction: column;
-      gap: 9px;
+      gap: 11px;
       min-width: 0;
       max-width: 100%;
     }
+    .section-box.danger-zone {
+      border-color: rgba(244, 63, 94, 0.34);
+      background: rgba(244, 63, 94, 0.035);
+    }
     .section-title {
-      font-size: 13px;
+      font-size: 13.5px;
       font-weight: 700;
-      color: var(--sakura);
+      color: var(--text-primary);
       display: flex;
       align-items: center;
       justify-content: space-between;
@@ -1944,11 +2096,46 @@
       min-width: 0;
     }
     .section-desc {
-      font-size: 11.6px;
+      font-size: 12px;
       color: var(--text-muted);
-      line-height: 1.4;
-      margin-top: -3px;
+      line-height: 1.45;
+      margin-top: -4px;
       word-break: break-word;
+    }
+
+    .settings-accordion {
+      background: rgba(255, 255, 255, 0.022);
+      border: 1px solid rgba(255, 255, 255, 0.09);
+      border-radius: 11px;
+      padding: 9px 12px;
+      font-size: 12px;
+      color: var(--text-secondary);
+    }
+    .settings-accordion summary {
+      cursor: pointer;
+      font-weight: 600;
+      color: var(--text-primary);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+      list-style: none;
+      user-select: none;
+    }
+    .settings-accordion summary::-webkit-details-marker {
+      display: none;
+    }
+    .settings-accordion[open] summary {
+      margin-bottom: 10px;
+      padding-bottom: 8px;
+      border-bottom: 1px dashed rgba(255, 255, 255, 0.1);
+    }
+
+    .diag-action-toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
     }
 
     .form-grid {
@@ -1984,9 +2171,7 @@
       font-size: 11.8px;
       font-weight: 600;
       color: var(--text-secondary);
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
+      line-height: 1.35;
     }
     .field-box input, .field-box select {
       width: 100%;
@@ -2046,45 +2231,75 @@
       line-height: 1.35;
     }
 
-    /* User-friendly Switch Row with Title + Hint */
+    /* User-friendly Switch Row with Title + Hint & Pill Toggle */
     .toggle-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      gap: 12px;
-      padding: 9px 12px;
-      background: rgba(255, 255, 255, 0.035);
-      border: 1px solid rgba(255, 255, 255, 0.06);
+      gap: 14px;
+      padding: 10px 13px;
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.065);
       border-radius: 11px;
       font-size: 12.5px;
       cursor: pointer;
       transition: background 0.15s ease, border-color 0.15s ease;
     }
     .toggle-row:hover {
-      background: rgba(255, 255, 255, 0.065);
-      border-color: rgba(244, 114, 182, 0.28);
+      background: rgba(255, 255, 255, 0.06);
+      border-color: rgba(244, 114, 182, 0.3);
     }
     .toggle-row-text {
       display: flex;
       flex-direction: column;
       gap: 2px;
+      min-width: 0;
     }
     .toggle-row-title {
       font-weight: 600;
       color: var(--text-primary);
-      font-size: 12.5px;
+      font-size: 12.6px;
     }
     .toggle-row-sub {
-      font-size: 11px;
+      font-size: 11.3px;
       color: var(--text-muted);
-      line-height: 1.32;
+      line-height: 1.38;
     }
     .toggle-row input[type="checkbox"] {
-      width: 18px;
-      height: 18px;
-      accent-color: var(--sakura);
+      appearance: none;
+      -webkit-appearance: none;
+      width: 38px;
+      height: 22px;
+      border-radius: 999px;
+      background: rgba(255, 255, 255, 0.16);
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      position: relative;
       cursor: pointer;
       flex-shrink: 0;
+      transition: background 0.18s ease, border-color 0.18s ease;
+    }
+    .toggle-row input[type="checkbox"]::after {
+      content: "";
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      background: #f8fafc;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.45);
+      transition: transform 0.18s ease;
+    }
+    .toggle-row input[type="checkbox"]:checked {
+      background: var(--sakura);
+      border-color: rgba(244, 114, 182, 0.85);
+    }
+    .toggle-row input[type="checkbox"]:checked::after {
+      transform: translateX(16px);
+    }
+    .toggle-row input[type="checkbox"]:focus-visible {
+      outline: 2px solid rgba(244, 114, 182, 0.65);
+      outline-offset: 2px;
     }
 
     /* ==================== STEP 3: TYPESETTING & MASK RETOUCHING UI ==================== */
@@ -2449,9 +2664,38 @@
     }
 
     /* Responsive Media & Container Queries */
-    @container settingsmodal (max-width: 680px) {
+    @container settingsmodal (max-width: 720px) {
+      .settings-shell {
+        flex-direction: column;
+      }
+      .settings-sidebar {
+        width: 100%;
+        flex-shrink: 0;
+        border-right: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 8px 10px;
+        gap: 6px;
+        max-height: 148px;
+      }
+      .settings-nav-group-label {
+        display: none;
+      }
       .settings-tabs-nav {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        flex-direction: row;
+        flex-wrap: wrap;
+        gap: 4px;
+      }
+      .settings-tab-btn {
+        width: auto;
+        border-left-width: 1px;
+        padding: 6px 10px;
+        font-size: 11.5px;
+      }
+      .settings-pane-header {
+        padding: 10px 14px;
+      }
+      .settings-body {
+        padding: 12px 14px;
       }
       .choice-cards-grid,
       .form-grid,
@@ -2475,11 +2719,31 @@
     @media (max-width: 820px) {
       .settings-modal {
         width: 98vw;
+        height: 94dvh;
         max-height: 96dvh;
         border-radius: 14px;
       }
+      .settings-shell {
+        flex-direction: column;
+      }
+      .settings-sidebar {
+        width: 100%;
+        border-right: none;
+        border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 8px 10px;
+      }
+      .settings-nav-group-label {
+        display: none;
+      }
       .settings-tabs-nav {
-        grid-template-columns: repeat(2, minmax(0, 1fr));
+        flex-direction: row;
+        overflow-x: auto;
+        gap: 4px;
+      }
+      .settings-tab-btn {
+        width: auto;
+        border-left-width: 1px;
+        padding: 6px 10px;
       }
       .choice-cards-grid,
       .form-grid,
@@ -2499,26 +2763,21 @@
         max-height: calc(100dvh - 12px);
       }
       .modal-header {
-        padding: 8px 14px;
+        padding: 9px 16px;
       }
-      .settings-tabs-nav {
-        padding: 6px 14px;
-        gap: 4px;
-      }
-      .settings-tab-btn {
-        padding: 5px 8px;
-        font-size: 11.5px;
+      .settings-pane-header {
+        padding: 9px 18px;
       }
       .settings-body {
-        padding: 10px 14px;
-        gap: 10px;
+        padding: 12px 18px;
+        gap: 11px;
       }
       .section-box {
-        padding: 10px 12px;
-        gap: 7px;
+        padding: 12px 14px;
+        gap: 9px;
       }
       .modal-footer {
-        padding: 8px 14px;
+        padding: 9px 16px;
       }
     }
     .pipeline-mode-group {
@@ -3117,13 +3376,12 @@
     </div>
   </div>
 
-  <!-- ==================== REDESIGNED TABBED SETTINGS MODAL ==================== -->
+  <!-- ==================== REDESIGNED MASTER-DETAIL SETTINGS MODAL ==================== -->
   <div class="modal-backdrop" id="settings-modal" onclick="if(event.target===this) toggleSettingsModal(false)">
     <div class="settings-modal" id="settings-modal-box">
       <div class="modal-header">
         <div class="modal-header-title">
-          <span>⚙️ Настройки Miko-chan Manga Studio</span>
-          <span style="font-size:11.5px; color:var(--text-muted); font-weight:500;">Адаптивное окно (можно растягивать за правый нижний угол)</span>
+          <span>⚙️ Настройки Miko-chan Studio</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <button type="button" class="pill-btn" id="btn-settings-wide" onclick="toggleSettingsModalWide()" title="Развернуть окно настроек шире или вернуть стандартный размер">⛶ Шире</button>
@@ -3131,804 +3389,813 @@
         </div>
       </div>
 
-      <!-- Tab Bar -->
-      <div class="settings-tabs-nav">
-        <button type="button" class="settings-tab-btn active" id="stab-btn-ai" onclick="switchSettingsTab('tab-ai')">🤖 ИИ и Модели</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-ui" onclick="switchSettingsTab('tab-ui')">🎨 Интерфейс и Редактор</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-filter" onclick="switchSettingsTab('tab-filter')">📊 Фильтр текста и SFX</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-font" onclick="switchSettingsTab('tab-font')">🔤 Шрифт и Сохранение</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-book" onclick="switchSettingsTab('tab-book'); loadChapterBookPanel();">📖 Текст главы (Книга)</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-glossary" onclick="switchSettingsTab('tab-glossary')">🔎 Глоссарий и Замена</button>
-        <button type="button" class="settings-tab-btn" id="stab-btn-diag" onclick="switchSettingsTab('tab-diag')">🩺 Диагностика и Логи</button>
-      </div>
-
-      <div class="settings-body">
-        <!-- TAB 1: AI & MODELS -->
-        <div class="settings-tab-pane active" id="tab-ai">
-          <div class="section-box" style="border-color:rgba(52, 211, 153, 0.38);">
-            <div class="section-title">
-              <span>⚡ Профиль пакетного перевода главы (в шапке — быстрый тумблер «🏠 Локально»)</span>
-            </div>
-            <div class="section-desc">Управляет группировкой страниц, слиянием хвостов и параллельными потоками для экономии запросов к API и сохранения сквозного контекста:</div>
-            <div class="field-box">
-              <select id="sel-settings-translation-profile" onchange="onTranslationProfileChange(this.value, false)">
-                <option value="eco_book">💎 Эконом + Книга (1–2 запроса на 25 стр. — двухфазный OCR + единый сценарий главы)</option>
-                <option value="balanced" selected>⚖️ Баланс (Без микро-потоков — пачки по 15 стр. со слиянием хвостов <= 5 стр., ~2 запроса)</option>
-                <option value="turbo">🚀 Турбо (Параллельный — пачки по 12 стр., до 3 потоков при >= 40 фраз на поток, 3–4 запроса)</option>
-                <option value="local_only">🏠 Локальный 100% (Ollama — 0 облачных запросов, авто-выбор JA -> Sugoi/Shisa, ZH/KO -> Qwen/Gemma)</option>
-              </select>
-            </div>
-            <label class="toggle-row" style="margin-top:6px; border-color:rgba(244, 114, 182, 0.42); background:rgba(244, 114, 182, 0.07);">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">👁 Визуальный контекст страницы при переводе (Image-Aware VLM Context, arXiv:2610.17908)</span>
-                <span class="toggle-row-sub">Передает в мультимодальную модель (Qwen3-VL / Gemma 3 / Cloud Vision) уменьшенное превью страницы с пронумерованными бабблами <b>#1..#N</b>, чтобы ИИ видел лицо говорящего, пол персонажа («я пошел» / «я пошла») и эмоции сцены. Включается автоматически в режиме <b>💎 Максимум</b>.</span>
-              </div>
-              <input id="chk-use-image-context" type="checkbox" onchange="onUseImageContextToggle(this.checked)" />
-            </label>
-            <div class="field-box" style="margin-top:6px;">
-              <label for="sel-ultra-proofread-mode">💎 Проход 2 в режиме «Максимум» (вычитка и сверка рода):</label>
-              <select id="sel-ultra-proofread-mode">
-                <option value="selective">🎯 Выборочно (стыки NSFW + длинные фразы, &lt;= 1 запрос — рекомендуем)</option>
-                <option value="off">⏭ Отключено (только Pass 0 глоссарий + основной перевод, минимум токенов)</option>
-                <option value="full">📚 Полная вычитка всех пачек (максимум токенов)</option>
-              </select>
-            </div>
+      <div class="settings-shell">
+        <!-- Left Sidebar Navigation + Instant Search -->
+        <aside class="settings-sidebar" aria-label="Разделы настроек">
+          <div class="settings-search-wrap">
+            <input id="inp-settings-search" type="search" placeholder="🔍 Поиск настройки..." oninput="filterSettingsModal(this.value)" onkeydown="if(event.key==='Escape'&&this.value){event.stopPropagation();clearSettingsSearch();}" />
+            <button type="button" class="settings-search-clear" id="btn-settings-search-clear" onclick="clearSettingsSearch()" title="Очистить поиск">✕</button>
           </div>
 
-          <div class="section-box">
-            <div class="section-title">
-              <span>🤖 Активная модель перевода</span>
-              <button type="button" class="romaji-copy-btn" onclick="testAndRefreshApi()">🔄 Обновить список моделей</button>
+          <nav class="settings-tabs-nav">
+            <div class="settings-nav-group-label">Перевод и ИИ</div>
+            <button type="button" class="settings-tab-btn active" id="stab-btn-ai" onclick="switchSettingsTab('tab-ai')">☁️ Модель и Облако</button>
+            <button type="button" class="settings-tab-btn" id="stab-btn-models" onclick="switchSettingsTab('tab-models')">🦙 Модели и Стек</button>
+
+            <div class="settings-nav-group-label">Страница и Студия</div>
+            <button type="button" class="settings-tab-btn" id="stab-btn-font" onclick="switchSettingsTab('tab-font')">🔤 Шрифт и Сохранение</button>
+            <button type="button" class="settings-tab-btn" id="stab-btn-filter" onclick="switchSettingsTab('tab-filter')">📊 Фильтр текста и SFX</button>
+            <button type="button" class="settings-tab-btn" id="stab-btn-ui" onclick="switchSettingsTab('tab-ui')">🎨 Интерфейс и Редактор</button>
+
+            <div class="settings-nav-group-label">Инструменты главы</div>
+            <button type="button" class="settings-tab-btn" id="stab-btn-glossary" onclick="switchSettingsTab('tab-glossary')">🔎 Глоссарий и Замена</button>
+            <button type="button" class="settings-tab-btn" id="stab-btn-book" onclick="switchSettingsTab('tab-book'); loadChapterBookPanel();">📖 Текст главы (Книга)</button>
+
+            <div class="settings-nav-group-label">Система</div>
+            <button type="button" class="settings-tab-btn" id="stab-btn-diag" onclick="switchSettingsTab('tab-diag')">🩺 Диагностика и Логи</button>
+          </nav>
+        </aside>
+
+        <!-- Right Detail Canvas -->
+        <div class="settings-content-col">
+          <div class="settings-pane-header">
+            <div>
+              <div class="settings-pane-title" id="settings-pane-title">☁️ Модель и Облако</div>
+              <div class="settings-pane-subtitle" id="settings-pane-subtitle">Активный переводчик, API-шлюзы (DeepSeek / OpenRouter / Grok) и режим 18+.</div>
             </div>
-            <div class="section-desc">Выберите модель, которая будет переводить диалоги (облачный DeepSeek или локальная модель Ollama на вашей RTX 5070 Ti).</div>
-            <div class="field-box">
-              <select id="sel-model" onchange="onModelSelectChange()"></select>
-            </div>
+            <button type="button" class="romaji-copy-btn" id="btn-settings-search-reset" style="display:none;" onclick="clearSettingsSearch()">✕ Сбросить поиск</button>
           </div>
 
-          <div class="section-box">
-            <div class="section-title">🌐 Облачный API перевода (DeepSeek / OpenRouter / xAI Grok)</div>
-            <div class="section-desc">Быстрое переключение в 1 клик между шлюзами DeepSeek, OpenRouter (DeepSeek Chat / Mistral) и xAI Grok.</div>
-            <div class="field-box" style="display:none;">
-              <select id="sel-cloud-preset" onchange="onCloudPresetChange()">
-                <option value="https://moduleapi.pro/v1|deepseek-v4-flash">⚡ DeepSeek Flash</option>
-                <option value="https://moduleapi.pro/v1|deepseek-v4-pro">🧠 DeepSeek Pro</option>
-                <option value="https://openrouter.ai/api/v1|deepseek/deepseek-chat">🌐 OpenRouter — DeepSeek Chat</option>
-                <option value="https://api.x.ai/v1|grok-4-fast-non-reasoning">🚀 xAI Grok 4 Fast (18+)</option>
-                <option value="https://openrouter.ai/api/v1|mistralai/mistral-small-3.2-24b-instruct">🔓 OpenRouter — Mistral Small 3.2</option>
-              </select>
+          <div class="settings-body" id="settings-body-scroll">
+            <div class="settings-empty-state" id="settings-search-empty">
+              <div>🔍 По вашему запросу настройки не найдены.</div>
+              <button type="button" class="soft-btn" style="margin-top:10px; padding:6px 12px;" onclick="clearSettingsSearch()">Показать текущий раздел</button>
             </div>
-            <div class="choice-cards-grid">
-              <div class="choice-card" id="card-preset-flash" onclick="selectDeepSeekPreset('deepseek-v4-flash')">
-                <div class="choice-card-title">⚡ DeepSeek Flash</div>
-                <div class="choice-card-sub"><b>deepseek-v4-flash</b> — высокая скорость и минимальный расход токенов для больших глав.</div>
-              </div>
-              <div class="choice-card" id="card-preset-pro" onclick="selectDeepSeekPreset('deepseek-v4-pro')">
-                <div class="choice-card-title">🧠 DeepSeek Pro</div>
-                <div class="choice-card-sub"><b>deepseek-v4-pro</b> — глубокое понимание контекста, сленга и сложной литературной речи.</div>
-              </div>
-              <div class="choice-card" id="card-preset-openrouter" onclick="selectCloudProviderPreset('https://openrouter.ai/api/v1', 'deepseek/deepseek-chat', 'openrouter')">
-                <div class="choice-card-title">🌐 OpenRouter (DeepSeek)</div>
-                <div class="choice-card-sub"><b>deepseek/deepseek-chat</b> — стабильный шлюз с Prefix Cache и поддержкой 18+ манги.</div>
-              </div>
-              <div class="choice-card" id="card-preset-grok" onclick="selectCloudProviderPreset('https://api.x.ai/v1', 'grok-4-fast-non-reasoning', 'grok')">
-                <div class="choice-card-title">🚀 xAI Grok 4 Fast</div>
-                <div class="choice-card-sub"><b>grok-4-fast-non-reasoning</b> — огромный контекст и минимальные цензурные отказы.</div>
-              </div>
-            </div>
-            <div class="form-grid">
-              <div class="field-box">
-                <label>Base URL шлюза API (OpenAI-совместимый):</label>
-                <input id="inp-unsloth-url" type="text" value="https://moduleapi.pro/v1" placeholder="https://moduleapi.pro/v1" />
-              </div>
-              <div class="field-box">
-                <label>API Ключ (sk-...):</label>
-                <div style="display:flex; gap:6px;">
-                  <input id="inp-api-key" type="password" placeholder="sk-..." style="flex:1;" />
-                  <button type="button" class="soft-btn" style="padding:6px 10px;" onclick="toggleApiKeyVisibility()" title="Показать или скрыть API ключ">👁</button>
-                </div>
-                <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:4px; font-size:11px;">
-                  <span id="api-key-saved-status" style="color:var(--text-muted);">⚪ Ключ не задан</span>
-                  <button type="button" id="btn-clear-api-key" class="romaji-copy-btn" style="display:none; color:#fb7185; border-color:rgba(251,113,133,0.4);" onclick="clearSavedApiKey()" title="Удалить сохранённый API-ключ с сервера">🗑 Очистить ключ</button>
-                </div>
-              </div>
-            </div>
-            <div class="field-box" style="display:none;">
-              <input id="inp-custom-model" type="text" />
-            </div>
-            <div id="api-status-banner" style="font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.25); border-radius:9px; padding:7px 10px; line-height:1.4;">
-              💡 Кликните по карточке <b>DeepSeek Flash</b> или <b>DeepSeek Pro</b> выше и нажмите «Сохранить настройки».
-            </div>
-            <div id="cloud-models-preview" style="display:none; margin-top:6px; font-size:11px; line-height:1.45;"></div>
 
-            <div style="margin-top:8px; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.14); display:flex; flex-direction:column; gap:6px;">
-              <label class="toggle-row" style="border-color:rgba(244, 114, 182, 0.45); background:rgba(244, 114, 182, 0.08);">
-                <div class="toggle-row-text">
-                  <span class="toggle-row-title">🛡 Расширенный контекст фэнтези / взрослой художественной манги (DeepSeek / Облако)</span>
-                  <span class="toggle-row-sub">Добавляет в начало системного промпта расширенный контекст литературной локализации: все персонажи — вымышленные взрослые герои фэнтези/художественной манги, переводить точно без сглаживания тона и примечаний.</span>
+            <!-- TAB 1: MODEL & CLOUD GATEWAY -->
+            <div class="settings-tab-pane active" id="tab-ai">
+              <div class="section-box" data-search-tab="tab-ai" data-search-keywords="модель перевод апи api key ключ шлюз url openrouter grok deepseek">
+                <div class="section-title">
+                  <span>🤖 Активная модель и облачный шлюз</span>
+                  <button type="button" class="romaji-copy-btn" onclick="testAndRefreshApi()">🔄 Обновить модели</button>
                 </div>
-                <input id="chk-anti-censorship-prompt" type="checkbox" onchange="onAntiCensorshipPromptToggle(this.checked)" />
-              </label>
+                <div class="section-desc">Выберите облачный шлюз в 1 клик или локальную модель Ollama из списка ниже.</div>
 
-              <label class="toggle-row" style="border-color:rgba(52, 211, 153, 0.42); background:rgba(52, 211, 153, 0.08);">
-                <div class="toggle-row-text">
-                  <span class="toggle-row-title">🛡 Умное 18+ разделение до облака (Pre-Flight NSFW Split -&gt; Ollama)</span>
-                  <span class="toggle-row-sub">Автоматически направляет откровенные 18+ бабблы в локальную Ollama (с контекстом из облачных реплик), не давая цензуре заблокировать всю облачную пачку.</span>
+                <div class="field-box">
+                  <label for="sel-model">Активная модель перевода:</label>
+                  <select id="sel-model" onchange="onModelSelectChange()"></select>
                 </div>
-                <input id="chk-preflight-nsfw-split" type="checkbox" checked />
-              </label>
 
-              <details class="style-retouch-details" style="margin-top:0;">
-                <summary>
-                  <span>📝 Шаблон расширенного контекста локализации (в начале системного промпта, поддерживает <code>{{PAYLOAD}}</code>)</span>
-                  <span style="font-size:10.5px; color:var(--text-muted);">Настроить текст</span>
-                </summary>
-                <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px;">
-                  <textarea id="inp-anti-censorship-custom-prompt" class="inline-popup-textarea" style="min-height:135px; font-family:Consolas, monospace; font-size:11px; line-height:1.35;" placeholder="[EXTENDED FICTION LOCALIZATION CONTEXT]..."></textarea>
-                  <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
-                    <span style="font-size:10.5px; color:var(--text-muted);">💡 Маркер <code>{{PAYLOAD}}</code> автоматически заменяется на правила локализации, глоссарий и контекст главы. Базовый контекст фэнтези/взрослой манги уже встроен в основной системный промпт.</span>
-                    <button type="button" class="romaji-copy-btn" onclick="resetAntiCensorshipPromptTemplate()">↺ Сбросить к стандартному</button>
+                <div class="field-box" style="display:none;">
+                  <select id="sel-cloud-preset" onchange="onCloudPresetChange()">
+                    <option value="https://moduleapi.pro/v1|deepseek-v4-flash">⚡ DeepSeek Flash</option>
+                    <option value="https://moduleapi.pro/v1|deepseek-v4-pro">🧠 DeepSeek Pro</option>
+                    <option value="https://openrouter.ai/api/v1|deepseek/deepseek-chat">🌐 OpenRouter — DeepSeek Chat</option>
+                    <option value="https://api.x.ai/v1|grok-4-fast-non-reasoning">🚀 xAI Grok 4 Fast (18+)</option>
+                    <option value="https://openrouter.ai/api/v1|mistralai/mistral-small-3.2-24b-instruct">🔓 OpenRouter — Mistral Small 3.2</option>
+                  </select>
+                </div>
+
+                <div class="choice-cards-grid">
+                  <div class="choice-card" id="card-preset-flash" onclick="selectDeepSeekPreset('deepseek-v4-flash')">
+                    <div class="choice-card-title">⚡ DeepSeek Flash</div>
+                    <div class="choice-card-sub"><b>deepseek-v4-flash</b> — быстро и экономно для больших глав.</div>
+                  </div>
+                  <div class="choice-card" id="card-preset-pro" onclick="selectDeepSeekPreset('deepseek-v4-pro')">
+                    <div class="choice-card-title">🧠 DeepSeek Pro</div>
+                    <div class="choice-card-sub"><b>deepseek-v4-pro</b> — глубже контекст и сленг.</div>
+                  </div>
+                  <div class="choice-card" id="card-preset-openrouter" onclick="selectCloudProviderPreset('https://openrouter.ai/api/v1', 'deepseek/deepseek-chat', 'openrouter')">
+                    <div class="choice-card-title">🌐 OpenRouter (DeepSeek)</div>
+                    <div class="choice-card-sub"><b>deepseek/deepseek-chat</b> — стабильный шлюз, Prefix Cache, 18+.</div>
+                  </div>
+                  <div class="choice-card" id="card-preset-grok" onclick="selectGrokPreset()">
+                    <div class="choice-card-title" id="card-preset-grok-title">🚀 Grok 18+ (вся манга)</div>
+                    <div class="choice-card-sub" id="card-preset-grok-sub"><b>grok-4-fast-non-reasoning</b> — минимум цензуры на 18+.</div>
                   </div>
                 </div>
-              </details>
-            </div>
-          </div>
 
-          <div class="section-box">
-            <div class="section-title">🌸 Скачать лучшие локальные модели для манги в 1 клик (Ollama / GGUF)</div>
-            <div class="section-desc">Работают полностью бесплатно, без интернета и без облачной цензуры на вашей видеокарте (с автоматическим обходом блокировки VPN Fake-IP 198.18.x.x).</div>
-            <div class="field-box">
-              <label>Выберите локальную модель для скачивания:</label>
-              <select id="sel-recommended-pull" onchange="onRecommendedPullSelectChange()">
-                <option value="hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4) — Топ-1 для японской манги (~8.3 ГБ)</option>
-                <option value="hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M">🌸 Shisa V2.1 8B (Qwen3) — Быстрая для манги JA➔EN/RU (~5.0 ГБ)</option>
-                <option value="hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored — Без цензуры для 18+ манги JA➔RU/EN (~7.0 ГБ)</option>
-                <option value="hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M">⚡ Sugoi 14B Ultra — Узкий спец. JA➔EN без цензуры (~8.5 ГБ)</option>
-                <option value="translategemma:12b">🌐 TranslateGemma 12B — Спец. переводчик Google JA/KO/ZH➔RU/EN (~7.3 ГБ)</option>
-                <option value="aya-expanse:8b">🌍 Aya Expanse 8B — Легкая мультиязычная JA/KO/ZH➔RU/EN (~5.1 ГБ)</option>
-                <option value="gemma3:12b">💎 Gemma 3 12B — Живой литературный слог RU/EN (~7.3 ГБ)</option>
-                <option value="qwen3:14b">🐉 Qwen 3 14B — Топ-универсал 2026 JA/KO/ZH➔RU/EN + Ромадзи (~9.0 ГБ)</option>
-                <option value="glm-ocr:latest">👁 GLM-OCR 0.9B (Vision) — Снайперский OCR для сложных SFX и обложек (~1.9 ГБ)</option>
-                <option value="qwen3-vl:8b">👁 Qwen 3 VL 8B (Vision) — Снайперский VLM-OCR + Визуальный контекст (~6.2 ГБ)</option>
-                <option value="gemma3:27b-it-qat">👑 Gemma 3 27B QAT (Vision) — Ультра-переводчик под 16 ГБ VRAM JA/KO/ZH➔RU/EN (~14.5 ГБ)</option>
-                <option value="qwen3:30b-a3b">🏆 Qwen 3 30B-A3B MoE — Топ-3 JP-TL-Bench (84.3% WR) JA/KO/ZH➔RU/EN (~16.0 ГБ)</option>
-              </select>
-            </div>
-            <div id="recommended-model-desc-box" style="font-size:12px; color:var(--text-primary); background:rgba(129, 140, 248, 0.11); border:1px solid rgba(129, 140, 248, 0.32); border-radius:10px; padding:9px 12px; line-height:1.45;">
-              <div><b style="color:var(--sakura);">🌸 Shisa V2.1 14B (Phi-4)</b> · <span style="color:var(--mint); font-weight:700;">JA ➔ EN / RU</span> · <span style="color:var(--amber);">~8.3 ГБ VRAM</span></div>
-              <div style="margin-top:3px; color:var(--text-secondary);">Флагманская билингвальная модель Shisa V2.1 (14B на базе Phi-4). Идеально понимает японский сленг, именные суффиксы (-сан/-кун/-сэмпай), полутона и контекст манги.</div>
-            </div>
-            <details class="style-retouch-details" style="margin-top:2px;">
-              <summary>
-                <span>📖 Справка по всем 10 локальным моделям (8 моделей перевода + 2 модели VLM-OCR)</span>
-                <span style="font-size:10.5px; color:var(--text-muted);">Нажмите, чтобы развернуть шпаргалку</span>
-              </summary>
-              <div style="display:flex; flex-direction:column; gap:6px; margin-top:6px; font-size:11.5px; line-height:1.4;">
-                <div>• <b style="color:var(--sakura);">🌸 Shisa V2.1 14B (Phi-4)</b> (~8.3 ГБ, <b>JA ➔ RU/EN</b>) — главный фаворит для японской манги: лучше всех понимает контекст, отсылки, именные суффиксы и сложную разговорную речь.</div>
-                <div>• <b style="color:var(--sakura);">🌸 Shisa V2.1 8B (Qwen3)</b> (~5.0 ГБ, <b>JA ➔ RU/EN</b>) — быстрая и легкая версия Shisa V2.1 для мгновенного перевода манги на русский и английский.</div>
-                <div>• <b style="color:#fb7185;">🔥 Shisa V2 12B Uncensored</b> (~7.0 ГБ, <b>JA ➔ RU/EN, 18+</b>) — полностью сняты фильтры цензуры (Abliterated). Идеальна для взрослой 18+ манги/додзинси и автоматического обхода цензуры облачного API.</div>
-                <div>• <b style="color:var(--amber);">⚡ Sugoi 14B Ultra GGUF</b> (~8.5 ГБ, <b>только JA ➔ EN, 18+</b>) — специализированная модель от автора Sugoi Toolkit, обученная на манге и визуальных новеллах без цензуры. Эталон для перевода с японского на английский (не для русского языка).</div>
-                <div>• <b style="color:#38bdf8;">🌐 TranslateGemma 12B</b> (~7.3 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — официальный специализированный переводчик от Google на базе Gemma 3 (55 языков). Очень чистый, точный и литературный русский и английский слог для манги, манхвы и маньхуа.</div>
-                <div>• <b style="color:var(--mint);">🌍 Aya Expanse 8B</b> (~5.1 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — легкая мультиязычная модель от Cohere Labs (23 языка). Очень быстрая, почти без цензуры, отлично переводит диалоги манги, корейской манхвы и китайской маньхуа.</div>
-                <div>• <b style="color:#c084fc;">💎 Gemma 3 12B</b> (~7.3 ГБ, <b>JA/KO/ZH ➔ RU/EN</b>) — базовая модель Google с живым художественным русским и английским языком.</div>
-                <div>• <b style="color:#818cf8;">🐉 Qwen 3 14B</b> (~9.0 ГБ, <b>JA/KO/ZH ➔ RU/EN + Ромадзи</b>) — новейший флагман Alibaba 2026 года (с быстрым режимом <code>/no_think</code>) для манги, корейской манхвы, китайской маньхуа и Ромадзи.</div>
-                <div>• <b style="color:#34d399;">👁 GLM-OCR 0.9B (Vision)</b> (~1.9 ГБ, <b>VLM-OCR: JA/KO/ZH/EN</b>) — снайперский OCR для сложных рукописных звуковых эффектов (SFX), стилизованных шрифтов и цветных обложек по кнопке «👁 VLM-OCR» и «➕ Обвести».</div>
-                <div>• <b style="color:#34d399;">👁 Qwen 3 VL 8B (Vision)</b> (~6.2 ГБ, <b>VLM-OCR + Image-Aware Перевод</b>) — мультимодальная модель 2026 года для чтения декоративных плашек, SFX и анализа лиц/пола персонажей по картинке страницы.</div>
-              </div>
-            </details>
-            <button class="cta-main" id="btn-pull-model" style="padding:9px 14px; font-size:12.5px;" onclick="pullRecommendedModel()">
-              📥 Скачать выбранную модель и сделать активной
-            </button>
-            <div id="pull-progress-wrap" style="display:none; flex-direction:column; gap:4px;">
-              <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--mint);">
-                <span id="pull-status-lbl">Скачивание...</span>
-                <span id="pull-pct-lbl">0%</span>
-              </div>
-              <div class="progress-track">
-                <div class="progress-bar-fill" id="pull-progress-fill"></div>
-              </div>
-            </div>
-          </div>
-
-          <!-- ==================== NEW: DEFAULT MODEL STACK & PRESETS BUILDER ==================== -->
-          <div class="section-box" style="border-color:rgba(192, 132, 252, 0.55); background:linear-gradient(180deg, rgba(168, 85, 247, 0.08), rgba(15, 23, 42, 0.45));">
-            <div class="section-title">
-              <span>🔗 Дефолтная связка всех моделей (Default Model Stack) и Любимые пресеты</span>
-              <button type="button" class="romaji-copy-btn" onclick="loadModelStorageAndStacks()">🔄 Обновить связки</button>
-            </div>
-            <div class="section-desc">
-              Соберите свою любимую комбинацию из <b>6 моделей конвейера</b> (Перевод, 18+ Фоллбэк, VLM-OCR, базовый OCR, Детектор бабблов и Инпейнтинг/Редро) и нажмите <b>«📌 Сделать дефолтной при запуске»</b> или сохраните её как именованный пресет для переключения в 1 клик!
-            </div>
-
-            <div style="font-size:11.5px; font-weight:700; color:var(--sakura); margin-top:2px;">⚡ Готовые и сохранённые пресеты связок (кликните, чтобы подставить и включить):</div>
-            <div class="choice-cards-grid" id="model-stacks-cards-grid" style="grid-template-columns: repeat(auto-fit, minmax(225px, 1fr)); gap:8px;"></div>
-
-            <div class="form-grid" style="margin-top:6px;">
-              <div class="field-box">
-                <label>1. 🤖 Основная модель перевода (JA/KO/ZH ➔ EN/RU):</label>
-                <select id="stack-sel-translation"></select>
-              </div>
-              <div class="field-box">
-                <label>2. 🔥 Локальная модель 18+ фоллбэка и мультиязычности:</label>
-                <select id="stack-sel-fallback">
-                  <option value="auto">✨ Автовыбор лучшей локальной модели (Sugoi / Shisa / Gemma)</option>
-                  <option value="ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M">⚡ Sugoi 14B Ultra (18+ без цензуры JA➔EN)</option>
-                  <option value="ollama::hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored (18+ без цензуры JA➔RU/EN)</option>
-                  <option value="ollama::hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4, JA➔RU/EN)</option>
-                  <option value="ollama::gemma3:27b-it-qat">👑 Gemma 3 27B QAT (Ультра под 16 ГБ VRAM)</option>
-                  <option value="ollama::qwen3:30b-a3b">🏆 Qwen 3 30B-A3B MoE (Топ-3 JP-TL-Bench)</option>
-                  <option value="ollama::translategemma:12b">🌐 TranslateGemma 12B (JA/KO/ZH➔RU/EN)</option>
-                </select>
-              </div>
-              <div class="field-box">
-                <label>3. 👁 Модель VLM-OCR и Визуального контекста страницы:</label>
-                <select id="stack-sel-vlm">
-                  <option value="auto">✨ Авто (Qwen3-VL 8B / GLM-OCR / Gemma 3 / Cloud Vision)</option>
-                  <option value="ollama::qwen3-vl:8b">👁 Qwen 3 VL 8B (Vision OCR + лица/пол персонажей)</option>
-                  <option value="ollama::glm-ocr:latest">👁 GLM-OCR 0.9B (Снайперский OCR для сложных SFX)</option>
-                  <option value="ollama::gemma3:27b-it-qat">👑 Gemma 3 27B QAT Vision (Максимальный VLM-контекст)</option>
-                  <option value="ollama::gemma3:12b">💎 Gemma 3 12B Vision</option>
-                  <option value="cloud_vision">☁️ Облачный Vision API</option>
-                </select>
-              </div>
-              <div class="field-box">
-                <label>4. 🔍 Движок распознавания текста (OCR):</label>
-                <select id="stack-sel-ocr">
-                  <option value="hybrid_nar_mangaocr">⚡ Гибрид manga-ocr-nar-small + MangaOCR FP16 (Быстрый и точный)</option>
-                  <option value="ultra_ensemble_vlm">💎 Ультра-ансамбль: NAR + MangaOCR FP16 + HayaiOCR + VLM-жюри</option>
-                  <option value="mangaocr_fp16_only">🎯 Только полный авторегрессионный MangaOCR FP16 на все бабблы</option>
-                  <option value="hayai_siglip2">🌐 Мультиязычный HayaiOCR v2.5 Nova (SigLIP2 NaFlex JA/KO/ZH/EN)</option>
-                </select>
-              </div>
-              <div class="field-box">
-                <label>5. 🎯 Детектор и сегментатор бабблов:</label>
-                <select id="stack-sel-detector">
-                  <option value="rtdetr_yolov8">⚖️ Двухконтурный RT-DETR-v2 (3-class) + YOLOv8m + TightInkCrop</option>
-                  <option value="triple_yolo26_seg">💎 Тройной ансамбль: RT-DETR-v2 + YOLOv8m + полигоны YOLO26s-seg</option>
-                  <option value="yolov8_fast">⚡ Быстрый YOLOv8m + OpenCV контуры (Турбо)</option>
-                </select>
-              </div>
-              <div class="field-box">
-                <label>6. 🎨 Движок замазки текста и перерисовки бабблов (Inpainting):</label>
-                <select id="stack-sel-inpaint">
-                  <option value="anime_lama_sota">⚖️ Anime-Manga Big-LaMa + Гармонический Лаплас + Zero-Bleed</option>
-                  <option value="ultra_deep_redraw">💎 Ультра Deep Redraw (1.5x Super-Sampled LaMa в 2 прохода + RFFT скринтон + редро стенок)</option>
-                  <option value="big_lama">🌐 Универсальная Big-LaMa (big-lama.pt) + Zero-Bleed</option>
-                  <option value="fast_telea">⚡ Быстрый математический Лаплас + OpenCV Telea (без нейросети)</option>
-                </select>
-              </div>
-            </div>
-
-            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:6px;">
-              <button type="button" class="cta-main" style="flex:1; min-width:220px; padding:9px 14px; font-size:12px;" onclick="applyAndSaveDefaultStack()">
-                📌 Сделать эту связку ДЕФОЛТНОЙ (при запуске)
-              </button>
-              <button type="button" class="soft-btn" style="padding:9px 12px; font-size:12px;" onclick="applyStackSessionOnly()">
-                ⚡ Применить на текущую сессию
-              </button>
-            </div>
-
-            <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; margin-top:4px; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.14);">
-              <input id="inp-stack-preset-name" type="text" placeholder="Название вашего пресета (например: Моя сборка 18+ Ультра)..." style="flex:1; min-width:200px;" />
-              <button type="button" class="soft-btn" style="border-color:rgba(52, 211, 153, 0.5); color:var(--mint); font-weight:700;" onclick="saveCurrentStackAsPreset()">
-                💾 Сохранить как мой пресет связки
-              </button>
-            </div>
-            <div id="stack-status-banner" style="display:none; font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.3); border-radius:8px; padding:6px 10px;"></div>
-          </div>
-
-          <!-- ==================== NEW: MODEL STORAGE & DELETION MANAGER ==================== -->
-          <div class="section-box" style="border-color:rgba(244, 63, 94, 0.38);">
-            <div class="section-title">
-              <span>🗑️ Менеджер установленных моделей и удаление (Ollama + Локальные веса)</span>
-              <button type="button" class="romaji-copy-btn" onclick="loadModelStorageAndStacks()">🔄 Обновить список и размеры</button>
-            </div>
-            <div class="section-desc">
-              Удаляйте ненужные языковые модели из Ollama (включая кэш <code>.gguf</code>) или локальные нейросети OCR/детекции/LaMa прямо из программы, чтобы мгновенно освободить видеопамять (VRAM) и гигабайты на диске:
-            </div>
-            <div id="model-storage-summary-bar" style="font-size:11.5px; font-weight:700; color:var(--amber); background:rgba(251, 191, 36, 0.08); border:1px solid rgba(251, 191, 36, 0.25); border-radius:8px; padding:7px 10px;">
-              ⏳ Загрузка информации о моделях на диске...
-            </div>
-            <div style="font-size:11.5px; font-weight:700; color:var(--text-secondary); margin-top:4px;">🦙 Установленные модели в локальном Ollama:</div>
-            <div id="storage-ollama-list" style="display:flex; flex-direction:column; gap:5px;"></div>
-            <div style="font-size:11.5px; font-weight:700; color:var(--text-secondary); margin-top:6px;">🧩 Локальные нейросети конвейера в папке <code>models/</code> (Детекторы, OCR, LaMa Inpainting):</div>
-            <div id="storage-local-list" style="display:flex; flex-direction:column; gap:5px;"></div>
-          </div>
-        </div>
-
-        <!-- TAB 2: UI & EDITOR (ALL 5 NEW OPTIONS CONFIGURABLE!) -->
-        <div class="settings-tab-pane" id="tab-ui">
-          <div class="section-box">
-            <div class="section-title">📐 1. Расположение панели редактора (чтобы не перекрывать страницу)</div>
-            <div class="section-desc">Выберите, где должна открываться панель со списком всех текстовых блоков страницы. Вы также можете переключать это в 1 клик прямо в шапке редактора!</div>
-            <div class="choice-cards-grid">
-              <div class="choice-card selected" id="ui-card-dock-right" onclick="setEditorDockMode('right')">
-                <div class="choice-card-title">➡ Сбоку (Справа)</div>
-                <div class="choice-card-sub">Страница манги всегда видна во всю высоту без перекрытий. Ширина меняется мышкой.</div>
-              </div>
-              <div class="choice-card" id="ui-card-dock-bottom" onclick="setEditorDockMode('bottom')">
-                <div class="choice-card-title">⬇ Снизу (Сплиттер)</div>
-                <div class="choice-card-sub">Панель под страницей с перетаскиваемой границей и честной прокруткой страницы до самого низа.</div>
-              </div>
-              <div class="choice-card" id="ui-card-dock-floating" onclick="setEditorDockMode('floating')">
-                <div class="choice-card-title">🪟 Плавающее окно</div>
-                <div class="choice-card-sub">Перетаскиваемое мини-окно поверх манги. Сворачивается в полоску и становится прозрачным.</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="section-box">
-            <div class="section-title">✨ 2. Удобные функции редактора и просмотра (можно включать и отключать)</div>
-            <div class="section-desc">Настройте поведение редактора, всплывающих окошек и боковой панели под свой стиль работы:</div>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">💬 Компактный всплывающий попап у кружка #N по клику на картинке</span>
-                <span class="toggle-row-sub">Клик по рамке #N на странице манги открывает мини-окошко редактирования прямо рядом с бабблом без открытия большой панели</span>
-              </div>
-              <input id="chk-ui-inline-popup" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">📌 Всегда показывать интерактивные рамки #N на переведенной странице</span>
-                <span class="toggle-row-sub">Если включено — номера кружков #1, #2... видны сразу после перевода (даже при закрытой панели редактора)</span>
-              </div>
-              <input id="chk-ui-always-pins" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🎯 Авто-центровка страницы манги на выбранном в редакторе кружке #N</span>
-                <span class="toggle-row-sub">При клике на блок в списке редактора страница манги плавно прокручивается к этому кружку и подсвечивает его</span>
-              </div>
-              <input id="chk-ui-auto-scroll" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">👻 Авто-прозрачность плавающего окна редактора при наведении на мангу</span>
-                <span class="toggle-row-sub">В режиме «🪟 Плавающее окно» делает редактор полупрозрачным, когда курсор мыши находится на странице манги</span>
-              </div>
-              <input id="chk-ui-floating-fade" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🖥 «Режим широкого экрана» (авто-сворачивание левой панели при открытии редактора)</span>
-                <span class="toggle-row-sub">Автоматически скрывает левую колонку со списком страниц при открытии редактора, отдавая максимум экрана под мангу</span>
-              </div>
-              <input id="chk-ui-auto-collapse" type="checkbox" onchange="onUiSettingCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title" id="lbl-ui-autosave-title">⏱ Автосохранение только при перетаскивании рамки или прокрутке колесиком</span>
-                <span class="toggle-row-sub">Работает ТОЛЬКО когда вы двигаете/растягиваете рамку мышкой или меняете размер шрифта колесиком (при вводе текста в окне редактора автосохранение не мешает!). Если выключено — на каждой рамке появляется значок <b>💾</b> для ручного сохранения.</span>
-              </div>
-              <input id="chk-ui-auto-save-box" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
-            </label>
-
-            <div class="toggle-row" id="row-ui-autosave-interval" style="cursor:default; flex-wrap:wrap; gap:10px;">
-              <div class="toggle-row-text" style="min-width:210px; flex:1;">
-                <span class="toggle-row-title">⏳ Интервал автосохранения рамок (в секундах): <b id="lbl-ui-autosave-sec-val" style="color:var(--mint);">2.5 сек</b></span>
-                <span class="toggle-row-sub">Через сколько секунд бездействия после перетаскивания рамки или прокрутки колесика страница автоматически перерисуется</span>
-              </div>
-              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <input id="rng-ui-autosave-sec" type="range" min="0.5" max="10" step="0.5" value="2.5" style="width:120px; accent-color:var(--sakura); cursor:pointer;" oninput="onAutoSaveDelayInput(this.value)" />
-                <input id="inp-ui-autosave-sec" type="number" min="0.5" max="30" step="0.5" value="2.5" style="width:68px; text-align:center; padding:5px 6px;" onchange="onAutoSaveDelayInput(this.value)" />
-                <span style="font-size:11.5px; color:var(--text-secondary);">сек</span>
-                <div style="display:flex; gap:4px;">
-                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(1.0)">1с</button>
-                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(1.5)">1.5с</button>
-                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(2.5)">2.5с</button>
-                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(4.0)">4с</button>
-                  <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(5.0)">5с</button>
+                <div class="form-grid">
+                  <div class="field-box">
+                    <label for="inp-unsloth-url">Base URL шлюза API:</label>
+                    <input id="inp-unsloth-url" type="text" value="https://moduleapi.pro/v1" placeholder="https://moduleapi.pro/v1" />
+                  </div>
+                  <div class="field-box">
+                    <label for="inp-api-key">API Ключ (sk-...):</label>
+                    <div style="display:flex; gap:6px;">
+                      <input id="inp-api-key" type="password" placeholder="sk-..." style="flex:1;" />
+                      <button type="button" class="soft-btn" style="padding:6px 10px;" onclick="toggleApiKeyVisibility()" title="Показать или скрыть API ключ">👁</button>
+                    </div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; margin-top:4px; font-size:11px;">
+                      <span id="api-key-saved-status" style="color:var(--text-muted);">⚪ Ключ не задан</span>
+                      <button type="button" id="btn-clear-api-key" class="romaji-copy-btn" style="display:none; color:#fb7185; border-color:rgba(251,113,133,0.4);" onclick="clearSavedApiKey()" title="Удалить сохранённый API-ключ с сервера">🗑 Очистить ключ</button>
+                    </div>
+                  </div>
                 </div>
-              </div>
-            </div>
 
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🐾 Компактная карточка ассистента Мико-тян</span>
-                <span class="toggle-row-sub">Уменьшает высоту карточки Мико-тян в левой панели, чтобы помещалось больше страниц в списке главы</span>
+                <div class="field-box" style="display:none;">
+                  <input id="inp-custom-model" type="text" />
+                </div>
+                <div id="api-status-banner" style="font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.22); border-radius:9px; padding:7px 10px; line-height:1.4;">
+                  💡 Выберите карточку провайдера выше и нажмите «Сохранить настройки» внизу.
+                </div>
+                <div id="cloud-models-preview" style="display:none; margin-top:4px; font-size:11px; line-height:1.45;"></div>
               </div>
-              <input id="chk-ui-compact-mascot" type="checkbox" onchange="onUiSettingCheckboxChange()" />
-            </label>
 
-          <div class="section-box" style="border-color:rgba(52, 211, 153, 0.38);">
-            <div class="section-title">
-              <span style="color:var(--mint);">📊 3. Умный трекер ваших кликов и привычек (UX-Телеметрия для редизайна)</span>
-              <span id="ux-mini-counter-badge" style="font-size:11.5px; color:var(--sakura);">Записано действий: 0</span>
-            </div>
-            <div class="section-desc">
-              Программа в фоновом режиме фиксирует, какие кнопки вы нажимаете чаще всего, какими функциями пользуетесь (попап у кружка vs боковой список, перетаскивание рамок, колесико шрифта, подложка, кисть ретуши, хоткеи), какие действия делаете подряд и какие кнопки не трогаете вообще. Все данные сохраняются в <b>logs/UX_USAGE_REPORT.txt</b>.
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <button type="button" class="cta-main" style="width:auto; padding:8px 16px; font-size:12px;" onclick="viewUxTelemetryReport(true)">
-                📊 Открыть и скопировать UX-Отчет моих кликов
-              </button>
-              <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="openUxReportInNotepad()">
-                📝 Открыть UX_USAGE_REPORT.txt в Блокноте
-              </button>
-              <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="clearUxTelemetryInStudio()">
-                🧹 Начать замер заново
-              </button>
-            </div>
-          </div>
+              <div class="section-box" data-search-tab="tab-ai" data-search-keywords="профиль пакет 18+ цензура nsfw вычитка контекст картинка vlm промпт grok грок облако ollama">
+                <div class="section-title">⚡ Режим перевода, 18+ защита и визуальный контекст</div>
 
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🖌 Показывать инструменты «Живая кисть замазки (B)» и «Замазка (dilate)»</span>
-                <span class="toggle-row-sub">Включает живую 60 FPS кисть ретуши прямо на картинке (ЛКМ — мгновенно закрасить остатки японского текста, ПКМ — вернуть оригинальный рисунок) и ползунок толщины замазки <b>dilate</b>.</span>
-              </div>
-              <input id="chk-ui-enable-mask-tools" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
-            </label>
-          </div>
-        </div>
+                <div class="form-grid">
+                  <div class="field-box">
+                    <label for="sel-settings-translation-profile">Профиль пакетного перевода (в шапке — быстрый «🏠 Локально»):</label>
+                    <select id="sel-settings-translation-profile" onchange="onTranslationProfileChange(this.value, false)">
+                      <option value="eco_book">💎 Эконом + Книга (1–2 запроса на 25 стр.)</option>
+                      <option value="balanced" selected>⚖️ Баланс (пачки по 15 стр., без микро-потоков)</option>
+                      <option value="turbo">🚀 Турбо (до 3 параллельных потоков)</option>
+                      <option value="local_only">🏠 Локальный 100% (Ollama — 0 облачных запросов)</option>
+                    </select>
+                  </div>
+                  <div class="field-box">
+                    <label for="sel-ultra-proofread-mode">Проход 2 в режиме «Максимум» (вычитка и сверка рода):</label>
+                    <select id="sel-ultra-proofread-mode">
+                      <option value="selective">🎯 Выборочно (стыки NSFW + длинные фразы, &lt;= 1 запрос)</option>
+                      <option value="off">⏭ Отключено (минимум токенов)</option>
+                      <option value="full">📚 Полная вычитка всех пачек</option>
+                    </select>
+                  </div>
+                </div>
 
-        <!-- TAB 3: TEXT FILTER & ARTWORK PROTECTION -->
-        <div class="settings-tab-pane" id="tab-filter">
-          <div class="section-box">
-            <div class="section-title">📊 Объем переводимого текста и защита рисунка от замазки</div>
-            <div class="section-desc">Настройте, какие надписи нужно переводить, а какие (вздохи, стоны, звуковые эффекты на фоне) оставлять в оригинале без замазки.</div>
-            <div class="field-box">
-              <label>Готовый профиль фильтрации:</label>
-              <select id="sel-text-filter-mode" onchange="onTextFilterModeChange()">
-                <option value="dialogue_only" selected>💬 Только диалоги (без спецэффектов и вздохов «а, о, ах, ох») — Рекомендуется</option>
-                <option value="bubbles_no_sighs">💭 Диалоги + важные надписи на фоне (без вздохов «а, о, ах, ох» и без SFX)</option>
-                <option value="long_only">🛡 Минимум замазки — только длинные фразы (от 4+ символов, без вздохов и фона)</option>
-                <option value="bubbles_only">🗨 Все облачка диалогов (без текста на фоне, но со вздохами)</option>
-                <option value="all">🔊 Переводить вообще всё (диалоги, фон, спецэффекты и вздохи)</option>
-              </select>
-            </div>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🚫 Не переводить короткие вздохи и охи («а», «о», «ах», «ох», «мм», «ха»)</span>
-                <span class="toggle-row-sub">Защищает мелкие эмоциональные облачка со вздохами от лишней замазки</span>
-              </div>
-              <input id="chk-skip-sighs" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🚫 Не переводить звуковые спецэффекты (SFX / ономатопею)</span>
-                <span class="toggle-row-sub">Пропускает звуки ударов, шорохов и спецэффектов катаканой/хангылем</span>
-              </div>
-              <input id="chk-skip-sfx" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🔍 Переводить текст ВНЕ бабблов (надписи прямо поверх рисунка/фона)</span>
-                <span class="toggle-row-sub">Если выключено — переводится только текст внутри рамок и облачков (рисунок фона никогда не трогается)</span>
-              </div>
-              <input id="chk-free-text" type="checkbox" onchange="onCustomFilterCheckboxChange()" />
-            </label>
-
-            <div class="form-grid">
-              <div class="field-box">
-                <label>📏 Минимальная длина фразы (символов):</label>
-                <input id="inp-min-text-len" type="number" min="1" max="15" value="2" onchange="updateSummaryChip()" />
-              </div>
-              <div class="field-box">
-                <label>📦 Пачка страниц за 1 запрос к ИИ:</label>
-                <input id="inp-batch-pages" type="number" min="1" max="50" value="15" onchange="updateSummaryChip()" />
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- TAB 4: FONT & SAVING -->
-        <div class="settings-tab-pane" id="tab-font">
-          <div class="scanlation-font-hint-banner" id="settings-font-hint-banner" style="margin:0 0 10px 0; display:flex;">
-            <span>💡 <b>Рекомендуемые сканлейт-шрифты (v6.1.0 Ultra Edition):</b> положите <code>.ttf</code> файлы <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b> в папку <code>fonts/</code>. При пустой папке <code>fonts/</code> программа по умолчанию использует системный комиксный шрифт <b>Comic Sans MS Bold</b> (также доступны Segoe UI Semibold и Trebuchet MS в списке шрифтов кружка).</span>
-          </div>
-          <div class="section-box">
-            <div class="section-title">🔤 Размер шрифта и стиль верстки</div>
-            <div class="section-desc">Движок автоматически подбирает оптимальный размер шрифта под каждое облачко в заданных пределах:</div>
-            <div class="form-grid">
-              <div class="field-box">
-                <label>Минимальный размер шрифта (px):</label>
-                <input id="inp-min-font" type="number" min="8" max="42" value="12" onchange="updateSummaryChip()" />
-              </div>
-              <div class="field-box">
-                <label>Максимальный размер шрифта (px):</label>
-                <input id="inp-max-font" type="number" min="12" max="72" value="32" onchange="updateSummaryChip()" />
-              </div>
-            </div>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">🔠 Заглавные буквы (КОМИКС-СТИЛЬ)</span>
-                <span class="toggle-row-sub">Верстать переведенный текст заглавными буквами, как в классической манге и комиксах</span>
-              </div>
-              <input id="chk-uppercase" type="checkbox" onchange="onUppercaseCheckboxChange()" />
-            </label>
-
-            <div class="field-box" style="margin-top:6px;">
-              <label>💬 Режим длинного текста в узких бабблах (дублирует кнопки на верхней панели):</label>
-              <select id="sel-overflow-mode" onchange="setOverflowMode(this.value, false)">
-                <option value="shrink" selected>📐 Стандарт (В рамку) — уменьшать шрифт до минимального порога внутри баббла</option>
-                <option value="overflow">🔓 Вариант Б (Выход за рамки) — не мельчить шрифт, разрешить тексту выходить за контур баббла с плотной обводкой</option>
-                <option value="expand_bubble">💬 Вариант В (Авто-перерисовка баббла) — не мельчить шрифт, автоматически рисовать расширенный баббл под весь текст</option>
-              </select>
-            </div>
-            <div class="choice-cards-grid" style="margin-top:4px;">
-              <div class="choice-card selected" id="card-ovf-shrink" onclick="setOverflowMode('shrink', true)">
-                <div class="choice-card-title">📐 В рамку (Стандарт)</div>
-                <div class="choice-card-sub">Текст строго внутри исходной рамки баббла, уменьшается до мин. размера шрифта.</div>
-              </div>
-              <div class="choice-card" id="card-ovf-overflow" onclick="setOverflowMode('overflow', true)">
-                <div class="choice-card-title">🔓 Вариант Б: За рамки</div>
-                <div class="choice-card-sub">Шрифт остается крупным (не ниже мин. порога), длинный текст свободно выходит за края баббла с белой обводкой.</div>
-              </div>
-              <div class="choice-card" id="card-ovf-expand_bubble" onclick="setOverflowMode('expand_bubble', true)">
-                <div class="choice-card-title">💬 Вариант В: Авто-баббл</div>
-                <div class="choice-card-sub">Шрифт остается крупным, а узкий баббл автоматически перерисовывается (расширяется) белой капсулой с рамкой под текст.</div>
-              </div>
-            </div>
-          </div>
-
-          <div class="section-box">
-            <div class="section-title">💾 Пакетный перевод и Автосохранение из браузера Chrome</div>
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">⏩ Продолжать перевод папки с места остановки</span>
-                <span class="toggle-row-sub">Автоматически пропускать уже переведенные страницы в выходной папке</span>
-              </div>
-              <input id="chk-skip-existing" type="checkbox" checked />
-            </label>
-
-            <label class="toggle-row">
-              <div class="toggle-row-text">
-                <span class="toggle-row-title">💾 Автосохранение манги из расширения Chrome в папку на ПК</span>
-                <span class="toggle-row-sub">Сохраняет оригинал, перевод и .translation_state.json для последующего редактирования в Студии</span>
-              </div>
-              <input id="chk-autosave-web" type="checkbox" checked />
-            </label>
-
-            <div class="field-box">
-              <label>📂 Папка автосохранения манги из браузера Chrome:</label>
-              <div style="display:flex; gap:6px; flex-wrap:wrap;">
-                <input id="inp-web-save-dir" type="text" placeholder="По умолчанию: Saved_Manga" style="flex:1 1 200px; min-width:0;" />
-                <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="pickWebSaveDirInStudio()">📁 Выбрать</button>
-                <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="openWebSaveDirInStudio()">📂 Открыть</button>
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <!-- TAB BOOK: CHAPTER BOOK & LITERARY PROOFREADING (BLOCK 2) -->
-        <div class="settings-tab-pane" id="tab-book">
-          <div class="section-box" style="border-color:rgba(52, 211, 153, 0.45);">
-            <div class="section-title">
-              <span>📖 Текст главы (Книга перевода и Литературная вычитка — _chapter_book.md)</span>
-              <span id="chapter-book-status-badge" style="font-size:11.5px; color:var(--mint);">Готов к работе</span>
-            </div>
-            <div class="section-desc">
-              По завершении перевода папки в директорию главы автоматически сохраняются чистая книга <b>_chapter_book.md</b> и двуязычный скрипт <b>_chapter_script_bilingual.json / .txt</b>. Вы можете отредактировать реплики прямо ниже и нажать <b>«📥 Импортировать и перерисовать страницы»</b> (0 запросов к OCR и API, мгновенная перерисовка из кэша очистки!) либо нажать <b>«✨ Вычитать стиль всей главы за 1 запрос»</b>.
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;">
-              <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                <button type="button" class="pill-btn active" id="btn-book-view-md" onclick="switchChapterBookViewMode('md')">📘 Чистая книга (_chapter_book.md)</button>
-                <button type="button" class="pill-btn" id="btn-book-view-bilingual" onclick="switchChapterBookViewMode('bilingual')">🔀 Двуязычный скрипт (Оригинал ➔ Перевод)</button>
-              </div>
-              <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="loadChapterBookPanel()">🔄 Обновить из папки</button>
-                <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('md')">💾 Скачать _chapter_book.md</button>
-                <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('json')">💾 Скачать .json</button>
-              </div>
-            </div>
-            <textarea id="chapter-book-textarea" placeholder="Откройте переведенную папку с главой манги, чтобы увидеть или отредактировать полный текст книги главы..." style="width:100%; height:300px; background:#0b0912; color:#e0e7ff; font-family:Consolas, 'Segoe UI', monospace; font-size:12.5px; border:1px solid rgba(129, 140, 248, 0.35); border-radius:10px; padding:12px; resize:vertical; line-height:1.5; user-select:text;"></textarea>
-            <div style="display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center;">
-              <button type="button" class="cta-main" id="btn-proofread-chapter-book" style="width:auto; padding:9px 18px; font-size:12.5px; background:linear-gradient(135deg, #818cf8, #c084fc);" onclick="proofreadEntireChapterBookInOneRequest()">
-                ✨ Вычитать стиль всей главы за 1 запрос (ИИ + перерисовка из кэша)
-              </button>
-              <button type="button" class="btn-save-edit" id="btn-import-chapter-book" style="padding:9px 18px; font-size:12.5px;" onclick="importEditedChapterBookAndRerender()">
-                📥 Импортировать правки текста и мгновенно перерисовать страницы (0 токенов)
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <!-- TAB 5: GLOSSARY & GLOBAL FIND/REPLACE (STEP 4) -->
-        <div class="settings-tab-pane" id="tab-glossary">
-          <div class="section-box">
-            <div class="section-title">
-              <span>🔎 Поиск и Замена по всей главе (Ctrl+F / Ctrl+H — 0 токенов ИИ!)</span>
-              <span id="find-replace-badge" style="font-size:11.5px; color:var(--mint);">Готов к поиску</span>
-            </div>
-            <div class="section-desc">
-              Мгновенно находите любые имена, термины или опечатки по всем переведенным страницам открытой папки и заменяйте их в 1 клик с автоматической перерисовкой затронутых страниц через кэш очищенного слоя!
-            </div>
-            <div class="form-grid">
-              <div class="field-box">
-                <label>Найти текст:</label>
-                <input id="inp-find-text" type="text" placeholder="Например: Сато / Нанака / сан..." onkeydown="if(event.key==='Enter'){event.preventDefault();runFolderFindReplace(true);}" />
-              </div>
-              <div class="field-box">
-                <label>Заменить на:</label>
-                <input id="inp-replace-text" type="text" placeholder="Новый вариант текста..." onkeydown="if(event.key==='Enter'){event.preventDefault();runFolderFindReplace(true);}" />
-              </div>
-            </div>
-            <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
-              <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-                <select id="sel-find-search-in" class="font-override-select" style="padding:6px 10px; font-size:12px;">
-                  <option value="translated" selected>🈯 Искать в переводе (RU / EN)</option>
-                  <option value="original">🇯🇵 Искать в оригинале (JA / KO / ZH)</option>
-                </select>
-                <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; color:var(--text-secondary);">
-                  <input type="checkbox" id="chk-find-match-case" style="accent-color:var(--sakura);" />
-                  <span>Учитывать регистр</span>
+                <label class="toggle-row" id="row-cloud-only-no-local-fallback">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🚀 Вся манга только в облаке (без локальной Ollama — для Grok 18+)</span>
+                    <span class="toggle-row-sub">Не перекидывает 18+ бабблы, Pass 0, доперевод и ошибки в локальную Ollama — вся глава переводится целиком выбранной облачной моделью</span>
+                  </div>
+                  <input id="chk-cloud-only-no-local-fallback" type="checkbox" onchange="onCloudOnlyNoFallbackToggle(this.checked)" />
                 </label>
-              </div>
-              <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
-                <button type="button" class="soft-btn" onclick="runFolderFindReplace(true)">
-                  🔎 Найти совпадения (Предпросмотр)
-                </button>
-                <button type="button" class="cta-main" id="btn-exec-find-replace" style="width:auto; padding:8px 15px; font-size:12px;" onclick="runFolderFindReplace(false)">
-                  ⚡ Заменить везде и перерисовать затронутые страницы
-                </button>
-              </div>
-            </div>
-            <div class="find-results-wrap" id="find-replace-results-list">
-              <div style="padding:10px; color:var(--text-muted); font-size:12px; text-align:center;">
-                Введите слово в поле «Найти текст» и нажмите «🔎 Найти совпадения», чтобы увидеть все реплики по страницам главы (клик по строке откроет нужную страницу и кружок #N).
-              </div>
-            </div>
-          </div>
 
-          <div class="section-box">
-            <div class="section-title">
-              <span>📖 Глоссарий имен и терминов (100% одинаковый перевод имен во всей манге)</span>
-              <div style="display:flex; gap:6px;">
-                <button type="button" class="romaji-copy-btn" onclick="fillGlossaryFromActiveBlock()" title="Подставить японский оригинал и перевод из выбранного на странице кружка #N">➕ Из активного блока</button>
-                <button type="button" class="romaji-copy-btn" onclick="loadGlossaryPanel()">🔄 Обновить</button>
-              </div>
-            </div>
-            <div class="section-desc">
-              Перед отправкой каждой пачки в ИИ переводчик автоматически проверяет, какие термины из глоссария встречаются в японском тексте этой пачки, и включает их в блок <b>ОБЯЗАТЕЛЬНЫЙ ГЛОССАРИЙ ТЕРМИНОВ И ИМЕН</b>.
-            </div>
-            <div class="glossary-add-grid">
-              <div class="field-box">
-                <label>Оригинал (JA/KO/ZH):</label>
-                <input id="inp-gloss-src" type="text" placeholder="七香 / ななか" />
-              </div>
-              <div class="field-box">
-                <label>Перевод (RU/EN):</label>
-                <input id="inp-gloss-dst" type="text" placeholder="Нанака" />
-              </div>
-              <div class="field-box">
-                <label>Примечание (опц.):</label>
-                <input id="inp-gloss-note" type="text" placeholder="Главная героиня (ж.р.)" />
-              </div>
-              <div class="field-box">
-                <label>Область:</label>
-                <select id="sel-gloss-scope" style="padding:8px 8px;">
-                  <option value="both" selected>🌐+📁 Везде</option>
-                  <option value="global">🌐 Глобально</option>
-                  <option value="folder">📁 Только глава</option>
-                </select>
-              </div>
-              <button type="button" class="btn-save-edit" style="height:36px; padding:0 14px;" onclick="addGlossaryEntryFromInputs()">
-                ➕ Добавить
-              </button>
-            </div>
-
-            <div class="glossary-table-wrap">
-              <table class="glossary-table">
-                <thead>
-                  <tr>
-                    <th>Оригинал (src)</th>
-                    <th>Перевод (dst)</th>
-                    <th>Примечание</th>
-                    <th>Область</th>
-                    <th style="width:60px; text-align:right;">Действие</th>
-                  </tr>
-                </thead>
-                <tbody id="glossary-table-body">
-                  <tr>
-                    <td colspan="5" style="text-align:center; color:var(--text-muted); padding:14px;">Глоссарий пока пуст. Добавьте имена персонажей выше или импортируйте словарь!</td>
-                  </tr>
-                </tbody>
-              </table>
-            </div>
-
-            <details class="style-retouch-details">
-              <summary>
-                <span>📥 / 📤 Импорт и Экспорт глоссария (.txt Sakura / .json / .tsv)</span>
-                <span style="font-size:10.5px; color:var(--text-muted);">Формат Sakura: термин->перевод #примечание</span>
-              </summary>
-              <div style="display:flex; flex-direction:column; gap:8px; margin-top:6px;">
-                <div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:space-between;">
-                  <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('sakura')">📤 Скачать Sakura (.txt)</button>
-                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('json')">📤 Скачать (.json)</button>
-                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('tsv')">📤 Скачать (.tsv)</button>
+                <label class="toggle-row" id="row-preflight-nsfw-split">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🛡 Pre-Flight 18+ разделение в локальную Ollama</span>
+                    <span class="toggle-row-sub" id="preflight-nsfw-split-sub">Острые 18+ бабблы уходят в локальную модель с контекстом из облачных реплик — цензура не срывает всю пачку</span>
                   </div>
-                  <div style="display:flex; flex-wrap:wrap; gap:6px;">
-                    <input type="file" id="inp-glossary-file" accept=".txt,.json,.tsv" style="display:none;" onchange="onGlossaryFilePicked(this)" />
-                    <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="document.getElementById('inp-glossary-file').click()">📂 Импорт из файла</button>
-                    <button type="button" class="btn-save-edit" style="padding:5px 12px; font-size:11.5px;" onclick="importGlossaryFromTextarea()">📥 Импортировать текст ниже</button>
+                  <input id="chk-preflight-nsfw-split" type="checkbox" checked />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">📜 Расширенный контекст взрослой художественной манги</span>
+                    <span class="toggle-row-sub">Фиксирует для облачной модели: все персонажи — вымышленные взрослые, переводить точно без цензуры</span>
+                  </div>
+                  <input id="chk-anti-censorship-prompt" type="checkbox" onchange="onAntiCensorshipPromptToggle(this.checked)" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">👁 Визуальный контекст страницы (VLM Image-Aware)</span>
+                    <span class="toggle-row-sub">Передаёт превью страницы с номерами бабблов #1..#N для точного определения пола и эмоций (авто в «💎 Максимум»)</span>
+                  </div>
+                  <input id="chk-use-image-context" type="checkbox" onchange="onUseImageContextToggle(this.checked)" />
+                </label>
+
+                <details class="settings-accordion">
+                  <summary>
+                    <span>⚙️ Свой шаблон расширенного промпта (поддерживает <code>{{PAYLOAD}}</code>)</span>
+                    <span style="font-size:10.5px; color:var(--text-muted);">Настроить</span>
+                  </summary>
+                  <div style="display:flex; flex-direction:column; gap:8px;">
+                    <textarea id="inp-anti-censorship-custom-prompt" class="inline-popup-textarea" style="min-height:130px; font-family:Consolas, monospace; font-size:11px; line-height:1.35;" placeholder="[EXTENDED FICTION LOCALIZATION CONTEXT]..."></textarea>
+                    <div style="display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap;">
+                      <span style="font-size:10.5px; color:var(--text-muted);">Маркер <code>{{PAYLOAD}}</code> заменяется на правила локализации и контекст.</span>
+                      <button type="button" class="romaji-copy-btn" onclick="resetAntiCensorshipPromptTemplate()">↺ Сбросить к стандартному</button>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <!-- TAB 2: LOCAL MODELS, PIPELINE STACK & STORAGE -->
+            <div class="settings-tab-pane" id="tab-models">
+              <div class="section-box" data-search-tab="tab-models" data-search-keywords="стек связка пресет ocr детектор лама lama инпейнтинг фоллбэк vlm">
+                <div class="section-title">
+                  <span>🔗 Пресеты и связка моделей конвейера</span>
+                  <button type="button" class="romaji-copy-btn" onclick="loadModelStorageAndStacks()">🔄 Обновить связки</button>
+                </div>
+                <div class="section-desc">Переключайте всю связку из 6 движков в 1 клик или раскройте тонкую настройку ниже.</div>
+
+                <div class="choice-cards-grid" id="model-stacks-cards-grid" style="grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:8px;"></div>
+
+                <details class="settings-accordion">
+                  <summary>
+                    <span>🛠 Ручная настройка 6 моделей конвейера и сохранение пресета</span>
+                    <span style="font-size:10.5px; color:var(--text-muted);">Продвинуто</span>
+                  </summary>
+                  <div style="display:flex; flex-direction:column; gap:10px;">
+                    <div class="form-grid">
+                      <div class="field-box">
+                        <label for="stack-sel-translation">1. Основная модель перевода:</label>
+                        <select id="stack-sel-translation"></select>
+                      </div>
+                      <div class="field-box">
+                        <label for="stack-sel-fallback">2. Локальный 18+ фоллбэк и ZH/KO:</label>
+                        <select id="stack-sel-fallback">
+                          <option value="auto">✨ Автовыбор лучшей локальной модели</option>
+                          <option value="ollama::hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M">⚡ Sugoi 14B Ultra (18+ JA➔EN)</option>
+                          <option value="ollama::hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored (18+)</option>
+                          <option value="ollama::hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4)</option>
+                          <option value="ollama::gemma3:27b-it-qat">👑 Gemma 3 27B QAT (16 ГБ VRAM)</option>
+                          <option value="ollama::qwen3:30b-a3b">🏆 Qwen 3 30B-A3B MoE</option>
+                          <option value="ollama::translategemma:12b">🌐 TranslateGemma 12B</option>
+                        </select>
+                      </div>
+                      <div class="field-box">
+                        <label for="stack-sel-vlm">3. Модель VLM-OCR и Визуального контекста:</label>
+                        <select id="stack-sel-vlm">
+                          <option value="auto">✨ Авто (Qwen3-VL / GLM-OCR / Cloud)</option>
+                          <option value="ollama::qwen3-vl:8b">👁 Qwen 3 VL 8B (OCR + контекст)</option>
+                          <option value="ollama::glm-ocr:latest">👁 GLM-OCR 0.9B (SFX и обложки)</option>
+                          <option value="ollama::gemma3:27b-it-qat">👑 Gemma 3 27B QAT Vision</option>
+                          <option value="ollama::gemma3:12b">💎 Gemma 3 12B Vision</option>
+                          <option value="cloud_vision">☁️ Облачный Vision API</option>
+                        </select>
+                      </div>
+                      <div class="field-box">
+                        <label for="stack-sel-ocr">4. Движок распознавания текста (OCR):</label>
+                        <select id="stack-sel-ocr">
+                          <option value="hybrid_nar_mangaocr">⚡ Гибрид NAR + MangaOCR BF16/FP16</option>
+                          <option value="ultra_ensemble_vlm">💎 Ультра-ансамбль (NAR + HayaiOCR + VLM)</option>
+                          <option value="mangaocr_fp16_only">🎯 Полный MangaOCR на все бабблы</option>
+                          <option value="hayai_siglip2">🌐 HayaiOCR v2.5 Nova (JA/KO/ZH/EN)</option>
+                        </select>
+                      </div>
+                      <div class="field-box">
+                        <label for="stack-sel-detector">5. Детектор и сегментатор бабблов:</label>
+                        <select id="stack-sel-detector">
+                          <option value="rtdetr_yolov8">⚖️ RT-DETR-v2 + YOLOv8m + TightInkCrop</option>
+                          <option value="triple_yolo26_seg">💎 Тройной: RT-DETR-v2 + YOLOv8m + YOLO26s-seg</option>
+                          <option value="yolov8_fast">⚡ Быстрый YOLOv8m + OpenCV</option>
+                        </select>
+                      </div>
+                      <div class="field-box">
+                        <label for="stack-sel-inpaint">6. Движок очистки и замазки (Inpainting):</label>
+                        <select id="stack-sel-inpaint">
+                          <option value="anime_lama_sota">⚖️ Anime-Manga LaMa + Лаплас + Zero-Bleed</option>
+                          <option value="ultra_deep_redraw">💎 Ультра Deep Redraw (1.5x LaMa + RFFT скринтон)</option>
+                          <option value="big_lama">🌐 Big-LaMa + Zero-Bleed</option>
+                          <option value="fast_telea">⚡ Быстрый Лаплас + Telea (без нейросети)</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center;">
+                      <button type="button" class="cta-main" style="flex:1; min-width:210px; padding:9px 14px; font-size:12px;" onclick="applyAndSaveDefaultStack()">
+                        📌 Сделать связку ДЕФОЛТНОЙ (при запуске)
+                      </button>
+                      <button type="button" class="soft-btn" style="padding:9px 12px; font-size:12px;" onclick="applyStackSessionOnly()">
+                        ⚡ Применить на сессию
+                      </button>
+                    </div>
+
+                    <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center; padding-top:8px; border-top:1px dashed rgba(255,255,255,0.12);">
+                      <input id="inp-stack-preset-name" type="text" placeholder="Название вашего пресета связки..." style="flex:1; min-width:190px;" />
+                      <button type="button" class="soft-btn" style="border-color:rgba(52, 211, 153, 0.5); color:var(--mint); font-weight:700;" onclick="saveCurrentStackAsPreset()">
+                        💾 Сохранить пресет
+                      </button>
+                    </div>
+                  </div>
+                </details>
+                <div id="stack-status-banner" style="display:none; font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.1); border:1px solid rgba(52,211,153,0.3); border-radius:8px; padding:6px 10px;"></div>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-models" data-search-keywords="скачать локальная модель ollama gguf shisa sugoi qwen gemma">
+                <div class="section-title">🌸 Скачать локальную модель (Ollama / GGUF)</div>
+                <div class="section-desc">Бесплатные модели без цензуры для вашей видеокарты (авто-обход VPN Fake-IP).</div>
+                <div class="field-box">
+                  <label for="sel-recommended-pull">Модель для установки:</label>
+                  <select id="sel-recommended-pull" onchange="onRecommendedPullSelectChange()">
+                    <option value="hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M">🌸 Shisa V2.1 14B (Phi-4) — Топ-1 для японской манги (~8.3 ГБ)</option>
+                    <option value="hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M">🌸 Shisa V2.1 8B (Qwen3) — Быстрая для манги JA➔EN/RU (~5.0 ГБ)</option>
+                    <option value="hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF">🔥 Shisa V2 12B Uncensored — Без цензуры для 18+ (~7.0 ГБ)</option>
+                    <option value="hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M">⚡ Sugoi 14B Ultra — Узкий спец. JA➔EN 18+ (~8.5 ГБ)</option>
+                    <option value="translategemma:12b">🌐 TranslateGemma 12B — Переводчик Google (~7.3 ГБ)</option>
+                    <option value="aya-expanse:8b">🌍 Aya Expanse 8B — Лёгкая мультиязычная (~5.1 ГБ)</option>
+                    <option value="gemma3:12b">💎 Gemma 3 12B — Живой литературный слог (~7.3 ГБ)</option>
+                    <option value="qwen3:14b">🐉 Qwen 3 14B — Топ-универсал JA/KO/ZH (~9.0 ГБ)</option>
+                    <option value="glm-ocr:latest">👁 GLM-OCR 0.9B (Vision) — Снайперский OCR для SFX (~1.9 ГБ)</option>
+                    <option value="qwen3-vl:8b">👁 Qwen 3 VL 8B (Vision) — VLM-OCR + Контекст (~6.2 ГБ)</option>
+                    <option value="gemma3:27b-it-qat">👑 Gemma 3 27B QAT (Vision) — Ультра под 16 ГБ VRAM (~14.5 ГБ)</option>
+                    <option value="qwen3:30b-a3b">🏆 Qwen 3 30B-A3B MoE — Топ-3 JP-TL-Bench (~16.0 ГБ)</option>
+                  </select>
+                </div>
+                <div id="recommended-model-desc-box" style="font-size:12px; color:var(--text-primary); background:rgba(129, 140, 248, 0.1); border:1px solid rgba(129, 140, 248, 0.25); border-radius:10px; padding:9px 12px; line-height:1.45;">
+                  <div><b style="color:var(--sakura);">🌸 Shisa V2.1 14B (Phi-4)</b> · <span style="color:var(--mint); font-weight:700;">JA ➔ EN / RU</span> · <span style="color:var(--amber);">~8.3 ГБ VRAM</span></div>
+                  <div style="margin-top:3px; color:var(--text-secondary);">Флагманская билингвальная модель Shisa V2.1 (14B на базе Phi-4). Понимает японский сленг, именные суффиксы и контекст манги.</div>
+                </div>
+                <details class="settings-accordion">
+                  <summary>
+                    <span>📖 Шпаргалка по локальным моделям</span>
+                    <span style="font-size:10.5px; color:var(--text-muted);">Развернуть</span>
+                  </summary>
+                  <div style="display:flex; flex-direction:column; gap:6px; font-size:11.5px; line-height:1.4;">
+                    <div>• <b style="color:var(--sakura);">Shisa V2.1 14B / 8B</b> (JA ➔ RU/EN) — лучший баланс сленга и именных суффиксов.</div>
+                    <div>• <b style="color:#fb7185;">Shisa V2 12B Uncensored / Sugoi 14B Ultra</b> — без фильтров цензуры (18+).</div>
+                    <div>• <b style="color:#38bdf8;">TranslateGemma 12B / Aya Expanse 8B / Qwen 3 14B</b> — для корейской манхвы (KO) и китайской маньхуа (ZH).</div>
+                    <div>• <b style="color:#c084fc;">Gemma 3 27B QAT / Qwen 3 30B-A3B</b> — флагманы под 16 ГБ VRAM (RTX 5070 Ti).</div>
+                    <div>• <b style="color:#34d399;">GLM-OCR 0.9B / Qwen 3 VL 8B</b> — мультимодальные VLM для сложных SFX и визуального контекста.</div>
+                  </div>
+                </details>
+                <button class="cta-main" id="btn-pull-model" style="padding:9px 14px; font-size:12.5px;" onclick="pullRecommendedModel()">
+                  📥 Скачать выбранную модель и сделать активной
+                </button>
+                <div id="pull-progress-wrap" style="display:none; flex-direction:column; gap:4px;">
+                  <div style="display:flex; justify-content:space-between; font-size:11.5px; color:var(--mint);">
+                    <span id="pull-status-lbl">Скачивание...</span>
+                    <span id="pull-pct-lbl">0%</span>
+                  </div>
+                  <div class="progress-track">
+                    <div class="progress-bar-fill" id="pull-progress-fill"></div>
                   </div>
                 </div>
-                <textarea id="inp-glossary-io-text" placeholder="Вставьте сюда строки в формате Sakura (например: 七香->Нанака #Главная героиня), TSV или JSON и нажмите «📥 Импортировать текст ниже»..." style="width:100%; height:95px; background:#0d0b14; color:#e0e7ff; border:1px solid rgba(255,255,255,0.14); border-radius:8px; padding:8px; font-family:Consolas, monospace; font-size:11.5px; resize:vertical;"></textarea>
               </div>
-            </details>
-          </div>
-        </div>
 
-        <!-- TAB 5: DIAGNOSTICS & LOGS -->
-        <div class="settings-tab-pane" id="tab-diag">
-          <div class="section-box">
-            <div class="section-title">
-              <span>🩺 Панель живой диагностики, профилирования и логов (v6.1.0)</span>
-              <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер обмена!</span>
+              <div class="section-box danger-zone" data-search-tab="tab-models" data-search-keywords="удаление диск vram вес хранилище модели ollama">
+                <div class="section-title">
+                  <span style="color:#fda4af;">🗑 Хранилище и удаление весов (Опасная зона)</span>
+                  <button type="button" class="romaji-copy-btn" onclick="loadModelStorageAndStacks()">🔄 Обновить размеры</button>
+                </div>
+                <div class="section-desc">Удаление неиспользуемых моделей Ollama и локальных весов из папки <code>models/</code> для освобождения диска.</div>
+                <details class="settings-accordion">
+                  <summary>
+                    <span>📦 Показать список установленных моделей и веса на диске</span>
+                    <span style="font-size:10.5px; color:#fda4af;">Удаление необратимо</span>
+                  </summary>
+                  <div style="display:flex; flex-direction:column; gap:6px;">
+                    <div id="model-storage-summary-bar" style="font-size:11.5px; font-weight:700; color:var(--amber); background:rgba(251, 191, 36, 0.08); border:1px solid rgba(251, 191, 36, 0.25); border-radius:8px; padding:7px 10px;">
+                      ⏳ Загрузка информации о моделях на диске...
+                    </div>
+                    <div style="font-size:11.5px; font-weight:700; color:var(--text-secondary); margin-top:4px;">🦙 Модели в локальном Ollama:</div>
+                    <div id="storage-ollama-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+                    <div style="font-size:11.5px; font-weight:700; color:var(--text-secondary); margin-top:4px;">🧩 Локальные нейросети в папке <code>models/</code>:</div>
+                    <div id="storage-local-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+                  </div>
+                </details>
+              </div>
             </div>
-            <div class="section-desc">
-              Все события и замеры скорости автоматически записываются в файл <b>logs/miko_studio.log</b>. Нажмите <b>«📋 Скопировать отчет для чата»</b> и вставьте его в диалог (Ctrl+V), чтобы мгновенно разобрать любую задержку или ошибку (ваш API-ключ автоматически скрывается).
-            </div>
-            <div style="display:flex; flex-wrap:wrap; gap:8px;">
-              <button type="button" class="cta-main" style="width:auto; padding:9px 16px; font-size:12.5px;" onclick="copyDiagnosticsReportToClipboard()">
-                📋 Скопировать отчет для чата (в 1 клик)
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px; border-color:rgba(52, 211, 153, 0.45); color:#6ee7b7;" onclick="viewChapterTranslationReport(false)" title="Загрузить ниже полный отчет TRANSLATION_REPORT.txt из папки переведенной манги">
-                📑 Отчет главы (TRANSLATION_REPORT.txt)
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openChapterReportInNotepad()" title="Открыть файл TRANSLATION_REPORT.txt из папки переведенной манги напрямую в Блокноте Windows">
-                📝 Открыть в Блокноте
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px; border-color:rgba(244, 114, 182, 0.55); color:#f9a8d4;" onclick="viewUxTelemetryReport(false)" title="Сформировать, скопировать в буфер обмена и показать полный отчет UX_USAGE_REPORT.txt (какие кнопки и функции вы используете чаще всего)">
-                📊 UX-Отчет (Какие кнопки я жму)
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openUxReportInNotepad()" title="Открыть файл logs/UX_USAGE_REPORT.txt в Блокноте Windows">
-                📝 UX-Отчет в Блокноте
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="clearUxTelemetryInStudio()" title="Обнулить статистику нажатий кнопок UX, чтобы начать чистый замер">
-                🔄 Сброс UX-кликов
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="loadDiagnosticsPanel()">
-                🔄 Обновить
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="openLogsFolderInStudio()">
-                📂 Открыть папку logs/
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="window.open('/diagnostics/download_log', '_blank')">
-                💾 Скачать miko_studio.log
-              </button>
-              <button type="button" class="soft-btn" style="padding:8px 13px;" onclick="clearDiagnosticsInStudio()">
-                🧹 Сбросить счетчики
-              </button>
-            </div>
-          </div>
 
-          <div class="section-box">
-            <div class="section-title">📊 Сводка по серверу, видеокарте и вызовам ИИ</div>
-            <div id="diag-summary-cards" class="diag-summary-grid">
-              <div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">Загрузка метрик...</div>
-            </div>
-          </div>
+            <!-- TAB 3: FONT & SAVING -->
+            <div class="settings-tab-pane" id="tab-font">
+              <div class="section-box" data-search-tab="tab-font" data-search-keywords="шрифт размер заглавные кегль переполнение баббл верстка">
+                <div class="section-title">🔤 Шрифт, кегль и переполнение бабблов</div>
+                <div class="scanlation-font-hint-banner" id="settings-font-hint-banner" style="margin:0; display:flex;">
+                  <span>💡 Положите <code>.ttf</code> сканлейт-шрифты (<b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>) в папку <code>fonts/</code>; иначе используется системный Comic Sans MS Bold.</span>
+                </div>
+                <div class="form-grid">
+                  <div class="field-box">
+                    <label for="inp-min-font">Минимальный размер шрифта (px):</label>
+                    <input id="inp-min-font" type="number" min="8" max="42" value="12" onchange="updateSummaryChip()" />
+                  </div>
+                  <div class="field-box">
+                    <label for="inp-max-font">Максимальный размер шрифта (px):</label>
+                    <input id="inp-max-font" type="number" min="12" max="72" value="32" onchange="updateSummaryChip()" />
+                  </div>
+                </div>
 
-          <div class="section-box">
-            <div class="section-title">⏱ Тайминги последних переведенных пачек и страниц (OCR vs ИИ vs Верстка)</div>
-            <div id="diag-jobs-list" style="font-family:Consolas, monospace; font-size:11.5px; background:#0d0b14; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); max-height:150px; overflow-y:auto; white-space:pre-wrap; color:#e0e7ff;">
-              Нет данных о переводах в текущей сессии.
-            </div>
-          </div>
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🔠 Заглавные буквы (КОМИКС-СТИЛЬ)</span>
+                    <span class="toggle-row-sub">Верстать переведённый текст в верхнем регистре, как в классической манге</span>
+                  </div>
+                  <input id="chk-uppercase" type="checkbox" onchange="onUppercaseCheckboxChange()" />
+                </label>
 
-          <div class="section-box">
-            <div class="section-title">📜 Живой журнал сервера (logs/miko_studio.log + предупреждения)</div>
-            <textarea id="diag-report-textarea" readonly style="width:100%; height:220px; background:#0b0912; color:#a7f3d0; font-family:Consolas, monospace; font-size:11.5px; border:1px solid rgba(244,114,182,0.3); border-radius:10px; padding:10px; resize:vertical; line-height:1.4; user-select:text;"></textarea>
+                <div class="field-box" style="display:none;">
+                  <select id="sel-overflow-mode" onchange="setOverflowMode(this.value, false)">
+                    <option value="shrink" selected>shrink</option>
+                    <option value="overflow">overflow</option>
+                    <option value="expand_bubble">expand_bubble</option>
+                  </select>
+                </div>
+
+                <div style="font-size:12px; font-weight:600; color:var(--text-secondary); margin-top:2px;">Поведение при длинном тексте в узком баббле:</div>
+                <div class="choice-cards-grid">
+                  <div class="choice-card selected" id="card-ovf-shrink" onclick="setOverflowMode('shrink', true)">
+                    <div class="choice-card-title">📐 В рамку (Стандарт)</div>
+                    <div class="choice-card-sub">Уменьшать кегль до минимального порога строго внутри баббла.</div>
+                  </div>
+                  <div class="choice-card" id="card-ovf-overflow" onclick="setOverflowMode('overflow', true)">
+                    <div class="choice-card-title">🔓 За рамки (Крупнее)</div>
+                    <div class="choice-card-sub">Не мельчить шрифт — выносить текст за края с белой обводкой.</div>
+                  </div>
+                  <div class="choice-card" id="card-ovf-expand_bubble" onclick="setOverflowMode('expand_bubble', true)">
+                    <div class="choice-card-title">💬 Авто-баббл</div>
+                    <div class="choice-card-sub">Автоматически расширять белый контур облачка под текст.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-font" data-search-keywords="сохранение chrome браузер папка автосохранение пропускать готовые">
+                <div class="section-title">💾 Сохранение глав и расширение Chrome</div>
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">⏩ Продолжать перевод папки с места остановки</span>
+                    <span class="toggle-row-sub">Пропускать уже переведённые страницы в выходной папке</span>
+                  </div>
+                  <input id="chk-skip-existing" type="checkbox" checked />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">💾 Автосохранение страниц из расширения Chrome на ПК</span>
+                    <span class="toggle-row-sub">Сохраняет оригинал, перевод и <code>.translation_state.json</code> для Студии</span>
+                  </div>
+                  <input id="chk-autosave-web" type="checkbox" checked />
+                </label>
+
+                <div class="field-box">
+                  <label for="inp-web-save-dir">📂 Папка автосохранения из браузера Chrome:</label>
+                  <div style="display:flex; gap:6px; flex-wrap:wrap;">
+                    <input id="inp-web-save-dir" type="text" placeholder="По умолчанию: Saved_Manga" style="flex:1 1 200px; min-width:0;" />
+                    <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="pickWebSaveDirInStudio()">📁 Выбрать</button>
+                    <button class="soft-btn" type="button" style="padding:6px 12px;" onclick="openWebSaveDirInStudio()">📂 Открыть</button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 4: TEXT FILTER & ARTWORK PROTECTION -->
+            <div class="settings-tab-pane" id="tab-filter">
+              <div class="section-box" data-search-tab="tab-filter" data-search-keywords="фильтр sfx вздохи фон ономатопея длина пачка страниц">
+                <div class="section-title">📊 Фильтрация текста и защита рисунка</div>
+                <div class="section-desc">Какие надписи переводить, а какие звуки и вздохи оставлять нетронутыми без замазки.</div>
+
+                <div class="field-box">
+                  <label for="sel-text-filter-mode">Готовый профиль фильтрации:</label>
+                  <select id="sel-text-filter-mode" onchange="onTextFilterModeChange()">
+                    <option value="dialogue_only" selected>💬 Только диалоги (без спецэффектов и вздохов) — Рекомендуется</option>
+                    <option value="bubbles_no_sighs">💭 Диалоги + важные надписи на фоне (без вздохов и SFX)</option>
+                    <option value="long_only">🛡 Минимум замазки — только фразы от 4+ символов</option>
+                    <option value="bubbles_only">🗨 Все облачка диалогов (без фона, со вздохами)</option>
+                    <option value="all">🔊 Переводить вообще всё (диалоги, фон, SFX и вздохи)</option>
+                  </select>
+                </div>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🚫 Пропускать короткие вздохи («а», «о», «ах», «ох», «мм»)</span>
+                    <span class="toggle-row-sub">Оставляет мелкие эмоциональные междометия в оригинале без замазки</span>
+                  </div>
+                  <input id="chk-skip-sighs" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🚫 Пропускать звуковые спецэффекты (SFX / ономатопею)</span>
+                    <span class="toggle-row-sub">Не трогает звуки ударов, шорохов и спецэффекты поверх арта</span>
+                  </div>
+                  <input id="chk-skip-sfx" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🔍 Переводить текст ВНЕ бабблов (надписи на фоне)</span>
+                    <span class="toggle-row-sub">Если выключено — фон рисунка никогда не замазывается</span>
+                  </div>
+                  <input id="chk-free-text" type="checkbox" onchange="onCustomFilterCheckboxChange()" />
+                </label>
+
+                <div class="form-grid">
+                  <div class="field-box">
+                    <label for="inp-min-text-len">📏 Минимальная длина фразы (символов):</label>
+                    <input id="inp-min-text-len" type="number" min="1" max="15" value="2" onchange="updateSummaryChip()" />
+                  </div>
+                  <div class="field-box">
+                    <label for="inp-batch-pages">📦 Пачка страниц за 1 запрос к ИИ:</label>
+                    <input id="inp-batch-pages" type="number" min="1" max="50" value="15" onchange="updateSummaryChip()" />
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 5: UI & EDITOR -->
+            <div class="settings-tab-pane" id="tab-ui">
+              <div class="section-box" data-search-tab="tab-ui" data-search-keywords="редактор панель док сбоку снизу плавающее окно расположение">
+                <div class="section-title">📐 Расположение панели редактора</div>
+                <div class="section-desc">Где открывать список блоков при редактировании страницы (переключается и из шапки редактора).</div>
+                <div class="choice-cards-grid">
+                  <div class="choice-card selected" id="ui-card-dock-right" onclick="setEditorDockMode('right')">
+                    <div class="choice-card-title">➡ Сбоку (Справа)</div>
+                    <div class="choice-card-sub">Страница манги видна во всю высоту без перекрытий.</div>
+                  </div>
+                  <div class="choice-card" id="ui-card-dock-bottom" onclick="setEditorDockMode('bottom')">
+                    <div class="choice-card-title">⬇ Снизу (Сплиттер)</div>
+                    <div class="choice-card-sub">Панель под страницей с перетаскиваемой границей.</div>
+                  </div>
+                  <div class="choice-card" id="ui-card-dock-floating" onclick="setEditorDockMode('floating')">
+                    <div class="choice-card-title">🪟 Плавающее окно</div>
+                    <div class="choice-card-sub">Перетаскиваемое мини-окно поверх манги.</div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-ui" data-search-keywords="попап рамки кисть ретушь автосохранение задержка мико маскот">
+                <div class="section-title">✨ Поведение редактора и инструментов</div>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">💬 Компактный попап у кружка #N по клику</span>
+                    <span class="toggle-row-sub">Быстрое редактирование прямо у баббла без открытия большой панели</span>
+                  </div>
+                  <input id="chk-ui-inline-popup" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">📌 Всегда показывать рамки #N на странице</span>
+                    <span class="toggle-row-sub">Номера бабблов видны сразу после перевода даже при закрытом редакторе</span>
+                  </div>
+                  <input id="chk-ui-always-pins" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🎯 Авто-центровка страницы на выбранном блоке #N</span>
+                    <span class="toggle-row-sub">Плавный скролл к бабблу при выборе его в списке</span>
+                  </div>
+                  <input id="chk-ui-auto-scroll" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">👻 Прозрачность плавающего окна при наведении на мангу</span>
+                    <span class="toggle-row-sub">Затемняет оверлей меньше, когда курсор на самой странице</span>
+                  </div>
+                  <input id="chk-ui-floating-fade" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🖥 Сворачивать левую панель страниц при открытии редактора</span>
+                    <span class="toggle-row-sub">Отдаёт больше ширины экрана под страницу манги</span>
+                  </div>
+                  <input id="chk-ui-auto-collapse" type="checkbox" onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🖌 Инструменты «Живая кисть замазки (B)» и ползунок dilate</span>
+                    <span class="toggle-row-sub">Показывает кисть ручной ретуши (ЛКМ — закрасить, ПКМ — вернуть оригинал)</span>
+                  </div>
+                  <input id="chk-ui-enable-mask-tools" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🐾 Компактная карточка ассистента Мико-тян</span>
+                    <span class="toggle-row-sub">Оставляет больше места под список страниц слева</span>
+                  </div>
+                  <input id="chk-ui-compact-mascot" type="checkbox" onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title" id="lbl-ui-autosave-title">⏱ Автосохранение после перетаскивания рамки / колесика</span>
+                    <span class="toggle-row-sub">Не мешает при наборе текста; при выключении появляется кнопка 💾 на рамке</span>
+                  </div>
+                  <input id="chk-ui-auto-save-box" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <div class="toggle-row" id="row-ui-autosave-interval" style="cursor:default; flex-wrap:wrap; gap:10px;">
+                  <div class="toggle-row-text" style="min-width:210px; flex:1;">
+                    <span class="toggle-row-title">⏳ Задержка автосохранения: <b id="lbl-ui-autosave-sec-val" style="color:var(--mint);">2.5 сек</b></span>
+                    <span class="toggle-row-sub">Пауза после сдвига рамки перед автоперерисовкой страницы</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <input id="rng-ui-autosave-sec" type="range" min="0.5" max="10" step="0.5" value="2.5" style="width:115px; accent-color:var(--sakura); cursor:pointer;" oninput="onAutoSaveDelayInput(this.value)" />
+                    <input id="inp-ui-autosave-sec" type="number" min="0.5" max="30" step="0.5" value="2.5" style="width:64px; text-align:center; padding:5px 6px;" onchange="onAutoSaveDelayInput(this.value)" />
+                    <div style="display:flex; gap:4px;">
+                      <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(1.0)">1с</button>
+                      <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(2.5)">2.5с</button>
+                      <button type="button" class="romaji-copy-btn" onclick="onAutoSaveDelayInput(4.0)">4с</button>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 6: GLOSSARY & GLOBAL FIND/REPLACE -->
+            <div class="settings-tab-pane" id="tab-glossary">
+              <div class="section-box" data-search-tab="tab-glossary" data-search-keywords="поиск замена глава ctrl+f имена опечатки перерисовать">
+                <div class="section-title">
+                  <span>🔎 Поиск и замена по всей главе (0 токенов)</span>
+                  <span id="find-replace-badge" style="font-size:11.5px; color:var(--mint);">Готов к поиску</span>
+                </div>
+                <div class="section-desc">Мгновенно заменяйте имена или фразы на всех страницах главы с автоперерисовкой из кэша очистки.</div>
+                <div class="form-grid">
+                  <div class="field-box">
+                    <label for="inp-find-text">Найти текст:</label>
+                    <input id="inp-find-text" type="text" placeholder="Например: Сато / Нанака..." onkeydown="if(event.key==='Enter'){event.preventDefault();runFolderFindReplace(true);}" />
+                  </div>
+                  <div class="field-box">
+                    <label for="inp-replace-text">Заменить на:</label>
+                    <input id="inp-replace-text" type="text" placeholder="Новый вариант..." onkeydown="if(event.key==='Enter'){event.preventDefault();runFolderFindReplace(true);}" />
+                  </div>
+                </div>
+                <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+                  <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+                    <select id="sel-find-search-in" class="font-override-select" style="padding:6px 10px; font-size:12px;">
+                      <option value="translated" selected>🈯 Искать в переводе (RU / EN)</option>
+                      <option value="original">🇯🇵 Искать в оригинале (JA / KO / ZH)</option>
+                    </select>
+                    <label style="display:inline-flex; align-items:center; gap:6px; font-size:12px; cursor:pointer; color:var(--text-secondary);">
+                      <input type="checkbox" id="chk-find-match-case" style="accent-color:var(--sakura);" />
+                      <span>Учитывать регистр</span>
+                    </label>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <button type="button" class="soft-btn" onclick="runFolderFindReplace(true)">🔎 Найти совпадения</button>
+                    <button type="button" class="cta-main" id="btn-exec-find-replace" style="width:auto; padding:8px 15px; font-size:12px;" onclick="runFolderFindReplace(false)">⚡ Заменить везде</button>
+                  </div>
+                </div>
+                <div class="find-results-wrap" id="find-replace-results-list">
+                  <div style="padding:10px; color:var(--text-muted); font-size:12px; text-align:center;">
+                    Введите слово и нажмите «🔎 Найти совпадения», чтобы перейти к нужному кружку #N.
+                  </div>
+                </div>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-glossary" data-search-keywords="глоссарий словарь имена термины sakura json tsv импорт экспорт">
+                <div class="section-title">
+                  <span>📖 Глоссарий имён и терминов</span>
+                  <div style="display:flex; gap:6px;">
+                    <button type="button" class="romaji-copy-btn" onclick="fillGlossaryFromActiveBlock()" title="Подставить текст из выбранного кружка #N">➕ Из блока</button>
+                    <button type="button" class="romaji-copy-btn" onclick="loadGlossaryPanel()">🔄 Обновить</button>
+                  </div>
+                </div>
+                <div class="section-desc">Фиксирует одинаковый перевод имён и терминов во всех пачках и главах.</div>
+                <div class="glossary-add-grid">
+                  <div class="field-box">
+                    <label for="inp-gloss-src">Оригинал:</label>
+                    <input id="inp-gloss-src" type="text" placeholder="七香 / ななか" />
+                  </div>
+                  <div class="field-box">
+                    <label for="inp-gloss-dst">Перевод:</label>
+                    <input id="inp-gloss-dst" type="text" placeholder="Нанака" />
+                  </div>
+                  <div class="field-box">
+                    <label for="inp-gloss-note">Примечание:</label>
+                    <input id="inp-gloss-note" type="text" placeholder="героиня (ж.р.)" />
+                  </div>
+                  <div class="field-box">
+                    <label for="sel-gloss-scope">Область:</label>
+                    <select id="sel-gloss-scope" style="padding:8px 8px;">
+                      <option value="both" selected>🌐+📁 Везде</option>
+                      <option value="global">🌐 Глобально</option>
+                      <option value="folder">📁 Только глава</option>
+                    </select>
+                  </div>
+                  <button type="button" class="btn-save-edit" style="height:36px; padding:0 14px;" onclick="addGlossaryEntryFromInputs()">➕ Добавить</button>
+                </div>
+
+                <div class="glossary-table-wrap">
+                  <table class="glossary-table">
+                    <thead>
+                      <tr>
+                        <th>Оригинал (src)</th>
+                        <th>Перевод (dst)</th>
+                        <th>Примечание</th>
+                        <th>Область</th>
+                        <th style="width:60px; text-align:right;">Действие</th>
+                      </tr>
+                    </thead>
+                    <tbody id="glossary-table-body">
+                      <tr>
+                        <td colspan="5" style="text-align:center; color:var(--text-muted); padding:14px;">Глоссарий пока пуст. Добавьте имена выше или импортируйте словарь.</td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+
+                <details class="settings-accordion">
+                  <summary>
+                    <span>📥 / 📤 Импорт и экспорт глоссария (.txt Sakura / .json / .tsv)</span>
+                    <span style="font-size:10.5px; color:var(--text-muted);">Развернуть</span>
+                  </summary>
+                  <div style="display:flex; flex-direction:column; gap:8px;">
+                    <div style="display:flex; flex-wrap:wrap; gap:6px; justify-content:space-between;">
+                      <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                        <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('sakura')">📤 Sakura (.txt)</button>
+                        <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('json')">📤 JSON</button>
+                        <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="exportGlossaryFormat('tsv')">📤 TSV</button>
+                      </div>
+                      <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                        <input type="file" id="inp-glossary-file" accept=".txt,.json,.tsv" style="display:none;" onchange="onGlossaryFilePicked(this)" />
+                        <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px;" onclick="document.getElementById('inp-glossary-file').click()">📂 Из файла</button>
+                        <button type="button" class="btn-save-edit" style="padding:5px 12px; font-size:11.5px;" onclick="importGlossaryFromTextarea()">📥 Импортировать текст</button>
+                      </div>
+                    </div>
+                    <textarea id="inp-glossary-io-text" placeholder="Формат Sakura: 七香->Нанака #Главная героиня..." style="width:100%; height:90px; background:#0d0b14; color:#e0e7ff; border:1px solid rgba(255,255,255,0.14); border-radius:8px; padding:8px; font-family:Consolas, monospace; font-size:11.5px; resize:vertical;"></textarea>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+            <!-- TAB 7: CHAPTER BOOK EDITOR -->
+            <div class="settings-tab-pane" id="tab-book">
+              <div class="section-box" data-search-tab="tab-book" data-search-keywords="книга скрипт вычитка chapter_book двуязычный экспорт импорт">
+                <div class="section-title">
+                  <span>📖 Книга главы и единая вычитка (_chapter_book.md)</span>
+                  <span id="chapter-book-status-badge" style="font-size:11.5px; color:var(--mint);">Готов к работе</span>
+                </div>
+                <div class="section-desc">
+                  Правьте диалоги всей главы в одном окне и перерисовывайте страницы из кэша замазки (0 запросов OCR/API) или вычитайте стиль за 1 запрос.
+                </div>
+                <div style="display:flex; flex-wrap:wrap; gap:8px; align-items:center; justify-content:space-between;">
+                  <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                    <button type="button" class="pill-btn active" id="btn-book-view-md" onclick="switchChapterBookViewMode('md')">📘 Чистая книга (.md)</button>
+                    <button type="button" class="pill-btn" id="btn-book-view-bilingual" onclick="switchChapterBookViewMode('bilingual')">🔀 Двуязычный скрипт</button>
+                  </div>
+                  <div style="display:flex; flex-wrap:wrap; gap:6px;">
+                    <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="loadChapterBookPanel()">🔄 Обновить</button>
+                    <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('md')">💾 .md</button>
+                    <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('json')">💾 .json</button>
+                  </div>
+                </div>
+                <textarea id="chapter-book-textarea" placeholder="Откройте переведенную папку с главой манги..." style="width:100%; height:310px; background:#0b0912; color:#e0e7ff; font-family:Consolas, 'Segoe UI', monospace; font-size:12.5px; border:1px solid rgba(129, 140, 248, 0.35); border-radius:10px; padding:12px; resize:vertical; line-height:1.5; user-select:text;"></textarea>
+                <div style="display:flex; flex-wrap:wrap; gap:10px; justify-content:space-between; align-items:center;">
+                  <button type="button" class="cta-main" id="btn-proofread-chapter-book" style="width:auto; padding:9px 16px; font-size:12.5px; background:linear-gradient(135deg, #818cf8, #c084fc);" onclick="proofreadEntireChapterBookInOneRequest()">
+                    ✨ Вычитать стиль всей главы (1 запрос)
+                  </button>
+                  <button type="button" class="btn-save-edit" id="btn-import-chapter-book" style="padding:9px 16px; font-size:12.5px;" onclick="importEditedChapterBookAndRerender()">
+                    📥 Импортировать и перерисовать (0 токенов)
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- TAB 8: DIAGNOSTICS, LOGS & UX TELEMETRY -->
+            <div class="settings-tab-pane" id="tab-diag">
+              <div class="section-box" data-search-tab="tab-diag" data-search-keywords="диагностика лог отчет gpu vram время скорость скопировать">
+                <div class="section-title">
+                  <span>🩺 Диагностика и отчёты (logs/miko_studio.log)</span>
+                  <span id="diag-copy-badge" style="font-size:11.5px; color:var(--mint); display:none;">✅ Скопировано в буфер!</span>
+                </div>
+                <div class="diag-action-toolbar">
+                  <button type="button" class="cta-main" style="width:auto; padding:8px 15px; font-size:12px;" onclick="copyDiagnosticsReportToClipboard()">
+                    📋 Скопировать отчёт для чата
+                  </button>
+                  <button type="button" class="soft-btn" style="padding:7px 12px; border-color:rgba(52, 211, 153, 0.45); color:#6ee7b7;" onclick="viewChapterTranslationReport(false)">📑 Отчёт главы</button>
+                  <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="openChapterReportInNotepad()">📝 В Блокнот</button>
+                  <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="loadDiagnosticsPanel()">🔄 Обновить</button>
+                  <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="openLogsFolderInStudio()">📂 logs/</button>
+                  <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="window.open('/diagnostics/download_log', '_blank')">💾 Скачать лог</button>
+                  <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="clearDiagnosticsInStudio()">🧹 Сбросить счётчики</button>
+                </div>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-diag" data-search-keywords="сводка сервер видеокарта gpu ии статистика">
+                <div class="section-title">📊 Сводка по серверу, GPU и вызовам ИИ</div>
+                <div id="diag-summary-cards" class="diag-summary-grid">
+                  <div style="background:#110e1c; padding:9px 11px; border-radius:10px; border:1px solid rgba(255,255,255,0.08);">Загрузка метрик...</div>
+                </div>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-diag" data-search-keywords="тайминги журнал лог ошибки скорость ocr верстка">
+                <div class="section-title">⏱ Тайминги пачек и живой журнал</div>
+                <div id="diag-jobs-list" style="font-family:Consolas, monospace; font-size:11.5px; background:#0d0b14; padding:10px; border-radius:10px; border:1px solid rgba(255,255,255,0.08); max-height:140px; overflow-y:auto; white-space:pre-wrap; color:#e0e7ff;">
+                  Нет данных о переводах в текущей сессии.
+                </div>
+                <textarea id="diag-report-textarea" readonly style="width:100%; height:200px; background:#0b0912; color:#a7f3d0; font-family:Consolas, monospace; font-size:11.5px; border:1px solid rgba(244,114,182,0.28); border-radius:10px; padding:10px; resize:vertical; line-height:1.4; user-select:text;"></textarea>
+              </div>
+
+              <div class="section-box" data-search-tab="tab-diag" data-search-keywords="ux телеметрия клики привычки кнопки отчет статистика">
+                <details class="settings-accordion">
+                  <summary>
+                    <span>📊 UX-телеметрия кликов (для редизайна)</span>
+                    <span id="ux-mini-counter-badge" style="font-size:11px; color:var(--sakura);">Записано действий: 0</span>
+                  </summary>
+                  <div style="display:flex; flex-direction:column; gap:8px;">
+                    <div style="font-size:11.5px; color:var(--text-muted); line-height:1.4;">
+                      Локальный учёт частоты нажатий кнопок в интерфейсе (сохраняется в <code>logs/UX_USAGE_REPORT.txt</code>).
+                    </div>
+                    <div style="display:flex; flex-wrap:wrap; gap:8px;">
+                      <button type="button" class="soft-btn" style="padding:7px 12px; border-color:rgba(244,114,182,0.45); color:#f9a8d4;" onclick="viewUxTelemetryReport(true)">📊 Показать и скопировать UX-отчёт</button>
+                      <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="openUxReportInNotepad()">📝 Открыть в Блокноте</button>
+                      <button type="button" class="soft-btn" style="padding:7px 12px;" onclick="clearUxTelemetryInStudio()">🧹 Сбросить UX-клики</button>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
           </div>
         </div>
       </div>
 
       <div class="modal-footer">
-        <button type="button" class="soft-btn" onclick="resetUiSettingsToDefaults()" title="Вернуть рекомендуемые настройки интерфейса и фильтрации">
-          ↺ Сбросить по умолчанию
-        </button>
+        <div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <button type="button" class="soft-btn" onclick="resetUiSettingsToDefaults()" title="Вернуть рекомендуемые настройки интерфейса и фильтрации">
+            ↺ Сбросить по умолчанию
+          </button>
+          <span id="settings-dirty-indicator" class="settings-dirty-badge" style="display:none;">● Есть несохранённые изменения</span>
+        </div>
         <div style="display:flex; gap:8px;">
           <button type="button" class="soft-btn" onclick="testAndRefreshApi()">🔄 Проверить API</button>
           <button type="button" class="cta-main" style="width:auto; padding:10px 24px;" onclick="saveSettingsAndClose()">✅ Сохранить настройки</button>
@@ -4361,11 +4628,14 @@
       const shortMod = activeModelLabel.length > 24 ? activeModelLabel.slice(0, 22) + "…" : activeModelLabel;
       if (typeof syncQuickFilterToolbarBtn === "function") syncQuickFilterToolbarBtn();
       const antiCensorBadge = document.getElementById("chk-anti-censorship-prompt")?.checked ? " · 🛡 Анти-цензура" : "";
+      const cloudOnlyBadge = (document.getElementById("chk-cloud-only-no-local-fallback")?.checked && translationProfile !== "local_only")
+        ? " · ☁️ Только облако"
+        : "";
       const pmodeShortMap = { balanced: "⚖️ Стандарт", ultra: "💎 Максимум" };
       const pmodeLbl = pmodeShortMap[normalizePipelineMode(pipelineMode)] || "⚖️ Стандарт";
       const imgCtxBadge = (useImageContext || normalizePipelineMode(pipelineMode) === "ultra") ? " · 👁 VLM-Контекст" : "";
       document.getElementById("summary-chip").textContent =
-        `${pmodeLbl} (${profLbl}) · Шрифт: ${minF}–${maxF}px · ${ovfLbl} · ИИ: ${shortMod}${imgCtxBadge}${antiCensorBadge}`;
+        `${pmodeLbl} (${profLbl}) · Шрифт: ${minF}–${maxF}px · ${ovfLbl} · ИИ: ${shortMod}${imgCtxBadge}${antiCensorBadge}${cloudOnlyBadge}`;
     }
 
     function syncPipelineModeUi(modeId, syncImgCheckbox = true) {
@@ -4525,13 +4795,165 @@
       );
     }
 
+    const SETTINGS_TAB_META = {
+      "tab-ai": {
+        title: "☁️ Модель и Облако",
+        subtitle: "Активный переводчик, API-шлюзы (DeepSeek / OpenRouter / Grok) и защита 18+."
+      },
+      "tab-models": {
+        title: "🦙 Локальные модели и Стек",
+        subtitle: "Пресеты 6 движков конвейера, загрузка GGUF/Ollama и управление весами на диске."
+      },
+      "tab-font": {
+        title: "🔤 Шрифт и Сохранение",
+        subtitle: "Кегль, заглавные буквы, переполнение бабблов и папка автосохранения Chrome."
+      },
+      "tab-filter": {
+        title: "📊 Фильтр текста и SFX",
+        subtitle: "Профили фильтрации, пропуск вздохов/звуков и размер пачки страниц."
+      },
+      "tab-ui": {
+        title: "🎨 Интерфейс и Редактор",
+        subtitle: "Расположение панели, всплывающие попапы, рамки #N и задержка автосохранения."
+      },
+      "tab-glossary": {
+        title: "🔎 Глоссарий и Замена",
+        subtitle: "Поиск и замена по всей переведённой главе, словарь имён и импорт/экспорт."
+      },
+      "tab-book": {
+        title: "📖 Текст главы (Книга)",
+        subtitle: "Единый редактор реплик главы _chapter_book.md и вычитка стиля в 1 запрос."
+      },
+      "tab-diag": {
+        title: "🩺 Диагностика и Логи",
+        subtitle: "Отчёты для чата, метрики GPU/ИИ, тайминги пачек и живой лог сервера."
+      }
+    };
+
+    const SETTINGS_SEARCH_SYNONYMS = {
+      "ключ": ["api", "key", "sk", "токен"],
+      "18+": ["nsfw", "цензур", "preflight", "uncensored", "shisa", "grok", "грок"],
+      "цензур": ["18+", "nsfw", "preflight", "промпт", "grok"],
+      "грок": ["grok", "18+", "nsfw", "облако", "ollama"],
+      "vram": ["gpu", "видеокарт", "модел", "удален", "диск"],
+      "ollama": ["локал", "gguf", "shisa", "sugoi", "qwen", "gemma"],
+      "локал": ["ollama", "gguf", "пресет"],
+      "sfx": ["звук", "ономатопе", "фон", "фильтр"],
+      "шрифт": ["кегл", "font", "заглав", "переполнен", "баббл"]
+    };
+
+    const SETTINGS_DIRTY_IGNORED_IDS = new Set([
+      "inp-settings-search",
+      "inp-find-text",
+      "inp-replace-text",
+      "sel-find-search-in",
+      "chk-find-match-case",
+      "chapter-book-textarea",
+      "diag-report-textarea",
+      "inp-gloss-src",
+      "inp-gloss-dst",
+      "inp-gloss-note",
+      "sel-gloss-scope",
+      "inp-glossary-io-text",
+      "inp-stack-preset-name",
+      "inp-glossary-file"
+    ]);
+
+    function setSettingsDirty(isDirty) {
+      window._settingsDirty = Boolean(isDirty);
+      const badge = document.getElementById("settings-dirty-indicator");
+      if (badge) badge.style.display = window._settingsDirty ? "inline-flex" : "none";
+    }
+
+    function clearSettingsSearch() {
+      const inp = document.getElementById("inp-settings-search");
+      if (inp) inp.value = "";
+      filterSettingsModal("");
+    }
+
+    function filterSettingsModal(rawQuery) {
+      const qRaw = String(rawQuery || "").trim().toLowerCase();
+      const bodyEl = document.getElementById("settings-body-scroll");
+      const emptyEl = document.getElementById("settings-search-empty");
+      const clearBtn = document.getElementById("btn-settings-search-clear");
+      const resetBtn = document.getElementById("btn-settings-search-reset");
+      const titleEl = document.getElementById("settings-pane-title");
+      const subEl = document.getElementById("settings-pane-subtitle");
+      if (!bodyEl) return;
+
+      if (clearBtn) clearBtn.style.display = qRaw ? "inline-flex" : "none";
+      if (resetBtn) resetBtn.style.display = qRaw ? "inline-flex" : "none";
+
+      const sections = bodyEl.querySelectorAll(".section-box[data-search-tab]");
+      sections.forEach(sec => {
+        const oldBadge = sec.querySelector(".search-section-badge");
+        if (oldBadge) oldBadge.remove();
+        sec.classList.remove("settings-search-hidden");
+      });
+
+      if (!qRaw) {
+        bodyEl.classList.remove("is-searching");
+        if (emptyEl) emptyEl.style.display = "none";
+        const activeMeta = SETTINGS_TAB_META[window._activeSettingsTab || "tab-ai"] || SETTINGS_TAB_META["tab-ai"];
+        if (titleEl) titleEl.textContent = activeMeta.title;
+        if (subEl) subEl.textContent = activeMeta.subtitle;
+        return;
+      }
+
+      const terms = [qRaw];
+      Object.entries(SETTINGS_SEARCH_SYNONYMS).forEach(([k, extra]) => {
+        if (k.includes(qRaw) || qRaw.includes(k)) {
+          terms.push(...extra);
+        }
+      });
+
+      bodyEl.classList.add("is-searching");
+      let matchesCount = 0;
+      sections.forEach(sec => {
+        const tabKey = sec.getAttribute("data-search-tab") || "";
+        const kw = (sec.getAttribute("data-search-keywords") || "").toLowerCase();
+        const txt = (sec.textContent || "").toLowerCase();
+        const tabTitle = ((SETTINGS_TAB_META[tabKey] && SETTINGS_TAB_META[tabKey].title) || "").toLowerCase();
+        const hay = `${kw} ${tabTitle} ${txt}`;
+        const matched = terms.some(t => t && hay.includes(t));
+        if (matched) {
+          matchesCount += 1;
+          const titleNode = sec.querySelector(".section-title");
+          if (titleNode && SETTINGS_TAB_META[tabKey]) {
+            const badge = document.createElement("span");
+            badge.className = "search-section-badge";
+            badge.textContent = SETTINGS_TAB_META[tabKey].title;
+            titleNode.insertBefore(badge, titleNode.firstChild);
+          }
+          sec.querySelectorAll("details.settings-accordion").forEach(det => {
+            if (terms.some(t => t && (det.textContent || "").toLowerCase().includes(t))) {
+              det.open = true;
+            }
+          });
+        } else {
+          sec.classList.add("settings-search-hidden");
+        }
+      });
+
+      if (emptyEl) emptyEl.style.display = matchesCount === 0 ? "block" : "none";
+      if (titleEl) titleEl.textContent = `🔍 Поиск по настройкам`;
+      if (subEl) subEl.textContent = `Найдено разделов: ${matchesCount}`;
+    }
+
     function switchSettingsTab(tabId) {
-      ["tab-ai", "tab-ui", "tab-filter", "tab-font", "tab-book", "tab-glossary", "tab-diag"].forEach(id => {
+      const targetTab = SETTINGS_TAB_META[tabId] ? tabId : "tab-ai";
+      window._activeSettingsTab = targetTab;
+      const searchInp = document.getElementById("inp-settings-search");
+      if (searchInp && searchInp.value) {
+        clearSettingsSearch();
+      }
+      Object.keys(SETTINGS_TAB_META).forEach(id => {
         const pane = document.getElementById(id);
-        if (pane) pane.classList.toggle("active", id === tabId);
+        if (pane) pane.classList.toggle("active", id === targetTab);
       });
       const btnMap = {
         "tab-ai": "stab-btn-ai",
+        "tab-models": "stab-btn-models",
         "tab-ui": "stab-btn-ui",
         "tab-filter": "stab-btn-filter",
         "tab-font": "stab-btn-font",
@@ -4541,14 +4963,37 @@
       };
       Object.entries(btnMap).forEach(([k, btnId]) => {
         const b = document.getElementById(btnId);
-        if (b) b.classList.toggle("active", k === tabId);
+        if (b) b.classList.toggle("active", k === targetTab);
       });
-      if (tabId === "tab-diag") {
+      const meta = SETTINGS_TAB_META[targetTab];
+      const titleEl = document.getElementById("settings-pane-title");
+      const subEl = document.getElementById("settings-pane-subtitle");
+      if (titleEl && meta) titleEl.textContent = meta.title;
+      if (subEl && meta) subEl.textContent = meta.subtitle;
+      const bodyEl = document.getElementById("settings-body-scroll");
+      if (bodyEl) bodyEl.scrollTop = 0;
+
+      if (targetTab === "tab-diag") {
         loadDiagnosticsPanel();
-      } else if (tabId === "tab-glossary") {
+      } else if (targetTab === "tab-glossary") {
         loadGlossaryPanel();
+      } else if (targetTab === "tab-models") {
+        loadModelStorageAndStacks(false);
       }
     }
+
+    (function bindSettingsDirtyTracker() {
+      const bodyEl = document.getElementById("settings-body-scroll");
+      if (!bodyEl || bodyEl.dataset.dirtyBound) return;
+      bodyEl.dataset.dirtyBound = "1";
+      const onChangeOrInput = (ev) => {
+        const tgt = ev && ev.target;
+        if (!tgt || !tgt.id || SETTINGS_DIRTY_IGNORED_IDS.has(tgt.id)) return;
+        setSettingsDirty(true);
+      };
+      bodyEl.addEventListener("change", onChangeOrInput);
+      bodyEl.addEventListener("input", onChangeOrInput);
+    })();
 
     async function loadDiagnosticsPanel() {
       try {
@@ -5300,7 +5745,7 @@
         }
         selMod.value = fullId;
       }
-      updateDeepSeekPresetCards(shortId);
+      updateDeepSeekPresetCards(fullId, document.getElementById("inp-unsloth-url")?.value || "");
       const banner = document.getElementById("api-status-banner");
       if (banner) {
         banner.style.color = "var(--mint)";
@@ -5314,6 +5759,9 @@
         banner.appendChild(document.createTextNode(". Нажмите «Сохранить настройки» внизу окна!"));
       }
       renderCloudModelsPreview(window._lastUnslothStatus, null);
+      if (document.getElementById("settings-modal")?.classList.contains("open")) {
+        setSettingsDirty(true);
+      }
       updateSummaryChip();
     }
 
@@ -5464,22 +5912,163 @@
     }
 
     function toggleSettingsModal(open) {
-      document.getElementById("settings-modal").classList.toggle("open", open);
+      const modal = document.getElementById("settings-modal");
+      if (!modal) return;
+      const wasDirty = Boolean(window._settingsDirty);
+      modal.classList.toggle("open", open);
+      if (open) {
+        const custInp = document.getElementById("inp-custom-model");
+        if (custInp) custInp.value = "";
+        clearSettingsSearch();
+        setSettingsDirty(false);
+      } else if (wasDirty) {
+        const custInp = document.getElementById("inp-custom-model");
+        if (custInp) custInp.value = "";
+        setSettingsDirty(false);
+        loadHealth(false, { forceFormSync: true });
+      }
     }
 
     function updateDeepSeekPresetCards(modelName, urlOverride) {
-      const mLow = String(modelName || "").toLowerCase();
+      const mLow = String(modelName || "").trim().toLowerCase();
+      const shortLow = mLow.replace(/^.*?::/, "");
       const uLow = String(urlOverride || document.getElementById("inp-unsloth-url")?.value || "").toLowerCase();
       const cFlash = document.getElementById("card-preset-flash");
       const cPro = document.getElementById("card-preset-pro");
       const cOpenRouter = document.getElementById("card-preset-openrouter");
       const cGrok = document.getElementById("card-preset-grok");
-      const isOr = uLow.includes("openrouter.ai") || mLow.includes("deepseek/deepseek-chat") || mLow.includes("mistralai/");
-      const isGrok = uLow.includes("api.x.ai") || mLow.includes("grok-");
-      if (cFlash) cFlash.classList.toggle("selected", !isOr && !isGrok && mLow.includes("flash"));
-      if (cPro) cPro.classList.toggle("selected", !isOr && !isGrok && mLow.includes("pro"));
+      if (mLow.startsWith("ollama::")) {
+        [cFlash, cPro, cOpenRouter, cGrok].forEach(c => c && c.classList.remove("selected"));
+        return;
+      }
+      const isGrok = shortLow.includes("grok") || (uLow.includes("api.x.ai") && (!shortLow || shortLow === "auto"));
+      const isOr = !isGrok && (uLow.includes("openrouter.ai") || shortLow.includes("deepseek/deepseek-chat") || shortLow.includes("mistralai/"));
+      const isFlash = !isGrok && !isOr && shortLow.includes("deepseek") && shortLow.includes("flash");
+      const isPro = !isGrok && !isOr && shortLow.includes("deepseek") && shortLow.includes("pro");
+      if (cFlash) cFlash.classList.toggle("selected", isFlash);
+      if (cPro) cPro.classList.toggle("selected", isPro);
       if (cOpenRouter) cOpenRouter.classList.toggle("selected", isOr);
       if (cGrok) cGrok.classList.toggle("selected", isGrok);
+    }
+
+    function findDetectedGrokModel(detectedOverride) {
+      const det = [];
+      const rawDet = Array.isArray(detectedOverride)
+        ? detectedOverride
+        : (Array.isArray(window._lastUnslothStatus?.detected_models) ? window._lastUnslothStatus.detected_models : []);
+      rawDet.forEach(m => {
+        const s = String(m || "").replace(/^.*?::/, "").trim();
+        if (s && !det.includes(s)) det.push(s);
+      });
+      const selMod = document.getElementById("sel-model");
+      if (selMod) {
+        Array.from(selMod.options).forEach(opt => {
+          const val = String(opt.value || "");
+          if (!val.startsWith("unsloth::")) return;
+          const s = val.replace(/^.*?::/, "").trim();
+          if (s && !det.includes(s)) det.push(s);
+        });
+      }
+      const groks = det.filter(m => m.toLowerCase().includes("grok"));
+      if (groks.length === 0) return "";
+      const nonImgGroks = groks.filter(m => !m.toLowerCase().includes("image") && !m.toLowerCase().includes("vision-only"));
+      const pool = nonImgGroks.length > 0 ? nonImgGroks : groks;
+      const prefs = ["grok-4.7", "grok-4-fast-non-reasoning", "grok-4-fast", "grok-4"];
+      for (const p of prefs) {
+        const hit = pool.find(m => m.toLowerCase() === p || m.toLowerCase().includes(p));
+        if (hit) return hit;
+      }
+      return pool[0];
+    }
+
+    function updateGrokPresetCardUi(detectedOverride) {
+      const titleEl = document.getElementById("card-preset-grok-title");
+      const subEl = document.getElementById("card-preset-grok-sub");
+      if (!subEl) return;
+      const curUrl = (document.getElementById("inp-unsloth-url")?.value || "").trim().toLowerCase();
+      const isCustomRemoteGateway = Boolean(
+        curUrl
+        && !curUrl.includes("api.x.ai")
+        && !curUrl.includes("127.0.0.1")
+        && !curUrl.includes("localhost")
+      );
+      const detectedGrok = findDetectedGrokModel(detectedOverride);
+      subEl.textContent = "";
+      const b = document.createElement("b");
+      if (isCustomRemoteGateway && detectedGrok) {
+        if (titleEl) titleEl.textContent = "🚀 Grok 18+ (вся манга)";
+        b.textContent = detectedGrok;
+        subEl.appendChild(b);
+        subEl.appendChild(document.createTextNode(" — через текущий шлюз, вся манга в облаке без Ollama."));
+      } else {
+        if (titleEl) titleEl.textContent = "🚀 xAI Grok 4 Fast";
+        b.textContent = "grok-4-fast-non-reasoning";
+        subEl.appendChild(b);
+        subEl.appendChild(document.createTextNode(" — минимум цензуры на 18+ (api.x.ai)."));
+      }
+    }
+
+    function syncCloudOnlyUiState() {
+      const cloudOnly = Boolean(document.getElementById("chk-cloud-only-no-local-fallback")?.checked);
+      const rowPre = document.getElementById("row-preflight-nsfw-split");
+      const chkPre = document.getElementById("chk-preflight-nsfw-split");
+      const subPre = document.getElementById("preflight-nsfw-split-sub");
+      if (rowPre) rowPre.style.opacity = cloudOnly ? "0.55" : "1";
+      if (chkPre) chkPre.disabled = cloudOnly;
+      if (subPre) {
+        subPre.textContent = cloudOnly
+          ? "Отключено, пока активен режим «Вся манга только в облаке» (все бабблы идут напрямую в Grok / облако)"
+          : "Острые 18+ бабблы уходят в локальную модель с контекстом из облачных реплик — цензура не срывает всю пачку";
+      }
+      updateSummaryChip();
+    }
+
+    function onCloudOnlyNoFallbackToggle(enabled) {
+      syncCloudOnlyUiState();
+      if (document.getElementById("settings-modal")?.classList.contains("open")) {
+        setSettingsDirty(true);
+      }
+    }
+
+    function selectGrokPreset() {
+      const curUrl = (document.getElementById("inp-unsloth-url")?.value || "").trim().replace(/\/+$/, "");
+      const curLow = curUrl.toLowerCase();
+      const isCustomRemoteGateway = Boolean(
+        curUrl
+        && !curLow.includes("api.x.ai")
+        && !curLow.includes("127.0.0.1")
+        && !curLow.includes("localhost")
+      );
+      const detectedGrok = isCustomRemoteGateway ? findDetectedGrokModel() : "";
+      const targetUrl = detectedGrok ? curUrl : "https://api.x.ai/v1";
+      const targetModel = detectedGrok || "grok-4-fast-non-reasoning";
+      selectCloudProviderPreset(targetUrl, targetModel, "grok");
+
+      const chkCloudOnly = document.getElementById("chk-cloud-only-no-local-fallback");
+      if (chkCloudOnly) {
+        chkCloudOnly.checked = true;
+      }
+      if (translationProfile === "local_only") {
+        syncTranslationProfileSelects(normalizePipelineMode(pipelineMode) === "ultra" ? "eco_book" : "balanced");
+      }
+      syncCloudOnlyUiState();
+
+      const banner = document.getElementById("api-status-banner");
+      if (banner) {
+        banner.style.color = "var(--mint)";
+        banner.style.background = "rgba(52,211,153,0.1)";
+        banner.style.borderColor = "rgba(52,211,153,0.25)";
+        banner.textContent = "";
+        banner.appendChild(document.createTextNode("✅ Выбрана модель "));
+        const b = document.createElement("b");
+        b.textContent = targetModel;
+        banner.appendChild(b);
+        banner.appendChild(document.createTextNode(" + режим «Вся манга только в облаке (без Ollama)». Нажмите «Сохранить настройки» внизу окна!"));
+      }
+      if (document.getElementById("settings-modal")?.classList.contains("open")) {
+        setSettingsDirty(true);
+      }
+      updateSummaryChip();
     }
 
     function selectCloudProviderPreset(baseUrl, modelName, cardKey) {
@@ -5495,6 +6084,7 @@
       if (selPreset) {
         selPreset.value = `${cleanUrl}|${modelName}`;
       }
+      updateGrokPresetCardUi();
       updateDeepSeekPresetCards(modelName, cleanUrl);
       const selMod = document.getElementById("sel-model");
       if (selMod) {
@@ -5518,12 +6108,18 @@
           opt.selected = true;
           selMod.appendChild(opt);
         }
+        selMod.value = fullId;
       }
       const banner = document.getElementById("api-status-banner");
       if (banner) {
         banner.style.color = "var(--mint)";
         banner.innerHTML = `✅ Выбрана модель <b>${escapeHtml(modelName)}</b>. Нажмите «Сохранить настройки» внизу окна!`;
       }
+      renderCloudModelsPreview(window._lastUnslothStatus, null);
+      if (document.getElementById("settings-modal")?.classList.contains("open")) {
+        setSettingsDirty(true);
+      }
+      updateSummaryChip();
     }
 
     function selectDeepSeekPreset(modelName) {
@@ -5727,99 +6323,127 @@
       }, 1200);
     }
 
-    async function loadHealth(force = false) {
+    async function loadHealth(force = false, options = {}) {
       try {
+        const opts = (options && typeof options === "object") ? options : {};
+        const isModalOpen = Boolean(document.getElementById("settings-modal")?.classList.contains("open"));
+        const syncModelsOnly = Boolean(opts.syncModelsOnly);
+        const skipFormOverwrite = (
+          isModalOpen
+          && !opts.forceFormSync
+          && !syncModelsOnly
+          && (Boolean(window._settingsDirty) || Boolean(opts.isBackgroundRetry))
+        );
         const res = await fetch("/health");
         const data = await res.json();
         const act = (data.active_model || "auto").replace(/^.*?::/, "");
         activeModelLabel = act;
         document.getElementById("gpu-badge").textContent = data.gpu?.device_name || "CPU";
-        const urlInpEl = document.getElementById("inp-unsloth-url");
-        if (urlInpEl && data.unsloth_url && document.activeElement?.id !== "inp-unsloth-url") {
-          urlInpEl.value = data.unsloth_url;
+        if (skipFormOverwrite) {
+          if (data.status === "initializing" && !window._healthInitRetryScheduled) {
+            window._healthInitRetryScheduled = true;
+            setTimeout(() => {
+              window._healthInitRetryScheduled = false;
+              loadHealth(false, { isBackgroundRetry: true });
+            }, 1500);
+          }
+          return;
         }
-        updateApiKeyStatusUi(Boolean(data.has_unsloth_key), data.masked_api_key || "");
-        if (typeof data.auto_save_web_pages === "boolean") {
-          document.getElementById("chk-autosave-web").checked = data.auto_save_web_pages;
-        }
-        if (data.web_save_dir) {
-          document.getElementById("inp-web-save-dir").value = data.web_save_dir;
-        }
-        if (data.text_filter_mode) {
-          document.getElementById("sel-text-filter-mode").value = data.text_filter_mode;
-        }
-        if (typeof data.skip_sighs === "boolean") {
-          document.getElementById("chk-skip-sighs").checked = data.skip_sighs;
-        }
-        if (typeof data.skip_sfx === "boolean") {
-          document.getElementById("chk-skip-sfx").checked = data.skip_sfx;
-        }
-        if (typeof data.detect_free_text === "boolean") {
-          document.getElementById("chk-free-text").checked = data.detect_free_text;
-        }
-        if (data.min_text_length) {
-          document.getElementById("inp-min-text-len").value = data.min_text_length;
-        }
-        if (data.min_font_size) {
-          document.getElementById("inp-min-font").value = data.min_font_size;
-        }
-        if (data.max_font_size) {
-          document.getElementById("inp-max-font").value = data.max_font_size;
-        }
-        if (typeof data.uppercase === "boolean") {
-          document.getElementById("chk-uppercase").checked = data.uppercase;
-        }
-        if (data.overflow_mode && ["shrink", "overflow", "expand_bubble"].includes(data.overflow_mode)) {
-          overflowMode = data.overflow_mode;
-          try { localStorage.setItem("miko_overflow_mode_v1", overflowMode); } catch (e) {}
-        }
-        syncOverflowModeUi();
-        if (data.translation_profile && ["eco_book", "balanced", "turbo", "local_only"].includes(data.translation_profile)) {
-          syncTranslationProfileSelects(data.translation_profile);
-        } else {
-          syncTranslationProfileSelects(translationProfile);
-        }
-        if (typeof data.use_image_context === "boolean") {
-          useImageContext = data.use_image_context;
-          try { localStorage.setItem("miko_use_image_context_v1", String(useImageContext)); } catch (e) {}
-        }
-        if (data.pipeline_mode) {
-          syncPipelineModeUi(normalizePipelineMode(data.pipeline_mode), true);
-        } else {
-          syncPipelineModeUi(pipelineMode, true);
-        }
-        if (data.batch_pages) {
-          document.getElementById("inp-batch-pages").value = data.batch_pages;
-        }
-        if (typeof data.anti_censorship_prompt === "boolean") {
-          antiCensorshipPrompt = data.anti_censorship_prompt;
-          const chkAc = document.getElementById("chk-anti-censorship-prompt");
-          if (chkAc) chkAc.checked = data.anti_censorship_prompt;
-        }
-        const taAc = document.getElementById("inp-anti-censorship-custom-prompt");
-        if (taAc && !taAc.value) {
-          taAc.value = (data.anti_censorship_custom_prompt && data.anti_censorship_custom_prompt.trim())
-            ? data.anti_censorship_custom_prompt
-            : (data.default_anti_censorship_prompt_template || DEFAULT_ANTI_CENSORSHIP_PROMPT_TEMPLATE);
-        }
-        if (data.ui_settings && typeof data.ui_settings === "object") {
-          // Merge server ui_settings if local storage hasn't overridden it yet
-          if (!localStorage.getItem("miko_ui_settings_v1")) {
-            uiSettings = { ...DEFAULT_UI_SETTINGS, ...data.ui_settings };
-            applyUiSettingsToDom();
+        if (!syncModelsOnly) {
+          const urlInpEl = document.getElementById("inp-unsloth-url");
+          if (urlInpEl && data.unsloth_url && document.activeElement?.id !== "inp-unsloth-url") {
+            urlInpEl.value = data.unsloth_url;
+          }
+          updateApiKeyStatusUi(Boolean(data.has_unsloth_key), data.masked_api_key || "");
+          if (typeof data.auto_save_web_pages === "boolean") {
+            document.getElementById("chk-autosave-web").checked = data.auto_save_web_pages;
+          }
+          if (data.web_save_dir) {
+            document.getElementById("inp-web-save-dir").value = data.web_save_dir;
+          }
+          if (data.text_filter_mode) {
+            document.getElementById("sel-text-filter-mode").value = data.text_filter_mode;
+          }
+          if (typeof data.skip_sighs === "boolean") {
+            document.getElementById("chk-skip-sighs").checked = data.skip_sighs;
+          }
+          if (typeof data.skip_sfx === "boolean") {
+            document.getElementById("chk-skip-sfx").checked = data.skip_sfx;
+          }
+          if (typeof data.detect_free_text === "boolean") {
+            document.getElementById("chk-free-text").checked = data.detect_free_text;
+          }
+          if (data.min_text_length) {
+            document.getElementById("inp-min-text-len").value = data.min_text_length;
+          }
+          if (data.min_font_size) {
+            document.getElementById("inp-min-font").value = data.min_font_size;
+          }
+          if (data.max_font_size) {
+            document.getElementById("inp-max-font").value = data.max_font_size;
+          }
+          if (typeof data.uppercase === "boolean") {
+            document.getElementById("chk-uppercase").checked = data.uppercase;
+          }
+          if (data.overflow_mode && ["shrink", "overflow", "expand_bubble"].includes(data.overflow_mode)) {
+            overflowMode = data.overflow_mode;
+            try { localStorage.setItem("miko_overflow_mode_v1", overflowMode); } catch (e) {}
+          }
+          syncOverflowModeUi();
+          if (data.translation_profile && ["eco_book", "balanced", "turbo", "local_only"].includes(data.translation_profile)) {
+            syncTranslationProfileSelects(data.translation_profile);
+          } else {
+            syncTranslationProfileSelects(translationProfile);
+          }
+          if (typeof data.use_image_context === "boolean") {
+            useImageContext = data.use_image_context;
+            try { localStorage.setItem("miko_use_image_context_v1", String(useImageContext)); } catch (e) {}
+          }
+          if (data.pipeline_mode) {
+            syncPipelineModeUi(normalizePipelineMode(data.pipeline_mode), true);
+          } else {
+            syncPipelineModeUi(pipelineMode, true);
+          }
+          if (data.batch_pages) {
+            document.getElementById("inp-batch-pages").value = data.batch_pages;
+          }
+          if (typeof data.anti_censorship_prompt === "boolean") {
+            antiCensorshipPrompt = data.anti_censorship_prompt;
+            const chkAc = document.getElementById("chk-anti-censorship-prompt");
+            if (chkAc) chkAc.checked = data.anti_censorship_prompt;
+          }
+          const taAc = document.getElementById("inp-anti-censorship-custom-prompt");
+          if (taAc && !taAc.value) {
+            taAc.value = (data.anti_censorship_custom_prompt && data.anti_censorship_custom_prompt.trim())
+              ? data.anti_censorship_custom_prompt
+              : (data.default_anti_censorship_prompt_template || DEFAULT_ANTI_CENSORSHIP_PROMPT_TEMPLATE);
+          }
+          if (data.ui_settings && typeof data.ui_settings === "object") {
+            // Merge server ui_settings if local storage hasn't overridden it yet
+            if (!localStorage.getItem("miko_ui_settings_v1")) {
+              uiSettings = { ...DEFAULT_UI_SETTINGS, ...data.ui_settings };
+              applyUiSettingsToDom();
+            }
+          }
+          if (typeof data.preflight_nsfw_split === "boolean") {
+            const chkSplit = document.getElementById("chk-preflight-nsfw-split");
+            if (chkSplit) chkSplit.checked = data.preflight_nsfw_split;
+          }
+          if (typeof data.cloud_only_no_local_fallback === "boolean") {
+            const chkCloudOnly = document.getElementById("chk-cloud-only-no-local-fallback");
+            if (chkCloudOnly) chkCloudOnly.checked = data.cloud_only_no_local_fallback;
+          }
+          syncCloudOnlyUiState();
+          if (typeof data.ultra_proofread_mode === "string") {
+            const selProof = document.getElementById("sel-ultra-proofread-mode");
+            if (selProof && ["off", "selective", "full"].includes(data.ultra_proofread_mode)) {
+              selProof.value = data.ultra_proofread_mode;
+            }
           }
         }
-        if (typeof data.preflight_nsfw_split === "boolean") {
-          const chkSplit = document.getElementById("chk-preflight-nsfw-split");
-          if (chkSplit) chkSplit.checked = data.preflight_nsfw_split;
-        }
-        if (typeof data.ultra_proofread_mode === "string") {
-          const selProof = document.getElementById("sel-ultra-proofread-mode");
-          if (selProof && ["off", "selective", "full"].includes(data.ultra_proofread_mode)) {
-            selProof.value = data.ultra_proofread_mode;
-          }
-        }
-        updateDeepSeekPresetCards(act, data.unsloth_url || "");
+        const effectiveSelectedModel = (data.selected_model && data.selected_model !== "auto") ? data.selected_model : act;
+        updateGrokPresetCardUi(data.unsloth_status?.detected_models || []);
+        updateDeepSeekPresetCards(effectiveSelectedModel, data.unsloth_url || "");
 
         if (Array.isArray(data.recommended_models) && data.recommended_models.length > 0) {
           const pullSel = document.getElementById("sel-recommended-pull");
@@ -5869,6 +6493,7 @@
         optAuto.textContent = `✨ Автовыбор (${act})`;
         sel.appendChild(optAuto);
 
+        let selectedModelAdded = false;
         models.forEach(m => {
           const isNotInstalled = m.installed === false || String(m.installed).toLowerCase() === "false";
           const isPureOcr = String(m.id || "").toLowerCase().includes("glm-ocr");
@@ -5876,14 +6501,30 @@
           const opt = document.createElement("option");
           opt.value = m.id;
           opt.textContent = m.name;
-          if (m.id === data.selected_model) opt.selected = true;
+          if (m.id === data.selected_model) {
+            opt.selected = true;
+            selectedModelAdded = true;
+          }
           sel.appendChild(opt);
         });
+        if (data.selected_model && data.selected_model !== "auto" && !selectedModelAdded) {
+          const fallbackOpt = document.createElement("option");
+          fallbackOpt.value = data.selected_model;
+          const shortSel = String(data.selected_model).replace(/^.*?::/, "");
+          fallbackOpt.textContent = String(data.selected_model).startsWith("unsloth::")
+            ? `☁️ [Cloud API] ${shortSel}`
+            : `🦙 [Ollama] ${shortSel}`;
+          fallbackOpt.selected = true;
+          sel.appendChild(fallbackOpt);
+        }
+        sel.value = (data.selected_model && data.selected_model !== "auto") ? data.selected_model : "auto";
         populateStackTranslationSelect(models, data.default_model_stack?.translation_model || data.selected_model || "auto", act);
         if (data.default_model_stack) {
           applyStackObjectToSelectors(data.default_model_stack);
         }
         renderModelStackPresetCards(data.built_in_model_stacks || [], data.saved_model_stacks || [], data.default_model_stack || {});
+        updateGrokPresetCardUi(data.unsloth_status?.detected_models || []);
+        updateDeepSeekPresetCards(effectiveSelectedModel, data.unsloth_url || "");
         renderCloudModelsPreview(data.unsloth_status, models);
         const apiBannerEl = document.getElementById("api-status-banner");
         if (apiBannerEl && data.unsloth_status?.is_cloud && data.unsloth_status?.error) {
@@ -5909,7 +6550,7 @@
           window._healthInitRetryScheduled = true;
           setTimeout(() => {
             window._healthInitRetryScheduled = false;
-            loadHealth(false);
+            loadHealth(false, { isBackgroundRetry: true });
           }, 1500);
         }
       } catch (e) {
@@ -6245,10 +6886,12 @@
     async function onModelSelectChange() {
       document.getElementById("inp-custom-model").value = "";
       const mod = document.getElementById("sel-model").value;
-      updateDeepSeekPresetCards(mod);
+      updateDeepSeekPresetCards(mod, document.getElementById("inp-unsloth-url")?.value || "");
+      renderCloudModelsPreview(window._lastUnslothStatus, null);
       // БЛОК 5: Если открыто модальное окно настроек, не сохраняем config.json дважды (при выборе в select и затем при нажатии «Сохранить настройки»)
       const modalOpen = document.getElementById("settings-modal")?.classList.contains("open");
       if (modalOpen) {
+        setSettingsDirty(true);
         updateSummaryChip();
         return;
       }
@@ -6303,6 +6946,7 @@
         sayMiko(`⚠️ Не удалось сохранить настройки API: ${errMsg}`);
         return;
       }
+      document.getElementById("inp-custom-model").value = "";
       if (postData.unsloth_url) {
         document.getElementById("inp-unsloth-url").value = postData.unsloth_url;
       }
@@ -6321,7 +6965,7 @@
         }
         return;
       }
-      await loadHealth(false);
+      await loadHealth(false, { syncModelsOnly: true });
       renderCloudModelsPreview(data.unsloth_status, data.models);
       const det = data.unsloth_status?.detected_models || [];
       const probeErr = data.unsloth_status?.error;
@@ -6412,6 +7056,7 @@
           anti_censorship_prompt: Boolean(document.getElementById("chk-anti-censorship-prompt")?.checked),
           anti_censorship_custom_prompt: (document.getElementById("inp-anti-censorship-custom-prompt")?.value || "").trim(),
           preflight_nsfw_split: Boolean(document.getElementById("chk-preflight-nsfw-split")?.checked ?? true),
+          cloud_only_no_local_fallback: Boolean(document.getElementById("chk-cloud-only-no-local-fallback")?.checked),
           ultra_proofread_mode: document.getElementById("sel-ultra-proofread-mode")?.value || "selective",
           ui_settings: uiSettings
         };
@@ -6440,8 +7085,9 @@
           document.getElementById("inp-unsloth-url").value = savedData.unsloth_url;
         }
         updateApiKeyStatusUi(Boolean(savedData.has_unsloth_key), savedData.masked_api_key || "");
+        setSettingsDirty(false);
         // БЛОК 5: Вызываем loadHealth(false), чтобы использовать 5-минутный in-memory кэш моделей без тройного опроса /v1/models
-        await loadHealth(false);
+        await loadHealth(false, { forceFormSync: true });
         toggleSettingsModal(false);
         sayMiko("Все настройки перевода, профилей, моделей и интерфейса сохранены! ✨");
       } catch (e) {
