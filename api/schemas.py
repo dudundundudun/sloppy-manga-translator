@@ -5,7 +5,7 @@ Pydantic-схемы запросов и ответов FastAPI-сервера Mi
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -321,6 +321,20 @@ class FolderInspectRequest(BaseModel):
     target_lang: str = Field(default="en")
 
 
+class FolderControlRequest(BaseModel):
+    action: Literal[
+        "abort_request",
+        "switch_model",
+        "skip_stage",
+        "toggle_cloud_only",
+        "pause_after_batch",
+        "stop_now",
+    ]
+    model: str | None = Field(default=None)
+    stage: str | None = Field(default=None)
+    cloud_only: bool | None = Field(default=None)
+
+
 class PageFileTranslateRequest(BaseModel):
     file_path: str = Field(description="Путь к исходному файлу страницы манги на диске")
     source_dir: str | None = Field(default=None)
@@ -381,6 +395,7 @@ class ServerSettingsRequest(BaseModel):
     cloud_only_no_local_fallback: bool | None = Field(default=None)
     ultra_proofread_mode: str | None = Field(default=None)
     auto_save_web_pages: bool | None = Field(default=None)
+    auto_export_chapter_book: bool | None = Field(default=None)
     web_save_dir: str | None = Field(default=None)
     text_filter_mode: str | None = Field(default=None)
     skip_sighs: bool | None = Field(default=None)

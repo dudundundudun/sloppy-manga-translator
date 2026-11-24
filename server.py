@@ -140,7 +140,7 @@ import torch
 import uvicorn
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, StreamingResponse
 from PIL import Image
 from pydantic import BaseModel, Field
 
@@ -158,6 +158,7 @@ from api.schemas import (
     DeleteModelRequest,
     DiamondWrapBlockRequest,
     FolderCleanNoiseRequest,
+    FolderControlRequest,
     FolderFindReplaceRequest,
     FolderInspectRequest,
     FolderTranslateRequest,
@@ -301,6 +302,8 @@ _ring_handler.setFormatter(_log_formatter)
 _root_logger.addHandler(_ring_handler)
 
 logging.getLogger("huggingface_hub").setLevel(logging.ERROR)
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 logger = logging.getLogger("manga_server")
 
 
@@ -348,7 +351,12 @@ def _append_diagnostic_event(event_type: str, data: dict[str, Any]) -> None:
         **data,
     }
     _recent_job_profiles.append(record)
+    if os.environ.get("MIKO_DISABLE_FILE_LOG", "").strip().lower() in ("1", "true", "yes"):
+        return
     try:
+        DIAG_EVENTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        if DIAG_EVENTS_FILE.exists() and DIAG_EVENTS_FILE.stat().st_size > 2 * 1024 * 1024:
+            os.replace(DIAG_EVENTS_FILE, DIAG_EVENTS_FILE.with_suffix(".jsonl.1"))
         with open(DIAG_EVENTS_FILE, "a", encoding="utf-8") as f_ev:
             f_ev.write(json.dumps(record, ensure_ascii=False) + "\n")
     except Exception as _exc:
@@ -360,6 +368,8 @@ VALID_TARGET_LANGS = {"en", "ru", "romaji"}
 OUTPUT_FOLDER_SUFFIXES = ("_EN", "_RU", "_ROMAJI", "temp_debug")
 MANIFEST_FILENAME = ".translation_state.json"
 REPORT_FILENAME = "TRANSLATION_REPORT.txt"
+META_DIRNAME = ".miko"
+META_MANIFEST_FILENAME = "translation_state.json"
 
 ocr_engine: MangaOCREngine | None = None
 translator_engine: OllamaTranslator | None = None
@@ -428,7 +438,9 @@ class AtomicStateCheckpoint:
     """
     def __init__(self, folder_path: Path) -> None:
         self.folder_path = folder_path
-        self.state_file = folder_path / ".translation_state.json"
+        self.meta_dir = folder_path / META_DIRNAME
+        self.state_file = self.meta_dir / META_MANIFEST_FILENAME
+        self._legacy_state_file = folder_path / MANIFEST_FILENAME
         self._lock = asyncio.Lock()
         self.state: dict[str, Any] = {
             "version": "2.0",
@@ -439,9 +451,10 @@ class AtomicStateCheckpoint:
         self._load_existing()
 
     def _load_existing(self) -> None:
-        if self.state_file.exists():
+        cand = self.state_file if self.state_file.exists() else self._legacy_state_file
+        if cand.exists():
             try:
-                raw = self.state_file.read_text(encoding="utf-8")
+                raw = cand.read_text(encoding="utf-8")
                 loaded = json.loads(raw)
                 if isinstance(loaded, dict):
                     self.state.update(loaded)
@@ -471,10 +484,10 @@ class AtomicStateCheckpoint:
             await asyncio.to_thread(self._atomic_write_sync, payload_bytes)
 
     def _atomic_write_sync(self, data: bytes) -> None:
-        self.folder_path.mkdir(parents=True, exist_ok=True)
+        self.meta_dir.mkdir(parents=True, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(
-            dir=str(self.folder_path),
-            prefix=".translation_state_",
+            dir=str(self.meta_dir),
+            prefix="translation_state_",
             suffix=".tmp",
         )
         try:
@@ -483,6 +496,11 @@ class AtomicStateCheckpoint:
                 f.flush()
                 os.fsync(f.fileno())
             os.replace(tmp_path, str(self.state_file))
+            if self._legacy_state_file.exists():
+                try:
+                    self._legacy_state_file.unlink()
+                except OSError as _exc:
+                    logger.debug("Could not remove legacy state file: %s", _exc)
         except Exception:
             if os.path.exists(tmp_path):
                 try:
@@ -625,6 +643,38 @@ class MangaPipelineOrchestrator:
 
 gpu_lock = PriorityGPULock()
 
+def _make_empty_live_state() -> dict[str, Any]:
+    return {
+        "run_id": "",
+        "stage": "idle",
+        "stage_label": "",
+        "batch_index": 0,
+        "batches_total": 0,
+        "batch_pages": 0,
+        "batch_blocks": 0,
+        "chunk_index": 0,
+        "chunks_total": 0,
+        "chunk_phrases": 0,
+        "model": "",
+        "batch_limit": 0,
+        "cloud_only": False,
+        "nsfw_mode": False,
+        "pause_after_batch": False,
+        "attempt": 0,
+        "max_attempts": 0,
+        "stream": False,
+        "received_keys": 0,
+        "expected_keys": 0,
+        "received_chars": 0,
+        "ttft_sec": None,
+        "step_started_ts": 0.0,
+        "last_token_ts": 0.0,
+        "step_elapsed_sec": 0.0,
+        "last_token_age_sec": None,
+        "events": [],
+    }
+
+
 folder_job_state: dict[str, Any] = {
     "status": "idle",
     "source_dir": None,
@@ -640,6 +690,7 @@ folder_job_state: dict[str, Any] = {
     "elapsed_sec": 0.0,
     "nsfw_mode": False,
     "error": None,
+    "live": _make_empty_live_state(),
 }
 _folder_task: asyncio.Task[None] | None = None
 _pull_task: asyncio.Task[Any] | None = None
@@ -647,7 +698,71 @@ _folder_start_lock = asyncio.Lock()
 _pull_start_lock = asyncio.Lock()
 _uvicorn_server: Any = None
 _folder_stop_requested: bool = False
+_folder_pause_after_batch: bool = False
+_folder_run_start_ts: float = 0.0
+_folder_state_seq: int = 0
 _AUTO_OPEN_GUI: bool = False
+
+
+def _bump_folder_state_seq() -> None:
+    global _folder_state_seq
+    _folder_state_seq += 1
+
+
+def _push_live_event(text: str, stage: str | None = None, *, ts: float | None = None) -> None:
+    live = folder_job_state.get("live")
+    if not isinstance(live, dict):
+        live = _make_empty_live_state()
+        folder_job_state["live"] = live
+    now_t = float(ts) if ts else time.time()
+    st_val = str(stage or live.get("stage") or "idle")
+    events = live.get("events")
+    if not isinstance(events, list):
+        events = []
+        live["events"] = events
+    events.append(
+        {
+            "ts": round(now_t, 2),
+            "time_str": time.strftime("%H:%M:%S", time.localtime(now_t)),
+            "stage": st_val,
+            "text": str(text)[:180],
+        }
+    )
+    if len(events) > 25:
+        del events[:-25]
+    _bump_folder_state_seq()
+
+
+def _snapshot_folder_job_state() -> dict[str, Any]:
+    snap = dict(folder_job_state)
+    is_active = snap.get("status") in ("running", "stopping")
+    if is_active and _folder_run_start_ts > 0:
+        snap["elapsed_sec"] = round(max(0.0, time.perf_counter() - _folder_run_start_ts), 1)
+    live_raw = snap.get("live")
+    live = dict(live_raw) if isinstance(live_raw, dict) else _make_empty_live_state()
+    live["pause_after_batch"] = bool(_folder_pause_after_batch)
+    if translator_engine is not None:
+        live["cloud_only"] = bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+        live["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
+        snap["nsfw_mode"] = live["nsfw_mode"]
+    now_wall = time.time()
+    step_ts = float(live.get("step_started_ts") or 0.0)
+    live["step_elapsed_sec"] = round(max(0.0, now_wall - step_ts), 1) if (is_active and step_ts > 0) else 0.0
+    tok_ts = float(live.get("last_token_ts") or 0.0)
+    live["last_token_age_sec"] = round(max(0.0, now_wall - tok_ts), 1) if (is_active and tok_ts > 0) else None
+    ev_list = live.get("events")
+    live["events"] = [dict(e) for e in ev_list] if isinstance(ev_list, list) else []
+    snap["live"] = live
+    return snap
+
+
+def _compute_live_batch_limit(active_model: str) -> int:
+    if translator_engine is None:
+        return 12
+    mod = str(active_model or "")
+    if mod.startswith("unsloth::") and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url):
+        return int(translator_engine._get_effective_cloud_batch_limit(mod))
+    return 12
 
 
 def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
@@ -1152,14 +1267,20 @@ async def lifespan(app: FastAPI):
 
     yield
     logger.info("Остановка сервера и очистка ресурсов...")
-    global _folder_task, _pull_task, _folder_stop_requested
+    global _folder_task, _pull_task, _folder_stop_requested, _folder_pause_after_batch
     _folder_stop_requested = True
+    _folder_pause_after_batch = False
+    if translator_engine is not None:
+        translator_engine.request_runtime_control("stop")
+    if folder_job_state.get("status") in ("running", "stopping"):
+        _push_live_event("Сервер останавливается — принудительное прерывание задачи", stage="stopped")
     for bg_task_name, bg_task in (
         ("инициализации движков", _engines_init_task),
         ("пакетного перевода папки", _folder_task),
         ("загрузки модели", _pull_task),
     ):
         if bg_task is not None and not bg_task.done():
+            logger.info("Отмена фоновой задачи %s при завершении сервера...", bg_task_name)
             bg_task.cancel()
             try:
                 await bg_task
@@ -1282,6 +1403,7 @@ def collect_images_in_folder(folder: Path) -> list[Path]:
         and p.suffix.lower() in SUPPORTED_IMAGE_EXTS
         and p.name != "mascot.png"
         and not p.parent.name.endswith(OUTPUT_FOLDER_SUFFIXES)
+        and not any(part.startswith(".") for part in p.relative_to(folder).parts[:-1])
     ]
     images.sort(key=_natural_sort_key)
     return images
@@ -1450,9 +1572,39 @@ def _sanitize_loaded_manifest(data: dict[str, Any]) -> dict[str, Any]:
     return data
 
 
+def _get_meta_dir(output_dir: Path) -> Path:
+    return output_dir / META_DIRNAME
+
+
+def _resolve_manifest_read_path(output_dir: Path) -> Path | None:
+    for cand in (
+        output_dir / META_DIRNAME / META_MANIFEST_FILENAME,
+        output_dir / META_DIRNAME / MANIFEST_FILENAME,
+        output_dir / MANIFEST_FILENAME,
+    ):
+        try:
+            if cand.exists() and cand.is_file():
+                return cand
+        except OSError as _exc:
+            logger.debug("Manifest path probe failed for %s: %s", cand, _exc)
+    return None
+
+
+def _has_folder_manifest(folder_dir: Path) -> bool:
+    return _resolve_manifest_read_path(folder_dir) is not None
+
+
+def _get_manifest_write_path(output_dir: Path) -> Path:
+    return _get_meta_dir(output_dir) / META_MANIFEST_FILENAME
+
+
+def _get_report_path(output_dir: Path) -> Path:
+    return _get_meta_dir(output_dir) / REPORT_FILENAME
+
+
 def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
-    manifest_path = output_dir / MANIFEST_FILENAME
-    if manifest_path.exists():
+    manifest_path = _resolve_manifest_read_path(output_dir)
+    if manifest_path is not None and manifest_path.exists():
         try:
             data = json.loads(manifest_path.read_text(encoding="utf-8"))
             if isinstance(data, dict):
@@ -1481,12 +1633,13 @@ _manifest_write_lock = threading.Lock()
 def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any], sync_disk: bool = True) -> None:
     try:
         with _manifest_write_lock:
-            output_dir.mkdir(parents=True, exist_ok=True)
-            manifest_path = output_dir / MANIFEST_FILENAME
+            meta_dir = _get_meta_dir(output_dir)
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            manifest_path = _get_manifest_write_path(output_dir)
             payload_bytes = json.dumps(manifest, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
             fd, tmp_path = tempfile.mkstemp(
-                dir=str(output_dir),
-                prefix=".translation_state_",
+                dir=str(meta_dir),
+                prefix="translation_state_",
                 suffix=".tmp",
             )
             try:
@@ -1496,6 +1649,12 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any], sync_disk:
                     if sync_disk:
                         os.fsync(f.fileno())
                 os.replace(tmp_path, str(manifest_path))
+                for legacy_p in (output_dir / MANIFEST_FILENAME, meta_dir / MANIFEST_FILENAME):
+                    if legacy_p.exists():
+                        try:
+                            legacy_p.unlink()
+                        except OSError as _exc:
+                            logger.debug("Failed removing legacy manifest %s: %s", legacy_p, _exc)
             except Exception:
                 if os.path.exists(tmp_path):
                     try:
@@ -1504,7 +1663,7 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any], sync_disk:
                         logger.debug("Ignored OSError at server.py:1789: %s", _exc)
                 raise
     except Exception as exc:
-        logger.warning("Не удалось сохранить %s: %s", MANIFEST_FILENAME, exc)
+        logger.warning("Не удалось сохранить %s: %s", META_MANIFEST_FILENAME, exc)
 
 
 CHAPTER_BOOK_MD_FILENAME = "_chapter_book.md"
@@ -1578,6 +1737,7 @@ def _generate_and_save_chapter_book_files(
     manifest: dict[str, Any] | None = None,
     source_dir: Path | None = None,
     target_lang: str | None = None,
+    write_files: bool = True,
 ) -> dict[str, Any]:
     """
     БЛОК 2.2: Автоматически формирует и сохраняет в папку перевода файлы «Книги перевода»:
@@ -1687,20 +1847,24 @@ def _generate_and_save_chapter_book_files(
         "entries": bilingual_entries,
     }
 
-    md_path = output_dir / CHAPTER_BOOK_MD_FILENAME
-    json_path = output_dir / CHAPTER_SCRIPT_JSON_FILENAME
-    txt_path = output_dir / CHAPTER_SCRIPT_TXT_FILENAME
-    try:
-        md_path.write_text(book_md_text, encoding="utf-8")
-        json_path.write_text(json.dumps(bilingual_json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
-        txt_path.write_text(bilingual_txt_text, encoding="utf-8")
-    except Exception as exc:
-        logger.warning("Не удалось сохранить файлы Книги главы в %s: %s", output_dir, exc)
+    meta_dir = _get_meta_dir(output_dir)
+    md_path = meta_dir / CHAPTER_BOOK_MD_FILENAME
+    json_path = meta_dir / CHAPTER_SCRIPT_JSON_FILENAME
+    txt_path = meta_dir / CHAPTER_SCRIPT_TXT_FILENAME
+    if write_files:
+        try:
+            meta_dir.mkdir(parents=True, exist_ok=True)
+            md_path.write_text(book_md_text, encoding="utf-8")
+            json_path.write_text(json.dumps(bilingual_json_payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            txt_path.write_text(bilingual_txt_text, encoding="utf-8")
+        except Exception as exc:
+            logger.warning("Не удалось сохранить файлы Книги главы в %s: %s", meta_dir, exc)
 
     return {
         "book_md_path": str(md_path),
         "script_json_path": str(json_path),
         "script_txt_path": str(txt_path),
+        "files_written": bool(write_files),
         "book_md": book_md_text,
         "bilingual_txt": bilingual_txt_text,
         "bilingual_json": bilingual_json_payload,
@@ -2097,7 +2261,7 @@ def _generate_and_save_folder_report(
         tr_info.get("last_local_fallback_model")
         or (translator_engine.default_model if translator_engine else "shisa-v2.1-14b")
     )
-    report_path = output_dir / REPORT_FILENAME
+    report_path = _get_report_path(output_dir)
 
     eff_free, eff_mode, eff_skip_sighs, eff_skip_sfx, eff_min_len = _resolve_filter_params()
     cur_min_fs = int(translator_engine.min_font_size if translator_engine else 12)
@@ -2456,18 +2620,27 @@ def _generate_and_save_folder_report(
 
     report_text = "\n".join(lines)
     try:
+        report_path.parent.mkdir(parents=True, exist_ok=True)
         report_path.write_text(report_text, encoding="utf-8")
+        legacy_report = output_dir / REPORT_FILENAME
+        if legacy_report.exists():
+            try:
+                legacy_report.unlink()
+            except OSError as _exc:
+                logger.debug("Failed removing legacy report %s: %s", legacy_report, _exc)
     except Exception as exc:
         logger.warning("Не удалось записать диагностический отчет %s: %s", report_path, exc)
-    try:
-        _generate_and_save_chapter_book_files(
-            output_dir=output_dir,
-            manifest=manifest,
-            source_dir=source_dir,
-            target_lang=t_lang,
-        )
-    except Exception as book_exc:
-        logger.warning("Ошибка генерации файлов книги главы: %s", book_exc)
+    if bool(getattr(translator_engine, "auto_export_chapter_book", False)):
+        try:
+            _generate_and_save_chapter_book_files(
+                output_dir=output_dir,
+                manifest=manifest,
+                source_dir=source_dir,
+                target_lang=t_lang,
+                write_files=True,
+            )
+        except Exception as book_exc:
+            logger.warning("Ошибка генерации файлов книги главы: %s", book_exc)
     return report_text
 
 
@@ -2482,14 +2655,11 @@ def is_page_already_translated(
     except OSError:
         return False
 
-    # Если в выходной папке ведется .translation_state.json, но у страницы нет записи blocks
-    # (например, предыдущий рендер упал в except и скопировал оригинал через shutil.copy2),
-    # страница НЕ является переведенной!
+    # Если в выходной папке ведется манифест перевода (.miko/translation_state.json или legacy .translation_state.json),
+    # но у страницы нет записи blocks (например, предыдущий рендер упал в except), страница НЕ является переведенной!
     if not isinstance(page_meta, dict) or ("blocks" not in page_meta and not bool(page_meta.get("manually_edited"))):
         try:
-            state_f1 = dest_path.parent / ".translation_state.json"
-            state_f2 = dest_path.parent.parent / ".translation_state.json"
-            if state_f1.exists() or state_f2.exists():
+            if _has_folder_manifest(dest_path.parent) or _has_folder_manifest(dest_path.parent.parent):
                 return False
         except OSError as _exc:
             logger.debug("Ignored OSError at server.py:2780: %s", _exc)
@@ -3027,15 +3197,19 @@ async def _run_folder_translation_job(
     pipeline_mode: str | None = None,
     use_image_context: bool | None = None,
 ) -> None:
-    global _folder_stop_requested
+    global _folder_stop_requested, _folder_pause_after_batch, _folder_run_start_ts
     assert ocr_engine is not None
     assert translator_engine is not None
     assert cleaner_engine is not None
     assert renderer_engine is not None
 
     _folder_stop_requested = False
+    _folder_pause_after_batch = False
     translator_engine.stop_requested = False
+    translator_engine.reset_runtime_controls()
     start_ts = time.perf_counter()
+    _folder_run_start_ts = start_ts
+    run_id = uuid.uuid4().hex[:8]
     eff_pmode = normalize_pipeline_mode(
         pipeline_mode
         if (pipeline_mode and pipeline_mode.strip())
@@ -3129,6 +3303,18 @@ async def _run_folder_translation_job(
         else:
             to_process.append((idx, img_path, dest_path, rel_norm))
 
+    live_init = _make_empty_live_state()
+    live_init.update(
+        {
+            "run_id": run_id,
+            "stage": "preparing",
+            "stage_label": "Подготовка папок и проверка кэша...",
+            "model": str(ollama_model or translator_engine.selected_model or "auto"),
+            "cloud_only": bool(getattr(translator_engine, "cloud_only_no_local_fallback", False)),
+            "nsfw_mode": bool(getattr(translator_engine, "nsfw_mode", False)),
+            "step_started_ts": time.time(),
+        }
+    )
     folder_job_state.update(
         {
             "status": "running",
@@ -3145,14 +3331,122 @@ async def _run_folder_translation_job(
             ),
             "elapsed_sec": 0.0,
             "error": None,
+            "live": live_init,
         }
+    )
+    _push_live_event(
+        f"[RUN {run_id}] Старт: к переводу {len(to_process)}/{len(image_paths)} стр. (профиль={active_profile_id}, режим={eff_pmode})",
+        stage="preparing",
     )
 
     if not to_process:
         folder_job_state["status"] = "completed"
         folder_job_state["current"] = len(image_paths)
         folder_job_state["current_file"] = f"Все страницы ({len(image_paths)}) уже переведены!"
+        folder_job_state["live"]["stage"] = "done"
+        folder_job_state["live"]["stage_label"] = "Все страницы уже переведены"
+        _push_live_event(f"[RUN {run_id}] Все страницы ({len(image_paths)}) уже готовы.", stage="done")
         return
+
+    def _on_translator_live_progress(ev: dict[str, Any]) -> None:
+        live = folder_job_state.get("live")
+        if not isinstance(live, dict):
+            return
+        ev_type = str(ev.get("event") or "")
+        ev_ts = float(ev.get("ts") or time.time())
+        if ev.get("model"):
+            live["model"] = str(ev["model"])
+        if ev.get("batch_limit"):
+            live["batch_limit"] = int(ev["batch_limit"])
+        live["cloud_only"] = bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+        live["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
+        folder_job_state["nsfw_mode"] = live["nsfw_mode"]
+
+        if ev_type == "chunk_start":
+            ch_i = int(ev.get("chunk_index") or 0)
+            ch_tot = int(ev.get("chunks_total") or 0)
+            ch_phr = int(ev.get("chunk_phrases") or 0)
+            live["stage"] = "llm"
+            live["chunk_index"] = ch_i
+            live["chunks_total"] = ch_tot
+            live["chunk_phrases"] = ch_phr
+            live["expected_keys"] = ch_phr
+            live["received_keys"] = 0
+            live["received_chars"] = 0
+            live["ttft_sec"] = None
+            live["last_token_ts"] = 0.0
+            live["step_started_ts"] = ev_ts
+            b_idx = int(live.get("batch_index") or 0)
+            b_tot = int(live.get("batches_total") or 0)
+            live["stage_label"] = (
+                f"Пачка {b_idx}/{b_tot} · Чанк {ch_i}/{ch_tot} ({ch_phr} фраз) · {live['model']}"
+                if ch_tot > 0
+                else f"Пачка {b_idx}/{b_tot} · Перевод ({ch_phr} фраз)"
+            )
+            _push_live_event(f"Чанк {ch_i}/{ch_tot} ({ch_phr} фраз) -> {live['model']}", stage="llm", ts=ev_ts)
+        elif ev_type == "llm_request_start":
+            st_n = str(ev.get("stage") or "llm")
+            live["stage"] = st_n
+            live["attempt"] = int(ev.get("attempt") or 1)
+            live["max_attempts"] = int(ev.get("max_attempts") or 1)
+            live["stream"] = bool(ev.get("stream", False))
+            live["expected_keys"] = int(ev.get("expected_keys") or 0)
+            live["received_keys"] = 0
+            live["received_chars"] = 0
+            live["ttft_sec"] = None
+            live["last_token_ts"] = 0.0
+            live["step_started_ts"] = ev_ts
+            _bump_folder_state_seq()
+        elif ev_type == "stream_progress":
+            live["received_keys"] = int(ev.get("received_keys") or 0)
+            if int(ev.get("expected_keys") or 0) > 0:
+                live["expected_keys"] = int(ev["expected_keys"])
+            live["received_chars"] = int(ev.get("received_chars") or 0)
+            if ev.get("ttft_sec") is not None:
+                live["ttft_sec"] = float(ev["ttft_sec"])
+            live["last_token_ts"] = float(ev.get("last_token_ts") or ev_ts)
+            _bump_folder_state_seq()
+        elif ev_type == "llm_request_end":
+            st_n = str(ev.get("stage") or live.get("stage") or "llm")
+            st_status = str(ev.get("status") or "OK")
+            p_keys = int(ev.get("parsed_keys") or 0)
+            e_keys = int(ev.get("expected_keys") or 0)
+            el_s = ev.get("elapsed_sec")
+            ttft_s = ev.get("ttft_sec")
+            live["last_token_ts"] = 0.0
+            ttft_txt = f", TTFT {ttft_s:.1f}с" if isinstance(ttft_s, (int, float)) else ""
+            err_t = f" ({ev.get('error')})" if ev.get("error") else ""
+            _push_live_event(
+                f"{st_status} [{st_n}] {p_keys}/{e_keys} фраз за {el_s}с{ttft_txt}{err_t}",
+                stage=st_n,
+                ts=ev_ts,
+            )
+        elif ev_type == "model_switched":
+            rem_p = int(ev.get("remaining_phrases") or 0)
+            ch_tot = int(ev.get("chunks_total") or live.get("chunks_total") or 0)
+            live["chunks_total"] = ch_tot
+            _push_live_event(
+                f"Модель переключена -> {live['model']} (лимит={live.get('batch_limit')}, осталось {rem_p} фраз)",
+                stage="llm",
+                ts=ev_ts,
+            )
+        elif ev_type == "stage_change":
+            st_n = str(ev.get("stage") or live.get("stage") or "llm")
+            live["stage"] = st_n
+            live["step_started_ts"] = ev_ts
+            live["last_token_ts"] = 0.0
+            if ev.get("stage_label"):
+                live["stage_label"] = str(ev["stage_label"])
+            _push_live_event(str(ev.get("stage_label") or st_n), stage=st_n, ts=ev_ts)
+        elif ev_type == "chunk_done":
+            ch_i = int(ev.get("chunk_index") or 0)
+            ch_tot = int(ev.get("chunks_total") or 0)
+            tr_c = int(ev.get("translated_in_chunk") or 0)
+            live["received_keys"] = tr_c
+            live["last_token_ts"] = 0.0
+            _push_live_event(f"Чанк {ch_i}/{ch_tot} готов ({tr_c} фраз)", stage="llm", ts=ev_ts)
+
+    translator_engine.live_progress_cb = _on_translator_live_progress
 
     try:
         done_in_run = 0
@@ -3189,22 +3483,65 @@ async def _run_folder_translation_job(
             tail_merge_pages=tail_merge_pages,
         )
         logger.info(
-            "🚀 Пакетный перевод папки [профиль=%s (%s)]: всего к переводу %d стр. -> %d пачек (%s)",
+            "🟢 [RUN %s] Старт пакетного перевода папки '%s' -> '%s' [профиль=%s (%s), режим=%s, модель=%s, cloud_only=%s]: всего %d стр. -> %d пачек (%s)",
+            run_id,
+            source_dir,
+            output_dir,
             active_profile_id,
             prof_cfg.get("title", active_profile_id),
+            eff_pmode,
+            active_mod,
+            bool(getattr(translator_engine, "cloud_only_no_local_fallback", False)),
             len(to_process),
             len(smart_batches),
             ", ".join(f"{len(b)} стр." for b in smart_batches),
         )
 
         for _batch_num, page_batch in enumerate(smart_batches, start=1):
+            if getattr(translator_engine, "_runtime_model_override", None):
+                active_mod = await translator_engine.resolve_model(
+                    translator_engine._runtime_model_override,
+                    source_lang=chapter_detected_lang or "ja",
+                    target_lang=target_lang,
+                    profile=active_profile_id,
+                )
             if _folder_stop_requested:
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                if phrase_cache:
+                    manifest["phrase_cache"] = phrase_cache
                 _save_folder_manifest(output_dir, manifest)
+                folder_job_state["live"]["stage"] = "stopped"
+                folder_job_state["live"]["stage_label"] = folder_job_state["current_file"]
+                _push_live_event(f"[RUN {run_id}] Пауза перед пачкой #{_batch_num}", stage="stopped")
                 return
 
             _batch_t0 = time.perf_counter()
+            live_b = folder_job_state.get("live")
+            if isinstance(live_b, dict):
+                eff_lim_b = _compute_live_batch_limit(active_mod)
+                live_b.update(
+                    {
+                        "batch_index": _batch_num,
+                        "batches_total": len(smart_batches),
+                        "batch_pages": len(page_batch),
+                        "batch_blocks": 0,
+                        "chunk_index": 0,
+                        "chunks_total": 0,
+                        "chunk_phrases": 0,
+                        "model": active_mod,
+                        "batch_limit": eff_lim_b,
+                        "stage": "ocr",
+                        "stage_label": f"Пачка {_batch_num}/{len(smart_batches)}: OCR ({len(page_batch)} стр.)",
+                        "received_keys": 0,
+                        "expected_keys": 0,
+                        "received_chars": 0,
+                        "ttft_sec": None,
+                        "step_started_ts": time.time(),
+                        "last_token_ts": 0.0,
+                    }
+                )
+                _push_live_event(f"Пачка {_batch_num}/{len(smart_batches)}: OCR {len(page_batch)} стр.", stage="ocr")
             scanned_pages: list[dict[str, Any]] = []
             combined_blocks: list[dict[str, Any]] = []
             batch_detected_lang = chapter_detected_lang or "ja"
@@ -3233,6 +3570,11 @@ async def _run_folder_translation_job(
                         else rel_norm
                     )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
+                if isinstance(folder_job_state.get("live"), dict):
+                    folder_job_state["live"]["stage_label"] = (
+                        f"Пачка {_batch_num}/{len(smart_batches)}: OCR {p_idx}/{len(page_batch)} ({rel_norm})"
+                    )
+                    _bump_folder_state_seq()
 
                 try:
                     if isinstance(pre_pil, Exception):
@@ -3395,7 +3737,26 @@ async def _run_folder_translation_job(
                 )
                 if loc_nsfw_mod:
                     active_mod = loc_nsfw_mod
+            if getattr(translator_engine, "_runtime_model_override", None):
+                active_mod = await translator_engine.resolve_model(
+                    translator_engine._runtime_model_override,
+                    source_lang=batch_detected_lang,
+                    target_lang=target_lang,
+                    profile=active_profile_id,
+                )
             folder_job_state["nsfw_mode"] = bool(getattr(translator_engine, "nsfw_mode", False))
+            if isinstance(folder_job_state.get("live"), dict):
+                eff_lim_llm = _compute_live_batch_limit(active_mod)
+                folder_job_state["live"].update(
+                    {
+                        "batch_blocks": len(combined_blocks),
+                        "model": active_mod,
+                        "batch_limit": eff_lim_llm,
+                        "cloud_only": bool(getattr(translator_engine, "cloud_only_no_local_fallback", False)),
+                        "nsfw_mode": bool(getattr(translator_engine, "nsfw_mode", False)),
+                    }
+                )
+                _bump_folder_state_seq()
 
             # Шаг 2: ИИ-перевод пачки (в профиле eco_book — единым сценарием книги P01_01..P25_09 за 1 запрос!)
             _llm_t0 = time.perf_counter()
@@ -3413,6 +3774,12 @@ async def _run_folder_translation_job(
                     else f"☁️ [2/3 ИИ-перевод пачки #{_batch_num}: {len(scanned_pages)} стр. / {len(combined_blocks)} фраз]..."
                 )
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
+                if isinstance(folder_job_state.get("live"), dict):
+                    folder_job_state["live"]["stage"] = "llm"
+                    folder_job_state["live"]["stage_label"] = (
+                        f"Пачка {_batch_num}/{len(smart_batches)}: подготовка ИИ ({len(combined_blocks)} фраз)"
+                    )
+                    _bump_folder_state_seq()
                 # Пока идет ожидание ответа от облачного ИИ (50+ сек простоя GPU), параллельно в фоне
                 # подготавливаем очищенные слои SimpleLama в CleanCache ТОЛЬКО если не включен локальный nsfw_mode!
                 _preclean_stop_flag = False
@@ -3476,6 +3843,7 @@ async def _run_folder_translation_job(
                         translator_engine.phrase_cache.update(phrase_cache)
                     if (
                         eff_pmode == "ultra"
+                        and str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() != "pass0"
                         and (_batch_num == 1 or (_batch_num <= 2 and len(folder_glossary_entries) < 4))
                         and int(getattr(translator_engine, "_consecutive_cloud_failures", 0) or 0) < 2
                         and len(combined_blocks) >= 4
@@ -3490,11 +3858,17 @@ async def _run_folder_translation_job(
                             model=active_mod,
                             existing_glossary=folder_glossary_entries,
                         )
+                        if str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "pass0":
+                            translator_engine._skip_current_stage = ""
                         if extracted_gloss:
                             folder_glossary_entries = merge_glossaries(extracted_gloss, folder_glossary_entries)
                             manifest["glossary"] = folder_glossary_entries
+                    elif str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "pass0":
+                        translator_engine._skip_current_stage = ""
                     valid_sp_list = [sp for sp in scanned_pages if sp.get("ok") and (sp.get("pil_img") is not None or sp.get("pil") is not None)]
                     first_valid_pil = (valid_sp_list[0].get("pil_img") or valid_sp_list[0].get("pil")) if len(valid_sp_list) == 1 else None
+                    if getattr(translator_engine, "_runtime_model_override", None):
+                        active_mod = str(translator_engine._runtime_model_override)
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -3509,7 +3883,12 @@ async def _run_folder_translation_job(
                         page_image=first_valid_pil,
                         use_image_context=eff_img_ctx,
                         pipeline_mode=eff_pmode,
+                        batch_label=f"Пачка #{_batch_num}/{len(smart_batches)}",
                     )
+                    if str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "micro_retry":
+                        translator_engine._skip_current_stage = ""
+                    if getattr(translator_engine, "_runtime_model_override", None):
+                        active_mod = str(translator_engine._runtime_model_override)
                     for eb in enriched_combined:
                         gid_eb = str(eb["id"])
                         translated_by_gid[gid_eb] = str(eb.get("translated_text") or "").strip()
@@ -3547,6 +3926,7 @@ async def _run_folder_translation_job(
                     if (
                         eff_pmode == "ultra"
                         and proof_mode != "off"
+                        and str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() != "proofread"
                         and _batch_had_cloud_issues
                         and not _folder_stop_requested
                         and target_lang.lower().strip() in ("en", "ru")
@@ -3559,6 +3939,7 @@ async def _run_folder_translation_job(
                     elif (
                         eff_pmode == "ultra"
                         and proof_mode != "off"
+                        and str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() != "proofread"
                         and not _folder_stop_requested
                         and target_lang.lower().strip() in ("en", "ru")
                         and not is_mt_only_local_model(eff_proof_mod)
@@ -3614,6 +3995,20 @@ async def _run_folder_translation_job(
                                     book_for_proof[gid_p] = {"orig": orig_p, "trans": tr_p}
                         if len(book_for_proof) >= 3:
                             folder_job_state["current_file"] = f"💎 [Ультра Проход 2/2: Литературная вычитка ({proof_mode}, {len(book_for_proof)} реплик)]..."
+                            if isinstance(folder_job_state.get("live"), dict):
+                                folder_job_state["live"].update(
+                                    {
+                                        "stage": "proofread",
+                                        "stage_label": f"Пачка {_batch_num}/{len(smart_batches)}: вычитка ({len(book_for_proof)} фраз)",
+                                        "model": eff_proof_mod,
+                                        "expected_keys": len(book_for_proof),
+                                        "received_keys": 0,
+                                        "ttft_sec": None,
+                                        "step_started_ts": time.time(),
+                                        "last_token_ts": 0.0,
+                                    }
+                                )
+                                _push_live_event(f"Pass 2 вычитка ({len(book_for_proof)} фраз, {eff_proof_mod})", stage="proofread")
                             proof_keys = list(book_for_proof.keys())
                             proof_sub_books = [
                                 {k: book_for_proof[k] for k in proof_keys[p_start : p_start + proof_chunk_size]}
@@ -3668,6 +4063,11 @@ async def _run_folder_translation_job(
                                         if orig_for_pk:
                                             phrase_cache[f"{t_lang_norm}||{orig_for_pk}"] = clean_pv
                                             translator_engine.phrase_cache[f"{t_lang_norm}||{orig_for_pk}"] = clean_pv
+                            if str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "proofread":
+                                translator_engine._skip_current_stage = ""
+                    elif str(getattr(translator_engine, "_skip_current_stage", "") or "").lower() == "proofread":
+                        translator_engine._skip_current_stage = ""
+                        logger.info("⏭ [2-Pass Proofread] Пропущен пользователем на пачке #%d.", _batch_num)
                 except Exception as llm_exc:
                     logger.exception("Ошибка пакетного ИИ-перевода пачки страниц: %s", llm_exc)
                 finally:
@@ -3679,8 +4079,16 @@ async def _run_folder_translation_job(
                             logger.debug("Ignored Exception at server.py:3948: %s", _exc)
 
             if _folder_stop_requested:
+                if translator_engine.phrase_cache:
+                    phrase_cache.update(translator_engine.phrase_cache)
+                manifest["rolling_context"] = rolling_context
+                manifest["phrase_cache"] = phrase_cache
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                folder_job_state["live"]["stage"] = "stopped"
+                folder_job_state["live"]["stage_label"] = folder_job_state["current_file"]
+                folder_job_state["live"]["last_token_ts"] = 0.0
+                _push_live_event(f"[RUN {run_id}] Остановлено пользователем — кэш ({len(phrase_cache)} фраз) сохранён", stage="stopped")
                 _save_folder_manifest(output_dir, manifest)
                 _generate_and_save_folder_report(
                     output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label="⏸ Остановлено на паузе"
@@ -3722,6 +4130,19 @@ async def _run_folder_translation_job(
 
             # Шаг 3: Быстрая параллельная очистка бабблов, верстка и сохранение всех страниц пачки!
             _render_t0 = time.perf_counter()
+            if isinstance(folder_job_state.get("live"), dict):
+                folder_job_state["live"].update(
+                    {
+                        "stage": "render",
+                        "stage_label": f"Пачка {_batch_num}/{len(smart_batches)}: очистка и вёрстка {len(page_batch)} стр.",
+                        "received_keys": 0,
+                        "expected_keys": len(page_batch),
+                        "ttft_sec": None,
+                        "step_started_ts": time.time(),
+                        "last_token_ts": 0.0,
+                    }
+                )
+                _push_live_event(f"Пачка {_batch_num}/{len(smart_batches)}: вёрстка {len(page_batch)} стр.", stage="render")
             for sp in scanned_pages:
                 if not sp.get("ok"):
                     continue
@@ -3899,6 +4320,13 @@ async def _run_folder_translation_job(
                 folder_job_state["translated_in_run"] = done_in_run
                 folder_job_state["current"] = skipped_count + done_in_run
                 folder_job_state["elapsed_sec"] = round(time.perf_counter() - start_ts, 1)
+                if isinstance(folder_job_state.get("live"), dict):
+                    done_ren = int(folder_job_state["live"].get("received_keys") or 0) + 1
+                    folder_job_state["live"]["received_keys"] = done_ren
+                    folder_job_state["live"]["stage_label"] = (
+                        f"Пачка {_batch_num}/{len(smart_batches)}: вёрстка {done_ren}/{len(page_batch)} стр."
+                    )
+                    _bump_folder_state_seq()
 
             await asyncio.gather(*(_render_page_task(sp) for sp in scanned_pages))
 
@@ -3993,9 +4421,19 @@ async def _run_folder_translation_job(
             manifest["phrase_cache"] = phrase_cache
             _save_folder_manifest(output_dir, manifest)
 
-            if _folder_stop_requested:
+            if _folder_stop_requested or _folder_pause_after_batch:
+                pause_reason = "после завершённой пачки" if _folder_pause_after_batch and not _folder_stop_requested else "по запросу"
+                _folder_stop_requested = True
+                _folder_pause_after_batch = False
                 folder_job_state["status"] = "stopped"
                 folder_job_state["current_file"] = f"Пауза ({folder_job_state['current']}/{len(image_paths)} готово)"
+                if isinstance(folder_job_state.get("live"), dict):
+                    folder_job_state["live"]["stage"] = "stopped"
+                    folder_job_state["live"]["stage_label"] = folder_job_state["current_file"]
+                    folder_job_state["live"]["pause_after_batch"] = False
+                    folder_job_state["live"]["last_token_ts"] = 0.0
+                _push_live_event(f"[RUN {run_id}] Пауза {pause_reason} ({folder_job_state['current']}/{len(image_paths)} стр.)", stage="stopped")
+                logger.info("⏸ [RUN %s] Пауза %s (%d/%d стр. готово)", run_id, pause_reason, folder_job_state["current"], len(image_paths))
                 _generate_and_save_folder_report(
                     output_dir,
                     manifest,
@@ -4009,6 +4447,17 @@ async def _run_folder_translation_job(
         folder_job_state["status"] = "completed"
         folder_job_state["elapsed_sec"] = total_elapsed
         folder_job_state["current_file"] = "Готово!"
+        if isinstance(folder_job_state.get("live"), dict):
+            folder_job_state["live"].update(
+                {
+                    "stage": "done",
+                    "stage_label": f"Готово за {total_elapsed:.1f}с ({done_in_run} стр.)",
+                    "pause_after_batch": False,
+                    "last_token_ts": 0.0,
+                }
+            )
+        _push_live_event(f"[RUN {run_id}] Завершено успешно за {total_elapsed:.1f}с ({done_in_run} стр.)", stage="done")
+        logger.info("🏁 [RUN %s] Завершено (completed) за %.2fс: %d/%d стр. переведено (пропущено=%d)", run_id, total_elapsed, done_in_run, len(image_paths), skipped_count)
 
         refusals_in_run = max(
             0, int(translator_engine.diagnostics_stats.get("refusals_count") or 0) - refusals_before_run
@@ -4056,19 +4505,36 @@ async def _run_folder_translation_job(
                 logger.debug("Ignored Exception at server.py:4322: %s", _exc)
 
     except asyncio.CancelledError:
+        if translator_engine.phrase_cache:
+            phrase_cache.update(translator_engine.phrase_cache)
+            manifest["phrase_cache"] = phrase_cache
         folder_job_state["status"] = "stopped"
         folder_job_state["current_file"] = "Пауза"
+        if isinstance(folder_job_state.get("live"), dict):
+            folder_job_state["live"]["stage"] = "stopped"
+            folder_job_state["live"]["stage_label"] = "Задача остановлена"
+            folder_job_state["live"]["last_token_ts"] = 0.0
+        _push_live_event(f"[RUN {run_id}] Задача отменена (кэш={len(phrase_cache)} фраз)", stage="stopped")
+        logger.info("⏸ [RUN %s] Завершено (CancelledError)", run_id)
         _save_folder_manifest(output_dir, manifest)
         _generate_and_save_folder_report(
             output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label="⏸ Остановлено пользователем"
         )
     except Exception as exc:
-        logger.exception("Критическая ошибка пакетного перевода папки")
+        logger.exception("❌ [RUN %s] Критическая ошибка пакетного перевода папки", run_id)
         folder_job_state["status"] = "error"
         folder_job_state["error"] = str(exc)
+        if isinstance(folder_job_state.get("live"), dict):
+            folder_job_state["live"]["stage"] = "error"
+            folder_job_state["live"]["stage_label"] = f"Ошибка: {exc}"
+            folder_job_state["live"]["last_token_ts"] = 0.0
+        _push_live_event(f"[RUN {run_id}] Критическая ошибка: {exc}", stage="error")
         _generate_and_save_folder_report(
             output_dir, manifest, source_dir=source_dir, target_lang=target_lang, run_status_label=f"❌ Ошибка: {exc}"
         )
+    finally:
+        if translator_engine is not None and translator_engine.live_progress_cb is _on_translator_live_progress:
+            translator_engine.live_progress_cb = None
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -4149,6 +4615,7 @@ async def health_check() -> dict[str, Any]:
         "unsloth_status": translator_engine.last_unsloth_status if translator_engine else {},
         "has_unsloth_key": bool(translator_engine and translator_engine.unsloth_api_key),
         "auto_save_web_pages": translator_engine.auto_save_web_pages if translator_engine else True,
+        "auto_export_chapter_book": bool(getattr(translator_engine, "auto_export_chapter_book", False)) if translator_engine else False,
         "web_save_dir": translator_engine.web_save_dir if translator_engine else str(BASE_DIR / "Saved_Manga"),
         "text_filter_mode": translator_engine.text_filter_mode if translator_engine else "dialogue_only",
         "skip_sighs": translator_engine.skip_sighs if translator_engine else True,
@@ -4488,6 +4955,7 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
             use_image_context=payload.use_image_context,
             local_fallback_model_multilang=payload.local_fallback_model_multilang,
             auto_save_web_pages=payload.auto_save_web_pages,
+            auto_export_chapter_book=payload.auto_export_chapter_book,
             web_save_dir=payload.web_save_dir,
             text_filter_mode=payload.text_filter_mode,
             skip_sighs=payload.skip_sighs,
@@ -4544,6 +5012,7 @@ async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, 
         "unsloth_status": translator_engine.last_unsloth_status,
         "has_unsloth_key": bool(saved["unsloth_api_key"]),
         "auto_save_web_pages": saved["auto_save_web_pages"],
+        "auto_export_chapter_book": bool(saved.get("auto_export_chapter_book", False)),
         "web_save_dir": saved["web_save_dir"],
         "text_filter_mode": saved["text_filter_mode"],
         "skip_sighs": saved["skip_sighs"],
@@ -6359,22 +6828,152 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
 
 @app.post("/folder_stop")
 async def stop_folder_translation_endpoint() -> dict[str, Any]:
-    global _folder_stop_requested
-    if folder_job_state.get("status") != "running":
+    global _folder_stop_requested, _folder_pause_after_batch
+    if folder_job_state.get("status") not in ("running", "stopping"):
         return {"status": "idle", "message": "Пакетный перевод сейчас не выполняется."}
     _folder_stop_requested = True
+    _folder_pause_after_batch = False
     if translator_engine is not None:
-        translator_engine.stop_requested = True
+        translator_engine.request_runtime_control("stop")
     if ocr_engine is not None:
         ocr_engine.stop_requested = True
     folder_job_state["status"] = "stopping"
-    folder_job_state["current_file"] = "Пауза после текущей страницы..."
-    return {"status": "stopping", "message": "Запрос на остановку отправлен. Прогресс сохранен."}
+    folder_job_state["current_file"] = "Остановка и сохранение прогресса..."
+    _push_live_event("Команда: пауза и сохранение переведённых фраз", stage=str((folder_job_state.get("live") or {}).get("stage") or "stopping"))
+    logger.info("🎛 [CONTROL] Остановка пакетного перевода по кнопке паузы.")
+    return {"status": "stopping", "message": "Запрос на остановку отправлен. Прогресс и кэш сохранены."}
+
+
+@app.post("/folder_control")
+async def control_folder_translation_endpoint(req: FolderControlRequest) -> dict[str, Any]:
+    global _folder_stop_requested, _folder_pause_after_batch
+    action = str(req.action or "").strip().lower()
+    is_running = folder_job_state.get("status") in ("running", "stopping")
+
+    if action == "toggle_cloud_only":
+        if translator_engine is None:
+            raise HTTPException(status_code=503, detail="Движок перевода не инициализирован.")
+        new_val = (
+            bool(req.cloud_only)
+            if req.cloud_only is not None
+            else not bool(getattr(translator_engine, "cloud_only_no_local_fallback", False))
+        )
+        translator_engine.cloud_only_no_local_fallback = new_val
+        if isinstance(folder_job_state.get("live"), dict):
+            folder_job_state["live"]["cloud_only"] = new_val
+        _push_live_event(f"Только облако -> {'ВКЛ' if new_val else 'ВЫКЛ'}")
+        logger.info("🎛 [CONTROL] toggle_cloud_only -> %s", new_val)
+        return {"status": "ok", "action": action, "cloud_only": new_val}
+
+    if not is_running:
+        return {"status": "idle", "action": action, "message": "Сейчас нет активного пакетного перевода."}
+
+    if translator_engine is None:
+        raise HTTPException(status_code=503, detail="Движок перевода не инициализирован.")
+
+    live = folder_job_state.get("live") if isinstance(folder_job_state.get("live"), dict) else {}
+
+    if action == "abort_request":
+        ctrl_res = translator_engine.request_runtime_control("abort_request")
+        _push_live_event(f"Команда: прервать зависший запрос (отменено задач: {ctrl_res['cancelled_tasks']})")
+        logger.info("🎛 [CONTROL] abort_request -> %s", ctrl_res)
+        return {"status": "ok", "action": action, **ctrl_res, "message": "Текущий запрос прерван, готовые SSE-реплики сохранены."}
+
+    if action == "switch_model":
+        new_model = (req.model or "").strip()
+        if not new_model:
+            raise HTTPException(status_code=400, detail="Не указана новая модель для переключения.")
+        ctrl_res = translator_engine.request_runtime_control("switch_model", new_model=new_model)
+        eff_lim = _compute_live_batch_limit(new_model)
+        if isinstance(live, dict):
+            live["model"] = new_model
+            live["batch_limit"] = eff_lim
+        _push_live_event(f"Команда: смена модели -> {new_model} (отменено задач: {ctrl_res['cancelled_tasks']})")
+        logger.info("🎛 [CONTROL] switch_model -> %s (%s)", new_model, ctrl_res)
+        return {
+            "status": "ok",
+            "action": action,
+            "model": new_model,
+            "batch_limit": eff_lim,
+            **ctrl_res,
+            "message": f"Модель переключена на {new_model} — продолжение с сохранённого места!",
+        }
+
+    if action == "skip_stage":
+        target_st = (req.stage or str(live.get("stage") or "")).strip().lower()
+        if target_st not in ("pass0", "proofread", "micro_retry"):
+            target_st = "micro_retry" if "доперевод" in str(live.get("stage_label") or "").lower() else target_st
+        ctrl_res = translator_engine.request_runtime_control("skip_stage", stage=target_st)
+        _push_live_event(f"Команда: пропустить этап '{target_st}'")
+        logger.info("🎛 [CONTROL] skip_stage -> %s (%s)", target_st, ctrl_res)
+        return {"status": "ok", "action": action, **ctrl_res, "message": f"Этап '{target_st}' пропускается."}
+
+    if action == "pause_after_batch":
+        _folder_pause_after_batch = not _folder_pause_after_batch
+        if isinstance(live, dict):
+            live["pause_after_batch"] = _folder_pause_after_batch
+        _push_live_event("Команда: пауза после текущей пачки " + ("ВКЛ" if _folder_pause_after_batch else "ОТМЕНЕНА"))
+        logger.info("🎛 [CONTROL] pause_after_batch -> %s", _folder_pause_after_batch)
+        return {
+            "status": "ok",
+            "action": action,
+            "pause_after_batch": _folder_pause_after_batch,
+            "message": "Остановится после текущей пачки." if _folder_pause_after_batch else "Пауза после пачки отменена.",
+        }
+
+    if action == "stop_now":
+        _folder_stop_requested = True
+        _folder_pause_after_batch = False
+        ctrl_res = translator_engine.request_runtime_control("stop")
+        if ocr_engine is not None:
+            ocr_engine.stop_requested = True
+        folder_job_state["status"] = "stopping"
+        folder_job_state["current_file"] = "Немедленная остановка..."
+        _push_live_event("Команда: немедленная остановка с сохранением кэша", stage="stopped")
+        logger.info("🎛 [CONTROL] stop_now -> %s", ctrl_res)
+        return {"status": "stopping", "action": action, **ctrl_res, "message": "Немедленная остановка запущена."}
+
+    raise HTTPException(status_code=400, detail=f"Неизвестное действие: {action}")
 
 
 @app.get("/folder_status")
 async def get_folder_status() -> dict[str, Any]:
-    return folder_job_state
+    return _snapshot_folder_job_state()
+
+
+@app.get("/folder_stream")
+async def stream_folder_status(request: Request) -> StreamingResponse:
+    async def _event_gen():
+        last_seq = -1
+        last_sent_mono = 0.0
+        try:
+            while True:
+                if await request.is_disconnected():
+                    break
+                cur_seq = _folder_state_seq
+                snap = _snapshot_folder_job_state()
+                is_active = snap.get("status") in ("running", "stopping")
+                now_m = time.monotonic()
+                heartbeat_interval = 0.8 if is_active else 5.0
+                if cur_seq != last_seq or (now_m - last_sent_mono) >= heartbeat_interval:
+                    payload_json = json.dumps(snap, ensure_ascii=False)
+                    yield f"event: status\ndata: {payload_json}\n\n"
+                    last_seq = cur_seq
+                    last_sent_mono = now_m
+                await asyncio.sleep(0.25)
+        except asyncio.CancelledError:
+            logger.debug("SSE client /folder_stream cancelled")
+            return
+
+    return StreamingResponse(
+        _event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 def _build_diagnostics_payload() -> dict[str, Any]:
@@ -6915,7 +7514,7 @@ async def get_folder_report_endpoint(
         src_dir,
         t_lang,
     )
-    report_file = out_dir / REPORT_FILENAME
+    report_file = _get_report_path(out_dir)
     return {
         "status": "ok",
         "source_dir": str(src_dir),
@@ -7099,9 +7698,10 @@ def _parse_imported_book_text(raw_text: str) -> dict[str, str]:
 async def get_chapter_book_endpoint(
     folder_path: str | None = Query(default=None),
     target_lang: str = Query(default="en"),
+    save_files: bool = Query(default=False),
 ) -> dict[str, Any]:
     """
-    БЛОК 2.2 / 2.3: Генерирует (или обновляет) и возвращает файлы «Книги перевода» главы:
+    БЛОК 2.2 / 2.3: Формирует (и при необходимости сохраняет в `.miko/`) файлы «Книги перевода» главы:
     `_chapter_book.md` и `_chapter_script_bilingual.json` / `.txt`.
     """
     t_lang = (target_lang or "en").strip().lower()
@@ -7120,12 +7720,16 @@ async def get_chapter_book_endpoint(
     src_dir = _unwrap_output_folder_if_needed(cand_dir)
     out_dir = get_output_dir_for_folder(src_dir, t_lang)
     manifest = _load_folder_manifest(out_dir)
+    should_write = bool(
+        save_files or (translator_engine is not None and getattr(translator_engine, "auto_export_chapter_book", False))
+    )
     book_data = await asyncio.to_thread(
         _generate_and_save_chapter_book_files,
         out_dir,
         manifest,
         src_dir,
         t_lang,
+        should_write,
     )
     return {
         "status": "ok",
@@ -7238,6 +7842,7 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
         manifest,
         source_dir,
         t_lang,
+        bool(translator_engine is not None and getattr(translator_engine, "auto_export_chapter_book", False)),
     )
     elapsed = round(time.perf_counter() - start_ts, 3)
     return {
@@ -7366,6 +7971,7 @@ async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) 
         manifest,
         source_dir,
         t_lang,
+        bool(translator_engine is not None and getattr(translator_engine, "auto_export_chapter_book", False)),
     )
     elapsed = round(time.perf_counter() - start_ts, 2)
     return {

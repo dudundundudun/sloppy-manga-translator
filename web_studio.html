@@ -471,6 +471,218 @@
       transition: width 0.3s ease;
     }
 
+    @keyframes lmPulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.45; transform: scale(0.82); }
+    }
+
+    .live-monitor-card {
+      margin: 6px 12px 8px 12px;
+      padding: 10px;
+      border-radius: 10px;
+      background: rgba(15, 23, 42, 0.72);
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      font-size: 11.5px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+    }
+
+    .live-monitor-card.stalled {
+      border-color: rgba(251, 191, 36, 0.72);
+      box-shadow: 0 0 0 1px rgba(251, 191, 36, 0.22) inset;
+    }
+
+    .lm-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+    }
+
+    .lm-status-wrap {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      min-width: 0;
+      font-weight: 600;
+    }
+
+    .lm-dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      flex-shrink: 0;
+      background: #4ade80;
+    }
+
+    .lm-dot.running {
+      background: #38bdf8;
+      animation: lmPulse 1.3s ease-in-out infinite;
+    }
+
+    .lm-dot.stalled {
+      background: #fbbf24;
+      animation: lmPulse 0.8s ease-in-out infinite;
+    }
+
+    .lm-dot.stopped,
+    .lm-dot.error {
+      background: #fb7185;
+    }
+
+    .lm-stages {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px;
+    }
+
+    .lm-pill {
+      padding: 2px 6px;
+      border-radius: 999px;
+      font-size: 10px;
+      border: 1px solid rgba(148, 163, 184, 0.22);
+      color: var(--text-muted);
+      background: rgba(255, 255, 255, 0.03);
+    }
+
+    .lm-pill.active {
+      color: #fff;
+      border-color: var(--indigo);
+      background: rgba(99, 102, 241, 0.28);
+      font-weight: 600;
+    }
+
+    .lm-pill.done {
+      color: #86efac;
+      border-color: rgba(74, 222, 128, 0.35);
+      background: rgba(74, 222, 128, 0.1);
+    }
+
+    .lm-detail {
+      color: #e2e8f0;
+      line-height: 1.35;
+      word-break: break-word;
+    }
+
+    .lm-pulse-row {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      color: var(--text-muted);
+      font-size: 10.5px;
+      background: rgba(0, 0, 0, 0.22);
+      padding: 6px 8px;
+      border-radius: 7px;
+    }
+
+    .lm-stall-banner {
+      display: none;
+      padding: 5px 7px;
+      border-radius: 6px;
+      background: rgba(251, 191, 36, 0.14);
+      border: 1px solid rgba(251, 191, 36, 0.45);
+      color: #fde68a;
+      font-size: 10.5px;
+      line-height: 1.3;
+    }
+
+    .lm-controls {
+      display: flex;
+      flex-direction: column;
+      gap: 5px;
+    }
+
+    .lm-model-row {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+
+    .lm-select {
+      flex: 1;
+      min-width: 0;
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: rgba(15, 23, 42, 0.92);
+      color: #f8fafc;
+      font-size: 11px;
+    }
+
+    .lm-btn-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 4px;
+    }
+
+    .lm-btn {
+      padding: 4px 6px;
+      border-radius: 6px;
+      border: 1px solid rgba(148, 163, 184, 0.24);
+      background: rgba(255, 255, 255, 0.06);
+      color: #e2e8f0;
+      font-size: 10.5px;
+      cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .lm-btn:hover:not(:disabled) {
+      background: rgba(255, 255, 255, 0.12);
+    }
+
+    .lm-btn:disabled {
+      opacity: 0.45;
+      cursor: not-allowed;
+    }
+
+    .lm-btn.active-flag {
+      border-color: var(--sakura);
+      background: rgba(244, 114, 182, 0.2);
+      color: #fbcfe8;
+    }
+
+    .lm-btn.primary {
+      border-color: var(--indigo);
+      background: rgba(99, 102, 241, 0.25);
+      color: #e0e7ff;
+    }
+
+    .lm-events-wrap summary {
+      cursor: pointer;
+      font-size: 10.5px;
+      color: var(--text-muted);
+      user-select: none;
+    }
+
+    .lm-events-list {
+      margin-top: 5px;
+      max-height: 115px;
+      overflow-y: auto;
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      font-size: 10px;
+      color: #cbd5e1;
+      background: rgba(0, 0, 0, 0.28);
+      padding: 5px 6px;
+      border-radius: 6px;
+    }
+
+    .lm-event-row {
+      display: flex;
+      gap: 5px;
+      line-height: 1.25;
+    }
+
+    .lm-event-ts {
+      color: #64748b;
+      flex-shrink: 0;
+    }
+
     .pages-filter-bar {
       display: flex;
       gap: 4px;
@@ -2988,6 +3200,51 @@
           </div>
         </div>
 
+        <div class="live-monitor-card" id="live-monitor-card" style="display:none;">
+          <div class="lm-header">
+            <div class="lm-status-wrap">
+              <span class="lm-dot" id="lm-dot"></span>
+              <span id="lm-run-badge">Мониторинг перевода</span>
+            </div>
+            <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+              <span id="lm-total-elapsed" style="color:var(--text-muted); font-size:10.5px;">0с</span>
+              <button type="button" id="lm-btn-close" class="lm-btn" style="display:none; padding:1px 5px;" onclick="hideLiveMonitorCard()" title="Скрыть">✕</button>
+            </div>
+          </div>
+          <div class="lm-stages" id="lm-stages">
+            <span class="lm-pill" data-stage="ocr">OCR</span>
+            <span class="lm-pill" data-stage="pass0">Pass 0</span>
+            <span class="lm-pill" data-stage="llm">ИИ</span>
+            <span class="lm-pill" data-stage="micro_retry">Доперевод</span>
+            <span class="lm-pill" data-stage="proofread">Вычитка</span>
+            <span class="lm-pill" data-stage="render">Вёрстка</span>
+          </div>
+          <div class="lm-detail" id="lm-stage-detail">Ожидание запуска...</div>
+          <div class="lm-pulse-row">
+            <div id="lm-model-lbl">Модель: —</div>
+            <div id="lm-keys-lbl">Поток: —</div>
+          </div>
+          <div class="lm-stall-banner" id="lm-stall-banner">
+            ⚠️ Запрос долго без новых токенов — можно прервать запрос (спася готовые реплики) или на лету сменить модель.
+          </div>
+          <div class="lm-controls" id="lm-controls">
+            <div class="lm-model-row">
+              <select class="lm-select" id="lm-switch-model-sel" title="Выбрать модель для мгновенного переключения"></select>
+              <button type="button" class="lm-btn primary" id="lm-btn-switch" onclick="sendFolderControl('switch_model')">🔀 Сменить</button>
+            </div>
+            <div class="lm-btn-row">
+              <button type="button" class="lm-btn" id="lm-btn-abort" onclick="sendFolderControl('abort_request')" title="Прервать зависший запрос, сохранив уже пришедшие SSE-реплики">⏭ Прервать запрос</button>
+              <button type="button" class="lm-btn" id="lm-btn-skip" onclick="sendFolderControl('skip_stage')" title="Пропустить Pass 0 / Доперевод / Вычитку">⏩ Пропустить этап</button>
+              <button type="button" class="lm-btn" id="lm-btn-pause-batch" onclick="sendFolderControl('pause_after_batch')" title="Аккуратно остановить после завершения текущей пачки">⏸ После пачки</button>
+              <button type="button" class="lm-btn" id="lm-btn-cloud-only" onclick="sendFolderControl('toggle_cloud_only')" title="Запретить/разрешить откат в локальную Ollama при сбое облака">☁️ Только облако</button>
+            </div>
+          </div>
+          <details class="lm-events-wrap" id="lm-events-wrap">
+            <summary id="lm-last-event-summary">Лента событий (0)</summary>
+            <div class="lm-events-list" id="lm-events-list"></div>
+          </details>
+        </div>
+
         <div class="pages-filter-bar" id="pages-filter-bar">
           <button class="pages-filter-btn active" id="pfilt-all" onclick="setPagesListFilter('all')">Все</button>
           <button class="pages-filter-btn" id="pfilt-wait" onclick="setPagesListFilter('wait')">⏳ Ждут</button>
@@ -3805,9 +4062,17 @@
                 <label class="toggle-row">
                   <div class="toggle-row-text">
                     <span class="toggle-row-title">💾 Автосохранение страниц из расширения Chrome на ПК</span>
-                    <span class="toggle-row-sub">Сохраняет оригинал, перевод и <code>.translation_state.json</code> для Студии</span>
+                    <span class="toggle-row-sub">Сохраняет оригинал, перевод и <code>.miko/translation_state.json</code> для Студии</span>
                   </div>
                   <input id="chk-autosave-web" type="checkbox" checked />
+                </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">📖 Автосохранять текстовую «Книгу главы» (.md / .json / .txt) в .miko/</span>
+                    <span class="toggle-row-sub">Если выключено (рекомендуется) — в папке перевода только картинки и .miko/; книгу всегда можно открыть и скачать во вкладке «Книга главы»</span>
+                  </div>
+                  <input id="chk-auto-export-chapter-book" type="checkbox" />
                 </label>
 
                 <div class="field-box">
@@ -4115,6 +4380,7 @@
                   </div>
                   <div style="display:flex; flex-wrap:wrap; gap:6px;">
                     <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="loadChapterBookPanel()">🔄 Обновить</button>
+                    <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="saveChapterBookToMetaFolder()" title="Сохранить _chapter_book.md и двуязычный скрипт в папку .miko/">📁 В .miko/</button>
                     <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('md')">💾 .md</button>
                     <button type="button" class="soft-btn" style="padding:6px 11px; font-size:11.5px;" onclick="downloadChapterBookFile('json')">💾 .json</button>
                   </div>
@@ -5157,6 +5423,35 @@
       a.download = filename;
       a.click();
       setTimeout(() => URL.revokeObjectURL(blobUrl), 1000);
+    }
+
+    async function saveChapterBookToMetaFolder() {
+      const folderParam = currentFolder || (selectedPage && selectedPage.source_path ? selectedPage.source_path.replace(/[\\/][^\\/]+$/, "") : "");
+      const badge = document.getElementById("chapter-book-status-badge");
+      if (!folderParam) {
+        sayMiko("Сначала выбери папку с главой манги слева~ 🌸");
+        return;
+      }
+      if (badge) badge.textContent = "⏳ Сохранение в .miko/...";
+      try {
+        const q = new URLSearchParams({
+          folder_path: folderParam,
+          target_lang: targetLang,
+          save_files: "true"
+        });
+        const res = await fetch("/chapter_book?" + q.toString());
+        const data = await res.json();
+        if (!res.ok) {
+          if (badge) badge.textContent = "⚠️ Ошибка";
+          sayMiko(`Не удалось сохранить Книгу главы: ${data.detail || "ошибка"}`);
+          return;
+        }
+        if (badge) badge.textContent = "✅ Сохранено в .miko/";
+        sayMiko(`Файлы Книги главы сохранены в «${data.book_md_path || ".miko/_chapter_book.md"}» 📁✨`);
+      } catch (e) {
+        if (badge) badge.textContent = "⚠️ Ошибка";
+        sayMiko("Ошибка сохранения Книги главы: " + e.message);
+      }
     }
 
     async function importEditedChapterBookAndRerender() {
@@ -6358,6 +6653,10 @@
           if (typeof data.auto_save_web_pages === "boolean") {
             document.getElementById("chk-autosave-web").checked = data.auto_save_web_pages;
           }
+          const chkAutoBook = document.getElementById("chk-auto-export-chapter-book");
+          if (chkAutoBook) {
+            chkAutoBook.checked = Boolean(data.auto_export_chapter_book);
+          }
           if (data.web_save_dir) {
             document.getElementById("inp-web-save-dir").value = data.web_save_dir;
           }
@@ -6518,6 +6817,7 @@
           sel.appendChild(fallbackOpt);
         }
         sel.value = (data.selected_model && data.selected_model !== "auto") ? data.selected_model : "auto";
+        syncLiveMonitorModelOptions(models, sel.value);
         populateStackTranslationSelect(models, data.default_model_stack?.translation_model || data.selected_model || "auto", act);
         if (data.default_model_stack) {
           applyStackObjectToSelectors(data.default_model_stack);
@@ -7042,6 +7342,7 @@
           ...(uUrl ? { unsloth_url: uUrl } : {}),
           ...(apiKey ? { unsloth_api_key: apiKey } : {}),
           auto_save_web_pages: autoSaveWeb,
+          auto_export_chapter_book: Boolean(document.getElementById("chk-auto-export-chapter-book")?.checked),
           web_save_dir: webSaveDir || null,
           text_filter_mode: textFilterMode,
           skip_sighs: skipSighs,
@@ -12029,10 +12330,332 @@
       const mainBtn = document.getElementById("btn-primary-folder");
       mainBtn.classList.add("stopping");
       mainBtn.textContent = "⏸ Пауза (остановить и сохранить прогресс)";
-      startFolderPolling();
+      connectFolderLiveStream();
     }
 
     let lastFolderPollCurrent = -1;
+    let folderEventSource = null;
+    let lmUserHidden = false;
+    const LM_STAGE_ORDER = ["ocr", "pass0", "llm", "micro_retry", "proofread", "render"];
+
+    function syncLiveMonitorModelOptions(models, selectedVal) {
+      const lmSel = document.getElementById("lm-switch-model-sel");
+      if (!lmSel) return;
+      const prevVal = lmSel.value;
+      lmSel.innerHTML = "";
+      (models || []).forEach(m => {
+        const isNotInstalled = m.installed === false || String(m.installed).toLowerCase() === "false";
+        const isPureOcr = String(m.id || "").toLowerCase().includes("glm-ocr");
+        if (isNotInstalled || isPureOcr) return;
+        const opt = document.createElement("option");
+        opt.value = m.id;
+        opt.textContent = m.name || m.id;
+        lmSel.appendChild(opt);
+      });
+      const wantVal = prevVal || selectedVal;
+      if (wantVal && wantVal !== "auto") {
+        const hasOpt = Array.from(lmSel.options).some(o => o.value === wantVal);
+        if (!hasOpt) {
+          const fallbackOpt = document.createElement("option");
+          fallbackOpt.value = wantVal;
+          fallbackOpt.textContent = wantVal;
+          lmSel.appendChild(fallbackOpt);
+        }
+        lmSel.value = wantVal;
+      }
+    }
+
+    function hideLiveMonitorCard() {
+      lmUserHidden = true;
+      const card = document.getElementById("live-monitor-card");
+      if (card) card.style.display = "none";
+    }
+
+    function formatLiveDuration(secVal) {
+      const s = Math.max(0, Math.round(Number(secVal) || 0));
+      if (s < 60) return s + "с";
+      const m = Math.floor(s / 60);
+      return m + "м " + (s % 60) + "с";
+    }
+
+    function renderLiveMonitor(st) {
+      const card = document.getElementById("live-monitor-card");
+      if (!card || !st) return;
+      const live = st.live || {};
+      const status = st.status || "idle";
+      const isActive = status === "running" || status === "stopping";
+      if (isActive) {
+        lmUserHidden = false;
+      }
+      if (!isActive && (!live.run_id || lmUserHidden)) {
+        card.style.display = "none";
+        return;
+      }
+      card.style.display = "flex";
+
+      const stepElSec = Number(live.step_elapsed_sec || 0);
+      const tokAge = live.last_token_age_sec;
+      const isStalled = isActive && (stepElSec >= 90 || (tokAge !== null && tokAge !== undefined && Number(tokAge) >= 30));
+      card.classList.toggle("stalled", isStalled);
+
+      const dotEl = document.getElementById("lm-dot");
+      if (dotEl) {
+        dotEl.className = "lm-dot " + (isStalled ? "stalled" : (isActive ? "running" : status));
+      }
+
+      const closeBtn = document.getElementById("lm-btn-close");
+      if (closeBtn) closeBtn.style.display = isActive ? "none" : "inline-block";
+
+      const badgeEl = document.getElementById("lm-run-badge");
+      if (badgeEl) {
+        const bIdx = Number(live.batch_index || 0);
+        const bTot = Number(live.batches_total || 0);
+        if (isActive) {
+          badgeEl.textContent = bTot > 0 ? `В работе · Пачка ${bIdx}/${bTot}` : "Выполняется...";
+        } else if (status === "completed") {
+          badgeEl.textContent = "✅ Перевод завершён";
+        } else if (status === "stopped") {
+          badgeEl.textContent = "⏸ Пауза";
+        } else {
+          badgeEl.textContent = "❌ Ошибка";
+        }
+      }
+
+      const totEl = document.getElementById("lm-total-elapsed");
+      if (totEl) {
+        totEl.textContent = `${formatLiveDuration(st.elapsed_sec)} · ${st.current || 0}/${st.total || 0}`;
+      }
+
+      const curStage = String(live.stage || "idle");
+      const curOrderIdx = LM_STAGE_ORDER.indexOf(curStage);
+      document.querySelectorAll("#lm-stages .lm-pill").forEach(pill => {
+        const pSt = pill.dataset.stage || "";
+        const pIdx = LM_STAGE_ORDER.indexOf(pSt);
+        pill.classList.toggle("active", isActive && pSt === curStage);
+        pill.classList.toggle("done", (status === "completed") || (curOrderIdx > pIdx && pIdx >= 0));
+      });
+
+      const detailEl = document.getElementById("lm-stage-detail");
+      if (detailEl) {
+        detailEl.textContent = live.stage_label || st.current_file || "—";
+      }
+
+      const modelEl = document.getElementById("lm-model-lbl");
+      if (modelEl) {
+        const limTxt = Number(live.batch_limit || 0) > 0 ? ` · лимит ${live.batch_limit}` : "";
+        const flags = [];
+        if (live.cloud_only) flags.push("Только облако");
+        if (live.nsfw_mode || st.nsfw_mode) flags.push("NSFW-локально");
+        const flagStr = flags.length ? ` [${flags.join(", ")}]` : "";
+        modelEl.textContent = `Модель: ${live.model || "—"}${limTxt}${flagStr}`;
+      }
+
+      const keysEl = document.getElementById("lm-keys-lbl");
+      if (keysEl) {
+        const expK = Number(live.expected_keys || 0);
+        const recK = Number(live.received_keys || 0);
+        const stepTxt = stepElSec > 0 ? `шаг ${formatLiveDuration(stepElSec)}` : "ожидание";
+        if (expK > 0 && (curStage === "llm" || curStage === "micro_retry" || curStage === "pass0" || curStage === "proofread")) {
+          const ttftTxt = (live.ttft_sec !== null && live.ttft_sec !== undefined) ? ` · TTFT ${live.ttft_sec}с` : "";
+          const tokTxt = (tokAge !== null && tokAge !== undefined) ? ` · токен ${Math.round(Number(tokAge))}с назад` : "";
+          keysEl.textContent = `SSE: ${recK}/${expK} фраз · ${stepTxt}${ttftTxt}${tokTxt}`;
+        } else {
+          keysEl.textContent = `Таймер шага: ${stepTxt}`;
+        }
+      }
+
+      const stallEl = document.getElementById("lm-stall-banner");
+      if (stallEl) stallEl.style.display = isStalled ? "block" : "none";
+
+      const ctrlBox = document.getElementById("lm-controls");
+      if (ctrlBox) {
+        ctrlBox.style.display = isActive ? "flex" : "none";
+      }
+      const skipBtn = document.getElementById("lm-btn-skip");
+      if (skipBtn) {
+        const skippable = curStage === "pass0" || curStage === "micro_retry" || curStage === "proofread";
+        skipBtn.disabled = !isActive || !skippable;
+      }
+      const pauseBatchBtn = document.getElementById("lm-btn-pause-batch");
+      if (pauseBatchBtn) {
+        pauseBatchBtn.classList.toggle("active-flag", Boolean(live.pause_after_batch));
+      }
+      const cloudBtn = document.getElementById("lm-btn-cloud-only");
+      if (cloudBtn) {
+        cloudBtn.classList.toggle("active-flag", Boolean(live.cloud_only));
+      }
+
+      const evList = Array.isArray(live.events) ? live.events : [];
+      const sumEl = document.getElementById("lm-last-event-summary");
+      const listEl = document.getElementById("lm-events-list");
+      if (sumEl) {
+        const lastEv = evList.length ? evList[evList.length - 1] : null;
+        sumEl.textContent = lastEv ? `События (${evList.length}): ${lastEv.time_str} ${lastEv.text}` : "Лента событий (0)";
+      }
+      if (listEl) {
+        listEl.innerHTML = "";
+        for (let i = evList.length - 1; i >= 0; i--) {
+          const evItem = evList[i] || {};
+          const row = document.createElement("div");
+          row.className = "lm-event-row";
+          const tsSpan = document.createElement("span");
+          tsSpan.className = "lm-event-ts";
+          tsSpan.textContent = String(evItem.time_str || "");
+          const msgSpan = document.createElement("span");
+          msgSpan.textContent = String(evItem.text || "");
+          row.appendChild(tsSpan);
+          row.appendChild(msgSpan);
+          listEl.appendChild(row);
+        }
+      }
+    }
+
+    async function sendFolderControl(action) {
+      const body = { action };
+      if (action === "switch_model") {
+        const sel = document.getElementById("lm-switch-model-sel");
+        if (!sel || !sel.value) {
+          sayMiko("Выбери модель в списке мониторинга перед переключением.");
+          return;
+        }
+        body.model = sel.value;
+      }
+      try {
+        const res = await fetch("/folder_control", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (!res.ok) {
+          sayMiko("Ошибка управления: " + (data.detail || res.statusText));
+          return;
+        }
+        if (data.message) {
+          sayMiko(data.message + " 🎛");
+        }
+      } catch (err) {
+        console.warn("Ошибка команды управления:", err);
+      }
+    }
+
+    async function handleFolderStatusSnapshot(st) {
+      if (!st) return;
+      const total = st.total || 0;
+      const cur = st.current || 0;
+      const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
+
+      document.getElementById("progress-fill").style.width = pct + "%";
+      document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
+      renderLiveMonitor(st);
+
+      if (st.status === "running" || st.status === "stopping") {
+        isJobRunning = true;
+        const mainBtn = document.getElementById("btn-primary-folder");
+        if (mainBtn && !mainBtn.classList.contains("stopping")) {
+          mainBtn.classList.add("stopping");
+          mainBtn.textContent = "⏸ Пауза (остановить и сохранить прогресс)";
+        }
+        if (lastFolderPollCurrent >= 0 && cur > lastFolderPollCurrent) {
+          lastFolderPollCurrent = cur;
+          await inspectCurrentFolder({ preserveCurrentSelection: true });
+        } else if (lastFolderPollCurrent < 0) {
+          lastFolderPollCurrent = cur;
+          if (cur > 0) {
+            await inspectCurrentFolder({ preserveCurrentSelection: true });
+          }
+        }
+        sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
+      } else {
+        if (pollTimer) {
+          clearInterval(pollTimer);
+          pollTimer = null;
+        }
+        if (folderEventSource) {
+          folderEventSource.close();
+          folderEventSource = null;
+        }
+        const wasRunning = isJobRunning;
+        isJobRunning = false;
+        lastFolderPollCurrent = -1;
+        updatePrimaryFolderButtonState();
+        if (wasRunning && currentFolder) {
+          await inspectCurrentFolder({ preserveCurrentSelection: true });
+        }
+      }
+    }
+
+    function connectFolderLiveStream() {
+      if (pollTimer) {
+        clearInterval(pollTimer);
+        pollTimer = null;
+      }
+      if (folderEventSource) {
+        folderEventSource.close();
+        folderEventSource = null;
+      }
+      lastFolderPollCurrent = Array.isArray(folderPages)
+        ? folderPages.filter(p => Boolean(p.is_translated)).length
+        : -1;
+
+      if (typeof EventSource === "undefined") {
+        startFolderPolling();
+        return;
+      }
+      let sseFailures = 0;
+      try {
+        folderEventSource = new EventSource("/folder_stream");
+        folderEventSource.addEventListener("status", async (ev) => {
+          sseFailures = 0;
+          try {
+            const st = JSON.parse(ev.data);
+            await handleFolderStatusSnapshot(st);
+          } catch (parseErr) {
+            console.warn("Ошибка разбора /folder_stream:", parseErr);
+          }
+        });
+        folderEventSource.onerror = () => {
+          sseFailures += 1;
+          if (sseFailures >= 4) {
+            if (folderEventSource) {
+              folderEventSource.close();
+              folderEventSource = null;
+            }
+            if (isJobRunning && !pollTimer) {
+              startFolderPolling();
+            }
+          }
+        };
+      } catch (esErr) {
+        console.warn("SSE недоступен, откат на polling:", esErr);
+        startFolderPolling();
+      }
+    }
+
+    async function reattachRunningFolderJobIfAny() {
+      try {
+        const res = await fetch("/folder_status");
+        if (!res.ok) return;
+        const st = await res.json();
+        if (st && (st.status === "running" || st.status === "stopping")) {
+          if (st.source_dir && !currentFolder) {
+            currentFolder = st.source_dir;
+            if (st.target_lang) targetLang = st.target_lang;
+            await inspectCurrentFolder({ preserveCurrentSelection: true });
+          }
+          isJobRunning = true;
+          const mainBtn = document.getElementById("btn-primary-folder");
+          if (mainBtn) {
+            mainBtn.classList.add("stopping");
+            mainBtn.textContent = "⏸ Пауза (остановить и сохранить прогресс)";
+          }
+          renderLiveMonitor(st);
+          connectFolderLiveStream();
+        }
+      } catch (err) {
+        console.warn("Ошибка восстановления активного перевода:", err);
+      }
+    }
 
     function startFolderPolling() {
       if (pollTimer) clearInterval(pollTimer);
@@ -12044,31 +12667,7 @@
           const res = await fetch("/folder_status");
           if (!res.ok) return;
           const st = await res.json();
-          const total = st.total || 0;
-          const cur = st.current || 0;
-          const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
-
-          document.getElementById("progress-fill").style.width = pct + "%";
-          document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
-
-          if (st.status === "running" || st.status === "stopping") {
-            if (lastFolderPollCurrent >= 0 && cur > lastFolderPollCurrent) {
-              lastFolderPollCurrent = cur;
-              await inspectCurrentFolder({ preserveCurrentSelection: true });
-            } else if (lastFolderPollCurrent < 0) {
-              lastFolderPollCurrent = cur;
-              if (cur > 0) {
-                await inspectCurrentFolder({ preserveCurrentSelection: true });
-              }
-            }
-            sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
-          } else {
-            clearInterval(pollTimer);
-            pollTimer = null;
-            isJobRunning = false;
-            lastFolderPollCurrent = -1;
-            await inspectCurrentFolder({ preserveCurrentSelection: true });
-          }
+          await handleFolderStatusSnapshot(st);
         } catch (err) {
           console.warn("Ошибка опроса статуса папки:", err);
         }
@@ -12745,6 +13344,7 @@
     loadLocalUiSettings();
     setTargetLang(targetLang);
     loadHealth(false);
+    reattachRunningFolderJobIfAny();
   </script>
 </body>
 </html>

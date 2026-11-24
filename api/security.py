@@ -56,6 +56,8 @@ _PRIVILEGED_ENDPOINTS = {
     "/folder_inspect",
     "/translate_folder",
     "/folder_stop",
+    "/folder_control",
+    "/folder_stream",
     "/save_edited_page",
     "/glossary",
     "/pull_model",

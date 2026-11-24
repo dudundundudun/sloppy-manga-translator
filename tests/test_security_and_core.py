@@ -2189,6 +2189,483 @@ def test_cloud_chunk_limits_timeout_retry_and_proofread_fixes():
     asyncio.run(_run())
 
 
+def test_pass0_optional_timeout_isolation_and_live_stream_telemetry():
+    import logging
+
+    tr_mod = _load_real_module("translator")
+    srv = _load_server_module()
+    import api.security as sec
+
+    assert "/folder_control" in sec._PRIVILEGED_ENDPOINTS
+    assert "/folder_stream" in sec._PRIVILEGED_ENDPOINTS
+    assert logging.getLogger("httpx").level >= logging.WARNING
+    assert logging.getLogger("httpcore").level >= logging.WARNING
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-telemetry",
+            )
+            tr.cloud_only_no_local_fallback = True
+            live_events: list[dict] = []
+            tr.live_progress_cb = live_events.append
+
+            # 1. _extract_sse_chunk_fields распознаёт как content, так и reasoning_content
+            fr_r, c_r, err_r, has_r = tr._extract_sse_chunk_fields(
+                json.dumps({"choices": [{"delta": {"reasoning_content": "thinking..."}}]})
+            )
+            assert fr_r == "" and c_r == "" and err_r is None and has_r is True
+            fr_c, c_c, err_c, has_c = tr._extract_sse_chunk_fields(
+                json.dumps({"choices": [{"delta": {"content": '{"1":"Hi"}'}, "finish_reason": "stop"}]})
+            )
+            assert fr_c == "stop" and c_c == '{"1":"Hi"}' and err_c is None and has_c is False
+
+            # 2. Таймаут Pass 0 и Pass 2 (is_optional_pass=True) не должен резать batch_limit и счётчики основного перевода
+            async def _always_timeout_cloud(*, stream_chunks_out, **kwargs):
+                raise httpx.ReadTimeout("simulated optional timeout")
+
+            pass0_blocks = [
+                {"id": "1", "original_text": "美咲ちゃんおはよう"},
+                {"id": "2", "original_text": "美咲さん待って"},
+                {"id": "3", "original_text": "美咲はどこ"},
+                {"id": "4", "original_text": "美咲だよ"},
+            ]
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_always_timeout_cloud):
+                res_p0 = await tr.extract_chapter_glossary_prepass(
+                    blocks=pass0_blocks,
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::grok-4.7",
+                )
+                res_p2 = await tr.proofread_chapter_book_script(
+                    book_map={"P01_01": {"orig": "こんにちは", "trans": "Hello"}},
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::grok-4.7",
+                )
+            assert res_p0 == []
+            assert res_p2 == {}
+            assert tr._batch_cloud_timeouts_count == 0
+            assert tr._consecutive_cloud_failures == 0
+            assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 45
+            assert any(c.get("status") == "OPTIONAL_TIMEOUT" for c in tr.recent_api_calls)
+
+            # 3. Реальный SSE-стрим через MockTransport эмитит stream_progress с received_keys и ttft_sec
+            live_events.clear()
+            sse_body = (
+                b'data: {"choices":[{"delta":{"reasoning_content":"step1"}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"{\\"1\\": \\"Alpha\\", "}}]}\n\n'
+                b'data: {"choices":[{"delta":{"content":"\\"2\\": \\"Beta\\"}"},"finish_reason":"stop"}]}\n\n'
+                b"data: [DONE]\n\n"
+            )
+
+            async def _mock_transport_handler(request: httpx.Request) -> httpx.Response:
+                return httpx.Response(
+                    status_code=200,
+                    headers={"content-type": "text/event-stream; charset=utf-8"},
+                    content=sse_body,
+                )
+
+            mock_client = httpx.AsyncClient(transport=httpx.MockTransport(_mock_transport_handler))
+            try:
+                res_sse = await tr._call_llm_json(
+                    client=mock_client,
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="Translate to EN JSON",
+                    user_prompt='{"1":"テスト1","2":"テスト2"}',
+                    stage_label="llm",
+                )
+            finally:
+                await mock_client.aclose()
+
+            assert res_sse == {"1": "Alpha", "2": "Beta"}
+            ev_names = [e.get("event") for e in live_events]
+            assert "llm_request_start" in ev_names
+            assert "stream_progress" in ev_names
+            assert "llm_request_end" in ev_names
+            prog_evs = [e for e in live_events if e.get("event") == "stream_progress"]
+            assert any(e.get("ttft_sec") is not None for e in prog_evs)
+            end_ev = next(e for e in live_events if e.get("event") == "llm_request_end")
+            assert end_ev["status"] == "OK"
+            assert end_ev["parsed_keys"] == 2
+            assert end_ev["ttft_sec"] is not None
+
+            # 4. server._snapshot_folder_job_state и _push_live_event корректно считают таймеры и ленту событий
+            orig_job = dict(srv.folder_job_state)
+            try:
+                srv.folder_job_state["status"] = "running"
+                srv.folder_job_state["live"] = srv._make_empty_live_state()
+                srv.folder_job_state["live"]["step_started_ts"] = srv.time.time() - 12.5
+                srv.folder_job_state["live"]["last_token_ts"] = srv.time.time() - 3.2
+                srv._push_live_event("Проверка live-ленты", stage="llm")
+                snap = srv._snapshot_folder_job_state()
+                assert snap["live"]["step_elapsed_sec"] >= 10.0
+                assert snap["live"]["last_token_age_sec"] is not None and snap["live"]["last_token_age_sec"] >= 2.0
+                assert snap["live"]["events"][-1]["text"] == "Проверка live-ленты"
+            finally:
+                srv.folder_job_state.clear()
+                srv.folder_job_state.update(orig_job)
+
+    asyncio.run(_run())
+
+
+def test_runtime_control_abort_switch_skip_and_monitor_ui_contracts():
+    import time as _time
+
+    tr_mod = _load_real_module("translator")
+    srv = _load_server_module()
+    from api.schemas import FolderControlRequest
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-control",
+            )
+            tr.cloud_only_no_local_fallback = True
+            live_events: list[dict] = []
+            tr.live_progress_cb = live_events.append
+
+            # 1. abort_request прерывает зависший запрос и спасает уже пришедшие SSE-реплики без инкремента таймаутов
+            started_abort_ev = asyncio.Event()
+
+            async def _hung_after_partial(*, stream_chunks_out, **kwargs):
+                stream_chunks_out.append('{"1": "Saved partial", ')
+                started_abort_ev.set()
+                await asyncio.sleep(30.0)
+                return 200, "", "stop", "{}", None, 0.1
+
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_hung_after_partial):
+                call_task = asyncio.create_task(
+                    tr._call_llm_json(
+                        client=tr._get_http_client(),
+                        full_model_id="unsloth::grok-4.7",
+                        system_prompt="Translate EN JSON",
+                        user_prompt='{"1":"テスト1","2":"テスト2"}',
+                        stage_label="llm",
+                    )
+                )
+                await asyncio.wait_for(started_abort_ev.wait(), timeout=2.0)
+                await asyncio.sleep(0.05)
+                ctrl_abort = tr.request_runtime_control("abort_request")
+                assert ctrl_abort["cancelled_tasks"] >= 1
+                res_aborted = await asyncio.wait_for(call_task, timeout=2.0)
+            assert res_aborted == {"1": "Saved partial"}
+            assert tr._batch_cloud_timeouts_count == 0
+            assert tr._consecutive_cloud_failures == 0
+
+            # 2. switch_model при нулевом SSE-прогрессе отменяет старый запрос и сразу запускает новую модель на том же чанке
+            tr.reset_runtime_controls()
+            started_switch_ev = asyncio.Event()
+            seen_urls_models: list[str] = []
+
+            async def _hung_then_new_model(*, payload_cloud, **kwargs):
+                seen_urls_models.append(str(payload_cloud.get("model")))
+                if payload_cloud.get("model") == "grok-4.7":
+                    started_switch_ev.set()
+                    await asyncio.sleep(30.0)
+                return 200, "", "stop", '{"1": "From DeepSeek"}', None, 0.05
+
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_hung_then_new_model):
+                sw_task = asyncio.create_task(
+                    tr._call_llm_json(
+                        client=tr._get_http_client(),
+                        full_model_id="unsloth::grok-4.7",
+                        system_prompt="Translate EN JSON",
+                        user_prompt='{"1":"テスト1"}',
+                        stage_label="llm",
+                    )
+                )
+                await asyncio.wait_for(started_switch_ev.wait(), timeout=2.0)
+                await asyncio.sleep(0.05)
+                tr.request_runtime_control("switch_model", new_model="unsloth::deepseek-v4-flash")
+                res_sw = await asyncio.wait_for(sw_task, timeout=2.0)
+            assert res_sw == {"1": "From DeepSeek"}
+            assert seen_urls_models == ["grok-4.7", "deepseek-v4-flash"]
+
+            # 3. Динамическое переключение модели и инкрементальная синхронизация external_cache в translate_blocks
+            tr.reset_runtime_controls()
+            live_events.clear()
+            chunk_models: list[str] = []
+
+            async def _fake_chunk_switch(*, chunk_blocks, active_model, **kwargs):
+                chunk_models.append(active_model)
+                if len(chunk_models) == 1:
+                    tr.request_runtime_control("switch_model", new_model="unsloth::deepseek-v4-flash")
+                elif len(chunk_models) == 2:
+                    assert len([k for k in ext_cache if k.startswith("en||")]) == 34
+                return {str(b["id"]): f"OK_{b['id']}" for b in chunk_blocks}
+
+            ext_cache: dict[str, str] = {}
+            blocks_100 = [{"id": str(i), "original_text": f"台詞テスト{i}"} for i in range(1, 101)]
+            with patch.object(tr, "_translate_batch_chunk", side_effect=_fake_chunk_switch):
+                out_blocks = await tr.translate_blocks(
+                    blocks=blocks_100,
+                    source_lang="ja",
+                    target_lang="en",
+                    model="unsloth::grok-4.7",
+                    external_cache=ext_cache,
+                    use_cache=False,
+                    profile="balanced",
+                )
+            assert len(out_blocks) == 100
+            assert chunk_models[0] == "unsloth::grok-4.7"
+            assert all(m == "unsloth::deepseek-v4-flash" for m in chunk_models[1:])
+            assert len([k for k in ext_cache if k.startswith("en||")]) == 100
+            assert any(e.get("event") == "model_switched" for e in live_events)
+
+            # 4. skip_stage ("micro_retry") пропускает доперевод без лишних вызовов LLM
+            tr.reset_runtime_controls()
+            tr.request_runtime_control("skip_stage", stage="micro_retry")
+            micro_retry_calls: list[str] = []
+
+            async def _fake_llm_once(*, stage_label="", **kwargs):
+                if stage_label == "micro_retry":
+                    micro_retry_calls.append(stage_label)
+                return {}
+
+            with patch.object(tr, "_call_llm_json", side_effect=_fake_llm_once):
+                await tr._translate_batch_chunk(
+                    client=tr._get_http_client(),
+                    chunk_blocks=[
+                        {"id": "1", "original_text": "長い台詞テスト1"},
+                        {"id": "2", "original_text": "長い台詞テスト2"},
+                        {"id": "3", "original_text": "長い台詞テスト3"},
+                        {"id": "4", "original_text": "長い台詞テスト4"},
+                    ],
+                    source_lang="ja",
+                    target_lang="en",
+                    active_model="unsloth::grok-4.7",
+                )
+            assert micro_retry_calls == []
+
+            # 5. Эндпоинт POST /folder_control управляет состоянием и live-метриками
+            orig_tr_engine = srv.translator_engine
+            orig_job_state = dict(srv.folder_job_state)
+            orig_stop_req = srv._folder_stop_requested
+            orig_pause_batch = srv._folder_pause_after_batch
+            try:
+                tr.reset_runtime_controls()
+                srv.translator_engine = tr
+                srv.folder_job_state["status"] = "running"
+                srv.folder_job_state["live"] = srv._make_empty_live_state()
+                srv.folder_job_state["live"]["stage"] = "proofread"
+                srv.folder_job_state["live"]["step_started_ts"] = _time.time()
+
+                r_toggle = await srv.control_folder_translation_endpoint(FolderControlRequest(action="toggle_cloud_only", cloud_only=False))
+                assert r_toggle["cloud_only"] is False and tr.cloud_only_no_local_fallback is False
+
+                r_sw = await srv.control_folder_translation_endpoint(
+                    FolderControlRequest(action="switch_model", model="unsloth::deepseek-v4-flash")
+                )
+                assert r_sw["model"] == "unsloth::deepseek-v4-flash"
+                assert tr._runtime_model_override == "unsloth::deepseek-v4-flash"
+
+                r_sw_local = await srv.control_folder_translation_endpoint(
+                    FolderControlRequest(action="switch_model", model="ollama::qwen3:14b")
+                )
+                assert r_sw_local["model"] == "ollama::qwen3:14b"
+                assert r_sw_local["batch_limit"] == 12
+                assert tr._runtime_model_override == "ollama::qwen3:14b"
+
+                r_pb = await srv.control_folder_translation_endpoint(FolderControlRequest(action="pause_after_batch"))
+                assert r_pb["pause_after_batch"] is True
+
+                r_sk = await srv.control_folder_translation_endpoint(FolderControlRequest(action="skip_stage", stage="proofread"))
+                assert r_sk["skip_stage"] == "proofread"
+
+                r_ab = await srv.control_folder_translation_endpoint(FolderControlRequest(action="abort_request"))
+                assert r_ab["status"] == "ok"
+
+                r_stop = await srv.control_folder_translation_endpoint(FolderControlRequest(action="stop_now"))
+                assert r_stop["status"] == "stopping" and tr.stop_requested is True
+            finally:
+                srv.translator_engine = orig_tr_engine
+                srv.folder_job_state.clear()
+                srv.folder_job_state.update(orig_job_state)
+                srv._folder_stop_requested = orig_stop_req
+                srv._folder_pause_after_batch = orig_pause_batch
+
+            # 6. Контракт UI в web_studio.html: live-monitor, SSE и отсутствие динамического innerHTML в новых функциях
+            html_txt = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+            for marker in (
+                'id="live-monitor-card"',
+                'new EventSource("/folder_stream")',
+                'fetch("/folder_control"',
+                "function syncLiveMonitorModelOptions",
+                "function renderLiveMonitor",
+                "function reattachRunningFolderJobIfAny",
+                "function sendFolderControl",
+            ):
+                assert marker in html_txt, f"Отсутствует маркер UI: {marker}"
+            lm_start = html_txt.index("function renderLiveMonitor(st)")
+            lm_end = html_txt.index("function startFolderPolling()")
+            lm_js_slice = html_txt[lm_start:lm_end]
+            for line in lm_js_slice.splitlines():
+                if ".innerHTML" in line:
+                    assert line.strip().endswith('= "";'), f"Найден нестатический innerHTML в live-monitor: {line}"
+
+    asyncio.run(_run())
+
+
+def test_miko_meta_dir_migration_book_export_gating_and_diag_rotation():
+    tr_mod = _load_real_module("translator")
+    srv = _load_server_module()
+    from api.schemas import ServerSettingsRequest
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_root = Path(tmp)
+        cfg_file = tmp_root / "cfg.json"
+        cfg_file.write_text("{}", encoding="utf-8")
+        tr = tr_mod.OllamaTranslator(config_path=cfg_file)
+        assert tr.auto_export_chapter_book is False
+        req_cfg = ServerSettingsRequest(auto_export_chapter_book=True)
+        assert req_cfg.auto_export_chapter_book is True
+        tr.save_config(auto_export_chapter_book=True)
+        tr_reloaded = tr_mod.OllamaTranslator(config_path=cfg_file)
+        assert tr_reloaded.auto_export_chapter_book is True
+        tr.auto_export_chapter_book = False
+
+        src_dir = tmp_root / "ch_clean"
+        out_dir = tmp_root / "ch_clean_RU"
+        src_dir.mkdir(parents=True, exist_ok=True)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        with (
+            patch.object(srv, "OllamaTranslator", tr_mod.OllamaTranslator),
+            patch.object(srv, "translator_engine", tr),
+            patch.object(srv, "japanese_to_romaji_local", tr_mod.japanese_to_romaji_local),
+            patch.object(srv, "enforce_glossary_on_translated_text", tr_mod.enforce_glossary_on_translated_text),
+            patch.object(srv, "normalize_glossary_entries", tr_mod.normalize_glossary_entries),
+            patch.object(srv, "merge_glossaries", tr_mod.merge_glossaries),
+            patch.object(srv, "clean_and_validate_glossary_name", tr_mod.clean_and_validate_glossary_name),
+            patch.object(
+                srv,
+                "_build_diagnostics_payload",
+                return_value={
+                    "server": {"python_version": "3.14"},
+                    "gpu": {
+                        "device_name": "CPU",
+                        "torch_version": "stub",
+                        "vram_allocated_mb": 0,
+                        "vram_total_mb": 0,
+                        "inpaint_backend": "OpenCV",
+                    },
+                    "translator": tr.get_diagnostics_summary(),
+                },
+            ),
+        ):
+            # 1. Legacy root .translation_state.json -> чтение + проверка is_page_already_translated + миграция в .miko/
+            page_file = out_dir / "001.png"
+            page_file.write_bytes(b"X" * 256)
+            legacy_manifest = out_dir / srv.MANIFEST_FILENAME
+            legacy_manifest.write_text(
+                json.dumps(
+                    {
+                        "pages": {},
+                        "phrase_cache": {"ru||テスト": "Тест"},
+                        "glossary": [],
+                    },
+                    ensure_ascii=False,
+                ),
+                encoding="utf-8",
+            )
+            assert srv.is_page_already_translated(page_file, page_meta=None, target_lang="ru") is False
+
+            loaded = srv._load_folder_manifest(out_dir)
+            assert loaded["phrase_cache"].get("ru||テスト") == "Тест"
+            loaded["pages"]["001.png"] = {
+                "detected_lang": "ja",
+                "blocks": [{"id": 1, "original_text": "テスト", "translated_text": "Тест", "bbox": [10, 10, 80, 40]}],
+            }
+            srv._save_folder_manifest(out_dir, loaded)
+            assert (out_dir / ".miko" / "translation_state.json").exists()
+            assert not legacy_manifest.exists()
+
+            # 2. collect_images_in_folder игнорирует изображения внутри .miko/
+            src_page = src_dir / "001.png"
+            src_page.write_bytes(b"PNG" * 60)
+            miko_src_junk = src_dir / ".miko" / "debug_thumb.png"
+            miko_src_junk.parent.mkdir(parents=True, exist_ok=True)
+            miko_src_junk.write_bytes(b"PNG" * 60)
+            collected = srv.collect_images_in_folder(src_dir)
+            assert [p.name for p in collected] == ["001.png"]
+
+            # 3. _generate_and_save_folder_report пишет в .miko/TRANSLATION_REPORT.txt, удаляет legacy отчет и НЕ пишет книги при False
+            legacy_report = out_dir / srv.REPORT_FILENAME
+            legacy_report.write_text("old report", encoding="utf-8")
+            tr.auto_export_chapter_book = False
+            rep_txt = srv._generate_and_save_folder_report(out_dir, loaded, source_dir=src_dir, target_lang="ru")
+            assert "КОНЕЦ ДИАГНОСТИЧЕСКОГО ОТЧЕТА" in rep_txt
+            assert (out_dir / ".miko" / "TRANSLATION_REPORT.txt").exists()
+            assert not legacy_report.exists()
+            for bname in ("_chapter_book.md", "_chapter_script_bilingual.json", "_chapter_script_bilingual.txt"):
+                assert not (out_dir / bname).exists()
+                assert not (out_dir / ".miko" / bname).exists()
+
+            # 4. При auto_export_chapter_book=True (и при save_files=True в GET /chapter_book) книги пишутся только в .miko/
+            async def _call_book():
+                res_mem = await srv.get_chapter_book_endpoint(folder_path=str(src_dir), target_lang="ru", save_files=False)
+                assert res_mem["files_written"] is False
+                assert not (out_dir / ".miko" / "_chapter_book.md").exists()
+
+                res_saved = await srv.get_chapter_book_endpoint(folder_path=str(src_dir), target_lang="ru", save_files=True)
+                assert res_saved["files_written"] is True
+
+            asyncio.run(_call_book())
+            for bname in ("_chapter_book.md", "_chapter_script_bilingual.json", "_chapter_script_bilingual.txt"):
+                assert (out_dir / ".miko" / bname).exists()
+                assert not (out_dir / bname).exists()
+
+            # 4b. Проверка автоэкспорта при auto_export_chapter_book=True внутри _generate_and_save_folder_report
+            for bname in ("_chapter_book.md", "_chapter_script_bilingual.json", "_chapter_script_bilingual.txt"):
+                (out_dir / ".miko" / bname).unlink()
+            tr.auto_export_chapter_book = True
+            srv._generate_and_save_folder_report(out_dir, loaded, source_dir=src_dir, target_lang="ru")
+            for bname in ("_chapter_book.md", "_chapter_script_bilingual.json", "_chapter_script_bilingual.txt"):
+                assert (out_dir / ".miko" / bname).exists()
+                assert not (out_dir / bname).exists()
+            tr.auto_export_chapter_book = False
+
+        # 5. _append_diagnostic_event: пропуск при MIKO_DISABLE_FILE_LOG=1 и ротация >2MB -> .jsonl.1
+        diag_tmp = tmp_root / "diag_events.jsonl"
+        orig_diag_file = srv.DIAG_EVENTS_FILE
+        orig_disable_env = os.environ.get("MIKO_DISABLE_FILE_LOG")
+        try:
+            srv.DIAG_EVENTS_FILE = diag_tmp
+            os.environ["MIKO_DISABLE_FILE_LOG"] = "1"
+            srv._append_diagnostic_event("test_disabled", {"x": 1})
+            assert not diag_tmp.exists()
+
+            os.environ["MIKO_DISABLE_FILE_LOG"] = "0"
+            diag_tmp.write_bytes(b"{" + b"a" * (2 * 1024 * 1024 + 64) + b"}\n")
+            srv._append_diagnostic_event("test_rotate", {"ok": True})
+            assert diag_tmp.with_suffix(".jsonl.1").exists()
+            assert diag_tmp.exists() and diag_tmp.stat().st_size < 1024
+        finally:
+            srv.DIAG_EVENTS_FILE = orig_diag_file
+            if orig_disable_env is None:
+                os.environ.pop("MIKO_DISABLE_FILE_LOG", None)
+            else:
+                os.environ["MIKO_DISABLE_FILE_LOG"] = orig_disable_env
+
+        # 6. Маркеры UI Stage 2 в web_studio.html
+        html_txt = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+        for ui_marker in (
+            'id="chk-auto-export-chapter-book"',
+            "auto_export_chapter_book",
+            "saveChapterBookToMetaFolder",
+        ):
+            assert ui_marker in html_txt, f"Отсутствует UI-маркер этапа 2: {ui_marker}"
+
+
 if __name__ == "__main__":
     test_funcs = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     for fn in test_funcs:
