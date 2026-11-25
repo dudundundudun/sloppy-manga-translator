@@ -1755,12 +1755,15 @@ def _build_smart_page_batches(
     items: list[Any],
     pages_per_batch: int,
     tail_merge_pages: int,
+    *,
+    fast_first_batch: bool = False,
+    first_batch_pages: int = 8,
 ) -> list[list[Any]]:
     """
     БЛОК 1: Разбивает список страниц на пачки по `pages_per_batch` с умным слиянием коротких хвостов:
-    если в последней пачке остается `<= tail_merge_pages` страниц, они присоединяются к предыдущей пачке
-    (например, при 25 стр. и пачке 15 стр. получается 1 пачка 15 + 10 = 25 или 2 сбалансированные пачки 12 + 13,
-    без микро-пачек по 1 странице!).
+    если в последней пачке остается `<= tail_merge_pages` страниц, они присоединяются к предыдущей пачке.
+    При `fast_first_batch=True` выделяет компактную стартовую пачку (`first_batch_pages`), чтобы первые
+    готовые страницы появлялись на диске за ~25–35 сек без 8-минутного ожидания полной пачки из 25 стр.
     """
     if not items:
         return []
@@ -1769,6 +1772,15 @@ def _build_smart_page_batches(
     t_merge = max(0, int(tail_merge_pages or 0))
     if n <= p_batch:
         return [items]
+    if fast_first_batch and n > p_batch and p_batch >= 12:
+        first_len = min(max(4, int(first_batch_pages or 8)), p_batch, n - 4)
+        if 0 < first_len < n:
+            return [items[:first_len]] + _build_smart_page_batches(
+                items[first_len:],
+                pages_per_batch=p_batch,
+                tail_merge_pages=t_merge,
+                fast_first_batch=False,
+            )
     # Если для режима balanced (p_batch=15, t_merge=5) 25 страниц = 15 + 10 (или если 16..20 стр., делим пополам 10+10 / 12+13)
     raw_batches = [items[i : i + p_batch] for i in range(0, n, p_batch)]
     if len(raw_batches) >= 2 and len(raw_batches[-1]) <= t_merge:
@@ -3602,6 +3614,7 @@ async def _run_folder_translation_job(
             to_process,
             pages_per_batch=pages_per_batch,
             tail_merge_pages=tail_merge_pages,
+            fast_first_batch=(len(to_process) > pages_per_batch and pages_per_batch >= 12),
         )
         logger.info(
             "🟢 [RUN %s] Старт пакетного перевода папки '%s' -> '%s' [профиль=%s (%s), режим=%s, модель=%s, cloud_only=%s]: всего %d стр. -> %d пачек (%s)",
@@ -3903,62 +3916,64 @@ async def _run_folder_translation_job(
                         f"Пачка {_batch_num}/{len(smart_batches)}: подготовка ИИ ({len(combined_blocks)} фраз)"
                     )
                     _bump_folder_state_seq()
-                # Пока идет ожидание ответа от облачного ИИ (50+ сек простоя GPU), параллельно в фоне
-                # подготавливаем очищенные слои SimpleLama в CleanCache ТОЛЬКО если не включен локальный nsfw_mode!
+                # Фоновая предочистка SimpleLama запускается СТРОГО после завершения локального Pass 0
+                # и немедленно останавливается при активном Circuit Breaker облака или переходе в локальную Ollama,
+                # исключая конкуренцию за 16 ГБ VRAM с 14B-моделями!
                 _preclean_stop_flag = False
                 _bg_preclean_task: asyncio.Task[None] | None = None
-                _is_remote_cloud_llm = (
-                    active_mod.startswith("unsloth::")
-                    and not getattr(translator_engine, "nsfw_mode", False)
-                    and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
-                    and cleaner_engine is not None
-                    and cleaner_engine.lama_model is not None
-                )
-                if _is_remote_cloud_llm:
-                    async def _bg_preclean_pages_during_cloud() -> None:
-                        for sp_pre in scanned_pages:
-                            if (
-                                _preclean_stop_flag
-                                or _folder_stop_requested
-                                or getattr(translator_engine, "nsfw_mode", False)
-                                or getattr(translator_engine, "_last_call_was_refusal", False)
-                            ):
-                                break
-                            if not sp_pre.get("ok"):
-                                continue
-                            p_blks_pre = sp_pre.get("blocks") or []
-                            pil_pre = sp_pre.get("pil_img")
-                            src_p_pre = sp_pre.get("img_path")
-                            if not p_blks_pre or pil_pre is None or src_p_pre is None:
-                                continue
-                            try:
-                                pre_clean_list = []
-                                for b_p in p_blks_pre:
-                                    if bool(b_p.get("is_deleted")):
-                                        continue
-                                    orig_p_txt = str(b_p.get("original_text") or "").strip()
-                                    if not orig_p_txt:
-                                        continue
-                                    if eff_skip_sighs and ocr_engine.is_sigh_or_interjection(orig_p_txt):
-                                        continue
-                                    b_p_copy = dict(b_p)
-                                    b_p_copy.pop("translated_text", None)
-                                    _ensure_block_clean_bbox(b_p_copy)
-                                    pre_clean_list.append(b_p_copy)
-                                if not pre_clean_list:
-                                    continue
-                                c_hash = _compute_clean_state_hash(src_p_pre, pre_clean_list)
-                                if _get_cached_cleaned_image(src_p_pre, c_hash) is not None:
-                                    continue
-                                async with gpu_lock(priority=2):
-                                    if _preclean_stop_flag or _folder_stop_requested:
-                                        break
-                                    c_im, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_pre, pre_clean_list, src_p_pre)
-                                    _store_cached_cleaned_image(src_p_pre, c_hash, c_im, save_to_disk=True)
-                            except Exception as pre_exc:
-                                logger.debug("Фоновая пред-очистка страницы пропущена: %s", pre_exc)
 
-                    _bg_preclean_task = asyncio.create_task(_bg_preclean_pages_during_cloud())
+                async def _bg_preclean_pages_during_cloud() -> None:
+                    for sp_pre in scanned_pages:
+                        _cb_active_now = float(getattr(translator_engine, "_cloud_down_until_ts", 0.0) or 0.0) > time.time()
+                        if (
+                            _preclean_stop_flag
+                            or _folder_stop_requested
+                            or _cb_active_now
+                            or int(getattr(translator_engine, "_chapter_cloud_outage_streaks", 0) or 0) > 0
+                            or getattr(translator_engine, "nsfw_mode", False)
+                            or getattr(translator_engine, "_last_call_was_refusal", False)
+                        ):
+                            break
+                        if not sp_pre.get("ok"):
+                            continue
+                        p_blks_pre = sp_pre.get("blocks") or []
+                        pil_pre = sp_pre.get("pil_img")
+                        src_p_pre = sp_pre.get("img_path")
+                        if not p_blks_pre or pil_pre is None or src_p_pre is None:
+                            continue
+                        try:
+                            pre_clean_list = []
+                            for b_p in p_blks_pre:
+                                if bool(b_p.get("is_deleted")):
+                                    continue
+                                orig_p_txt = str(b_p.get("original_text") or "").strip()
+                                if not orig_p_txt:
+                                    continue
+                                if eff_skip_sighs and ocr_engine.is_sigh_or_interjection(orig_p_txt):
+                                    continue
+                                b_p_copy = dict(b_p)
+                                b_p_copy.pop("translated_text", None)
+                                _ensure_block_clean_bbox(b_p_copy)
+                                pre_clean_list.append(b_p_copy)
+                            if not pre_clean_list:
+                                continue
+                            c_hash = _compute_clean_state_hash(src_p_pre, pre_clean_list)
+                            sp_pre["_preclean_hash"] = c_hash
+                            sp_pre["_preclean_blocks"] = pre_clean_list
+                            if _get_cached_cleaned_image(src_p_pre, c_hash) is not None:
+                                continue
+                            async with gpu_lock(priority=2):
+                                if (
+                                    _preclean_stop_flag
+                                    or _folder_stop_requested
+                                    or float(getattr(translator_engine, "_cloud_down_until_ts", 0.0) or 0.0) > time.time()
+                                    or getattr(translator_engine, "nsfw_mode", False)
+                                ):
+                                    break
+                                c_im, _ = await asyncio.to_thread(cleaner_engine.clean_image, pil_pre, pre_clean_list, src_p_pre)
+                                _store_cached_cleaned_image(src_p_pre, c_hash, c_im, save_to_disk=False)
+                        except Exception as pre_exc:
+                            logger.debug("Фоновая пред-очистка страницы пропущена: %s", pre_exc)
 
                 try:
                     folder_glossary_entries = normalize_glossary_entries(manifest.get("glossary", []))
@@ -4014,6 +4029,17 @@ async def _run_folder_translation_job(
                     first_valid_pil = (valid_sp_list[0].get("pil_img") or valid_sp_list[0].get("pil")) if len(valid_sp_list) == 1 else None
                     if getattr(translator_engine, "_runtime_model_override", None):
                         active_mod = str(translator_engine._runtime_model_override)
+                    _can_run_bg_preclean = (
+                        active_mod.startswith("unsloth::")
+                        and not getattr(translator_engine, "nsfw_mode", False)
+                        and float(getattr(translator_engine, "_cloud_down_until_ts", 0.0) or 0.0) <= time.time()
+                        and int(getattr(translator_engine, "_chapter_cloud_outage_streaks", 0) or 0) == 0
+                        and translator_engine._is_remote_cloud_url(translator_engine.unsloth_url)
+                        and cleaner_engine is not None
+                        and cleaner_engine.lama_model is not None
+                    )
+                    if _can_run_bg_preclean:
+                        _bg_preclean_task = asyncio.create_task(_bg_preclean_pages_during_cloud())
                     enriched_combined = await translator_engine.translate_blocks(
                         blocks=combined_blocks,
                         source_lang=batch_detected_lang,
@@ -4370,11 +4396,47 @@ async def _run_folder_translation_job(
                 pil_img_in: Image.Image,
                 active_in: list[dict[str, Any]],
                 src_p: Path,
+                sp_meta: dict[str, Any] | None = None,
             ) -> Image.Image:
                 clean_hash = _compute_clean_state_hash(src_p, active_in)
                 cached_im = _get_cached_cleaned_image(src_p, clean_hash)
                 if cached_im is not None:
                     return cached_im
+                pre_hash = (sp_meta or {}).get("_preclean_hash")
+                pre_blocks = (sp_meta or {}).get("_preclean_blocks")
+                if (
+                    pre_hash
+                    and isinstance(pre_blocks, list)
+                    and hasattr(cleaner_engine, "_restore_original_patch")
+                    and not any(b.get("custom_mask_strokes") for b in active_in)
+                ):
+                    pre_im = _get_cached_cleaned_image(src_p, str(pre_hash))
+                    if pre_im is not None:
+                        try:
+                            def _norm_cb(blk_d: dict[str, Any]) -> tuple[int, int, int, int]:
+                                raw_c = blk_d.get("clean_bbox") or blk_d.get("original_bbox") or blk_d.get("bbox") or [0, 0, 0, 0]
+                                vals = [int(round(float(v))) for v in raw_c[:4]] if len(raw_c) >= 4 else [0, 0, 0, 0]
+                                return (vals[0], vals[1], vals[2], vals[3])
+
+                            act_boxes = {_norm_cb(b) for b in active_in}
+                            pre_boxes_map = {_norm_cb(pb): pb for pb in pre_blocks if isinstance(pb, dict)}
+                            if act_boxes.issubset(pre_boxes_map.keys()):
+                                excluded = [pb for cb_k, pb in pre_boxes_map.items() if cb_k not in act_boxes]
+                                has_overlap = any(
+                                    not (ex_c[2] <= ac_c[0] or ex_c[0] >= ac_c[2] or ex_c[3] <= ac_c[1] or ex_c[1] >= ac_c[3])
+                                    for ex_c in (_norm_cb(eb) for eb in excluded)
+                                    for ac_c in act_boxes
+                                )
+                                if not has_overlap:
+                                    comp_np = np.array(pre_im.convert("RGB"), copy=True)
+                                    raw_np = np.array(pil_img_in.convert("RGB"))
+                                    for ex_b in excluded:
+                                        cleaner_engine._restore_original_patch(comp_np, raw_np, ex_b)
+                                    reused_im = Image.fromarray(comp_np, mode="RGB")
+                                    _store_cached_cleaned_image(src_p, clean_hash, reused_im, save_to_disk=False)
+                                    return reused_im
+                        except Exception as reuse_exc:
+                            logger.debug("Быстрое восстановление патчей поверх пред-кэша пропущено: %s", reuse_exc)
                 cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in, src_p)
                 _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=False)
                 return cleaned_im
@@ -4453,10 +4515,10 @@ async def _run_folder_translation_job(
                     else:
                         if uses_gpu_lama:
                             async with gpu_lock(priority=1):
-                                cleaned_im = await asyncio.to_thread(_clean_page_only_sync, pil_img, active_in, img_path)
+                                cleaned_im = await asyncio.to_thread(_clean_page_only_sync, pil_img, active_in, img_path, sp_item)
                         else:
                             async with render_sem:
-                                cleaned_im = await asyncio.to_thread(_clean_page_only_sync, pil_img, active_in, img_path)
+                                cleaned_im = await asyncio.to_thread(_clean_page_only_sync, pil_img, active_in, img_path, sp_item)
                         async with render_sem:
                             await asyncio.to_thread(_render_and_save_page_sync, cleaned_im, active_in, img_path, dest_path)
 

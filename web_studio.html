@@ -253,7 +253,7 @@
       max-width: 540px;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 8px;
       overflow: hidden;
       flex-shrink: 0;
       transition: width 0.22s cubic-bezier(0.4, 0, 0.2, 1), min-width 0.22s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.18s ease, margin 0.22s ease;
@@ -405,7 +405,8 @@
       flex: 1;
       display: flex;
       flex-direction: column;
-      gap: 10px;
+      gap: 7px;
+      padding: 10px 11px;
       overflow: hidden;
       min-height: 0;
     }
@@ -413,7 +414,7 @@
     .source-pickers {
       display: grid;
       grid-template-columns: 1fr 1fr;
-      gap: 8px;
+      gap: 6px;
       flex-shrink: 0;
     }
 
@@ -421,9 +422,9 @@
       background: var(--bg-bento-inner);
       color: var(--text-primary);
       border: 1px solid rgba(255, 255, 255, 0.12);
-      border-radius: 11px;
-      padding: 8px 11px;
-      font-size: 12.5px;
+      border-radius: 10px;
+      padding: 7px 10px;
+      font-size: 12px;
       font-weight: 600;
       cursor: pointer;
       display: flex;
@@ -446,19 +447,28 @@
 
     .progress-labels {
       display: flex;
+      align-items: center;
       justify-content: space-between;
       font-size: 11.5px;
       color: var(--text-secondary);
-      gap: 6px;
+      gap: 8px;
     }
     .progress-labels span:first-child {
+      flex: 1;
+      min-width: 0;
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
+    #folder-count-lbl {
+      white-space: nowrap;
+      flex-shrink: 0;
+      font-weight: 600;
+      color: var(--mint);
+    }
 
     .progress-track {
-      height: 6px;
+      height: 5px;
       background: rgba(255, 255, 255, 0.08);
       border-radius: 999px;
       overflow: hidden;
@@ -478,15 +488,16 @@
     }
 
     .live-monitor-card {
-      margin: 6px 12px 8px 12px;
-      padding: 10px;
+      margin: 0;
+      padding: 7px 9px;
       border-radius: 10px;
-      background: rgba(15, 23, 42, 0.72);
+      background: rgba(15, 23, 42, 0.76);
       border: 1px solid rgba(148, 163, 184, 0.22);
-      font-size: 11.5px;
+      font-size: 11px;
       display: flex;
       flex-direction: column;
-      gap: 7px;
+      gap: 5px;
+      flex-shrink: 0;
     }
 
     .live-monitor-card.stalled {
@@ -499,6 +510,7 @@
       align-items: center;
       justify-content: space-between;
       gap: 6px;
+      min-width: 0;
     }
 
     .lm-status-wrap {
@@ -506,7 +518,72 @@
       align-items: center;
       gap: 6px;
       min-width: 0;
+      flex: 1;
       font-weight: 600;
+      overflow: hidden;
+    }
+
+    #lm-run-badge {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .lm-compact-sub {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .lm-inline-sse {
+      font-size: 10px;
+      font-weight: 600;
+      color: #bae6fd;
+      background: rgba(56, 189, 248, 0.12);
+      border: 1px solid rgba(56, 189, 248, 0.26);
+      border-radius: 999px;
+      padding: 1px 6px;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+
+    .lm-drawer-body {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding-top: 6px;
+      border-top: 1px solid rgba(148, 163, 184, 0.16);
+    }
+
+    .live-monitor-card.expanded .lm-drawer-body {
+      display: flex;
+    }
+
+    .lm-toggle-btn {
+      padding: 2px 7px;
+      min-height: 20px;
+      border-radius: 999px;
+      border: 1px solid rgba(148, 163, 184, 0.28);
+      background: rgba(255, 255, 255, 0.06);
+      color: var(--text-secondary);
+      font-size: 10px;
+      font-weight: 600;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+      transition: background 0.14s ease, border-color 0.14s ease, color 0.14s ease;
+    }
+    .lm-toggle-btn:hover {
+      background: rgba(244, 114, 182, 0.16);
+      border-color: var(--sakura);
+      color: #fff;
+    }
+    .lm-toggle-btn.active {
+      background: rgba(129, 140, 248, 0.24);
+      border-color: rgba(129, 140, 248, 0.55);
+      color: #e0e7ff;
     }
 
     .lm-dot {
@@ -535,13 +612,13 @@
     .lm-stages {
       display: flex;
       flex-wrap: wrap;
-      gap: 4px;
+      gap: 3px;
     }
 
     .lm-pill {
-      padding: 2px 6px;
+      padding: 1px 6px;
       border-radius: 999px;
-      font-size: 10px;
+      font-size: 9.5px;
       border: 1px solid rgba(148, 163, 184, 0.22);
       color: var(--text-muted);
       background: rgba(255, 255, 255, 0.03);
@@ -561,9 +638,14 @@
     }
 
     .lm-detail {
-      color: #e2e8f0;
-      line-height: 1.35;
-      word-break: break-word;
+      flex: 1;
+      min-width: 0;
+      color: var(--text-secondary);
+      font-size: 10.8px;
+      line-height: 1.3;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
 
     .lm-pulse-row {
@@ -695,8 +777,8 @@
       background: rgba(255, 255, 255, 0.04);
       color: var(--text-muted);
       border: 1px solid transparent;
-      border-radius: 8px;
-      padding: 4px 6px;
+      border-radius: 7px;
+      padding: 3px 6px;
       font-size: 11px;
       font-weight: 600;
       cursor: pointer;
@@ -713,26 +795,26 @@
     }
 
     .pages-scroll {
-      flex: 1;
+      flex: 1 1 auto;
       background: rgba(12, 10, 19, 0.68);
       border: 1px solid var(--border-subtle);
-      border-radius: 12px;
+      border-radius: 10px;
       overflow-y: auto;
-      padding: 5px;
+      padding: 4px;
       display: flex;
       flex-direction: column;
-      gap: 3px;
-      min-height: 90px;
+      gap: 2px;
+      min-height: 160px;
     }
 
     .page-row {
       display: flex;
       align-items: center;
       justify-content: space-between;
-      padding: 7px 10px;
-      border-radius: 9px;
+      padding: 5px 8px;
+      border-radius: 7px;
       cursor: pointer;
-      font-size: 12.5px;
+      font-size: 12px;
       border: 1px solid transparent;
       transition: background 0.14s ease, border-color 0.14s ease;
       gap: 6px;
@@ -747,19 +829,19 @@
     }
 
     .page-badge-done {
-      font-size: 11px;
+      font-size: 10.5px;
       color: var(--mint);
       background: rgba(52, 211, 153, 0.14);
-      padding: 2px 7px;
+      padding: 1px 6px;
       border-radius: 999px;
       font-weight: 600;
       flex-shrink: 0;
     }
     .page-badge-wait {
-      font-size: 11px;
+      font-size: 10.5px;
       color: var(--text-muted);
       background: rgba(255, 255, 255, 0.05);
-      padding: 2px 7px;
+      padding: 1px 6px;
       border-radius: 999px;
       flex-shrink: 0;
     }
@@ -767,16 +849,42 @@
     .cta-stack {
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 5px;
       flex-shrink: 0;
+    }
+
+    .sidebar-flags-row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 6px;
+      background: rgba(15, 23, 42, 0.55);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 8px;
+      padding: 5px 8px;
+      font-size: 11px;
+    }
+
+    .sidebar-flag-lbl {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 5px;
+      cursor: pointer;
+      user-select: none;
+      min-width: 0;
+    }
+    .sidebar-flag-lbl span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
     .cta-main {
       width: 100%;
       border: none;
-      border-radius: 12px;
-      padding: 11px 14px;
-      font-size: 13.5px;
+      border-radius: 10px;
+      padding: 9px 12px;
+      font-size: 13px;
       font-weight: 700;
       color: #fff;
       cursor: pointer;
@@ -790,21 +898,55 @@
       background: linear-gradient(135deg, #f43f5e, #e11d48);
     }
 
+    .cta-sub-row {
+      display: none;
+      grid-template-columns: 1fr 1fr;
+      gap: 5px;
+    }
+
     .cta-sub {
       width: 100%;
+      min-width: 0;
       background: var(--bg-bento-inner);
       color: var(--text-primary);
       border: 1px solid var(--border-soft);
-      border-radius: 10px;
-      padding: 8px 12px;
-      font-size: 12px;
+      border-radius: 9px;
+      padding: 6px 8px;
+      font-size: 11.5px;
       font-weight: 600;
       cursor: pointer;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
       transition: all 0.15s ease;
     }
     .cta-sub:hover {
       background: rgba(244, 114, 182, 0.16);
       border-color: var(--sakura);
+    }
+
+    .miko-mini-toast {
+      position: fixed;
+      left: 16px;
+      bottom: 16px;
+      max-width: min(420px, calc(100vw - 32px));
+      padding: 8px 13px;
+      border-radius: 11px;
+      background: rgba(21, 18, 36, 0.95);
+      border: 1px solid rgba(244, 114, 182, 0.42);
+      box-shadow: 0 12px 28px rgba(0, 0, 0, 0.68);
+      color: var(--text-primary);
+      font-size: 12px;
+      line-height: 1.35;
+      z-index: 55;
+      pointer-events: none;
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity 0.2s cubic-bezier(0.16, 1, 0.3, 1), transform 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+    .miko-mini-toast.visible {
+      opacity: 1;
+      transform: translateY(0);
     }
 
     /* ==================== MAIN STAGE & DOCKABLE LAYOUTS ==================== */
@@ -3225,9 +3367,9 @@
 
   <!-- ==================== MAIN WORKSPACE ==================== -->
   <div class="bento-workspace" role="main">
-    <!-- Left Sidebar (Mascot + Pages List) -->
+    <!-- Left Sidebar (Pages List + Compact Controls) -->
     <div class="bento-left" id="bento-left" role="complementary" aria-label="Список страниц и управление">
-      <div class="bento-card mascot-card compact-mascot" id="mascot-card">
+      <div class="bento-card mascot-card compact-mascot" id="mascot-card" style="display:none;">
         <div class="mascot-avatar-wrap">
           <img src="/mascot.png" alt="Miko-chan" onerror="this.style.display='none'" />
         </div>
@@ -3236,7 +3378,7 @@
             <span>✨ Мико-тян</span>
             <div style="display:flex; align-items:center; gap:6px;">
               <span id="gpu-badge" style="font-size:10.5px; color:var(--mint);">GPU Ready</span>
-              <button type="button" class="romaji-copy-btn" onclick="toggleCompactMascot()" id="btn-compact-mascot" title="Свернуть/развернуть карточку Мико-тян, чтобы освободить место для списка страниц">↕</button>
+              <button type="button" class="romaji-copy-btn" onclick="toggleCompactMascot()" id="btn-compact-mascot" title="Скрыть карточку Мико-тян, чтобы освободить место для списка страниц">✕</button>
             </div>
           </div>
           <div class="mascot-bubble" id="miko-speech" aria-live="polite">
@@ -3247,7 +3389,7 @@
 
       <div class="bento-card chapter-card">
         <div class="source-pickers" style="grid-template-columns: 1fr;">
-          <button class="soft-btn" onclick="pickFolderDialog()" style="justify-content:center; font-weight:700; padding:9px 12px;">
+          <button class="soft-btn" onclick="pickFolderDialog()" style="justify-content:center; font-weight:700;">
             <span>📁</span>
             <span>Выбрать папку с мангой</span>
           </button>
@@ -3273,44 +3415,50 @@
               <span class="lm-dot" id="lm-dot"></span>
               <span id="lm-run-badge">Мониторинг перевода</span>
             </div>
-            <div style="display:flex; align-items:center; gap:6px; flex-shrink:0;">
+            <div style="display:flex; align-items:center; gap:5px; flex-shrink:0;">
               <span id="lm-total-elapsed" style="color:var(--text-muted); font-size:10.5px;">0с</span>
-              <button type="button" id="lm-btn-close" class="lm-btn" style="display:none; padding:1px 5px;" onclick="hideLiveMonitorCard()" title="Скрыть">✕</button>
+              <button type="button" id="lm-btn-toggle-expand" class="lm-toggle-btn" onclick="toggleLiveMonitorDetails()" title="Показать/скрыть управление моделью, кнопки пропуска и ленту событий">Управление ▾</button>
+              <button type="button" id="lm-btn-close" class="lm-btn" style="display:none; padding:1px 5px; min-height:20px;" onclick="hideLiveMonitorCard()" title="Скрыть">✕</button>
             </div>
           </div>
-          <div class="lm-stages" id="lm-stages">
-            <span class="lm-pill" data-stage="ocr">OCR</span>
-            <span class="lm-pill" data-stage="pass0">Pass 0</span>
-            <span class="lm-pill" data-stage="llm">ИИ</span>
-            <span class="lm-pill" data-stage="micro_retry">Доперевод</span>
-            <span class="lm-pill" data-stage="proofread">Вычитка</span>
-            <span class="lm-pill" data-stage="render">Вёрстка</span>
-          </div>
-          <div class="lm-detail" id="lm-stage-detail">Ожидание запуска...</div>
-          <div class="lm-pulse-row">
-            <div id="lm-model-lbl">Модель: —</div>
-            <div id="lm-keys-lbl">Поток: —</div>
+          <div class="lm-compact-sub">
+            <div class="lm-detail" id="lm-stage-detail">Ожидание запуска...</div>
+            <span class="lm-inline-sse" id="lm-inline-sse" style="display:none;"></span>
           </div>
           <div class="lm-stall-banner" id="lm-stall-banner">
             ⚠️ Запрос долго без новых токенов — можно прервать запрос (спася готовые реплики) или на лету сменить модель.
           </div>
           <div class="lm-stall-banner" id="lm-rate-limit-banner" style="display:none; background:rgba(251,191,36,0.12); border-color:rgba(251,191,36,0.38); color:#fde68a;"></div>
-          <div class="lm-controls" id="lm-controls">
-            <div class="lm-model-row">
-              <select class="lm-select" id="lm-switch-model-sel" title="Выбрать модель для мгновенного переключения"></select>
-              <button type="button" class="lm-btn primary" id="lm-btn-switch" onclick="sendFolderControl('switch_model')">🔀 Сменить</button>
+          <div class="lm-drawer-body" id="lm-drawer-body">
+            <div class="lm-stages" id="lm-stages">
+              <span class="lm-pill" data-stage="ocr">OCR</span>
+              <span class="lm-pill" data-stage="pass0">Pass 0</span>
+              <span class="lm-pill" data-stage="llm">ИИ</span>
+              <span class="lm-pill" data-stage="micro_retry">Доперевод</span>
+              <span class="lm-pill" data-stage="proofread">Вычитка</span>
+              <span class="lm-pill" data-stage="render">Вёрстка</span>
             </div>
-            <div class="lm-btn-row">
-              <button type="button" class="lm-btn" id="lm-btn-abort" onclick="sendFolderControl('abort_request')" title="Прервать зависший запрос, сохранив уже пришедшие SSE-реплики">⏭ Прервать запрос</button>
-              <button type="button" class="lm-btn" id="lm-btn-skip" onclick="sendFolderControl('skip_stage')" title="Пропустить Pass 0 / Доперевод / Вычитку">⏩ Пропустить этап</button>
-              <button type="button" class="lm-btn" id="lm-btn-pause-batch" onclick="sendFolderControl('pause_after_batch')" title="Аккуратно остановить после завершения текущей пачки">⏸ После пачки</button>
-              <button type="button" class="lm-btn" id="lm-btn-cloud-only" onclick="sendFolderControl('toggle_cloud_only')" title="Запретить/разрешить откат в локальную Ollama при сбое облака">☁️ Только облако</button>
+            <div class="lm-pulse-row">
+              <div id="lm-model-lbl">Модель: —</div>
+              <div id="lm-keys-lbl">Поток: —</div>
             </div>
+            <div class="lm-controls" id="lm-controls">
+              <div class="lm-model-row">
+                <select class="lm-select" id="lm-switch-model-sel" title="Выбрать модель для мгновенного переключения"></select>
+                <button type="button" class="lm-btn primary" id="lm-btn-switch" onclick="sendFolderControl('switch_model')">🔀 Сменить</button>
+              </div>
+              <div class="lm-btn-row">
+                <button type="button" class="lm-btn" id="lm-btn-abort" onclick="sendFolderControl('abort_request')" title="Прервать зависший запрос, сохранив уже пришедшие SSE-реплики">⏭ Прервать запрос</button>
+                <button type="button" class="lm-btn" id="lm-btn-skip" onclick="sendFolderControl('skip_stage')" title="Пропустить Pass 0 / Доперевод / Вычитку">⏩ Пропустить этап</button>
+                <button type="button" class="lm-btn" id="lm-btn-pause-batch" onclick="sendFolderControl('pause_after_batch')" title="Аккуратно остановить после завершения текущей пачки">⏸ После пачки</button>
+                <button type="button" class="lm-btn" id="lm-btn-cloud-only" onclick="sendFolderControl('toggle_cloud_only')" title="Запретить/разрешить откат в локальную Ollama при сбое облака">☁️ Только облако</button>
+              </div>
+            </div>
+            <details class="lm-events-wrap" id="lm-events-wrap">
+              <summary id="lm-last-event-summary">Лента событий (0)</summary>
+              <div class="lm-events-list" id="lm-events-list"></div>
+            </details>
           </div>
-          <details class="lm-events-wrap" id="lm-events-wrap">
-            <summary id="lm-last-event-summary">Лента событий (0)</summary>
-            <div class="lm-events-list" id="lm-events-list"></div>
-          </details>
         </div>
 
         <div class="pages-filter-bar" id="pages-filter-bar">
@@ -3326,41 +3474,31 @@
         </div>
 
         <div class="cta-stack">
-          <div class="sidebar-mode-card" title="Режим работы конвейера (Детекция + OCR + Клининг + ИИ-перевод)">
-            <div style="display:flex; justify-content:space-between; align-items:center; font-size:10.5px; color:var(--text-secondary); font-weight:700;">
-              <span>🎛 Режим работы:</span>
-              <span id="pmode-side-badge" style="color:var(--mint);">⚖️ Стандарт</span>
-            </div>
-            <div class="sidebar-mode-pills">
-              <button type="button" class="pmode-btn active" id="pmode-side-balanced" data-pmode="balanced" onclick="setPipelineMode('balanced', true)" title="Быстрый и чистый перевод на каждый день">⚖️ Стандарт</button>
-              <button type="button" class="pmode-btn" id="pmode-side-ultra" data-pmode="ultra" onclick="setPipelineMode('ultra', true)" title="💎 Максимум (HQ): 2-Pass AI, YOLO26s-seg и выборочный 1.5x редро текстур">💎 Максимум</button>
-            </div>
-            <div id="pmode-side-desc" style="font-size:10.5px; color:var(--text-muted); line-height:1.3;">
-              RT-DETR-v2 + YOLOv8m, Anime-LaMa (1 проход) + CleanCache
-            </div>
-          </div>
-          <div style="display:flex; flex-direction:column; gap:4px; background:rgba(15, 23, 42, 0.55); border:1px solid rgba(255,255,255,0.08); border-radius:9px; padding:6px 9px; font-size:11.5px;">
-            <label style="display:flex; align-items:center; justify-content:space-between; gap:6px; cursor:pointer; user-select:none;" title="Если включено — пропускает уже переведенные страницы и допереводит только оставшиеся. Если выключить — перерисует все страницы папки (переводы мгновенно возьмутся из кэша .translation_state.json без траты токенов ИИ!)">
-              <span style="color:var(--text-primary); font-weight:600;">⏩ Пропускать уже готовые</span>
-              <input id="chk-sidebar-skip-existing" type="checkbox" checked onchange="onSidebarFolderFlagsChange('skip')" style="accent-color:var(--mint); width:15px; height:15px; cursor:pointer;" />
+          <div class="sidebar-flags-row">
+            <label class="sidebar-flag-lbl" title="Если включено — пропускает уже переведенные страницы и допереводит только оставшиеся. Если выключить — перерисует все страницы папки (переводы мгновенно возьмутся из кэша .translation_state.json без траты токенов ИИ!)">
+              <span style="color:var(--text-primary); font-weight:600;">⏩ Пропуск готовых</span>
+              <input id="chk-sidebar-skip-existing" type="checkbox" checked onchange="onSidebarFolderFlagsChange('skip')" style="accent-color:var(--mint); width:14px; height:14px; cursor:pointer; flex-shrink:0;" />
             </label>
-            <label style="display:flex; align-items:center; justify-content:space-between; gap:6px; cursor:pointer; user-select:none;" title="Включайте ТОЛЬКО если нужно стереть кэш .translation_state.json и заново отправить все реплики в ИИ. Оставьте выключенной, чтобы брать готовые переводы из кэша (0 токенов ИИ)!">
-              <span style="color:var(--text-secondary);">🔄 Принудительно заново (сброс кэша ИИ)</span>
-              <input id="chk-force-retranslate" type="checkbox" onchange="onSidebarFolderFlagsChange('force')" style="accent-color:var(--sakura); width:15px; height:15px; cursor:pointer;" />
+            <label class="sidebar-flag-lbl" title="Включайте ТОЛЬКО если нужно стереть кэш .translation_state.json и заново отправить все реплики в ИИ. Оставьте выключенной, чтобы брать готовые переводы из кэша (0 токенов ИИ)!">
+              <span style="color:var(--text-secondary);">🔄 Сброс кэша ИИ</span>
+              <input id="chk-force-retranslate" type="checkbox" onchange="onSidebarFolderFlagsChange('force')" style="accent-color:var(--sakura); width:14px; height:14px; cursor:pointer; flex-shrink:0;" />
             </label>
           </div>
           <button class="cta-main" id="btn-primary-folder" onclick="onPrimaryFolderButtonClick()">
             ▶ Перевести папку
           </button>
-          <button class="cta-sub" id="btn-contextual-page" onclick="translateSelectedPage()" style="display:none;">
-            🎯 Перевести выбранную страницу
-          </button>
-          <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none !important;">
-            ✏️ Редактировать перевод и Ромадзи
-          </button>
+          <div class="cta-sub-row" id="cta-sub-row">
+            <button class="cta-sub" id="btn-contextual-page" onclick="translateSelectedPage()" style="display:none;">
+              🎯 Только стр. #1
+            </button>
+            <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none;">
+              ✏️ Блоки стр. #1
+            </button>
+          </div>
         </div>
       </div>
     </div>
+    <div id="miko-mini-toast" class="miko-mini-toast"></div>
 
     <!-- Draggable Splitter for Left Sidebar -->
     <div class="panel-splitter v-splitter" id="left-sidebar-splitter" role="separator" aria-orientation="vertical" tabindex="0" title="Потяните, чтобы изменить ширину левой панели"></div>
@@ -4293,8 +4431,8 @@
 
                 <label class="toggle-row">
                   <div class="toggle-row-text">
-                    <span class="toggle-row-title">🐾 Компактная карточка ассистента Мико-тян</span>
-                    <span class="toggle-row-sub">Оставляет больше места под список страниц слева</span>
+                    <span class="toggle-row-title">🐾 Показывать карточку ассистента Мико-тян в левой панели</span>
+                    <span class="toggle-row-sub">По умолчанию скрыта, чтобы освободить максимум места под список страниц</span>
                   </div>
                   <input id="chk-ui-compact-mascot" type="checkbox" onchange="onUiSettingCheckboxChange()" />
                 </label>
@@ -4609,7 +4747,8 @@
       auto_collapse_sidebar: false,   // Auto-collapse left sidebar when opening editor
       auto_save_after_idle: true,     // Auto-rerender page 2.5s after moving/resizing/wheeling bbox
       auto_save_delay_ms: 2500,       // 2.5 seconds idle delay
-      compact_mascot: true,           // Compact Miko-chan card by default for taller page list
+      show_mascot: false,             // Hidden by default so page list gets maximum height
+      compact_mascot: true,           // Compact Miko-chan card when shown
       enable_mask_tools: true,        // Reworked 60 FPS live mask brush & dilate tools (ON by default)
       settings_modal_wide: false,     // Expanded settings modal mode
       right_panel_width: 460,
@@ -4648,6 +4787,12 @@
         if (!localStorage.getItem("miko_ux_v108_ready")) {
           uiSettings.compact_mascot = true;
           localStorage.setItem("miko_ux_v108_ready", "1");
+          localStorage.setItem("miko_ui_settings_v1", JSON.stringify(uiSettings));
+        }
+        // Однократная миграция v6.1.1 UX: карточка Мико-тян скрыта по умолчанию ради максимальной высоты списка страниц
+        if (!localStorage.getItem("miko_ux_v611_sidebar_slim")) {
+          uiSettings.show_mascot = false;
+          localStorage.setItem("miko_ux_v611_sidebar_slim", "1");
           localStorage.setItem("miko_ui_settings_v1", JSON.stringify(uiSettings));
         }
       } catch (e) {}
@@ -4735,9 +4880,12 @@
       const btnAutoCenter = document.getElementById("btn-auto-center-pin");
       if (btnAutoCenter) btnAutoCenter.classList.toggle("subtle-active", Boolean(uiSettings.auto_scroll_to_bubble));
 
-      // Mascot compact state
+      // Mascot visibility & compact state
       const mascotCard = document.getElementById("mascot-card");
-      if (mascotCard) mascotCard.classList.toggle("compact-mascot", Boolean(uiSettings.compact_mascot));
+      if (mascotCard) {
+        mascotCard.style.display = uiSettings.show_mascot ? "flex" : "none";
+        mascotCard.classList.toggle("compact-mascot", uiSettings.compact_mascot !== false);
+      }
 
       // Sync checkboxes in Settings modal
       const chkPopup = document.getElementById("chk-ui-inline-popup");
@@ -4766,7 +4914,7 @@
       if (rowInterval) rowInterval.style.opacity = autoOn ? "1" : "0.62";
 
       const chkMascot = document.getElementById("chk-ui-compact-mascot");
-      if (chkMascot) chkMascot.checked = Boolean(uiSettings.compact_mascot);
+      if (chkMascot) chkMascot.checked = Boolean(uiSettings.show_mascot);
 
       const maskToolsOn = Boolean(uiSettings.enable_mask_tools);
       const chkMaskTools = document.getElementById("chk-ui-enable-mask-tools");
@@ -4838,7 +4986,7 @@
       uiSettings.auto_collapse_sidebar = document.getElementById("chk-ui-auto-collapse").checked;
       const chkAutoSaveBox = document.getElementById("chk-ui-auto-save-box");
       if (chkAutoSaveBox) uiSettings.auto_save_after_idle = chkAutoSaveBox.checked;
-      uiSettings.compact_mascot = document.getElementById("chk-ui-compact-mascot").checked;
+      uiSettings.show_mascot = document.getElementById("chk-ui-compact-mascot").checked;
       const chkMask = document.getElementById("chk-ui-enable-mask-tools");
       if (chkMask) uiSettings.enable_mask_tools = chkMask.checked;
       if (!uiSettings.inline_bubble_popup) {
@@ -4892,7 +5040,7 @@
     }
 
     function toggleCompactMascot() {
-      uiSettings.compact_mascot = !uiSettings.compact_mascot;
+      uiSettings.show_mascot = false;
       saveLocalUiSettings();
       applyUiSettingsToDom();
     }
@@ -4945,9 +5093,30 @@
       setTimeout(() => renderBboxPinsOnStage(), 150);
     });
 
+    let _mikoMiniToastTimer = null;
     function sayMiko(text) {
       const el = document.getElementById("miko-speech");
       if (el) el.textContent = text;
+      if (!uiSettings.show_mascot && text) {
+        const msg = String(text).trim();
+        if (
+          msg &&
+          !msg.startsWith("Перевожу [") &&
+          !msg.startsWith("Выбери папку") &&
+          !msg.startsWith("Открыта папка") &&
+          !msg.startsWith("В папке «")
+        ) {
+          const toastEl = document.getElementById("miko-mini-toast");
+          if (toastEl) {
+            toastEl.textContent = msg;
+            toastEl.classList.add("visible");
+            if (_mikoMiniToastTimer) clearTimeout(_mikoMiniToastTimer);
+            _mikoMiniToastTimer = setTimeout(() => {
+              toastEl.classList.remove("visible");
+            }, 3200);
+          }
+        }
+      }
     }
 
     function updateSummaryChip() {
@@ -6548,9 +6717,11 @@
       const fastCandidate = findDetectedFastCloudModel(curShort, detectedOverride);
 
       if (warnBox && warnText) {
-        if (cloudOnly && isCloudSelected && isSlowReasoningCloudModel(curShort)) {
+        if (isCloudSelected && isSlowReasoningCloudModel(curShort) && translationProfile !== "local_only") {
           warnBox.style.display = "flex";
-          warnText.textContent = `⚠️ Модель «${curShort}» — reasoning/медленная (TTFT 35–70с): на больших пачках выше риск таймаутов и HTTP 429 шлюза. Для быстрого перевода лучше выбрать быструю модель без рассуждений.`;
+          warnText.textContent = cloudOnly
+            ? `⚠️ Модель «${curShort}» — reasoning/медленная (TTFT 35–75с): на больших пачках выше риск таймаутов и HTTP 429 шлюза. Для быстрого перевода лучше выбрать быструю модель без рассуждений.`
+            : `⚠️ Модель «${curShort}» — reasoning/медленная (TTFT 35–75с): шлюз может обрывать долгие чанки по 90с SSE-таймауту. Рекомендуется переключиться на быструю non-reasoning модель или локальный режим.`;
           if (btnFast) {
             if (fastCandidate) {
               btnFast.style.display = "inline-flex";
@@ -7825,8 +7996,9 @@
         const isSel = selectedPage && selectedPage.rel_path === p.rel_path;
         item.className = "page-row" + (isSel ? " selected" : "");
         item.dataset.relPath = p.rel_path;
+        item.title = p.rel_path;
         const badge = p.is_translated
-          ? `<span class="page-badge-done">✅ Готово</span>`
+          ? `<span class="page-badge-done">✓ Готово</span>`
           : `<span class="page-badge-wait">⏳ Ждет</span>`;
         item.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">#${Number(p.index) || 0} &nbsp;${escapeHtml(p.rel_path)}</span>${badge}`;
         item.onclick = () => selectPage(p);
@@ -8231,17 +8403,23 @@
         el.classList.toggle("selected", el.dataset.relPath === p.rel_path);
       });
 
+      const subRow = document.getElementById("cta-sub-row");
       const subBtn = document.getElementById("btn-contextual-page");
       const editBtn = document.getElementById("btn-edit-page");
+      if (subRow) subRow.style.display = "grid";
       subBtn.style.display = "block";
       editBtn.style.display = "block";
 
       if (p.is_translated) {
-        subBtn.textContent = `🔁 Перевести стр. #${p.index} заново (ИИ)`;
-        editBtn.textContent = `✏️ Редактировать текст стр. #${p.index} (+ Ромадзи)`;
+        subBtn.textContent = `🔁 Заново стр. #${p.index}`;
+        subBtn.title = `Перевести страницу #${p.index} (${p.filename || p.rel_path}) заново через ИИ`;
+        editBtn.textContent = `✏️ Текст стр. #${p.index}`;
+        editBtn.title = `Редактировать текст и Ромадзи страницы #${p.index} (${p.filename || p.rel_path})`;
       } else {
-        subBtn.textContent = `🎯 Перевести только стр. #${p.index} (${p.filename || p.rel_path})`;
-        editBtn.textContent = `✏️ Открыть блоки стр. #${p.index} (+ Ромадзи)`;
+        subBtn.textContent = `🎯 Только стр. #${p.index}`;
+        subBtn.title = `Перевести только страницу #${p.index} (${p.filename || p.rel_path})`;
+        editBtn.textContent = `✏️ Блоки стр. #${p.index}`;
+        editBtn.title = `Открыть блоки и Ромадзи страницы #${p.index} (${p.filename || p.rel_path})`;
       }
 
       document.getElementById("editor-title-lbl").textContent =
@@ -12670,10 +12848,16 @@
           is_translated: false,
           blocks: []
         };
-        document.getElementById("btn-contextual-page").style.display = "block";
-        document.getElementById("btn-contextual-page").textContent = `🔁 Перевести «${data.filename}» заново`;
-        document.getElementById("btn-edit-page").style.display = "block";
-        document.getElementById("btn-edit-page").textContent = `✏️ Редактировать перевод и Ромадзи`;
+        const subRow = document.getElementById("cta-sub-row");
+        if (subRow) subRow.style.display = "grid";
+        const subBtnSingle = document.getElementById("btn-contextual-page");
+        const editBtnSingle = document.getElementById("btn-edit-page");
+        subBtnSingle.style.display = "block";
+        subBtnSingle.textContent = `🔁 Заново стр. #1`;
+        subBtnSingle.title = `Перевести «${data.filename}» заново`;
+        editBtnSingle.style.display = "block";
+        editBtnSingle.textContent = `✏️ Текст стр. #1`;
+        editBtnSingle.title = `Редактировать перевод и Ромадзи «${data.filename}»`;
         updateTopPageNav();
         renderViewer();
         await translateSelectedPage();
@@ -12848,7 +13032,32 @@
     let isFolderPollInspecting = false;
     let folderEventSource = null;
     let lmUserHidden = false;
+    let lmDetailsExpanded = false;
+    let lmAutoExpandedForStall = false;
     const LM_STAGE_ORDER = ["ocr", "pass0", "llm", "micro_retry", "proofread", "render"];
+    const LM_STAGE_SHORT_NAMES = {
+      ocr: "OCR",
+      pass0: "Pass 0",
+      llm: "ИИ",
+      micro_retry: "Доперевод",
+      proofread: "Вычитка",
+      render: "Вёрстка"
+    };
+
+    function syncLiveMonitorExpandUi(hasActiveFlag = false) {
+      const card = document.getElementById("live-monitor-card");
+      const btn = document.getElementById("lm-btn-toggle-expand");
+      if (card) card.classList.toggle("expanded", Boolean(lmDetailsExpanded));
+      if (btn) {
+        btn.classList.toggle("active", Boolean(lmDetailsExpanded) || Boolean(hasActiveFlag));
+        btn.textContent = lmDetailsExpanded ? "Свернуть ▴" : "Управление ▾";
+      }
+    }
+
+    function toggleLiveMonitorDetails() {
+      lmDetailsExpanded = !lmDetailsExpanded;
+      syncLiveMonitorExpandUi();
+    }
 
     function syncLiveMonitorModelOptions(models, selectedVal) {
       const lmSel = document.getElementById("lm-switch-model-sel");
@@ -12912,6 +13121,13 @@
       const isRatePaused = Boolean(live.rate_limit_paused) || curStage === "paused_429";
       const isStalled = isActive && !isRateWait && !isRatePaused && (stepElSec >= 90 || (tokAge !== null && tokAge !== undefined && Number(tokAge) >= 30));
       card.classList.toggle("stalled", isStalled);
+      if (isStalled && !lmAutoExpandedForStall) {
+        lmDetailsExpanded = true;
+        lmAutoExpandedForStall = true;
+      } else if (!isStalled) {
+        lmAutoExpandedForStall = false;
+      }
+      syncLiveMonitorExpandUi(Boolean(live.pause_after_batch) || Boolean(live.cloud_only));
 
       const dotEl = document.getElementById("lm-dot");
       if (dotEl) {
@@ -12925,8 +13141,9 @@
       if (badgeEl) {
         const bIdx = Number(live.batch_index || 0);
         const bTot = Number(live.batches_total || 0);
+        const stShort = LM_STAGE_SHORT_NAMES[curStage] ? ` · ${LM_STAGE_SHORT_NAMES[curStage]}` : "";
         if (isActive) {
-          badgeEl.textContent = bTot > 0 ? `В работе · Пачка ${bIdx}/${bTot}` : "Выполняется...";
+          badgeEl.textContent = bTot > 0 ? `Пачка ${bIdx}/${bTot}${stShort}` : `В работе${stShort}`;
         } else if (status === "completed") {
           badgeEl.textContent = "✅ Перевод завершён";
         } else if (status === "stopped") {
@@ -12951,7 +13168,25 @@
 
       const detailEl = document.getElementById("lm-stage-detail");
       if (detailEl) {
-        detailEl.textContent = live.stage_label || st.current_file || "—";
+        const rawDetail = String(live.stage_label || st.current_file || "—");
+        detailEl.textContent = rawDetail.replace(/^Пачка\s+\d+\/\d+\s*·\s*/i, "").replace(/\b(?:unsloth|ollama)::/gi, "");
+        detailEl.title = rawDetail;
+      }
+
+      const inlineSseEl = document.getElementById("lm-inline-sse");
+      if (inlineSseEl) {
+        const expInline = Number(live.expected_keys || 0);
+        const recInline = Number(live.received_keys || 0);
+        if (isActive && expInline > 0 && (curStage === "llm" || curStage === "micro_retry" || curStage === "pass0" || curStage === "proofread")) {
+          inlineSseEl.style.display = "inline-block";
+          inlineSseEl.textContent = `${recInline}/${expInline} · ${formatLiveDuration(stepElSec)}`;
+        } else if (isActive && stepElSec > 0) {
+          inlineSseEl.style.display = "inline-block";
+          inlineSseEl.textContent = formatLiveDuration(stepElSec);
+        } else {
+          inlineSseEl.style.display = "none";
+          inlineSseEl.textContent = "";
+        }
       }
 
       const modelEl = document.getElementById("lm-model-lbl");

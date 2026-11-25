@@ -452,9 +452,9 @@ class StandaloneLaMaInpainter:
             try:
                 torch.backends.cuda.matmul.allow_tf32 = True
                 torch.backends.cudnn.allow_tf32 = True
-                torch.backends.cudnn.benchmark = True
+                torch.backends.cudnn.benchmark = False
             except Exception as exc:
-                logger.debug("Не удалось включить TF32/cuDNN benchmark для LaMa: %s", exc)
+                logger.debug("Не удалось включить TF32 для LaMa: %s", exc)
 
         # Опциональный BF16 (на TorchScript FFT LaMa может вызывать ошибку; при сбое сработает авто-откат на TF32/FP32)
         self.use_bf16 = (
@@ -5173,7 +5173,7 @@ class BubbleCleaner:
                 # прогоняем их за один батчевый вызов GPU `StandaloneLaMaInpainter.inpaint_rois_batch`.
                 pre_batched_lama_rgb: np.ndarray | None = None
                 textured_rois_set: set[tuple[int, int, int, int]] = set()
-                is_ultra_redraw = (self.pipeline_mode == "ultra") or (self.inpaint_backend == "ultra_deep_redraw")
+                is_ultra_redraw = self.inpaint_backend == "ultra_deep_redraw"
                 if (
                     len(uncached_blocks) >= 2
                     and self.inpaint_backend != "fast_telea"

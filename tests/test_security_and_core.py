@@ -3939,6 +3939,9 @@ def test_stage3_ui_ux_extension_gui_and_hygiene():
     ):
         assert marker in html, f"Отсутствует Stage 3 UX/a11y контракт в web_studio.html: {marker}"
     assert "btn-sidebar-chapter-book" not in html
+    assert "sidebar-mode-card" not in html.split("</style>", 1)[1], "Дубликат Режим работы в левой панели должен быть убран"
+    assert 'id="lm-drawer-body"' in html and 'id="lm-btn-toggle-expand"' in html
+    assert "show_mascot: false" in html
 
     scripts = [m for m in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) if m.strip()]
     node_bin = shutil.which("node")
@@ -4000,6 +4003,164 @@ def test_stage3_ui_ux_extension_gui_and_hygiene():
         bat_txt = bat.read_bytes().decode("ascii")
         assert "\r\n" in bat_txt and bat_txt.replace("\r\n", "").find("\n") == -1
         assert "setlocal" in bat_txt, f"{bat.name} missing setlocal"
+
+
+def test_audit_p0_p2_performance_fixes():
+    import numpy as np
+    from PIL import Image
+
+    tr_mod = _load_real_module("translator")
+    cleaner_mod = _load_real_module("cleaner")
+    ocr_mod = _load_real_module("ocr_engine")
+    srv = _load_server_module()
+
+    # 1. Fast-start first batch: 170 pages (p_batch=25, tail=10) -> first batch is 8 pages!
+    batches_170 = srv._build_smart_page_batches(list(range(170)), pages_per_batch=25, tail_merge_pages=10, fast_first_batch=True)
+    assert [len(b) for b in batches_170] == [8, 25, 25, 25, 25, 25, 25, 12]
+    batches_small = srv._build_smart_page_batches(list(range(20)), pages_per_batch=25, tail_merge_pages=10, fast_first_batch=True)
+    assert [len(b) for b in batches_small] == [20]
+
+    # 2. OCR engine disables cudnn.benchmark on dynamic crop sizes and avoids unconditional empty_cache() per page
+    ocr_src = (REPO_ROOT / "ocr_engine.py").read_text(encoding="utf-8")
+    assert "torch.backends.cudnn.benchmark = False" in ocr_src
+    fake_ocr = object.__new__(ocr_mod.MangaOCREngine)
+    fake_ocr._page_ocr_cache = {(0, 0, 10, 10, "ja"): "x"}
+    fake_ocr._last_rtdetr_free_boxes = [{"bbox": [0, 0, 5, 5]}]
+    empty_calls: list[int] = []
+    if ocr_mod.torch is not None and hasattr(ocr_mod.torch, "cuda"):
+        with (
+            patch.object(ocr_mod.torch.cuda, "is_available", return_value=True),
+            patch.object(ocr_mod.torch.cuda, "memory_allocated", return_value=1024 * 1024 * 500),
+            patch.object(ocr_mod.torch.cuda, "empty_cache", side_effect=lambda: empty_calls.append(1)),
+        ):
+            fake_ocr.release_transient_vram(flush_cuda_cache=False)
+            assert empty_calls == [], "release_transient_vram не должен сбрасывать CUDA кэш на каждой странице при низкой VRAM"
+            fake_ocr.release_transient_vram(flush_cuda_cache=True)
+            assert len(empty_calls) == 1
+
+    # 3. Cleaner runs batched LaMa inpaint_rois_batch in ultra mode when inpaint_backend == 'anime_lama_sota'
+    bc = cleaner_mod.BubbleCleaner(use_lama=False, device="cpu")
+    bc.pipeline_mode = "ultra"
+    bc.inpaint_backend = "anime_lama_sota"
+    batch_roi_calls: list[int] = []
+
+    class _BatchLamaStub:
+        def inpaint_rois_batch(self, page_bgr, page_mask, roi_bboxes, context_pad=80, max_batch_size=16):
+            batch_roi_calls.append(len(roi_bboxes))
+            return page_bgr.copy()
+
+    bc.lama_model = _BatchLamaStub()
+    page_arr = np.full((300, 300, 3), 180, dtype=np.uint8)
+    page_arr[::4, :, :] = 90
+    page_arr[50:90, 65:70, :] = 10
+    page_arr[65:70, 50:90, :] = 10
+    page_arr[190:230, 205:210, :] = 10
+    page_arr[205:210, 190:230, :] = 10
+    bc.clean_image(
+        Image.fromarray(page_arr, mode="RGB"),
+        [
+            {"id": "1", "bbox": [40, 40, 110, 110], "clean_bbox": [38, 38, 112, 112], "is_free_text": True, "original_text": "あ"},
+            {"id": "2", "bbox": [180, 180, 250, 250], "clean_bbox": [178, 178, 252, 252], "is_free_text": True, "original_text": "い"},
+        ],
+    )
+    assert batch_roi_calls == [2], f"Ожидался батч-прогон LaMa в ultra при anime_lama_sota: {batch_roi_calls}"
+
+    # 4. P0+P1 translator fixes: fail-fast on SSE upstream timeout, persistent outage streak across batches,
+    #    reasoning_effort='low', adaptive slow-model batch limit=24, Pass 0 VRAM swap guard, and emphatic '!?' audit
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-audit",
+            )
+            tr.cloud_only_no_local_fallback = False
+
+            # Emphatic '!?' / '!' translations must not trigger false-positive missing-'?' micro_retry
+            flags = tr._detect_batch_misalignment_and_hallucinations(
+                {"1": "お前はタイムトラベラーか！？", "2": "本当に元気だよ"},
+                {"1": "What! You're a time traveler!", "2": "I am really fine."},
+                target_lang="en",
+            )
+            assert flags == {}, f"Не должно быть ложного срабатывания '?' на экспрессивном восклицании: {flags}"
+
+            # Pass 0 prefers configured non-MT fallback model and skips swapping when warm Sugoi is active
+            tr._cached_models = [
+                {"id": "ollama::sugoi-14b-ultra:Q4_K_M", "provider": "ollama", "installed": "true"},
+                {"id": "ollama::shisa-v2.1-14b:Q4_K_M", "provider": "ollama", "installed": "true"},
+                {"id": "ollama::qwen3:14b", "provider": "ollama", "installed": "true"},
+            ]
+            tr.local_fallback_model_multilang = "ollama::shisa-v2.1-14b:Q4_K_M"
+            assert await tr._resolve_local_non_mt_llm() == "ollama::shisa-v2.1-14b:Q4_K_M"
+
+            tr.last_local_fallback_model = "ollama::sugoi-14b-ultra:Q4_K_M"
+            p0_res = await tr.extract_chapter_glossary_prepass(
+                blocks=[
+                    {"id": "1", "original_text": "美咲ちゃん、おはよう"},
+                    {"id": "2", "original_text": "美咲は急いでいる"},
+                    {"id": "3", "original_text": "美咲はどこ"},
+                    {"id": "4", "original_text": "美咲だよ"},
+                ],
+                source_lang="ja",
+                target_lang="en",
+                model="unsloth::grok-4.7",
+            )
+            assert p0_res == [], "При уже разогретой в VRAM Sugoi Pass 0 не должен вытеснять её загрузкой Qwen3-14B"
+
+            # SSE upstream timeout fails fast in 1 attempt (not 2x90s), sets 180s cooldown, and survives reset_batch_cloud_state()
+            sse_attempts = 0
+            seen_reasoning_effort: list[Any] = []
+
+            async def _fake_sse_upstream_timeout(
+                client, url, headers, payload_cloud, req_timeout, t0_cloud, max_total_stream_sec, stream_chunks_out, expected_total_keys=0
+            ):
+                nonlocal sse_attempts
+                sse_attempts += 1
+                seen_reasoning_effort.append(payload_cloud.get("reasoning_effort"))
+                raise httpx.RemoteProtocolError("SSE upstream error: 等待响应超时。")
+
+            async def _fake_ollama_direct(client, ollama_model_name, system_prompt, user_prompt, **kwargs):
+                return {"1": "Translated by local Sugoi"}
+
+            async def _fake_resolve_fb(*args, **kwargs):
+                return "ollama::sugoi-14b-ultra:Q4_K_M"
+
+            with (
+                patch.object(tr, "_execute_cloud_chat_request", side_effect=_fake_sse_upstream_timeout),
+                patch.object(tr, "_resolve_local_fallback_model", side_effect=_fake_resolve_fb),
+                patch.object(tr, "_call_ollama_direct", side_effect=_fake_ollama_direct),
+            ):
+                r_b1 = await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "こんにちは"}',
+                )
+                assert r_b1 == {"1": "Translated by local Sugoi"}
+                assert sse_attempts == 1, f"SSE upstream timeout должен завершаться за 1 попытку без слепого повтора: {sse_attempts}"
+                assert seen_reasoning_effort == ["low"]
+                assert tr._chapter_cloud_outage_streaks == 1
+                assert tr._get_effective_cloud_batch_limit("unsloth::grok-4.7") == 24
+                assert (tr._cloud_down_until_ts - srv.time.time()) > 120.0
+
+                # Симулируем переход к следующей пачке с истёкшим таймером: streak сохраняется и включает nsfw_mode на 2-м сбое!
+                tr.reset_batch_cloud_state()
+                assert tr._chapter_cloud_outage_streaks == 1
+                tr._cloud_down_until_ts = 0.0
+                r_b2 = await tr._call_llm_json(
+                    client=tr._get_http_client(),
+                    full_model_id="unsloth::grok-4.7",
+                    system_prompt="sys",
+                    user_prompt='{"1": "ありがとう"}',
+                )
+                assert r_b2 == {"1": "Translated by local Sugoi"}
+                assert sse_attempts == 2
+                assert tr._chapter_cloud_outage_streaks == 2
+                assert tr.nsfw_mode is True
+
+    asyncio.run(_run())
 
 
 if __name__ == "__main__":
