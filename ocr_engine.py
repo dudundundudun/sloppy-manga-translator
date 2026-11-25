@@ -589,9 +589,14 @@ class HallucinationFreeMangaOCR:
         img_or_crop: Union[np.ndarray, Image.Image],
         max_length: int = 300,
         gate_crop: Optional[Union[np.ndarray, Image.Image]] = None,
+        _precomputed_gate: Optional[StrokeGateResult] = None,
     ) -> MangaOCRRecognition:
         # Этап 1: Pre-OCR Stroke Gate
-        gate = pre_ocr_stroke_gate(gate_crop if gate_crop is not None else img_or_crop)
+        gate = (
+            _precomputed_gate
+            if _precomputed_gate is not None
+            else pre_ocr_stroke_gate(gate_crop if gate_crop is not None else img_or_crop)
+        )
         if not gate.passed:
             return MangaOCRRecognition(
                 text="",
@@ -668,8 +673,13 @@ class HallucinationFreeMangaOCR:
             return [r for r in results if r is not None]
 
         if len(valid_entries) == 1:
-            orig_i, _, _, raw_item, g_crop = valid_entries[0]
-            results[orig_i] = self.recognize(raw_item, max_length=max_length, gate_crop=g_crop)
+            orig_i, _, pre_gate, raw_item, g_crop = valid_entries[0]
+            results[orig_i] = self.recognize(
+                raw_item,
+                max_length=max_length,
+                gate_crop=g_crop,
+                _precomputed_gate=pre_gate,
+            )
             return [r for r in results if r is not None]
 
         step_bs = max(1, int(batch_size))
@@ -679,8 +689,13 @@ class HallucinationFreeMangaOCR:
         for b_start in range(0, len(valid_entries), step_bs):
             sub_valid = valid_entries[b_start : b_start + step_bs]
             if len(sub_valid) == 1:
-                orig_i, _, _, raw_item, g_crop = sub_valid[0]
-                results[orig_i] = self.recognize(raw_item, max_length=max_length, gate_crop=g_crop)
+                orig_i, _, pre_gate, raw_item, g_crop = sub_valid[0]
+                results[orig_i] = self.recognize(
+                    raw_item,
+                    max_length=max_length,
+                    gate_crop=g_crop,
+                    _precomputed_gate=pre_gate,
+                )
                 continue
 
             pil_batch = [entry[1] for entry in sub_valid]
@@ -4191,9 +4206,11 @@ class MangaOCREngine:
                     ol_exc,
                 )
 
-        # 2. Пробуем облачный OpenAI-совместимый Vision API (с ретраями при сетевых таймаутах)
-        if cloud_api_url and cloud_api_key:
-            c_url = cloud_api_url.strip().rstrip("/")
+        # 2. Пробуем облачный OpenAI-совместимый Vision API (с ретраями при сетевых таймаутах и сверкой со списком доступных моделей шлюза)
+        eff_c_url = (cloud_api_url or getattr(self, "_cloud_api_url", "") or "").strip()
+        eff_c_key = (cloud_api_key or getattr(self, "_cloud_api_key", "") or "").strip()
+        if eff_c_url and eff_c_key and time.monotonic() >= float(getattr(self, "_vlm_cloud_disabled_until", 0.0) or 0.0):
+            c_url = eff_c_url.rstrip("/")
             for sfx in ("/chat/completions", "/models"):
                 if c_url.endswith(sfx):
                     c_url = c_url[: -len(sfx)].rstrip("/")
@@ -4201,22 +4218,35 @@ class MangaOCREngine:
             c_path = (urlparse(c_url).path or "").rstrip("/")
             chat_url = f"{c_url}/chat/completions" if c_path else f"{c_url}/v1/chat/completions"
             candidate_cloud_models: list[str] = []
-            if cloud_vlm_model and cloud_vlm_model.strip() and cloud_vlm_model.strip() != "auto":
+            if cloud_vlm_model and cloud_vlm_model.strip() and cloud_vlm_model.strip() not in ("auto", "cloud_vision"):
                 cm = cloud_vlm_model.strip().split("::", 1)[-1]
                 candidate_cloud_models.append(cm)
+            avail_cloud = [
+                str(m).strip().split("::", 1)[-1]
+                for m in (getattr(self, "available_cloud_models", None) or [])
+                if str(m).strip()
+            ]
+            vision_hints = ("vl", "vision", "gemini", "gpt-4o", "claude-3", "grok-4", "deepseek-v4", "pixtral", "qwen2.5-vl", "qwen3-vl")
+            for am in avail_cloud:
+                low_am = am.lower()
+                if any(vh in low_am for vh in vision_hints) and am not in candidate_cloud_models:
+                    candidate_cloud_models.append(am)
             for def_cm in ("deepseek-v4-flash", "deepseek-v4-pro", "gpt-4o-mini", "qwen-vl-max"):
-                if def_cm not in candidate_cloud_models:
+                if (not avail_cloud or def_cm in avail_cloud) and def_cm not in candidate_cloud_models:
                     candidate_cloud_models.append(def_cm)
+            if not candidate_cloud_models:
+                candidate_cloud_models.extend(["deepseek-v4-flash", "gpt-4o-mini"])
 
             headers = {
                 "Content-Type": "application/json",
                 "Accept": "application/json",
-                "Authorization": f"Bearer {cloud_api_key.strip()}",
+                "Authorization": f"Bearer {eff_c_key}",
                 "User-Agent": "MikoMangaStudio/6.1.0",
             }
             if httpx is None:
                 logger.debug("httpx недоступен для облачного VLM-OCR.")
-                return ""
+                return "", fb_lang, ""
+            cloud_hard_failures = 0
             with httpx.Client(timeout=httpx.Timeout(30.0, connect=10.0), trust_env=False) as client:
                 for c_mod in candidate_cloud_models[:2]:
                     payload_cloud = {
@@ -4266,13 +4296,17 @@ class MangaOCREngine:
                                 time.sleep(0.8)
                                 continue
                             else:
+                                cloud_hard_failures += 1
                                 break
                         except Exception as c_exc:
                             if attempt == 0:
                                 logger.debug("Повтор VLM-OCR Cloud (%s) после сетевого сбоя: %s", c_mod, c_exc)
                                 time.sleep(0.6)
                                 continue
+                            cloud_hard_failures += 1
                             logger.warning("Сбой облачного VLM-OCR (%s): %s", c_mod, c_exc)
+            if cloud_hard_failures >= len(candidate_cloud_models[:2]):
+                self._vlm_cloud_disabled_until = time.monotonic() + 300.0
 
         return "", fb_lang, ""
 
@@ -4308,6 +4342,22 @@ class MangaOCREngine:
                     return 512
             return 384
 
+        use_cuda_hayai = str(self.device).startswith("cuda") and torch.cuda.is_available()
+        hayai_ac_dtype = (
+            (torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16)
+            if use_cuda_hayai
+            else None
+        )
+
+        def _generate_hayai(gen_kwargs: dict[str, Any]) -> Any:
+            if use_cuda_hayai and hayai_ac_dtype is not None:
+                try:
+                    with torch.autocast(device_type="cuda", dtype=hayai_ac_dtype):
+                        return model.generate(**gen_kwargs)
+                except Exception:
+                    return model.generate(**gen_kwargs)
+            return model.generate(**gen_kwargs)
+
         def _run_single_crop(img: Image.Image) -> str:
             patch_budget = _choose_patch_budget([img])
             inputs = processor(images=[img], max_num_patches=patch_budget, return_tensors="pt")
@@ -4323,7 +4373,7 @@ class MangaOCREngine:
             if "spatial_shapes" in inputs:
                 gen_kwargs["spatial_shapes"] = inputs["spatial_shapes"]
 
-            raw_out = model.generate(**gen_kwargs)
+            raw_out = _generate_hayai(gen_kwargs)
             if isinstance(raw_out, str):
                 raw_txt = raw_out
             elif isinstance(raw_out, (list, tuple)) and len(raw_out) > 0:
@@ -4367,7 +4417,7 @@ class MangaOCREngine:
                     if "spatial_shapes" in inputs:
                         gen_kwargs["spatial_shapes"] = inputs["spatial_shapes"]
 
-                    raw_batch = model.generate(**gen_kwargs)
+                    raw_batch = _generate_hayai(gen_kwargs)
                     if isinstance(raw_batch, (list, tuple)) and len(raw_batch) == len(sub_crops):
                         for item in raw_batch:
                             if isinstance(item, str):
@@ -6139,7 +6189,10 @@ class MangaOCREngine:
         if p75 >= 210.0:
             interior_mask = cls._extract_bubble_interior_mask(roi_gray, p75)
             ink_thresh = max(165, int(p75 - 18))
-            binary = ((roi_gray < ink_thresh) & (interior_mask > 0)).astype(np.uint8) * 255
+            roi_chroma = np.max(roi_rgb, axis=2).astype(np.int16) - np.min(roi_rgb, axis=2).astype(np.int16)
+            bg_chroma_med = float(np.median(roi_chroma[interior_mask > 0])) if np.any(interior_mask > 0) else 0.0
+            color_ink_cond = (roi_chroma >= max(42, int(round(bg_chroma_med + 32.0)))) if bg_chroma_med <= 14.0 else False
+            binary = (((roi_gray < ink_thresh) | color_ink_cond) & (interior_mask > 0)).astype(np.uint8) * 255
             if rh >= 28 and rw >= 28:
                 dash_chk = segment_dashed_bubble_roi(roi_gray, None)
                 pad_d = min(28, max(12, int(min(bw, bh) * 0.14)))
@@ -6224,10 +6277,54 @@ class MangaOCREngine:
         if kept_ink_px < 12 or max_cx <= min_cx or max_cy <= min_cy:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
 
-        ink_x1 = max(bx1, ix1 + min_cx - 4)
-        ink_y1 = max(by1, iy1 + min_cy - 4)
-        ink_x2 = min(bx2, ix1 + max_cx + 4)
-        ink_y2 = min(by2, iy1 + max_cy + 4)
+        clamp_x1 = min(bx1, valid_hint[0]) if valid_hint is not None else bx1
+        clamp_y1 = min(by1, valid_hint[1]) if valid_hint is not None else by1
+        clamp_x2 = max(bx2, valid_hint[2]) if valid_hint is not None else bx2
+        clamp_y2 = max(by2, valid_hint[3]) if valid_hint is not None else by2
+
+        ink_x1 = max(clamp_x1, ix1 + min_cx - 4)
+        ink_y1 = max(clamp_y1, iy1 + min_cy - 4)
+        ink_x2 = min(clamp_x2, ix1 + max_cx + 4)
+        ink_y2 = min(clamp_y2, iy1 + max_cy + 4)
+        if valid_hint is not None:
+            if valid_hint[0] < bx1 and min_cx <= 3:
+                ink_x1 = min(ink_x1, valid_hint[0])
+            if valid_hint[1] < by1 and min_cy <= 3:
+                ink_y1 = min(ink_y1, valid_hint[1])
+            if valid_hint[2] > bx2 and max_cx >= rw - 3:
+                ink_x2 = max(ink_x2, valid_hint[2])
+            if valid_hint[3] > by2 and max_cy >= rh - 3:
+                ink_y2 = max(ink_y2, valid_hint[3])
+        elif has_clean_interior and (min_cx <= 2 or min_cy <= 2 or max_cx >= rw - 2 or max_cy >= rh - 2):
+            over_pad = min(max_overhang, min(14, max(4, int(min(bw, bh) * 0.10))))
+            ex1 = max(0, bx1 - over_pad)
+            ey1 = max(0, by1 - over_pad)
+            ex2 = min(img_w, bx2 + over_pad)
+            ey2 = min(img_h, by2 + over_pad)
+            if ex1 < bx1 or ey1 < by1 or ex2 > bx2 or ey2 > by2:
+                ext_gray = cv2.cvtColor(img_np[ey1:ey2, ex1:ex2], cv2.COLOR_RGB2GRAY)
+                eh, ew = ext_gray.shape[:2]
+                pure_w_e = (ext_gray >= max(225, int(p75 - 24))).astype(np.uint8) * 255
+                dist_pw_e = cv2.distanceTransform(cv2.bitwise_not(pure_w_e), cv2.DIST_L2, 3)
+                dark_e = ((ext_gray < min(155, int(p75 - 65))) & (dist_pw_e <= 4.0)).astype(np.uint8) * 255
+                nl_e, _, st_e, _ = cv2.connectedComponentsWithStats(dark_e, connectivity=8)
+                rb_x1, rb_y1 = bx1 - ex1, by1 - ey1
+                rb_x2, rb_y2 = bx2 - ex1, by2 - ey1
+                for le in range(1, nl_e):
+                    cx_e, cy_e, cw_e, ch_e, ca_e = [int(v) for v in st_e[le]]
+                    if ca_e < 6 or cw_e > ew * 0.45 or ch_e > eh * 0.45:
+                        continue
+                    overlaps_inner = not (
+                        (cx_e + cw_e) < (rb_x1 + 2)
+                        or cx_e > (rb_x2 - 2)
+                        or (cy_e + ch_e) < (rb_y1 + 2)
+                        or cy_e > (rb_y2 - 2)
+                    )
+                    if overlaps_inner:
+                        ink_x1 = min(ink_x1, max(ex1, ex1 + cx_e - 2))
+                        ink_y1 = min(ink_y1, max(ey1, ey1 + cy_e - 2))
+                        ink_x2 = max(ink_x2, min(ex2, ex1 + cx_e + cw_e + 2))
+                        ink_y2 = max(ink_y2, min(ey2, ey1 + cy_e + ch_e + 2))
 
         if (ink_x2 - ink_x1) < 10 or (ink_y2 - ink_y1) < 10:
             return valid_hint if valid_hint is not None else [bx1, by1, bx2, by2]
@@ -6467,9 +6564,16 @@ class MangaOCREngine:
             return True
         if REPEATED_NOISE_REGEX.match(norm):
             return True
-        # Числовой шум штриховки (например '7755', '111', '00' из наклонных линий '////') без единой буквы/кандзи/каны
+        # Числовой шум штриховки (например '7755', '111', '00' из наклонных линий '////') без единой буквы/кандзи/каны;
+        # реальные числа в речевых бабблах ('100', '2026', '3') с достаточным количеством чернил сохраняем!
         if re.fullmatch(r"[0-9０-９]+", norm):
-            if is_free_text or len(set(norm)) <= 2 or len(norm) >= 4:
+            is_hatching_digits = (
+                (len(norm) >= 2 and len(set(norm)) == 1 and norm[0] in "017０１７")
+                or (len(norm) >= 3 and len(set(norm)) == 1)
+                or set(norm).issubset({"1", "7", "１", "７"}) and len(norm) >= 3
+                or len(norm) >= 7
+            )
+            if is_free_text or is_hatching_digits or ink_pixels < 28:
                 return True
 
         # Проверка физической плотности чернил на символ: длинная фраза из 8+ символов не может возникнуть из пары точек
@@ -6640,9 +6744,23 @@ class MangaOCREngine:
         if mode in ("dialogue_only", "bubbles_only", "long_only") and is_free_text:
             return ("free_text_disabled", f"Надпись вне баббла (отключено в профиле {mode})")
 
-        # Чистые цифры без единой буквы или иероглифа ('7755', '100', '11') не требуют перевода и часто являются шумом штриховки
+        # Чистые цифры вне уверенных речевых бабблов ('7755', '111' на штриховке) отсеиваем, но сохраняем реальные числовые реплики ('100', '3', '2026') внутри баббла!
         if mode != "all" and re.fullmatch(r"[0-9０-９]+", core):
-            return ("numeric_noise", "Числовой артефакт OCR / цифры без букв (не требует перевода)")
+            is_hatching_num = (
+                (len(core) >= 2 and len(set(core)) == 1 and core[0] in "017０１７")
+                or (len(core) >= 3 and len(set(core)) == 1)
+                or (set(core).issubset({"1", "7", "１", "７"}) and len(core) >= 3)
+                or len(core) >= 7
+            )
+            is_confident_dialogue_num = (
+                not is_free_text
+                and bool(has_enclosing_frame)
+                and float(confidence) >= 0.78
+                and 1 <= len(core) <= 6
+                and not is_hatching_num
+            )
+            if not is_confident_dialogue_num:
+                return ("numeric_noise", "Числовой артефакт OCR / цифры без букв (не требует перевода)")
 
         has_kanji = bool(HANZI_REGEX.search(core))
         effective_char_len = len(core) + (1 if (has_kanji and len(core) == 1 and eff_min_len <= 2) else 0)
@@ -7351,8 +7469,17 @@ class MangaOCREngine:
             inputs = {k: (v.to(self.device) if hasattr(v, "to") else v) for k, v in inputs.items()}
 
             low_thresh = max(0.18, min(active_conf, 0.25))
+            use_cuda_rt = str(self.device).startswith("cuda") and torch.cuda.is_available()
             with torch.inference_mode():
-                outputs = model(**inputs)
+                if use_cuda_rt:
+                    rt_dtype = torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+                    try:
+                        with torch.autocast(device_type="cuda", dtype=rt_dtype):
+                            outputs = model(**inputs)
+                    except Exception:
+                        outputs = model(**inputs)
+                else:
+                    outputs = model(**inputs)
                 target_sizes = torch.tensor([[sh, sw]], device=self.device)
                 results = processor.post_process_object_detection(
                     outputs,
@@ -8791,7 +8918,7 @@ class MangaOCREngine:
                 return ""
             return ko_zh_text
 
-        ja_list = self._recognize_crops_batch_ja([padded_crop_pil])
+        ja_list = self._recognize_crops_batch_ja([padded_crop_pil], raw_crops_np=[raw_crop_np])
         ja_text = ja_list[0].strip() if ja_list else ""
 
         if self._is_hallucinated_ocr_text(ja_text, ink_pixels, is_free_text=is_free_text):
@@ -8802,6 +8929,7 @@ class MangaOCREngine:
         self,
         crops_pil: list[Image.Image],
         batch_size: int = 16,
+        gate_crops: Sequence[Union[np.ndarray, Image.Image] | None] | None = None,
     ) -> list[str]:
         """
         Пакетное распознавание через классический авторегрессионный `MangaOcr` (до 300 символов)
@@ -8813,7 +8941,7 @@ class MangaOCREngine:
         if isinstance(self.ja_recognizer, HallucinationFreeMangaOCR):
             recs = self.ja_recognizer.recognize_batch(
                 balanced_crops,
-                gate_crops=crops_pil,
+                gate_crops=gate_crops if gate_crops is not None else crops_pil,
                 batch_size=min(max(1, batch_size), 12),
             )
             results_hf: list[str] = []
@@ -8881,6 +9009,7 @@ class MangaOCREngine:
         crops_pil: list[Image.Image],
         batch_size: int = 16,
         _allow_line_split: bool = True,
+        raw_crops_np: Sequence[np.ndarray | None] | None = None,
     ) -> list[str]:
         """
         Гибридное пакетное GPU-распознавание японских бабблов (Шаг 2 + Deskew/Multi-line Screen Upgrade):
@@ -8922,10 +9051,16 @@ class MangaOCREngine:
             if multiline_map:
                 out_combined: list[str] = [""] * len(crops_pil)
                 if normal_crops:
+                    normal_raw = (
+                        [raw_crops_np[n_i] if n_i < len(raw_crops_np) else None for n_i in normal_indices]
+                        if raw_crops_np is not None
+                        else None
+                    )
                     norm_res = self._recognize_crops_batch_ja(
                         normal_crops,
                         batch_size=batch_size,
                         _allow_line_split=False,
+                        raw_crops_np=normal_raw,
                     )
                     for n_i, n_txt in zip(normal_indices, norm_res):
                         out_combined[n_i] = n_txt
@@ -8947,7 +9082,7 @@ class MangaOCREngine:
         active_ocr_b = getattr(self, "ocr_backend", "hybrid_nar_mangaocr")
         is_ultra_ocr = (getattr(self, "pipeline_mode", "balanced") == "ultra") or (active_ocr_b == "ultra_ensemble_vlm")
         if active_ocr_b == "mangaocr_fp16_only" and not is_ultra_ocr:
-            fp16_res = self._run_classic_manga_ocr_batch(crops_pil, batch_size=batch_size)
+            fp16_res = self._run_classic_manga_ocr_batch(crops_pil, batch_size=batch_size, gate_crops=raw_crops_np)
             return [_restore_english_word_spaces(t) if _looks_like_merged_english_ocr(t) else t for t in fp16_res]
         if active_ocr_b == "hayai_siglip2" and self.use_hayai_ocr:
             h_res = self._recognize_crops_batch_hayai(crops_pil, lang="ja")
@@ -8980,7 +9115,22 @@ class MangaOCREngine:
                     # Если manga-ocr-nar-small вернул пустую строку ("") на кропе — значит внутри нет японских букв,
                     # и принудительный вызов классического MangaOCR на пустом/фоновом кропе приводил к галлюцинации
                     # заученных фраз («タクシー運転手さん一番うまい店に連れてって» -> «Taxi driver, take me to the best restaurant»).
-                    def _has_nar_kana_stutter(s_txt: str, crop_img: Image.Image | None = None) -> bool:
+                    gate_memo: dict[int, StrokeGateResult] = {}
+
+                    def _get_crop_gate(c_idx: int) -> StrokeGateResult:
+                        cached_g = gate_memo.get(c_idx)
+                        if cached_g is not None:
+                            return cached_g
+                        raw_item = (
+                            raw_crops_np[c_idx]
+                            if (raw_crops_np is not None and c_idx < len(raw_crops_np) and raw_crops_np[c_idx] is not None)
+                            else crops_pil[c_idx]
+                        )
+                        computed_g = pre_ocr_stroke_gate(raw_item)
+                        gate_memo[c_idx] = computed_g
+                        return computed_g
+
+                    def _has_nar_kana_stutter(s_txt: str, c_idx: int | None = None) -> bool:
                         if not s_txt:
                             return False
                         # 1. Детектор повторов слогов/биграмм и заикания CTC/NAR-декодера («使っててさい心ははがが良い»)
@@ -8993,11 +9143,11 @@ class MangaOCREngine:
                                 return True
                         if KNOWN_OCR_HALLUCINATIONS_REGEX.search(s_txt):
                             return True
-                        # 2. Проверка плотности чернил относительно числа распознанных символов (защита от галлюцинаций на скринтоне/шуме)
-                        if crop_img is not None:
+                        # 2. Проверка плотности чернил относительно числа распознанных символов (по сырому кропу без искусственной белой рамки pad=8)
+                        if c_idx is not None:
                             core_s = STRIP_PUNCT_REGEX.sub("", s_txt.strip())
                             if len(core_s) >= 8:
-                                gate_res = pre_ocr_stroke_gate(crop_img)
+                                gate_res = _get_crop_gate(c_idx)
                                 cc_cnt = max(1, int(gate_res.valid_cc_count))
                                 # Если NAR-декодер нафантазировал длинную фразу (>10 симв.) из 1-3 мелких штрихов
                                 if not gate_res.passed or (len(core_s) >= 10 and len(core_s) > cc_cnt * 2.2):
@@ -9009,19 +9159,31 @@ class MangaOCREngine:
                         idx
                         for idx, txt in enumerate(nar_texts)
                         if len(txt) >= len_thresh
-                        or _has_nar_kana_stutter(txt, crops_pil[idx])
+                        or _has_nar_kana_stutter(txt, idx)
                         or _looks_like_merged_english_ocr(txt)
-                        or (not txt.strip() and pre_ocr_stroke_gate(crops_pil[idx]).passed)
+                        or (not txt.strip() and _get_crop_gate(idx).passed)
                         or (
                             len(STRIP_PUNCT_REGEX.sub("", txt.strip())) <= (5 if is_ultra_ocr else 4)
                             and (crops_pil[idx].size[0] * crops_pil[idx].size[1]) >= (18000 if is_ultra_ocr else 22000)
-                            and pre_ocr_stroke_gate(crops_pil[idx]).passed
+                            and _get_crop_gate(idx).passed
                         )
                     ]
                     rejected_by_hf_ocr: set[int] = set()
                     if fallback_indices:
                         sub_crops = [crops_pil[idx] for idx in fallback_indices]
-                        fallback_texts = self._run_classic_manga_ocr_batch(sub_crops, batch_size=batch_size)
+                        sub_raw_gates = [
+                            (
+                                raw_crops_np[idx]
+                                if (raw_crops_np is not None and idx < len(raw_crops_np) and raw_crops_np[idx] is not None)
+                                else crops_pil[idx]
+                            )
+                            for idx in fallback_indices
+                        ]
+                        fallback_texts = self._run_classic_manga_ocr_batch(
+                            sub_crops,
+                            batch_size=batch_size,
+                            gate_crops=sub_raw_gates,
+                        )
                         for idx, fb_txt in zip(fallback_indices, fallback_texts):
                             cur_nar = nar_texts[idx].strip()
                             fb_clean = fb_txt.strip()
@@ -9031,7 +9193,7 @@ class MangaOCREngine:
                                 continue
                             cur_core_len = len(STRIP_PUNCT_REGEX.sub("", cur_nar))
                             fb_core_len = len(STRIP_PUNCT_REGEX.sub("", fb_clean))
-                            nar_stuttered = _has_nar_kana_stutter(cur_nar, crops_pil[idx])
+                            nar_stuttered = _has_nar_kana_stutter(cur_nar, idx)
                             fb_stuttered = _has_nar_kana_stutter(fb_clean)
                             if (
                                 not cur_nar
@@ -9290,7 +9452,10 @@ class MangaOCREngine:
 
         if batch_candidates_crops:
             if resolved_lang == "ja":
-                batch_texts = self._recognize_crops_batch_ja(batch_candidates_crops)
+                batch_texts = self._recognize_crops_batch_ja(
+                    batch_candidates_crops,
+                    raw_crops_np=batch_candidates_raw_np,
+                )
             else:
                 batch_texts = self._recognize_crops_batch_ko_zh(
                     batch_candidates_crops,
@@ -9355,13 +9520,20 @@ class MangaOCREngine:
                     recognized_text = retry_full_txt
                     ocr_coords = [x1, y1, x2, y2]
 
-            # Авто-дочитка через VLM-OCR вызывается ТОЛЬКО при явно выбранном бэкенде 'ultra_ensemble_vlm',
+            # Авто-дочитка через VLM-OCR вызывается в режиме 'ultra' (или при явно выбранном бэкенде 'ultra_ensemble_vlm'),
             # не более 1 раза на страницу, только для реальных бабблов (не free_text шума и не rejected_hallucination_keys)
-            # и только если локальный VLM в Ollama не отключен Circuit Breaker'ом!
+            # и только если доступен локальный VLM в Ollama или облачный Vision API!
+            now_vlm_mono = time.monotonic()
+            has_local_vlm_slot = now_vlm_mono >= float(getattr(self, "_vlm_ollama_disabled_until", 0.0) or 0.0)
+            has_cloud_vlm_slot = (
+                bool(getattr(self, "_cloud_api_url", ""))
+                and bool(getattr(self, "_cloud_api_key", ""))
+                and now_vlm_mono >= float(getattr(self, "_vlm_cloud_disabled_until", 0.0) or 0.0)
+            )
             if (
-                getattr(self, "ocr_backend", "") == "ultra_ensemble_vlm"
+                (getattr(self, "ocr_backend", "") == "ultra_ensemble_vlm" or eff_pmode == "ultra")
                 and vlm_auto_calls_on_page < 1
-                and time.monotonic() >= float(getattr(self, "_vlm_ollama_disabled_until", 0.0) or 0.0)
+                and (has_local_vlm_slot or has_cloud_vlm_slot)
                 and not is_free
                 and cache_key not in rejected_hallucination_keys
                 and has_ink
@@ -9374,6 +9546,8 @@ class MangaOCREngine:
                         rgb_image,
                         [x1, y1, x2, y2],
                         lang=resolved_lang,
+                        cloud_api_url=getattr(self, "_cloud_api_url", None) or None,
+                        cloud_api_key=getattr(self, "_cloud_api_key", None) or None,
                     )
                     if vlm_resc_txt and not PUNCT_ONLY_REGEX.match(vlm_resc_txt):
                         recognized_text = vlm_resc_txt

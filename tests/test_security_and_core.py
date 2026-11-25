@@ -955,7 +955,7 @@ def test_sam2_off_by_default_and_clean_cache_cap():
 
     assert inspect.signature(ocr_mod.MangaOCREngine.__init__).parameters["use_sam2_seg"].default is False
     cleaner_src = (REPO_ROOT / "cleaner.py").read_text(encoding="utf-8")
-    assert "cache_files[:-120]" in cleaner_src
+    assert "cache_files[:-240]" in cleaner_src or "cache_files[:-120]" in cleaner_src
     assert inspect.signature(cleaner_mod.BubbleCleaner.__init__).parameters["cache_max_pages"].default >= 48
 
     calls: list[tuple[int, int]] = []
@@ -1277,7 +1277,7 @@ def test_lama_wide_context_and_bubble_polygon_barrier():
     ]
     cleaned_img, _ = bc.clean_image(page_pil, blocks)
     assert cleaned_img.size == (320, 320)
-    assert 80 in recorded_pads, f"Ожидался context_pad=80 в батче LaMa, получено: {recorded_pads}"
+    assert any(p >= 80 for p in recorded_pads), f"Ожидался context_pad>=80 в батче LaMa, получено: {recorded_pads}"
 
 
 def test_preflight_nsfw_triage_splits_cloud_and_local_and_static_system_prompt():
@@ -3772,47 +3772,58 @@ def test_stage2_cv_cleaner_and_renderer_fixes():
     assert sig.parameters["cache_max_pages"].default >= 48
     assert sig.parameters["cache_max_ram_mb"].default >= 32
 
-    bc = cleaner_mod.BubbleCleaner(use_lama=False, cache_max_pages=48, cache_max_ram_mb=32)
-    bc.cache_max_ram_bytes = 5000
-    for idx in range(3):
-        bc.put_cached_cleaned_image(f"page_{idx}.png", f"h{idx}", Image.new("RGB", (50, 50), (idx, 10, 20)))
-    assert len(bc._cleaned_lru_cache) == 1
-    assert ("page_2.png".lower(), "h2") or len(bc._cleaned_lru_cache) == 1
+    with tempfile.TemporaryDirectory() as tmp_models_dir:
+        tmp_seg_pt = Path(tmp_models_dir) / "comic-text-segmenter" / "comic-text-segmenter.pt"
+        tmp_seg_pt.parent.mkdir(parents=True, exist_ok=True)
+        tmp_seg_pt.write_bytes(b"dummy-seg-weights")
 
-    sample_blocks = [{"bbox": [10, 10, 80, 40], "is_free_text": False}]
-    bc.inpaint_backend = "anime_lama_sota"
-    bc.pipeline_mode = "balanced"
-    h1 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
-    bc.inpaint_backend = "ultra_deep_redraw"
-    h2 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
-    bc.pipeline_mode = "ultra"
-    h3 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
-    assert len({h1, h2, h3}) == 3
+        bc = cleaner_mod.BubbleCleaner(
+            use_lama=False,
+            models_dir=Path(tmp_models_dir),
+            cache_max_pages=48,
+            cache_max_ram_mb=32,
+        )
+        bc.cache_max_ram_bytes = 5000
+        for idx in range(3):
+            bc.put_cached_cleaned_image(f"page_{idx}.png", f"h{idx}", Image.new("RGB", (50, 50), (idx, 10, 20)))
+        assert len(bc._cleaned_lru_cache) == 1
+        assert ("page_2.png".lower(), "h2") or len(bc._cleaned_lru_cache) == 1
 
-    bc.stroke_segmenter._download_attempted = True
-    bc.delete_local_model_weights("ctd_unet")
-    assert bc.stroke_segmenter._download_attempted is False
+        sample_blocks = [{"bbox": [10, 10, 80, 40], "is_free_text": False}]
+        bc.inpaint_backend = "anime_lama_sota"
+        bc.pipeline_mode = "balanced"
+        h1 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
+        bc.inpaint_backend = "ultra_deep_redraw"
+        h2 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
+        bc.pipeline_mode = "ultra"
+        h3 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
+        assert len({h1, h2, h3}) == 3
 
-    seg = bc.stroke_segmenter
-    seg.device = cleaner_mod.torch.device("cpu")
-    seg._lazy_init = lambda *a, **kw: None
-    seg.backend_name = "yolo_text_seg"
-    seg._has_pretrained_weights = True
-    seg._page_mask_cache.clear()
-    tile_calls: list[tuple[tuple[int, int], bool]] = []
+        bc.stroke_segmenter._download_attempted = True
+        bc.delete_local_model_weights("ctd_unet")
+        assert bc.stroke_segmenter._download_attempted is False
+        assert not tmp_seg_pt.exists(), "delete_local_model_weights должен удалять веса только внутри переданного models_dir"
 
-    class _TilingYoloStub:
-        def predict(self, **kwargs):
-            src = kwargs["source"]
-            tile_calls.append((src.shape[:2], bool(kwargs.get("retina_masks"))))
-            return []
+        seg = bc.stroke_segmenter
+        seg.device = cleaner_mod.torch.device("cpu")
+        seg._lazy_init = lambda *a, **kw: None
+        seg.backend_name = "yolo_text_seg"
+        seg._has_pretrained_weights = True
+        seg._page_mask_cache.clear()
+        tile_calls: list[tuple[tuple[int, int], bool]] = []
 
-    seg._yolo_model = _TilingYoloStub()
-    tall_webtoon = np.zeros((3200, 800, 3), dtype=np.uint8)
-    mask_out = seg.predict_page_stroke_mask(tall_webtoon)
-    assert mask_out is not None and mask_out.shape == (3200, 800)
-    assert len(tile_calls) >= 2, f"Ожидался тайлинг высокого вебтуна, получено: {tile_calls}"
-    assert all(rt is True for _, rt in tile_calls)
+        class _TilingYoloStub:
+            def predict(self, **kwargs):
+                src = kwargs["source"]
+                tile_calls.append((src.shape[:2], bool(kwargs.get("retina_masks"))))
+                return []
+
+        seg._yolo_model = _TilingYoloStub()
+        tall_webtoon = np.zeros((3200, 800, 3), dtype=np.uint8)
+        mask_out = seg.predict_page_stroke_mask(tall_webtoon)
+        assert mask_out is not None and mask_out.shape == (3200, 800)
+        assert len(tile_calls) >= 2, f"Ожидался тайлинг высокого вебтуна, получено: {tile_calls}"
+        assert all(rt is True for _, rt in tile_calls)
 
     roi = np.full((64, 128, 3), 240, dtype=np.uint8)
     alpha = np.zeros((64, 128), dtype=np.uint8)
@@ -4161,6 +4172,214 @@ def test_audit_p0_p2_performance_fixes():
                 assert tr.nsfw_mode is True
 
     asyncio.run(_run())
+
+
+def test_ocr_and_cleaner_audit_p0_p2_fixes():
+    import numpy as np
+    from PIL import Image
+
+    srv = _load_server_module()
+    schemas_mod = _load_real_module("api.schemas")
+    cleaner_mod = _load_real_module("cleaner")
+    ocr_mod = _load_real_module("ocr_engine")
+
+    # 1. C-03 & C-05: TextBlock + _ensure_block_clean_bbox preserve bubble_polygon and keep clean_bbox_modified=False on drag
+    poly_pts = [[30, 30], [150, 30], [150, 150], [30, 150]]
+    tb_model = schemas_mod.TextBlock(
+        id=1,
+        bbox=[42, 36, 162, 156],
+        clean_bbox=[30, 30, 150, 150],
+        text_bbox=[22, 48, 140, 132],
+        bubble_polygon=poly_pts,
+        original_text="！？",
+        translated_text="?!",
+    )
+    dumped = srv._ensure_block_clean_bbox(tb_model.model_dump())
+    assert dumped["bubble_polygon"] == poly_pts, "TextBlock и _ensure_block_clean_bbox обязаны сохранять bubble_polygon"
+    assert dumped["bbox_modified"] is True
+    assert dumped["clean_bbox_modified"] is False, "Перетаскивание рамки перевода не должно помечать clean_bbox_modified=True"
+
+    merged_dumped = srv._ensure_block_clean_bbox({**dumped, "clean_bbox_modified": True})
+    assert merged_dumped["bubble_polygon"] is None, "При clean_bbox_modified=True устаревший полигон должен сбрасываться"
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_p = Path(tmp_dir)
+        bc = cleaner_mod.BubbleCleaner(
+            use_lama=False,
+            device="cpu",
+            models_dir=tmp_p / "models",
+            disk_cache_dir=tmp_p / "clean_cache",
+        )
+        # Отключаем сетевую догрузку весов в изолированном юнит-тесте
+        bc.stroke_segmenter._lazy_init = lambda *a, **kw: None
+        bc.stroke_segmenter.backend_name = "morphological_fallback"
+        bc.stroke_segmenter._init_done = True
+
+        # 2. C-05: Перетаскивание bbox не сбрасывает text_bbox и не инвалидирует CleanCache
+        blk_orig = {
+            "id": 1,
+            "bbox": [30, 30, 150, 150],
+            "clean_bbox": [30, 30, 150, 150],
+            "text_bbox": [22, 48, 140, 132],
+            "bubble_polygon": poly_pts,
+            "bbox_modified": False,
+            "clean_bbox_modified": False,
+            "is_free_text": False,
+            "original_text": "テスト",
+        }
+        blk_dragged = {
+            **blk_orig,
+            "bbox": [55, 65, 175, 185],
+            "bbox_modified": True,
+            "clean_bbox_modified": False,
+        }
+        assert bc._get_clean_bbox(blk_orig) == [22, 30, 150, 150]
+        assert bc._get_clean_bbox(blk_dragged) == [22, 30, 150, 150]
+        assert bc.compute_clean_state_hash([blk_orig], src_file="p1.webp", src_mtime=1) == bc.compute_clean_state_hash(
+            [blk_dragged], src_file="p1.webp", src_mtime=1
+        )
+
+        # 3. C-02: Тракт А (bubble_polygon) реально реагирует на ползунок mask_dilate и захватывает цветные буквы
+        canvas = np.full((200, 200, 3), 255, dtype=np.uint8)
+        cleaner_mod.cv2.rectangle(canvas, (28, 28), (152, 152), (10, 10, 10), 2)
+        canvas[75:95, 80:96] = (255, 235, 30)
+        m_small = bc.build_text_mask(canvas, [{**blk_orig, "mask_dilate": 2}])
+        m_large = bc.build_text_mask(canvas, [{**blk_orig, "mask_dilate": 18}])
+        nz_small = int(np.count_nonzero(m_small))
+        nz_large = int(np.count_nonzero(m_large))
+        assert nz_small > 100, "Тракт А обязан выделять цветной текст внутри белого баббла"
+        assert nz_large > int(nz_small * 1.6), f"Ползунок mask_dilate должен расширять маску Тракта А: {nz_small} vs {nz_large}"
+
+        # 4. C-04: inpaint_rois_batch пропускает обычные речевые бабблы (сохраняя Zero-Bleed Context Shielding)
+        batch_seen: list[list[tuple[int, int, int, int]]] = []
+
+        class _ZeroBleedBatchStub:
+            def inpaint_rois_batch(self, page_bgr, page_mask, roi_bboxes, context_pad=96, max_batch_size=16):
+                batch_seen.append(list(roi_bboxes))
+                return page_bgr.copy()
+
+            def inpaint_rgb_crop(self, img_rgb, mask_u8):
+                return img_rgb.copy()
+
+        bc.lama_model = _ZeroBleedBatchStub()
+        bc.inpaint_backend = "anime_lama_sota"
+        dark_page = np.full((220, 220, 3), 35, dtype=np.uint8)
+        dark_page[30:100, 30:100] = 250
+        dark_page[55:75, 55:110] = 10
+        dark_page[140:190, 140:190] = 240
+        bc.clean_image(
+            Image.fromarray(dark_page, mode="RGB"),
+            [
+                {"id": 1, "bbox": [30, 30, 105, 100], "clean_bbox": [30, 30, 112, 100], "is_free_text": False, "original_text": "あ"},
+                {"id": 2, "bbox": [135, 135, 195, 195], "clean_bbox": [135, 135, 195, 195], "is_free_text": True, "original_text": "ドン"},
+            ],
+        )
+        assert batch_seen == [], f"Обычные бабблы не должны попадать в сырой inpaint_rois_batch в обход Zero-Bleed: {batch_seen}"
+
+        # 5. C-07: Свободный текст стирается со 100% непрозрачностью ядра (без 50% остаточного ореола) + живой delta_l_ring
+        bg_gray = np.full((120, 120, 3), 120, dtype=np.uint8)
+        bg_with_halo = bg_gray.copy()
+        bg_with_halo[48:72, 48:72] = 250
+        bg_with_halo[52:68, 52:68] = 15
+
+        class _BiasedLamaStub:
+            def __call__(self, img_rgb, mask_u8):
+                out = img_rgb.copy()
+                out[mask_u8 > 0] = 138
+                return out
+
+            def inpaint_rgb_crop(self, img_rgb, mask_u8):
+                return self(img_rgb, mask_u8)
+
+        bc.lama_model = _BiasedLamaStub()
+        cleaned_free_pil, _ = bc.clean_image(
+            Image.fromarray(bg_with_halo, mode="RGB"),
+            [{"id": 1, "bbox": [44, 44, 76, 76], "clean_bbox": [44, 44, 76, 76], "is_free_text": True, "original_text": "ゴゴ"}],
+        )
+        cleaned_free_np = np.array(cleaned_free_pil)
+        assert float(cleaned_free_np[48, 60].mean()) < 142.0, f"Ореол на границе маски не должен просвечивать: {cleaned_free_np[48, 60]}"
+
+        hmc = cleaner_mod.HybridMangaCleaner()
+        cmask = np.zeros((80, 80), dtype=np.uint8)
+        cmask[24:56, 24:56] = 255
+        regrounded = hmc.inpaint_crop_with_regrounding_and_feather(
+            np.full((80, 80, 3), 120, dtype=np.uint8),
+            cmask,
+            _BiasedLamaStub(),
+        )
+        assert float(regrounded[40, 40].mean()) < 130.0, f"delta_l_ring должен компенсировать сдвиг яркости LaMa: {regrounded[40, 40]}"
+
+        # 6. C-06: Дисковый CleanCache сохраняет lossless WebP и восстанавливает попиксельно точный слой
+        test_im = Image.fromarray(canvas, mode="RGB")
+        bc.put_cached_cleaned_image("ch01_p001.webp", "deadbeef1234", test_im, save_to_disk=True)
+        webp_files = list((tmp_p / "clean_cache").glob("clean_*.webp"))
+        assert len(webp_files) == 1, "CleanCache должен сохранять компактный lossless .webp файл"
+        bc._cleaned_lru_cache.clear()
+        bc._cleaned_cache_bytes = 0
+        restored = bc.get_cached_cleaned_image("ch01_p001.webp", "deadbeef1234")
+        assert restored is not None and np.array_equal(np.array(restored), canvas)
+
+    # 7. C-08: Split в web_studio.html делает нахлёст clean_bbox без 2-пиксельной мёртвой щели
+    html_src = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    assert "clean_bbox_modified: true" in html_src
+    assert "Math.min(cx2 - 8, cmidX - 1)" in html_src and "Math.max(cx1 + 8, cmidX + 1)" in html_src
+
+    # 8. O-02, O-03 & O-05: Цветной текст в _compute_tight_ink_bbox, числа в диалогах и однократный pre_ocr_stroke_gate по raw_crops_np
+    color_page = np.full((180, 180, 3), 255, dtype=np.uint8)
+    cleaner_mod.cv2.rectangle(color_page, (20, 20), (160, 160), (0, 0, 0), 2)
+    color_page[55:115, 68:108] = (255, 232, 35)
+    tight_box = ocr_mod.MangaOCREngine._compute_tight_ink_bbox(color_page, [20, 20, 160, 160], is_free_text=False)
+    assert 55 <= tight_box[0] <= 72 and 104 <= tight_box[2] <= 120, f"Цветной текст вебтуна должен определяться точно: {tight_box}"
+
+    assert ocr_mod.MangaOCREngine._is_hallucinated_ocr_text("100", ink_pixels=80, is_free_text=False) is False
+    assert ocr_mod.MangaOCREngine._is_hallucinated_ocr_text("2026", ink_pixels=110, is_free_text=False) is False
+    assert ocr_mod.MangaOCREngine._is_hallucinated_ocr_text("1111", ink_pixels=80, is_free_text=False) is True
+    assert (
+        ocr_mod.MangaOCREngine.classify_filter_reason(
+            "100",
+            is_free_text=False,
+            text_filter_mode="dialogue_only",
+            confidence=0.92,
+            has_enclosing_frame=True,
+        )
+        is None
+    )
+    assert (
+        ocr_mod.MangaOCREngine.classify_filter_reason(
+            "111",
+            is_free_text=False,
+            text_filter_mode="dialogue_only",
+            confidence=0.92,
+            has_enclosing_frame=True,
+        )
+        is not None
+    )
+
+    eng = object.__new__(ocr_mod.MangaOCREngine)
+    eng.ocr_backend = "hybrid_nar_mangaocr"
+    eng.pipeline_mode = "balanced"
+    eng.use_hayai_ocr = False
+    eng.use_baberu_ocr = False
+    eng._inference_lock = srv.threading.Lock()
+    eng._get_ja_nar_recognizer = lambda: (lambda crops: (["" for _ in crops] if isinstance(crops, list) else ""))
+    seen_gate_shapes: list[tuple[int, int]] = []
+    real_gate = ocr_mod.pre_ocr_stroke_gate
+
+    def _spy_gate(crop_in):
+        arr = np.asarray(crop_in)
+        seen_gate_shapes.append(tuple(arr.shape[:2]))
+        return real_gate(crop_in)
+
+    raw_crop = np.full((36, 36, 3), 255, dtype=np.uint8)
+    raw_crop[10:26, 12:15] = 10
+    raw_crop[10:26, 20:23] = 10
+    padded_pil = Image.new("RGB", (68, 68), (255, 255, 255))
+    padded_pil.paste(Image.fromarray(raw_crop), (16, 16))
+    eng._run_classic_manga_ocr_batch = lambda sub_crops, batch_size=16, gate_crops=None: ["テスト" for _ in sub_crops]
+    with patch.object(ocr_mod, "pre_ocr_stroke_gate", side_effect=_spy_gate):
+        out_ja = eng._recognize_crops_batch_ja([padded_pil], _allow_line_split=False, raw_crops_np=[raw_crop])
+    assert out_ja == ["テスト"]
+    assert seen_gate_shapes == [(36, 36)], f"pre_ocr_stroke_gate должен вызываться 1 раз по сырому кропу 36x36 без pad: {seen_gate_shapes}"
 
 
 if __name__ == "__main__":

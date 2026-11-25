@@ -2093,7 +2093,7 @@ class SotaMangaCleaner:
         ).round().astype(np.uint8)
         out[mask_outside > 0] = blended[mask_outside > 0]
 
-        # Проблема №5а: Прямая реконструкция разорванного моста стенки баббла (fitEllipseDirect)
+        # Проблема №5а: Прямая реконструкция разорванного моста стенки баббла (fitEllipseDirect + hermite_wall_bridge)
         # на узком стыке между cavity_roi и mask_outside
         try:
             wy, wx = np.nonzero(wall_roi > 0)
@@ -2104,9 +2104,63 @@ class SotaMangaCleaner:
                 )
                 if np.any(interface_band > 0):
                     wall_pts = np.column_stack([wx, wy]).astype(np.float32)
-                    ell_box = cv2.fitEllipseDirect(wall_pts)
                     rec_wall = np.zeros_like(wall_roi)
-                    cv2.ellipse(rec_wall, ell_box, 255, 2)
+                    ell_fit_ratio = 0.0
+                    try:
+                        ell_box = cv2.fitEllipseDirect(wall_pts)
+                        cv2.ellipse(rec_wall, ell_box, 255, 2)
+                        ell_band = cv2.dilate(rec_wall, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+                        ell_fit_ratio = float(np.count_nonzero((wall_roi > 0) & (ell_band > 0))) / float(max(1, len(wx)))
+                    except cv2.error:
+                        rec_wall.fill(0)
+                        ell_fit_ratio = 0.0
+
+                    # Для прямоугольных/плоских рамок, где глобальный эллипс отклоняется от стенки, строим мост Эрмита по концевым касательным
+                    if ell_fit_ratio < 0.55 or not np.any(cv2.bitwise_and(rec_wall, interface_band) > 0):
+                        gap_dil = cv2.dilate(interface_band, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9)))
+                        intact_wall = cv2.bitwise_and(wall_roi, cv2.bitwise_not(mask_outside))
+                        tips_mask = cv2.bitwise_and(intact_wall, gap_dil)
+                        nt_w, lbl_tw, st_tw, ct_tw = cv2.connectedComponentsWithStats(tips_mask, connectivity=8)
+                        if nt_w >= 3:
+                            order_tw = sorted(range(1, nt_w), key=lambda idx_t: int(st_tw[idx_t, cv2.CC_STAT_AREA]), reverse=True)[:2]
+                            pts_a = np.column_stack(np.nonzero(lbl_tw == order_tw[0])[::-1]).astype(np.float32)
+                            pts_b = np.column_stack(np.nonzero(lbl_tw == order_tw[1])[::-1]).astype(np.float32)
+                            if len(pts_a) >= 2 and len(pts_b) >= 2:
+                                c_a = pts_a.mean(axis=0)
+                                c_b = pts_b.mean(axis=0)
+                                pA_arr = pts_a[int(np.argmin(np.sum((pts_a - c_b) ** 2, axis=1)))]
+                                pB_arr = pts_b[int(np.argmin(np.sum((pts_b - c_a) ** 2, axis=1)))]
+                                chord_v = pB_arr - pA_arr
+                                chord_n = float(np.linalg.norm(chord_v))
+                                if 2.0 <= chord_n <= 96.0:
+                                    dir_ab = chord_v / chord_n
+
+                                    def _tip_tangent(tip_pt: np.ndarray, target_dir: np.ndarray) -> tuple[float, float]:
+                                        d2 = np.sum((wall_pts - tip_pt) ** 2, axis=1)
+                                        near = wall_pts[(d2 <= 196.0) & (d2 >= 1.0)]
+                                        if len(near) >= 5:
+                                            centered = near - near.mean(axis=0)
+                                            _, _, vt = np.linalg.svd(centered, full_matrices=False)
+                                            t_vec = vt[0].astype(np.float32)
+                                            if float(np.dot(t_vec, target_dir)) < 0.0:
+                                                t_vec = -t_vec
+                                            n_t = float(np.linalg.norm(t_vec))
+                                            if n_t > 1e-5:
+                                                return (float(t_vec[0] / n_t), float(t_vec[1] / n_t))
+                                        return (float(target_dir[0]), float(target_dir[1]))
+
+                                    tA = _tip_tangent(pA_arr, dir_ab)
+                                    tB = _tip_tangent(pB_arr, dir_ab)
+                                    h_pts = hermite_wall_bridge(
+                                        (float(pA_arr[0]), float(pA_arr[1])),
+                                        tA,
+                                        (float(pB_arr[0]), float(pB_arr[1])),
+                                        tB,
+                                        num_pts=max(12, int(round(chord_n * 1.5))),
+                                    )
+                                    rec_wall.fill(0)
+                                    cv2.polylines(rec_wall, [h_pts.reshape(-1, 1, 2)], isClosed=False, color=255, thickness=2)
+
                     bridge_mask = cv2.bitwise_and(rec_wall, interface_band)
                     if np.any(bridge_mask > 0):
                         wall_vals = roi_rgb[wall_roi > 0]
@@ -2395,6 +2449,12 @@ class HybridMangaCleaner:
         if np.count_nonzero(crop_mask) == 0:
             return crop_rgb.copy()
 
+        feather_r = max(2, int(round(min(4.0, self.isolation_feather_radius * scale))))
+        iso_kernel = cv2.getStructuringElement(
+            cv2.MORPH_ELLIPSE, (2 * feather_r + 1, 2 * feather_r + 1)
+        )
+        isolated_mask = cv2.dilate((crop_mask > 0).astype(np.uint8) * 255, iso_kernel, iterations=1)
+
         pad_h = (self.pad_mod - (ch % self.pad_mod)) % self.pad_mod
         pad_w = (self.pad_mod - (cw % self.pad_mod)) % self.pad_mod
         if pad_h > 0 or pad_w > 0:
@@ -2402,11 +2462,11 @@ class HybridMangaCleaner:
                 crop_rgb, 0, pad_h, 0, pad_w, cv2.BORDER_REFLECT_101
             )
             crop_mask_padded = cv2.copyMakeBorder(
-                crop_mask, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0
+                isolated_mask, 0, pad_h, 0, pad_w, cv2.BORDER_CONSTANT, value=0
             )
         else:
             crop_rgb_padded = crop_rgb
-            crop_mask_padded = crop_mask
+            crop_mask_padded = isolated_mask
 
         if lama_callable is not None:
             inpainted_padded = lama_callable(crop_rgb_padded, crop_mask_padded)
@@ -2416,34 +2476,35 @@ class HybridMangaCleaner:
             bgr_out = cv2.inpaint(bgr_in, crop_mask_padded, inpaintRadius=5, flags=cv2.INPAINT_NS)
             inpainted_rgb = cv2.cvtColor(bgr_out[:ch, :cw], cv2.COLOR_BGR2RGB)
 
-        ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (15, 15))
-        outer_ring = (cv2.dilate(crop_mask, ring_k) > 0) & (crop_mask == 0)
-        if np.count_nonzero(outer_ring) > 20:
+        ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (11, 11))
+        outer_ring = (cv2.dilate(isolated_mask, ring_k) > 0) & (isolated_mask == 0)
+        inner_eroded = cv2.erode(isolated_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+        inner_ring = (isolated_mask > 0) & (inner_eroded == 0)
+        if np.count_nonzero(inner_ring) < 12:
+            inner_ring = isolated_mask > 0
+        if np.count_nonzero(outer_ring) > 20 and np.count_nonzero(inner_ring) > 8:
             orig_lab = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
             inp_lab = cv2.cvtColor(inpainted_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
-            delta_l_ring = float(
-                np.median(orig_lab[:, :, 0][outer_ring] - inp_lab[:, :, 0][outer_ring])
-            )
-            ys_m, xs_m = np.where(crop_mask > 0)
-            mw = max(8, int(xs_m.max() - xs_m.min() + 1)) if len(xs_m) > 0 else cw
-            mh = max(8, int(ys_m.max() - ys_m.min() + 1)) if len(ys_m) > 0 else ch
-            sigma = max(5.0, 0.25 * min(mw, mh))
-            k_blur = int(round(sigma * 3)) | 1
-            soft_mask = cv2.GaussianBlur(
-                (crop_mask > 0).astype(np.float32), (k_blur, k_blur), sigma
-            )
-            inp_lab[:, :, 0] = np.clip(
-                inp_lab[:, :, 0] + 0.85 * delta_l_ring * soft_mask, 0.0, 255.0
-            )
-            inpainted_rgb = cv2.cvtColor(inp_lab.astype(np.uint8), cv2.COLOR_LAB2RGB)
+            outer_l = orig_lab[:, :, 0][outer_ring]
+            if float(np.std(outer_l)) <= 28.0:
+                delta_l_ring = float(np.clip(np.median(outer_l) - np.median(inp_lab[:, :, 0][inner_ring]), -18.0, 18.0))
+                ys_m, xs_m = np.where(isolated_mask > 0)
+                mw = max(8, int(xs_m.max() - xs_m.min() + 1)) if len(xs_m) > 0 else cw
+                mh = max(8, int(ys_m.max() - ys_m.min() + 1)) if len(ys_m) > 0 else ch
+                sigma = max(4.0, 0.25 * min(mw, mh))
+                k_blur = int(round(sigma * 3)) | 1
+                soft_mask = cv2.GaussianBlur(
+                    (isolated_mask > 0).astype(np.float32), (k_blur, k_blur), sigma
+                )
+                inp_lab[:, :, 0] = np.clip(
+                    inp_lab[:, :, 0] + 0.80 * delta_l_ring * soft_mask, 0.0, 255.0
+                )
+                inpainted_rgb = cv2.cvtColor(inp_lab.round().astype(np.uint8), cv2.COLOR_LAB2RGB)
 
-        feather_r = max(3, int(round(self.isolation_feather_radius * scale)))
-        iso_kernel = cv2.getStructuringElement(
-            cv2.MORPH_ELLIPSE, (2 * feather_r + 1, 2 * feather_r + 1)
-        )
-        isolated_mask = cv2.dilate(crop_mask, iso_kernel, iterations=1)
+        core_alpha = (crop_mask > 0).astype(np.float32)
         dist_inside = cv2.distanceTransform(isolated_mask, cv2.DIST_L2, 3)
-        alpha = np.clip(dist_inside / float(feather_r), 0.0, 1.0)[..., np.newaxis]
+        feather_alpha = np.clip(dist_inside / float(max(1, feather_r)), 0.0, 1.0).astype(np.float32)
+        alpha = np.maximum(core_alpha, feather_alpha)[..., np.newaxis]
 
         blended = (
             alpha * inpainted_rgb.astype(np.float32)
@@ -3557,6 +3618,20 @@ class BubbleCleaner:
         hasher.update(sample.tobytes())
         return hasher.hexdigest()
 
+    @staticmethod
+    def _block_poly_sig(block: dict[str, Any]) -> int:
+        if bool(block.get("is_free_text", False)) or bool(block.get("clean_bbox_modified", False)):
+            return 0
+        raw_poly = block.get("bubble_polygon")
+        if not isinstance(raw_poly, (list, tuple)) or len(raw_poly) < 3:
+            return 0
+        try:
+            p0 = raw_poly[0]
+            pm = raw_poly[len(raw_poly) // 2]
+            return (len(raw_poly) << 16) ^ ((int(round(float(p0[0]))) & 0xFF) << 8) ^ (int(round(float(pm[1]))) & 0xFF)
+        except Exception:
+            return 0
+
     def compute_base_clean_hash(
         self,
         blocks: list[dict[str, Any]],
@@ -3572,7 +3647,7 @@ class BubbleCleaner:
             except OSError:
                 src_mtime = 0
 
-        active_tuples: list[tuple[tuple[int, int, int, int], bool, int]] = []
+        active_tuples: list[tuple[tuple[int, int, int, int], bool, int, int]] = []
         for block in blocks:
             if not isinstance(block, dict) or self._is_block_skipped(block):
                 continue
@@ -3580,19 +3655,20 @@ class BubbleCleaner:
             clean_tuple = (int(cb[0]), int(cb[1]), int(cb[2]), int(cb[3]))
             is_free = bool(block.get("is_free_text", False))
             mask_dilate_val = int(block.get("mask_dilate") or 0)
-            active_tuples.append((clean_tuple, is_free, mask_dilate_val))
+            poly_sig = self._block_poly_sig(block)
+            active_tuples.append((clean_tuple, is_free, mask_dilate_val, poly_sig))
 
-        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2]))
+        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3]))
         payload = {
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
             "inpaint_backend": str(self.inpaint_backend),
             "pipeline_mode": str(self.pipeline_mode),
-            "clean_ver": "v5.4-hybrid-lir",
+            "clean_ver": "v6.1-poly-zerobleed",
             "base_clean_blocks": [
-                [list(coords), is_free, mdil]
-                for coords, is_free, mdil in active_tuples
+                [list(coords), is_free, mdil, psig]
+                for coords, is_free, mdil, psig in active_tuples
             ],
         }
         raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -3613,7 +3689,7 @@ class BubbleCleaner:
             except OSError:
                 src_mtime = 0
 
-        active_tuples: list[tuple[tuple[int, int, int, int], bool, int, tuple[tuple[int, int, int, str], ...]]] = []
+        active_tuples: list[tuple[tuple[int, int, int, int], bool, int, int, tuple[tuple[int, int, int, str], ...]]] = []
         for block in blocks:
             if not isinstance(block, dict) or self._is_block_skipped(block):
                 continue
@@ -3621,10 +3697,11 @@ class BubbleCleaner:
             clean_tuple = (int(cb[0]), int(cb[1]), int(cb[2]), int(cb[3]))
             is_free = bool(block.get("is_free_text", False))
             mask_dilate_val = int(block.get("mask_dilate") or 0)
+            poly_sig = self._block_poly_sig(block)
             strokes_tuple = tuple(self._normalize_block_strokes(block))
-            active_tuples.append((clean_tuple, is_free, mask_dilate_val, strokes_tuple))
+            active_tuples.append((clean_tuple, is_free, mask_dilate_val, poly_sig, strokes_tuple))
 
-        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3]))
+        active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3], item[4]))
 
         payload = {
             "src_file": src_key,
@@ -3632,10 +3709,10 @@ class BubbleCleaner:
             "dilate_size": int(self.dilate_size),
             "inpaint_backend": str(self.inpaint_backend),
             "pipeline_mode": str(self.pipeline_mode),
-            "clean_ver": "v5.4-hybrid-lir",
+            "clean_ver": "v6.1-poly-zerobleed",
             "active_clean_blocks": [
-                [list(coords), is_free, mdil, [list(st) for st in strokes]]
-                for coords, is_free, mdil, strokes in active_tuples
+                [list(coords), is_free, mdil, psig, [list(st) for st in strokes]]
+                for coords, is_free, mdil, psig, strokes in active_tuples
             ],
         }
         raw_json = json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -3646,7 +3723,7 @@ class BubbleCleaner:
             return None
         stem = Path(src_key).stem if src_key else "page"
         safe_stem = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in stem)[:32] or "page"
-        return self.disk_cache_dir / f"clean_{safe_stem}_{clean_state_hash}.png"
+        return self.disk_cache_dir / f"clean_{safe_stem}_{clean_state_hash}.webp"
 
     @staticmethod
     def _estimate_image_bytes(img: Image.Image) -> int:
@@ -3682,15 +3759,17 @@ class BubbleCleaner:
                 return cached.copy()
 
         disk_path = self._get_disk_cache_path(src_key, clean_state_hash)
-        if disk_path is not None and disk_path.exists():
-            try:
-                with Image.open(disk_path) as im:
-                    loaded = im.convert("RGB").copy()
-                with self._cache_lock:
-                    self._store_cleaned_lru_locked(cache_key, loaded.copy())
-                return loaded
-            except Exception as exc:
-                logger.debug("Не удалось прочитать кэш очищенного слоя с диска (%s): %s", disk_path, exc)
+        if disk_path is not None:
+            cand_path = disk_path if disk_path.exists() else disk_path.with_suffix(".png")
+            if cand_path.exists():
+                try:
+                    with Image.open(cand_path) as im:
+                        loaded = im.convert("RGB").copy()
+                    with self._cache_lock:
+                        self._store_cleaned_lru_locked(cache_key, loaded.copy())
+                    return loaded
+                except Exception as exc:
+                    logger.debug("Не удалось прочитать кэш очищенного слоя с диска (%s): %s", cand_path, exc)
         return None
 
     def put_cached_cleaned_image(
@@ -3712,12 +3791,15 @@ class BubbleCleaner:
             disk_path = self._get_disk_cache_path(src_key, clean_state_hash)
             if disk_path is not None and not disk_path.exists():
                 try:
-                    rgb_copy.save(disk_path, format="PNG", compress_level=1)
+                    try:
+                        rgb_copy.save(disk_path, format="WEBP", lossless=True, method=0)
+                    except Exception:
+                        rgb_copy.save(disk_path.with_suffix(".png"), format="PNG", compress_level=1)
                     cache_files = sorted(
-                        self.disk_cache_dir.glob("clean_*.png"),
+                        [*self.disk_cache_dir.glob("clean_*.webp"), *self.disk_cache_dir.glob("clean_*.png")],
                         key=lambda p: p.stat().st_mtime if p.exists() else 0.0,
                     )
-                    for old_f in cache_files[:-120]:
+                    for old_f in cache_files[:-240]:
                         try:
                             old_f.unlink(missing_ok=True)
                         except OSError as exc:
@@ -4024,7 +4106,7 @@ class BubbleCleaner:
         else:
             return [0, 0, 0, 0]
 
-        if not bool(block.get("bbox_modified", False)):
+        if not bool(block.get("clean_bbox_modified", False)):
             raw_tb = block.get("text_bbox")
             if isinstance(raw_tb, (list, tuple)) and len(raw_tb) >= 4:
                 try:
@@ -4108,7 +4190,7 @@ class BubbleCleaner:
 
             has_valid_tb = False
             tb_box = [x1, y1, x2, y2]
-            if not bool(block.get("bbox_modified", False)):
+            if not bool(block.get("clean_bbox_modified", False)):
                 raw_tb = block.get("text_bbox")
                 if isinstance(raw_tb, (list, tuple)) and len(raw_tb) >= 4:
                     try:
@@ -4177,6 +4259,7 @@ class BubbleCleaner:
             raw_poly = block.get("bubble_polygon")
             if (
                 not is_free_text
+                and not bool(block.get("clean_bbox_modified", False))
                 and isinstance(raw_poly, (list, tuple))
                 and len(raw_poly) >= 3
             ):
@@ -4197,7 +4280,7 @@ class BubbleCleaner:
                         if np.count_nonzero(shrunk_poly) < 32:
                             shrunk_poly = poly_mask
 
-                        # Выделяем текст внутри сжатого полигона (Fixed Threshold 210 / Otsu + сегментатор глифов)
+                        # Выделяем текст внутри сжатого полигона (Fixed Threshold 210 / Otsu + chroma + сегментатор глифов)
                         inside_vals = roi_gray[shrunk_poly > 0]
                         is_dark_bubble = float(np.percentile(inside_vals, 50)) < 110.0
                         if (not is_dark_bubble) and inside_vals.size >= 32:
@@ -4241,23 +4324,124 @@ class BubbleCleaner:
                             otsu_thr, _ = cv2.threshold(inside_vals, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
                             eff_thr = int(max(185, min(225, max(210.0, float(otsu_thr)))))
                             bin_txt = (roi_gray < eff_thr).astype(np.uint8) * 255
+                            roi_chroma = np.max(roi_rgb, axis=2).astype(np.int16) - np.min(roi_rgb, axis=2).astype(np.int16)
+                            bg_chroma_med = float(np.median(roi_chroma[shrunk_poly > 0])) if np.any(shrunk_poly > 0) else 0.0
+                            if bg_chroma_med <= 14.0:
+                                color_ink = (roi_chroma >= max(42, int(round(bg_chroma_med + 32.0)))).astype(np.uint8) * 255
+                                bin_txt = cv2.bitwise_or(bin_txt, color_ink)
 
-                        stroke_prob = self.stroke_segmenter.predict_stroke_mask(
-                            roi_rgb,
-                            text_bbox_rel=(cx1_r, cy1_r, cx2_r, cy2_r),
-                            page_neural_crop=page_neural_crop,
+                        tb_rel_p = (
+                            (
+                                max(0, tb_box[0] - ix1),
+                                max(0, tb_box[1] - iy1),
+                                min(rw, tb_box[2] - ix1),
+                                min(rh, tb_box[3] - iy1),
+                            )
+                            if has_valid_tb
+                            else (cx1_r, cy1_r, cx2_r, cy2_r)
+                        )
+                        stroke_prob = (
+                            self.stroke_segmenter.predict_stroke_mask(
+                                roi_rgb,
+                                text_bbox_rel=tb_rel_p,
+                                page_neural_crop=page_neural_crop,
+                            )
+                            if self.stroke_segmenter is not None
+                            else np.zeros_like(roi_gray)
                         )
                         nn_txt = (stroke_prob >= 110).astype(np.uint8) * 255
                         text_in_poly = cv2.bitwise_and(cv2.bitwise_or(bin_txt, nn_txt), shrunk_poly)
+
+                        # Защита внутреннего чиби-арта / крупных тёмных рисунков внутри полигона баббла (если нейросегментатор не считает их текстом)
+                        if not is_dark_bubble and np.count_nonzero(text_in_poly) >= int(150 * scale_p * scale_p):
+                            dt_dark_p = cv2.distanceTransform((roi_gray < 175).astype(np.uint8), cv2.DIST_L2, 3)
+                            poly_edge = cv2.subtract(shrunk_poly, cv2.erode(shrunk_poly, np.ones((3, 3), np.uint8)))
+                            nl_p, lbl_p, st_p, _ = cv2.connectedComponentsWithStats(text_in_poly, connectivity=8)
+                            chibi_poly = np.zeros_like(text_in_poly)
+                            poly_area_nz = max(1, int(np.count_nonzero(shrunk_poly)))
+                            for lp in range(1, nl_p):
+                                c_area_p = int(st_p[lp, cv2.CC_STAT_AREA])
+                                if c_area_p < int(150 * scale_p * scale_p):
+                                    continue
+                                comp_mask_p = lbl_p == lp
+                                nn_ratio = float(np.count_nonzero(nn_txt[comp_mask_p])) / float(max(1, c_area_p))
+                                if nn_ratio >= 0.35:
+                                    continue
+                                comp_dt_p = dt_dark_p[comp_mask_p]
+                                max_dt_p = float(np.max(comp_dt_p)) if comp_dt_p.size > 0 else 1.5
+                                touches_poly_edge = np.any(poly_edge[comp_mask_p] > 0)
+                                if touches_poly_edge and max_dt_p >= max(6.0, 3.6 * scale_p) and float(np.percentile(comp_dt_p, 85)) >= max(4.0, 2.2 * scale_p):
+                                    chibi_poly[comp_mask_p] = 255
+                                elif max_dt_p >= max(14.0, 7.5 * scale_p) and float(np.percentile(comp_dt_p, 90)) >= max(7.5, 4.0 * scale_p):
+                                    c_gray_p = roi_gray[comp_mask_p]
+                                    mg_r = float(np.mean((c_gray_p >= 50) & (c_gray_p <= 185))) if c_gray_p.size > 0 else 0.0
+                                    if mg_r >= 0.22 or c_area_p >= 0.22 * poly_area_nz:
+                                        chibi_poly[comp_mask_p] = 255
+                            if np.any(chibi_poly > 0):
+                                chibi_guard = cv2.dilate(chibi_poly, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+                                text_in_poly[chibi_guard > 0] = 0
+
                         if np.count_nonzero(text_in_poly) > 0:
-                            dil_px = max(4, min(6, int(round(4.0 * scale_p))))
-                            dil_k = cv2.getStructuringElement(
-                                cv2.MORPH_ELLIPSE, (2 * dil_px + 1, 2 * dil_px + 1)
-                            )
+                            if block_kernel is not None:
+                                dil_k = block_kernel
+                                clamp_poly = poly_mask if custom_dilate > 10 else shrunk_poly
+                            else:
+                                dil_px = max(4, min(6, int(round(4.0 * scale_p))))
+                                dil_k = cv2.getStructuringElement(
+                                    cv2.MORPH_ELLIPSE, (2 * dil_px + 1, 2 * dil_px + 1)
+                                )
+                                clamp_poly = shrunk_poly
                             poly_clean_mask = cv2.bitwise_and(
                                 cv2.dilate(text_in_poly, dil_k, iterations=1),
-                                shrunk_poly,
+                                clamp_poly,
                             )
+
+                            # Захват выступающих за контур баббла кончиков экспрессивных букв ('！？', '♡', жирные кандзи с белым ореолом)
+                            if not is_dark_bubble:
+                                ext_zone = np.zeros((rh, rw), dtype=np.uint8)
+                                pad_ext = max(8, int(round(14.0 * scale_p)))
+                                ez_x1 = max(0, tb_rel_p[0] - pad_ext)
+                                ez_y1 = max(0, tb_rel_p[1] - pad_ext)
+                                ez_x2 = min(rw, tb_rel_p[2] + pad_ext)
+                                ez_y2 = min(rh, tb_rel_p[3] + pad_ext)
+                                ext_zone[ez_y1:ez_y2, ez_x1:ez_x2] = 255
+                                ext_zone[poly_mask > 0] = 0
+                                if np.any(ext_zone > 0):
+                                    near_text = cv2.dilate(
+                                        text_in_poly,
+                                        cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (2 * pad_ext + 1, 2 * pad_ext + 1)),
+                                    )
+                                    ext_nn = cv2.bitwise_and((stroke_prob >= 125).astype(np.uint8) * 255, cv2.bitwise_and(ext_zone, near_text))
+                                    pure_w_p = (roi_gray >= max(220, int(p75 - 28))).astype(np.uint8) * 255
+                                    dist_pw_p = cv2.distanceTransform(cv2.bitwise_not(pure_w_p), cv2.DIST_L2, 3)
+                                    # Исключаем саму замкнутую рамку баббла в узком кольце 4px вокруг poly_mask, если нет подтверждения нейросегментатора
+                                    wall_ring_p = cv2.subtract(
+                                        cv2.dilate(poly_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))),
+                                        poly_mask,
+                                    )
+                                    halo_backed_dark = (
+                                        (roi_gray < min(155, int(p75 - 65)))
+                                        & (dist_pw_p <= 4.5 * scale_p)
+                                        & (ext_zone > 0)
+                                        & (near_text > 0)
+                                        & (wall_ring_p == 0)
+                                    ).astype(np.uint8) * 255
+                                    # Оставляем только компактные внешние штрихи, имеющие собственный белый ореол снаружи баббла
+                                    ext_pw = cv2.bitwise_and(pure_w_p, cv2.bitwise_and(ext_zone, cv2.bitwise_not(wall_ring_p)))
+                                    if np.count_nonzero(ext_pw) >= int(16 * scale_p):
+                                        near_ext_pw = cv2.dilate(ext_pw, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7)))
+                                        halo_backed_dark = cv2.bitwise_and(halo_backed_dark, near_ext_pw)
+                                    else:
+                                        halo_backed_dark.fill(0)
+                                    ext_char_ink = cv2.bitwise_or(ext_nn, halo_backed_dark)
+                                    if np.count_nonzero(ext_char_ink) >= max(10, int(10 * scale_p)):
+                                        halo_ext_p = self.sota_cleaner._extract_text_halo(
+                                            roi_rgb, ext_char_ink, poly_mask, 4.2 * scale_p
+                                        )
+                                        ext_full = cv2.bitwise_or(ext_char_ink, cv2.bitwise_and(halo_ext_p, ext_zone))
+                                        ext_dil = cv2.bitwise_and(cv2.dilate(ext_full, dil_k, iterations=1), ext_zone)
+                                        poly_clean_mask = cv2.bitwise_or(poly_clean_mask, ext_dil)
+
                             full_mask[iy1:iy2, ix1:ix2] = np.maximum(
                                 full_mask[iy1:iy2, ix1:ix2],
                                 poly_clean_mask,
@@ -5134,6 +5318,7 @@ class BubbleCleaner:
                     int(y2),
                     bool(is_free_text),
                     int(mdil),
+                    int(self._block_poly_sig(block)),
                     int(self.dilate_size),
                     eff_redraw_tag,
                 )
@@ -5181,19 +5366,8 @@ class BubbleCleaner:
                     and self.lama_model is not None
                     and hasattr(self.lama_model, "inpaint_rois_batch")
                 ):
-                    cavity_map_page = None
-                    _ensure_ocr_geometry_helpers()
-                    if group_text_boxes_by_bubble_cavity is not None:
-                        try:
-                            tb_inputs = [
-                                {"bbox": self._get_effective_clean_bounds(ub, orig_w, orig_h)}
-                                for ub in uncached_blocks
-                            ]
-                            _, cavity_map_page = group_text_boxes_by_bubble_cavity(img_np, tb_inputs)
-                        except Exception:
-                            cavity_map_page = None
-
                     textured_rois: List[Tuple[int, int, int, int]] = []
+                    max_batch_pad = 80
                     for (
                         _blk,
                         x1_s,
@@ -5208,30 +5382,27 @@ class BubbleCleaner:
                         _bkey,
                         cached_pair_s,
                     ) in active_block_specs:
-                        if cached_pair_s is not None:
+                        if cached_pair_s is not None or not is_free_s:
                             continue
                         sub_m = base_mask_np[cy1_s:cy2_s, cx1_s:cx2_s]
                         if np.count_nonzero(sub_m) == 0:
                             continue
-                        if is_free_s:
-                            textured_rois.append((int(x1_s), int(y1_s), int(x2_s), int(y2_s)))
-                        elif cavity_map_page is not None:
-                            sub_cav = cavity_map_page[cy1_s:cy2_s, cx1_s:cx2_s]
-                            outside_ink = np.count_nonzero((sub_m > 0) & (sub_cav == 0))
-                            if outside_ink > 0.15 * np.count_nonzero(sub_m):
-                                textured_rois.append((int(x1_s), int(y1_s), int(x2_s), int(y2_s)))
+                        textured_rois.append((int(x1_s), int(y1_s), int(x2_s), int(y2_s)))
+                        req_pad = max(x1_s - cx1_s, cx2_s - x2_s, y1_s - cy1_s, cy2_s - y2_s) + 8
+                        if req_pad > max_batch_pad:
+                            max_batch_pad = req_pad
 
-                    textured_rois_set: set[tuple[int, int, int, int]] = set()
+                    textured_rois_set = set()
                     if len(textured_rois) >= 2:
                         try:
-                            lama_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
+                            lama_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
                             dil_page_mask = cv2.dilate(base_mask_np, lama_k, iterations=1)
                             page_bgr_in = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
                             batch_bgr_out = self.inpaint_rois_batch(
                                 page_bgr=page_bgr_in,
                                 page_mask=dil_page_mask,
                                 roi_bboxes=textured_rois,
-                                context_pad=80,
+                                context_pad=max_batch_pad,
                             )
                             pre_batched_lama_rgb = cv2.cvtColor(batch_bgr_out, cv2.COLOR_BGR2RGB)
                             textured_rois_set = set(textured_rois)
@@ -5275,13 +5446,22 @@ class BubbleCleaner:
                             continue
 
                         roi_key_t = (int(x1), int(y1), int(x2), int(y2))
-                        if pre_batched_lama_rgb is not None and (is_free_text or roi_key_t in textured_rois_set):
+                        if pre_batched_lama_rgb is not None and is_free_text and roi_key_t in textured_rois_set:
                             inpainted_crop = pre_batched_lama_rgb[cy1:cy2, cx1:cx2].copy()
                         else:
                             inpainted_crop = None
                             poly_rel_c: Optional[list[list[int]]] = None
-                            # Тракт А: если есть bubble_polygon и фон внутри однородный (std <= 10.0) — мгновенная заливка
-                            raw_poly_b = None if is_free_text else block.get("bubble_polygon")
+                            inpaint_mask_eff = (
+                                cv2.dilate(crop_mask, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+                                if is_free_text
+                                else crop_mask
+                            )
+                            # Тракт А: если есть bubble_polygon, фон внутри однородный (std <= 10.0) и нет выступающей за полигон маски — мгновенная заливка
+                            raw_poly_b = (
+                                None
+                                if (is_free_text or bool(block.get("clean_bbox_modified", False)))
+                                else block.get("bubble_polygon")
+                            )
                             if isinstance(raw_poly_b, (list, tuple)) and len(raw_poly_b) >= 3:
                                 try:
                                     poly_rel_c = [
@@ -5291,8 +5471,9 @@ class BubbleCleaner:
                                     poly_c = np.array(poly_rel_c, dtype=np.int32)
                                     pmask_c = np.zeros((cy2 - cy1, cx2 - cx1), dtype=np.uint8)
                                     cv2.fillPoly(pmask_c, [poly_c], 255)
+                                    outside_poly_px = int(np.count_nonzero((crop_mask > 0) & (pmask_c == 0)))
                                     bg_ring = (pmask_c > 0) & (crop_mask == 0)
-                                    if np.count_nonzero(bg_ring) >= 32:
+                                    if outside_poly_px == 0 and np.count_nonzero(bg_ring) >= 32:
                                         bg_pixels = crop_rgb[bg_ring]
                                         if float(np.std(bg_pixels)) <= 10.0:
                                             med_col = np.median(bg_pixels, axis=0).round().astype(np.uint8)
@@ -5301,11 +5482,11 @@ class BubbleCleaner:
                                 except Exception:
                                     inpainted_crop = None
                             if inpainted_crop is None and (self.pipeline_mode == "ultra" or self.inpaint_backend == "ultra_deep_redraw") and is_free_text:
-                                inpainted_crop = self._inpaint_with_flux_klein_4b(crop_rgb, crop_mask)
+                                inpainted_crop = self._inpaint_with_flux_klein_4b(crop_rgb, inpaint_mask_eff)
                             if inpainted_crop is None:
                                 inpainted_crop = self._inpaint_crop(
                                     crop_rgb,
-                                    crop_mask,
+                                    inpaint_mask_eff,
                                     is_free_text=is_free_text,
                                     inner_box_rel=(x1 - cx1, y1 - cy1, x2 - cx1, y2 - cy1),
                                     bubble_polygon_rel=poly_rel_c,
@@ -5319,22 +5500,29 @@ class BubbleCleaner:
                                 self._block_crop_cache.popitem(last=False)
 
                     if is_free_text:
-                        # Preserve Surrounding Art: вставка строго внутри маски глифов с 2px DT-feathering
-                        # и коррекцией яркости в пространстве CIE LAB, чтобы окружающий арт остался на 100% оригинальным
+                        # Preserve Surrounding Art: 100% стирание внутри crop_mask (alpha=1.0 без полупрозрачного ореола!)
+                        # + мягкий 2px внешний перьевой переход по расширенному полю LaMa и CIE LAB ре-калибровка яркости
                         bin_m = (crop_mask > 0).astype(np.uint8)
-                        dist_in = cv2.distanceTransform(bin_m, cv2.DIST_L2, 3)
-                        alpha_2d = np.clip(dist_in / 2.0, 0.0, 1.0).astype(np.float32)
+                        feather_m = cv2.dilate(bin_m * 255, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)), iterations=1)
+                        dist_f = cv2.distanceTransform(feather_m, cv2.DIST_L2, 3)
+                        feather_alpha = np.clip(dist_f / 2.5, 0.0, 1.0).astype(np.float32)
+                        alpha_2d = np.maximum(bin_m.astype(np.float32), feather_alpha)
                         adj_crop = inpainted_crop
                         try:
-                            ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (7, 7))
-                            outer_ring = (cv2.dilate(bin_m, ring_k, iterations=1) > 0) & (bin_m == 0)
-                            if np.count_nonzero(outer_ring) >= 24 and np.count_nonzero(bin_m) >= 16:
+                            ring_k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (9, 9))
+                            outer_ring = (cv2.dilate(feather_m, ring_k, iterations=1) > 0) & (feather_m == 0)
+                            inner_er = cv2.erode(feather_m, cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5)))
+                            inner_ring = (feather_m > 0) & (inner_er == 0)
+                            if np.count_nonzero(inner_ring) < 12:
+                                inner_ring = bin_m > 0
+                            if np.count_nonzero(outer_ring) >= 24 and np.count_nonzero(inner_ring) >= 12:
                                 src_lab = cv2.cvtColor(crop_rgb, cv2.COLOR_RGB2LAB).astype(np.float32)
                                 inp_lab = cv2.cvtColor(inpainted_crop, cv2.COLOR_RGB2LAB).astype(np.float32)
-                                delta_l = float(np.median(src_lab[outer_ring, 0]) - np.median(inp_lab[bin_m > 0, 0]))
-                                if abs(delta_l) <= 18.0:
-                                    inp_lab[..., 0] = np.clip(inp_lab[..., 0] + delta_l * 0.65, 0.0, 255.0)
-                                    adj_crop = cv2.cvtColor(inp_lab.round().astype(np.uint8), cv2.COLOR_LAB2RGB)
+                                if float(np.std(src_lab[outer_ring, 0])) <= 28.0:
+                                    delta_l = float(np.median(src_lab[outer_ring, 0]) - np.median(inp_lab[inner_ring, 0]))
+                                    if abs(delta_l) <= 18.0:
+                                        inp_lab[..., 0] = np.clip(inp_lab[..., 0] + delta_l * 0.65, 0.0, 255.0)
+                                        adj_crop = cv2.cvtColor(inp_lab.round().astype(np.uint8), cv2.COLOR_LAB2RGB)
                         except Exception:
                             adj_crop = inpainted_crop
                         alpha = alpha_2d[..., None]

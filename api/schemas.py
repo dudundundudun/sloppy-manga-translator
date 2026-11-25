@@ -91,9 +91,18 @@ class TextBlock(BaseModel):
         max_length=4,
         description="Точный внутренний контур букв внутри баббла (от двухконтурного детектора RT-DETR-v2 / TightInkCrop)",
     )
+    bubble_polygon: list[list[int]] | None = Field(
+        default=None,
+        max_length=256,
+        description="Полигональный контур внутренней полости баббла [[x, y], ...] от YOLO26s-seg / SAM 2.1",
+    )
     bbox_modified: bool = Field(
         default=False,
         description="Если True, пользователь вручную передвинул или изменил размер рамки перевода мышкой",
+    )
+    clean_bbox_modified: bool = Field(
+        default=False,
+        description="Если True, область стирания японского оригинала (clean_bbox) была изменена при Merge/Split",
     )
     bbox_resized: bool = Field(
         default=False,

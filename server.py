@@ -800,11 +800,31 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     else:
         block.setdefault("text_bbox", None)
     block["bbox_modified"] = bool(block.get("bbox_modified", False)) or (clean_bbox != bbox)
+    clean_bbox_modified = bool(block.get("clean_bbox_modified", False))
+    block["clean_bbox_modified"] = clean_bbox_modified
     cw = clean_bbox[2] - clean_bbox[0]
     ch = clean_bbox[3] - clean_bbox[1]
     nw = bbox[2] - bbox[0]
     nh = bbox[3] - bbox[1]
     block["bbox_resized"] = bool(block.get("bbox_resized", False)) or (abs(nw - cw) >= 3 or abs(nh - ch) >= 3)
+
+    raw_poly = block.get("bubble_polygon")
+    if (
+        not bool(block.get("is_free_text", False))
+        and not clean_bbox_modified
+        and isinstance(raw_poly, (list, tuple))
+        and len(raw_poly) >= 3
+    ):
+        norm_poly: list[list[int]] = []
+        for pt in raw_poly[:256]:
+            if isinstance(pt, (list, tuple)) and len(pt) >= 2:
+                try:
+                    norm_poly.append([int(round(float(pt[0]))), int(round(float(pt[1])))])
+                except (ValueError, TypeError):
+                    continue
+        block["bubble_polygon"] = norm_poly if len(norm_poly) >= 3 else None
+    else:
+        block["bubble_polygon"] = None
 
     # Поля профессиональной верстки и ретуши маски (Шаг 3) с обратной совместимостью
     block.setdefault("font_family", None)
@@ -3034,6 +3054,18 @@ def _run_ocr_compat(
     min_text_length: int = 2,
     pipeline_mode: str | None = None,
 ) -> tuple[list[dict[str, Any]], str]:
+    if translator_engine is not None:
+        cloud_vlm_ok = (
+            not bool(getattr(translator_engine, "nsfw_mode", False))
+            and time.time() >= float(getattr(translator_engine, "_cloud_down_until_ts", 0.0) or 0.0)
+        )
+        if cloud_vlm_ok:
+            engine._cloud_api_url = str(getattr(translator_engine, "unsloth_url", "") or "").strip()
+            engine._cloud_api_key = str(getattr(translator_engine, "unsloth_api_key", "") or "").strip()
+            engine.available_cloud_models = list(getattr(translator_engine, "_cached_cloud_models", []) or [])
+        else:
+            engine._cloud_api_url = ""
+            engine._cloud_api_key = ""
     try:
         res = engine.process_image(
             pil_image,
@@ -4433,12 +4465,12 @@ async def _run_folder_translation_job(
                                     for ex_b in excluded:
                                         cleaner_engine._restore_original_patch(comp_np, raw_np, ex_b)
                                     reused_im = Image.fromarray(comp_np, mode="RGB")
-                                    _store_cached_cleaned_image(src_p, clean_hash, reused_im, save_to_disk=False)
+                                    _store_cached_cleaned_image(src_p, clean_hash, reused_im, save_to_disk=True)
                                     return reused_im
                         except Exception as reuse_exc:
                             logger.debug("Быстрое восстановление патчей поверх пред-кэша пропущено: %s", reuse_exc)
                 cleaned_im, _ = cleaner_engine.clean_image(pil_img_in, active_in, src_p)
-                _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=False)
+                _store_cached_cleaned_image(src_p, clean_hash, cleaned_im, save_to_disk=True)
                 return cleaned_im
 
             def _render_and_save_page_sync(

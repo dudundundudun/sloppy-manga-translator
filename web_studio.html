@@ -8902,7 +8902,10 @@
         id: baseBlock.id,
         bbox: [minX1, minY1, maxX2, maxY2],
         clean_bbox: [minCX1, minCY1, maxCX2, maxCY2],
+        text_bbox: null,
+        bubble_polygon: null,
         bbox_modified: true,
+        clean_bbox_modified: true,
         bbox_resized: false,
         is_merged_bubble: true,
         original_text: mergedOrig,
@@ -9015,16 +9018,17 @@
         const cmidX = Math.round((cx1 + cx2) / 2);
         bbox1 = [Math.min(x2 - 8, midX + 1), y1, x2, y2];
         bbox2 = [x1, y1, Math.max(x1 + 8, midX - 1), y2];
-        cbbox1 = [Math.min(cx2 - 8, cmidX + 1), cy1, cx2, cy2];
-        cbbox2 = [cx1, cy1, Math.max(cx1 + 8, cmidX - 1), cy2];
+        // Для области замазки оригинала делаем мягкий нахлёст 2 px, чтобы на стыке не оставались нестёртые штрихи
+        cbbox1 = [Math.max(cx1, Math.min(cx2 - 8, cmidX - 1)), cy1, cx2, cy2];
+        cbbox2 = [cx1, cy1, Math.min(cx2, Math.max(cx1 + 8, cmidX + 1)), cy2];
       } else {
         // Делим по горизонтали на верхнюю и нижнюю половины
         const midY = Math.round((y1 + y2) / 2);
         const cmidY = Math.round((cy1 + cy2) / 2);
         bbox1 = [x1, y1, x2, Math.max(y1 + 8, midY - 1)];
         bbox2 = [x1, Math.min(y2 - 8, midY + 1), x2, y2];
-        cbbox1 = [cx1, cy1, cx2, Math.max(cy1 + 8, cmidY - 1)];
-        cbbox2 = [cx1, Math.min(cy2 - 8, cmidY + 1), cx2, cy2];
+        cbbox1 = [cx1, cy1, cx2, Math.min(cy2, Math.max(cy1 + 8, cmidY + 1))];
+        cbbox2 = [cx1, Math.max(cy1, Math.min(cy2 - 8, cmidY - 1)), cx2, cy2];
       }
 
       const [tr1, tr2] = splitTextIntoTwoParts(blk.translated_text);
@@ -9035,7 +9039,10 @@
         ...blk,
         bbox: bbox1,
         clean_bbox: cbbox1,
+        text_bbox: null,
+        bubble_polygon: null,
         bbox_modified: true,
+        clean_bbox_modified: true,
         bbox_resized: true,
         original_text: or1 || blk.original_text || "",
         romaji_text: rm1 || blk.romaji_text || "",
@@ -9050,7 +9057,10 @@
         ...blk,
         bbox: bbox2,
         clean_bbox: cbbox2,
+        text_bbox: null,
+        bubble_polygon: null,
         bbox_modified: true,
+        clean_bbox_modified: true,
         bbox_resized: true,
         original_text: or2 || blk.original_text || "",
         romaji_text: rm2 || "",
