@@ -3665,7 +3665,7 @@ class BubbleCleaner:
             "dilate_size": int(self.dilate_size),
             "inpaint_backend": str(self.inpaint_backend),
             "pipeline_mode": str(self.pipeline_mode),
-            "clean_ver": "v6.1-poly-zerobleed",
+            "clean_ver": "v6.2-poly-tailfix",
             "base_clean_blocks": [
                 [list(coords), is_free, mdil, psig]
                 for coords, is_free, mdil, psig in active_tuples
@@ -3709,7 +3709,7 @@ class BubbleCleaner:
             "dilate_size": int(self.dilate_size),
             "inpaint_backend": str(self.inpaint_backend),
             "pipeline_mode": str(self.pipeline_mode),
-            "clean_ver": "v6.1-poly-zerobleed",
+            "clean_ver": "v6.2-poly-tailfix",
             "active_clean_blocks": [
                 [list(coords), is_free, mdil, psig, [list(st) for st in strokes]]
                 for coords, is_free, mdil, psig, strokes in active_tuples
@@ -4283,39 +4283,22 @@ class BubbleCleaner:
                         # Выделяем текст внутри сжатого полигона (Fixed Threshold 210 / Otsu + chroma + сегментатор глифов)
                         inside_vals = roi_gray[shrunk_poly > 0]
                         is_dark_bubble = float(np.percentile(inside_vals, 50)) < 110.0
-                        if (not is_dark_bubble) and inside_vals.size >= 32:
+                        if (not is_dark_bubble) and inside_vals.size >= 32 and p75 >= 210.0:
                             bg_inside = inside_vals[inside_vals >= 180]
-                            if bg_inside.size >= 16 and float(np.std(bg_inside)) <= 12.0 and float(np.median(bg_inside)) >= 225.0:
-                                w_cand = (roi_gray >= 228).astype(np.uint8) * 255
-                                d_w_close = cv2.morphologyEx(
-                                    (roi_gray < 210).astype(np.uint8) * 255,
-                                    cv2.MORPH_CLOSE,
-                                    np.ones((3, 3), dtype=np.uint8),
-                                )
-                                w_cand[d_w_close > 0] = 0
-                                seed_mask = (shrunk_poly > 0) & (w_cand > 0)
-                                sy_s, sx_s = np.where(seed_mask)
-                                if len(sx_s) > 0:
-                                    mid_idx = len(sx_s) // 2
-                                    ff_c = w_cand.copy()
-                                    ff_cm = np.zeros((rh + 2, rw + 2), dtype=np.uint8)
-                                    cv2.floodFill(ff_c, ff_cm, (int(sx_s[mid_idx]), int(sy_s[mid_idx])), 128)
-                                    cav_flood = (ff_cm[1:-1, 1:-1] > 0).astype(np.uint8) * 255
-                                    if np.count_nonzero(cav_flood) > 0:
-                                        cnts_f, _ = cv2.findContours(cav_flood, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-                                        cav_filled = np.zeros_like(cav_flood)
-                                        cv2.drawContours(cav_filled, cnts_f, -1, 255, -1)
-                                        ptouch = (
-                                            int(np.count_nonzero(cav_filled[0, :]))
-                                            + int(np.count_nonzero(cav_filled[rh - 1, :]))
-                                            + int(np.count_nonzero(cav_filled[:, 0]))
-                                            + int(np.count_nonzero(cav_filled[:, rw - 1]))
-                                        ) / float(max(1, 2 * (rw + rh)))
-                                        poly_nz = max(1, int(np.count_nonzero(poly_mask)))
-                                        if ptouch <= 0.04 and np.count_nonzero(cav_filled) <= 2.2 * poly_nz:
-                                            k_wall_g = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (5, 5))
+                            if bg_inside.size >= 16 and float(np.std(bg_inside)) <= 16.0 and float(np.median(bg_inside)) >= 218.0:
+                                core_int_ext = self._extract_bubble_interior_mask(core_gray, p75)
+                                if np.count_nonzero(core_int_ext) >= 48:
+                                    ext_full_cav = np.zeros((rh, rw), dtype=np.uint8)
+                                    ext_full_cav[cy1_r:cy2_r, cx1_r:cx2_r] = core_int_ext
+                                    nl_wc, lbl_wc, _, _ = cv2.connectedComponentsWithStats(ext_full_cav, connectivity=8)
+                                    if nl_wc > 1:
+                                        seed_lbls = np.unique(lbl_wc[(shrunk_poly > 0) & (lbl_wc > 0)])
+                                        if seed_lbls.size > 0:
+                                            cav_filled = (np.isin(lbl_wc, seed_lbls).astype(np.uint8)) * 255
+                                            k_wall_g = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                                             cav_exp_eroded = cv2.erode(cav_filled, k_wall_g, iterations=1)
                                             if np.count_nonzero(cav_exp_eroded) >= 32:
+                                                poly_mask = cv2.bitwise_or(poly_mask, cav_filled)
                                                 shrunk_poly = cv2.bitwise_or(shrunk_poly, cav_exp_eroded)
                                                 inside_vals = roi_gray[shrunk_poly > 0]
                         if is_dark_bubble:
@@ -4997,9 +4980,23 @@ class BubbleCleaner:
                             k_p3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
                             poly_cav = cv2.erode(poly_full, k_p3, iterations=1)
                             if np.count_nonzero(poly_cav) >= 32:
+                                # Если YOLO26s-seg обрубил полигон посреди высокого баббла (002.webp: 'ああ!!'),
+                                # не режем замкнутую `cavity_mask` по воздуху и не рисуем мнимую стенку поверх белого фона!
+                                if np.any((crop_mask_np > 0) & (cavity_mask > 0) & (poly_full == 0)):
+                                    nl_cv, lbl_cv, _, _ = cv2.connectedComponentsWithStats(cavity_mask, connectivity=8)
+                                    if nl_cv > 1:
+                                        conn_lbls = np.unique(lbl_cv[(poly_cav > 0) & (lbl_cv > 0)])
+                                        if conn_lbls.size > 0:
+                                            poly_cav = cv2.bitwise_or(
+                                                poly_cav,
+                                                (np.isin(lbl_cv, conn_lbls).astype(np.uint8) * 255),
+                                            )
                                 poly_border = cv2.subtract(cv2.dilate(poly_full, k_p3, iterations=1), poly_cav)
+                                poly_border_dark = cv2.bitwise_and(
+                                    poly_border, (crop_gray < 190).astype(np.uint8) * 255
+                                )
                                 cavity_mask = cv2.bitwise_and(cavity_mask, poly_cav)
-                                wall_mask = cv2.bitwise_or(wall_mask, poly_border)
+                                wall_mask = cv2.bitwise_or(wall_mask, poly_border_dark)
                     except Exception as poly_bar_exc:
                         logger.debug("Пропуск полигонального барьера в _inpaint_crop: %s", poly_bar_exc)
 
