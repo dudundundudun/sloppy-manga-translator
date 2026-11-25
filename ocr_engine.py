@@ -37,8 +37,10 @@ import math
 
 import base64
 import functools
+import hashlib
 import io
 import logging
+import os
 import re
 import sys
 import threading
@@ -2102,7 +2104,7 @@ def segment_dashed_bubble_roi(
     )
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        ink_mask, connectivity=8, ltype=cv2.CV_16U
+        ink_mask, connectivity=8, ltype=cv2.CV_32S
     )
     if num_labels <= 1:
         empty = np.zeros((H, W), dtype=np.uint8)
@@ -2469,7 +2471,7 @@ def segment_open_wispy_bubble_roi(
     tw, th = max(10.0, float(tx2 - tx1)), max(10.0, float(ty2 - ty1))
 
     num_labels, labels, stats, centroids = cv2.connectedComponentsWithStats(
-        ink_mask, connectivity=8, ltype=cv2.CV_16U
+        ink_mask, connectivity=8, ltype=cv2.CV_32S
     )
     if num_labels <= 1:
         empty = np.zeros((H, W), dtype=np.uint8)
@@ -2687,7 +2689,7 @@ def decompose_overlapping_bubbles(
     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     ink_closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k3, iterations=1)
     num_l, labels, stats, _ = cv2.connectedComponentsWithStats(
-        ink_closed, connectivity=8, ltype=cv2.CV_16U
+        ink_closed, connectivity=8, ltype=cv2.CV_32S
     )
     w_c = stats[:, cv2.CC_STAT_WIDTH]
     h_c = stats[:, cv2.CC_STAT_HEIGHT]
@@ -2707,7 +2709,7 @@ def decompose_overlapping_bubbles(
     cavity_space = cv2.bitwise_and(cavity_space, cv2.bitwise_not(protected_wall_mask))
 
     num_cav, cav_labels, _, _ = cv2.connectedComponentsWithStats(
-        cavity_space, connectivity=4, ltype=cv2.CV_16U
+        cavity_space, connectivity=4, ltype=cv2.CV_32S
     )
 
     chosen_cids: list[int] = []
@@ -2828,7 +2830,7 @@ def verify_bubble_and_text_candidate(
     solid_dark = (blur < 115).astype(np.uint8) * 255
     ink = cv2.bitwise_or(ink_adapt, solid_dark)
 
-    num_l, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8, ltype=cv2.CV_16U)
+    num_l, labels, stats, _ = cv2.connectedComponentsWithStats(ink, connectivity=8, ltype=cv2.CV_32S)
     areas = stats[:, cv2.CC_STAT_AREA]
     w_c = stats[:, cv2.CC_STAT_WIDTH]
     h_c = stats[:, cv2.CC_STAT_HEIGHT]
@@ -2839,7 +2841,7 @@ def verify_bubble_and_text_candidate(
 
     inv_wall = cv2.bitwise_not(cv2.dilate(wall_mask, np.ones((3, 3), np.uint8)))
     num_holes, _, hole_stats, _ = cv2.connectedComponentsWithStats(
-        inv_wall, connectivity=4, ltype=cv2.CV_16U
+        inv_wall, connectivity=4, ltype=cv2.CV_32S
     )
 
     internal_holes = 0
@@ -2861,7 +2863,7 @@ def verify_bubble_and_text_candidate(
     k3 = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     wall_closed = cv2.morphologyEx(ink, cv2.MORPH_CLOSE, k3, iterations=1)
     white_space = cv2.bitwise_not(wall_closed)
-    n_cav, cav_labels, _, _ = cv2.connectedComponentsWithStats(white_space, connectivity=4, ltype=cv2.CV_16U)
+    n_cav, cav_labels, _, _ = cv2.connectedComponentsWithStats(white_space, connectivity=4, ltype=cv2.CV_32S)
 
     cy1, cy2 = int(0.18 * Hr), max(int(0.18 * Hr) + 2, int(0.82 * Hr))
     cx1, cx2 = int(0.18 * Wr), max(int(0.18 * Wr) + 2, int(0.82 * Wr))
@@ -3007,7 +3009,7 @@ def estimate_and_deskew_tilted_text_block(
         cv2.threshold(blur, 195, 255, cv2.THRESH_BINARY_INV)[1],
     )
 
-    num_l, _, stats, centroids = cv2.connectedComponentsWithStats(ink, connectivity=8, ltype=cv2.CV_16U)
+    num_l, _, stats, centroids = cv2.connectedComponentsWithStats(ink, connectivity=8, ltype=cv2.CV_32S)
     areas = stats[:, cv2.CC_STAT_AREA]
     w_c = stats[:, cv2.CC_STAT_WIDTH]
     h_c = stats[:, cv2.CC_STAT_HEIGHT]
@@ -3021,6 +3023,12 @@ def estimate_and_deskew_tilted_text_block(
     )
     char_mask[0] = False
     char_ids = np.nonzero(char_mask)[0]
+
+    MAX_DESKEW_CHARS = 800
+    if len(char_ids) > MAX_DESKEW_CHARS:
+        med_char_area = float(np.median(areas[char_ids]))
+        order = np.argsort(np.abs(areas[char_ids].astype(np.float32) - med_char_area))
+        char_ids = char_ids[order[:MAX_DESKEW_CHARS]]
 
     if len(char_ids) < 4:
         return {
@@ -3163,17 +3171,42 @@ def build_bubble_geometry_context(
 
 HF_YOLO_REPO = "ogkalu/comic-speech-bubble-detector-yolov8m"
 HF_YOLO_FILENAME = "comic-speech-bubble-detector.pt"
+HF_YOLO_REVISION = "21d5af0a9c69bb522b9968d6cc915f898d71a264"
+HF_YOLO_SHA256 = "10bc9f702698148e079fb4462a6b910fcd69753e04838b54087ef91d5633097b"
 
 HF_YOLO26_SEG_REPO = "ShadowB/Manga109-panel-balloon-text-yolov26-segmentation"
 HF_YOLO26_SEG_FILENAME = "best.pt"
+HF_YOLO26_SEG_REVISION = "3a860269ee0beb43ce9f31d82c7851441eb178ae"
+HF_YOLO26_SEG_SHA256 = "0b4376e426fa96af3976afa6a2602421dacf2dec96ef87b4a44f5e8d4971cb6f"
 LOCAL_YOLO26_SEG_FILENAME = "manga109-yolov26s-seg.pt"
 
 HF_RTDETR_REPO = "ogkalu/comic-text-and-bubble-detector"
+HF_RTDETR_REVISION = "16e8a622f91fabc6b5b65c96d32d1183f8843546"
 HF_RTDETR_SUBDIR = "comic-text-and-bubble-detector"
 HF_RTDETR_PT_FILES = ("config.json", "preprocessor_config.json", "model.safetensors")
+HF_RTDETR_SAFETENSORS_SHA256 = "037930a861e67870eb345be01b28cc70d7e2b7956528e48ee0ebdb0c093df80d"
+
+HF_MANGA_OCR_BASE_REPO = "kha-white/manga-ocr-base"
+HF_MANGA_OCR_BASE_REVISION = "aa6573bd10b0d446cbf622e29c3e084914df9741"
+HF_MANGA_OCR_BIN_SHA256 = "c63e0bb5b3ff798c5991de18a8e0956c7ee6d1563aca6729029815eda6f5c2eb"
 
 HF_JA_NAR_REPO = "muscgab/manga-ocr-nar-small"
+HF_JA_NAR_REVISION = "81ff4f3313263d1da349946a9dd20d14e0fb0e66"
 HF_JA_NAR_SUBDIR = "manga-ocr-nar-small"
+HF_JA_NAR_SAFETENSORS_SHA256 = "16e46e2c1adf6743acea068f386fca62dd7f5f8a0bdb2ebfbcd7f49dde5c9e4a"
+HF_JA_NAR_PY_SHA256: dict[str, str] = {
+    "manga_ocr_nar_small/__init__.py": "1722e61d47d8bbba1bb647f6824f814465bab661b865c4b9eff0fbdb64475872",
+    "manga_ocr_nar_small/backends/__init__.py": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+    "manga_ocr_nar_small/backends/coreml.py": "32bbd83365cc90b0984f9b60bfde98e12e29d543780e0d0ee7286aeb44e6fd4f",
+    "manga_ocr_nar_small/backends/cuda.py": "9444ec966fc20379ab629d84cbf8dde818f88b45c6cd4425652612bcb60e7b8e",
+    "manga_ocr_nar_small/backends/onnx.py": "7d40d263d3d0d8e9651f82891834f6c57af917a5603f6bee1ed42532628ff007",
+    "manga_ocr_nar_small/cli.py": "6c4683a08b2952bef17f19a75767457f494b289997a97cadf9a9edd33a126710",
+    "manga_ocr_nar_small/gpu_preprocess.py": "bba5d0be5ba897f9e81874385a1565f6de25857411cd718ace1a1fa70b13bd08",
+    "manga_ocr_nar_small/model.py": "3f6e9bbbc8081f74b965957ea58e5a0a04c881c01be835880db8bcd2fd88a3cb",
+    "manga_ocr_nar_small/preprocess.py": "9241c63b7fb58244671e4e02e4d8ae4589a963e843477fa0ad503f0f0167f7cd",
+    "manga_ocr_nar_small/vocab.py": "3f9be9ccdd6bd29836140875e6e5d49bcb0df6482ff4e326b75e48d61c27a669",
+    "mangaocr_nar_small/__init__.py": "67b32c509ed986645bdab3a50c8378535e6ceeb480faafc114103dd93fe9cb80",
+}
 HF_JA_NAR_ALLOW_PATTERNS = (
     "*.json",
     "*.safetensors",
@@ -3186,7 +3219,13 @@ HF_JA_NAR_ALLOW_PATTERNS = (
 )
 
 HF_HAYAI_REPO = "JustANormalTinkerer/hayai-ocr-v2.5-nova"
+HF_HAYAI_REVISION = "2803d0dc005fa4396ab1e7c5a472d2c450a247f7"
 HF_HAYAI_SUBDIR = "hayai-ocr-v2.5-nova"
+HF_HAYAI_SAFETENSORS_SHA256 = "ac63cd177c5b68bd91e18dd4408e0400461c7cf19f484b0da1643e232d1ffc3a"
+HF_HAYAI_PY_SHA256: dict[str, str] = {
+    "configuration_hayai.py": "47abd38cf1bae7aef27d01f5b8b4aa0960a7bc625a8afad79c4762ff5e5ed970",
+    "modeling_hayai.py": "3409131b4a35fc1bc1f0d7c40f906f79d10f57476f40fe05939c5a1a0ba9d527",
+}
 HF_HAYAI_ALLOW_PATTERNS = (
     "*.json",
     "*.safetensors",
@@ -3196,6 +3235,7 @@ HF_HAYAI_ALLOW_PATTERNS = (
 )
 
 HF_HAYAI_PROCESSOR_REPO = "google/siglip2-base-patch16-naflex"
+HF_HAYAI_PROCESSOR_REVISION = "b53b807d3a2d5e2b3911292f2d69e5341cdc064c"
 HF_HAYAI_PROCESSOR_SUBDIR = "siglip2-base-patch16-naflex"
 HF_HAYAI_PROCESSOR_ALLOW_PATTERNS = (
     "*.json",
@@ -3212,6 +3252,51 @@ HF_BABERU_ALLOW_PATTERNS = (
     "*.txt",
     "*.model",
 )
+
+
+def _verify_file_sha256(file_path: Path, expected_sha256: str, label: str = "model") -> None:
+    """Проверяет SHA256 локального файла модели потоково перед загрузкой."""
+    p = Path(file_path)
+    if not p.is_file():
+        raise RuntimeError(f"Файл {label} не найден для проверки SHA256: {p}")
+    expected = (expected_sha256 or "").strip().lower()
+    if not expected:
+        raise RuntimeError(f"Для {label} не задана эталонная контрольная сумма SHA256.")
+    hasher = hashlib.sha256()
+    with open(p, "rb") as f_in:
+        for chunk in iter(lambda: f_in.read(1024 * 1024), b""):
+            hasher.update(chunk)
+    actual = hasher.hexdigest().lower()
+    if actual != expected:
+        raise RuntimeError(
+            f"Нарушена целостность {label} ({p.name}): SHA256={actual[:16]}... ожидался {expected[:16]}..."
+        )
+
+
+def _verify_directory_py_hashes(
+    local_dir: Path,
+    expected_py_hashes: dict[str, str],
+    label: str = "remote_code",
+) -> None:
+    """Проверяет SHA256 каждого Python-файла модели и блокирует любые лишние .py файлы перед импортом."""
+    root = Path(local_dir)
+    if not root.is_dir():
+        raise RuntimeError(f"Директория {label} не найдена для проверки кода: {root}")
+    found_py: dict[str, Path] = {}
+    for py_file in sorted(root.rglob("*.py")):
+        rel_parts = py_file.relative_to(root).parts
+        if ".cache" in rel_parts or "__pycache__" in rel_parts:
+            continue
+        rel_key = py_file.relative_to(root).as_posix()
+        found_py[rel_key] = py_file
+        if rel_key not in expected_py_hashes:
+            raise RuntimeError(
+                f"Обнаружен неверифицированный Python-файл в {label}: {rel_key}"
+            )
+    for rel_key, expected_sha in expected_py_hashes.items():
+        if rel_key not in found_py:
+            raise RuntimeError(f"В {label} отсутствует обязательный Python-файл: {rel_key}")
+        _verify_file_sha256(found_py[rel_key], expected_sha, label=f"{label}/{rel_key}")
 
 LOCAL_SAM2_SEG_FILENAME = "sam2.1_b.pt"
 LOCAL_SAM2_FALLBACK_FILENAME = "sam2.1_s.pt"
@@ -3776,9 +3861,12 @@ class MangaOCREngine:
                     )
                     snapshot_download(
                         repo_id=HF_HAYAI_REPO,
+                        revision=HF_HAYAI_REVISION,
                         local_dir=str(local_dir),
                         allow_patterns=list(HF_HAYAI_ALLOW_PATTERNS),
                     )
+                _verify_directory_py_hashes(local_dir, HF_HAYAI_PY_SHA256, label="HayaiOCR")
+                _verify_file_sha256(weights_file, HF_HAYAI_SAFETENSORS_SHA256, label="HayaiOCR weights")
 
                 import transformers
                 from transformers import AutoModel, AutoProcessor, PreTrainedTokenizerFast
@@ -3812,6 +3900,7 @@ class MangaOCREngine:
                     )
                     snapshot_download(
                         repo_id=HF_HAYAI_PROCESSOR_REPO,
+                        revision=HF_HAYAI_PROCESSOR_REVISION,
                         local_dir=str(proc_dir),
                         allow_patterns=list(HF_HAYAI_PROCESSOR_ALLOW_PATTERNS),
                     )
@@ -3831,9 +3920,12 @@ class MangaOCREngine:
                     except Exception:
                         try:
                             if (local_dir / "preprocessor_config.json").exists():
-                                processor = AutoProcessor.from_pretrained(str(local_dir))
+                                processor = AutoProcessor.from_pretrained(str(local_dir), local_files_only=True)
                         except Exception:
-                            processor = AutoProcessor.from_pretrained(HF_HAYAI_PROCESSOR_REPO)
+                            processor = AutoProcessor.from_pretrained(
+                                HF_HAYAI_PROCESSOR_REPO,
+                                revision=HF_HAYAI_PROCESSOR_REVISION,
+                            )
 
                 try:
                     model = AutoModel.from_pretrained(str(local_dir), trust_remote_code=True, local_files_only=True)
@@ -4333,9 +4425,12 @@ class MangaOCREngine:
                     )
                     snapshot_download(
                         repo_id=HF_JA_NAR_REPO,
+                        revision=HF_JA_NAR_REVISION,
                         local_dir=str(local_dir),
                         allow_patterns=list(HF_JA_NAR_ALLOW_PATTERNS),
                     )
+                _verify_directory_py_hashes(local_dir, HF_JA_NAR_PY_SHA256, label="MangaOCR-NAR")
+                _verify_file_sha256(weights_file, HF_JA_NAR_SAFETENSORS_SHA256, label="MangaOCR-NAR weights")
 
                 local_dir_str = str(local_dir.resolve())
                 if local_dir_str not in sys.path:
@@ -4387,10 +4482,12 @@ class MangaOCREngine:
             downloaded_path = hf_hub_download(
                 repo_id=HF_YOLO_REPO,
                 filename=HF_YOLO_FILENAME,
+                revision=HF_YOLO_REVISION,
                 local_dir=str(self.models_dir),
             )
             local_weights = Path(downloaded_path)
 
+        _verify_file_sha256(local_weights, HF_YOLO_SHA256, label="YOLOv8m detector")
         detector = YOLO(str(local_weights))
         detector.to(self.device)
         return detector
@@ -4424,8 +4521,10 @@ class MangaOCREngine:
                     dl_path = hf_hub_download(
                         repo_id=HF_YOLO26_SEG_REPO,
                         filename=HF_YOLO26_SEG_FILENAME,
+                        revision=HF_YOLO26_SEG_REVISION,
                         local_dir=str(self.models_dir / "yolo26_seg_cache"),
                     )
+                    _verify_file_sha256(Path(dl_path), HF_YOLO26_SEG_SHA256, label="YOLO26s-seg cache")
                     import shutil
                     shutil.copy2(dl_path, local_weights)
                 except Exception as exc:
@@ -4434,6 +4533,7 @@ class MangaOCREngine:
                     return None
 
             try:
+                _verify_file_sha256(local_weights, HF_YOLO26_SEG_SHA256, label="YOLO26s-seg")
                 seg_model = YOLO(str(local_weights))
                 seg_model.to(self.device)
                 self._yolo26_seg_model = seg_model
@@ -4763,6 +4863,17 @@ class MangaOCREngine:
             if self._baberu_model is not None and self._baberu_processor is not None:
                 return self._baberu_model, self._baberu_processor
 
+            baberu_rev = os.environ.get("MIKO_BABERU_REVISION", "").strip()
+            allow_unverified = os.environ.get("MIKO_ALLOW_UNVERIFIED_REMOTE_CODE", "").strip() == "1"
+            if not (allow_unverified and re.fullmatch(r"[0-9a-fA-F]{40}", baberu_rev)):
+                logger.warning(
+                    "Baberu-OCR (%s) отключен: загрузка remote code без зафиксированных SHA256 заблокирована. "
+                    "Для явного включения задайте 40-символьный MIKO_BABERU_REVISION и MIKO_ALLOW_UNVERIFIED_REMOTE_CODE=1.",
+                    HF_BABERU_REPO,
+                )
+                self._baberu_available = False
+                return None
+
             local_dir = self.models_dir / HF_BABERU_SUBDIR
             try:
                 from transformers import AutoModelForImageTextToText, AutoProcessor  # type: ignore
@@ -4774,6 +4885,7 @@ class MangaOCREngine:
                     local_dir.mkdir(parents=True, exist_ok=True)
                     snapshot_download(
                         repo_id=HF_BABERU_REPO,
+                        revision=baberu_rev,
                         local_dir=str(local_dir),
                         allow_patterns=list(HF_BABERU_ALLOW_PATTERNS),
                     )
@@ -4860,8 +4972,14 @@ class MangaOCREngine:
                     hf_hub_download(
                         repo_id=HF_RTDETR_REPO,
                         filename=fname,
+                        revision=HF_RTDETR_REVISION,
                         local_dir=str(local_dir),
                     )
+            _verify_file_sha256(
+                local_dir / "model.safetensors",
+                HF_RTDETR_SAFETENSORS_SHA256,
+                label="RT-DETR-v2",
+            )
 
             import transformers
 
@@ -4930,7 +5048,7 @@ class MangaOCREngine:
     def _load_manga_ocr(self) -> Any:
         force_cpu = not self.device.startswith("cuda")
         local_mocr_dir = self.models_dir / "manga-ocr-base"
-        model_source = "kha-white/manga-ocr-base"
+        model_source = HF_MANGA_OCR_BASE_REPO
         try:
             has_weights = (
                 (local_mocr_dir / "pytorch_model.bin").exists()
@@ -4938,9 +5056,16 @@ class MangaOCREngine:
             )
             if (not (local_mocr_dir / "config.json").exists() or not has_weights) and snapshot_download is not None:
                 snapshot_download(
-                    repo_id="kha-white/manga-ocr-base",
+                    repo_id=HF_MANGA_OCR_BASE_REPO,
+                    revision=HF_MANGA_OCR_BASE_REVISION,
                     local_dir=str(local_mocr_dir),
                     allow_patterns=["*.json", "*.bin", "*.safetensors", "*.txt"],
+                )
+            if (local_mocr_dir / "pytorch_model.bin").exists():
+                _verify_file_sha256(
+                    local_mocr_dir / "pytorch_model.bin",
+                    HF_MANGA_OCR_BIN_SHA256,
+                    label="manga-ocr-base",
                 )
             if (local_mocr_dir / "config.json").exists():
                 model_source = str(local_mocr_dir)
@@ -5226,6 +5351,7 @@ class MangaOCREngine:
             return [(0, h, crop_rgb_np)]
 
         proc_np = cls._preprocess_crop_np_for_ocr(crop_rgb_np)
+        h, w = proc_np.shape[:2]
         gray = cv2.cvtColor(proc_np, cv2.COLOR_RGB2GRAY)
 
         pad_x = max(1, int(w * 0.04))
@@ -7912,14 +8038,24 @@ class MangaOCREngine:
                 # 1. Прогон YOLOv8m (speech bubble detector; Ultralytics expects BGR numpy arrays)
                 slice_bgr = cv2.cvtColor(slice_np, cv2.COLOR_RGB2BGR) if slice_np.ndim == 3 else slice_np
                 with self._inference_lock:
-                    results = self._predict_yolo_cuda_fp16(
-                        self.detector,
-                        source=slice_bgr,
-                        conf=active_conf,
-                        iou=self.iou_threshold,
-                        imgsz=self.imgsz,
-                        device=self.device,
-                        verbose=False,
+                    if self.detector is None:
+                        try:
+                            self.detector = self._load_detector()
+                        except Exception as det_exc:
+                            logger.debug("Ленивая перезагрузка YOLOv8m не удалась: %s", det_exc)
+                            self.detector = None
+                    results = (
+                        self._predict_yolo_cuda_fp16(
+                            self.detector,
+                            source=slice_bgr,
+                            conf=active_conf,
+                            iou=self.iou_threshold,
+                            imgsz=self.imgsz,
+                            device=self.device,
+                            verbose=False,
+                        )
+                        if self.detector is not None
+                        else None
                     )
 
                 if results and len(results) > 0 and results[0].boxes is not None:
@@ -8123,8 +8259,11 @@ class MangaOCREngine:
 
         for i in range(1, n_cc):
             x, y, cw, ch, area = [int(v) for v in stats[i]]
+            if cw <= 0 or ch <= 0:
+                continue
             if cw > img_w * 0.18 or ch > img_h * 0.18 or area > int(page_area * 0.015):
-                wall_mask[labels == i] = 255
+                sub_l = labels[y : y + ch, x : x + cw] == i
+                wall_mask[y : y + ch, x : x + cw][sub_l] = 255
                 continue
             if area < 4 or area > int(page_area * 0.012):
                 continue
@@ -8143,7 +8282,8 @@ class MangaOCREngine:
                 and float(np.percentile(valid_bg, 80)) >= 230.0
                 and float(np.std(white_px)) <= 12.8
             ):
-                glyph_mask[labels == i] = 255
+                sub_l = labels[y : y + ch, x : x + cw] == i
+                glyph_mask[y : y + ch, x : x + cw][sub_l] = 255
 
         k_group = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (21, 21))
         grouped = cv2.dilate(glyph_mask, k_group, iterations=1)

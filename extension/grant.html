@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <title>Miko-chan Manga Studio — Доступ CORS</title>
+  <style>
+    body {
+      margin: 0;
+      padding: 18px;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      background: #151724;
+      color: #f4f6fb;
+    }
+    .card {
+      background: #1e2235;
+      border: 1px solid #313856;
+      border-radius: 12px;
+      padding: 16px;
+    }
+    h1 {
+      margin: 0 0 8px 0;
+      font-size: 16px;
+      color: #ff9ec4;
+    }
+    p {
+      margin: 0 0 12px 0;
+      font-size: 13px;
+      line-height: 1.45;
+      color: #cfd6eb;
+    }
+    code {
+      display: block;
+      padding: 8px 10px;
+      margin-bottom: 14px;
+      background: #121420;
+      border-radius: 6px;
+      color: #8ce9c0;
+      font-size: 12px;
+      word-break: break-all;
+    }
+    .actions {
+      display: flex;
+      gap: 10px;
+    }
+    button {
+      flex: 1;
+      padding: 9px 12px;
+      border: 0;
+      border-radius: 8px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    #btn-grant {
+      background: #ff6ea8;
+      color: #ffffff;
+    }
+    #btn-cancel {
+      background: #2c324d;
+      color: #dce2f5;
+    }
+    #status {
+      margin-top: 12px;
+      font-size: 12px;
+      color: #ffd584;
+      min-height: 16px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Разрешить доступ к изображениям манги</h1>
+    <p>Расширению требуется CORS-доступ к домену для загрузки защищённых страниц на локальный сервер:</p>
+    <code id="origin-label">...</code>
+    <div class="actions">
+      <button id="btn-grant" type="button">Разрешить</button>
+      <button id="btn-cancel" type="button">Отмена</button>
+    </div>
+    <div id="status"></div>
+  </div>
+  <script src="grant.js"></script>
+</body>
+</html>

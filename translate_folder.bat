@@ -1,4 +1,5 @@
 @echo off
+setlocal
 title Local Manga Translator v6.1.0 - Batch Folder Translation (Auto-Resume)
 cd /d "%~dp0"
 
@@ -19,6 +20,18 @@ if defined USER_LANG set "USER_LANG=%USER_LANG:"=%"
 if /i "%USER_LANG%"=="en" set "TARGET_LANG=en"
 if /i "%USER_LANG%"=="ru" set "TARGET_LANG=ru"
 if /i "%USER_LANG%"=="romaji" set "TARGET_LANG=romaji"
+
+where python >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] Python is not found in PATH. Please install Python 3.10+.
+    pause
+    exit /b 1
+)
+if not exist "%~dp0cli_client.py" (
+    echo [ERROR] cli_client.py not found in "%~dp0".
+    pause
+    exit /b 1
+)
 
 echo.
 if defined FOLDER_ARG (

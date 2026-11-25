@@ -48,7 +48,7 @@ import warnings
 import webbrowser
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 warnings.filterwarnings("ignore", message=".*Failed to find CUDA.*", category=UserWarning)
 warnings.filterwarnings("ignore", module="triton.*")
@@ -146,11 +146,14 @@ from pydantic import BaseModel, Field
 
 from api.native_dialogs import (
     NativePickerBusyError,
+    PickerResult,
     _SUBPROCESS_PICKER_SCRIPT,
     _native_picker_lock,
     _run_native_picker_dialog,
     open_native_file_picker,
+    open_native_file_picker_result,
     open_native_folder_picker,
+    open_native_folder_picker_result,
 )
 from api.schemas import (
     ChapterBookImportRequest,
@@ -898,7 +901,7 @@ def _ensure_block_clean_bbox(block: dict[str, Any]) -> dict[str, Any]:
     return block
 
 
-_CLEANED_PAGE_CACHE_MAX = 48
+_CLEANED_PAGE_CACHE_MAX = 16
 _cleaned_page_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
 _cleaned_page_cache_lock = threading.Lock()
 
@@ -921,8 +924,7 @@ def _compute_clean_state_hash(
     """
     Вычисляет детерминированный хэш состояния замазки страницы `clean_state_hash`
     на основе пути исходного файла `src_file`, его `mtime`, глобального `dilate_size`
-    и отсортированного списка кортежей `(tuple(clean_bbox), bool(is_free_text), int(block.get("mask_dilate") or 0))`
-    для всех активных неудаленных блоков.
+    и отсортированного списка активных неудаленных блоков.
     """
     eff_dilate = int(
         dilate_size
@@ -969,10 +971,14 @@ def _compute_clean_state_hash(
         active_tuples.append((clean_tuple, is_free, mask_dilate_val, tuple(st_list)))
 
     active_tuples.sort(key=lambda item: (item[0][0], item[0][1], item[0][2], item[0][3], item[1], item[2], item[3]))
+    eff_backend = str(getattr(cleaner_engine, "inpaint_backend", "anime_lama_sota") or "anime_lama_sota")
+    eff_pm = str(getattr(cleaner_engine, "pipeline_mode", "balanced") or "balanced")
     payload = {
         "src_file": src_key,
         "mtime": int(src_mtime),
         "dilate_size": eff_dilate,
+        "inpaint_backend": eff_backend,
+        "pipeline_mode": eff_pm,
         "active_clean_blocks": [
             [list(coords), is_free, mdil, [list(s) for s in st_tup]]
             for coords, is_free, mdil, st_tup in active_tuples
@@ -993,22 +999,15 @@ def _get_cached_cleaned_image(
     except Exception:
         src_key = str(src_file)
 
+    if cleaner_engine is not None and hasattr(cleaner_engine, "get_cached_cleaned_image"):
+        return cleaner_engine.get_cached_cleaned_image(src_key, clean_state_hash)
+
     cache_key = (src_key, clean_state_hash)
     with _cleaned_page_cache_lock:
         cached = _cleaned_page_lru_cache.get(cache_key)
         if cached is not None:
             _cleaned_page_lru_cache.move_to_end(cache_key)
             return cached.copy()
-
-    if cleaner_engine is not None and hasattr(cleaner_engine, "get_cached_cleaned_image"):
-        eng_cached = cleaner_engine.get_cached_cleaned_image(src_key, clean_state_hash)
-        if eng_cached is not None:
-            with _cleaned_page_cache_lock:
-                _cleaned_page_lru_cache[cache_key] = eng_cached.copy()
-                _cleaned_page_lru_cache.move_to_end(cache_key)
-                while len(_cleaned_page_lru_cache) > _CLEANED_PAGE_CACHE_MAX:
-                    _cleaned_page_lru_cache.popitem(last=False)
-            return eng_cached
     return None
 
 
@@ -1025,14 +1024,7 @@ def _store_cached_cleaned_image(
     except Exception:
         src_key = str(src_file)
 
-    cache_key = (src_key, clean_state_hash)
     rgb_copy = cleaned_image.convert("RGB").copy()
-    with _cleaned_page_cache_lock:
-        _cleaned_page_lru_cache[cache_key] = rgb_copy
-        _cleaned_page_lru_cache.move_to_end(cache_key)
-        while len(_cleaned_page_lru_cache) > _CLEANED_PAGE_CACHE_MAX:
-            _cleaned_page_lru_cache.popitem(last=False)
-
     if cleaner_engine is not None and hasattr(cleaner_engine, "put_cached_cleaned_image"):
         cleaner_engine.put_cached_cleaned_image(
             src_key,
@@ -1040,6 +1032,14 @@ def _store_cached_cleaned_image(
             rgb_copy,
             save_to_disk=save_to_disk,
         )
+        return
+
+    cache_key = (src_key, clean_state_hash)
+    with _cleaned_page_cache_lock:
+        _cleaned_page_lru_cache[cache_key] = rgb_copy
+        _cleaned_page_lru_cache.move_to_end(cache_key)
+        while len(_cleaned_page_lru_cache) > _CLEANED_PAGE_CACHE_MAX:
+            _cleaned_page_lru_cache.popitem(last=False)
 
 
 async def _get_or_clean_page_image(
@@ -1613,37 +1613,53 @@ def _get_report_path(output_dir: Path) -> Path:
     return _get_meta_dir(output_dir) / REPORT_FILENAME
 
 
-def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
-    manifest_path = _resolve_manifest_read_path(output_dir)
-    if manifest_path is not None and manifest_path.exists():
-        try:
-            data = json.loads(manifest_path.read_text(encoding="utf-8"))
-            if isinstance(data, dict):
-                data.setdefault("pages", {})
-                data.setdefault("rolling_context", [])
-                data.setdefault("phrase_cache", {})
-                data.setdefault("glossary", [])
-                data.setdefault("run_history", [])
-                data.setdefault("batches_log", [])
-                return _sanitize_loaded_manifest(data)
-        except Exception as exc:
-            logger.warning("Не удалось прочитать %s: %s", manifest_path, exc)
-    return {
-        "pages": {},
-        "rolling_context": [],
-        "phrase_cache": {},
-        "glossary": [],
-        "run_history": [],
-        "batches_log": [],
-    }
-
-
 _manifest_write_lock = threading.Lock()
+_manifest_folder_locks_guard = threading.Lock()
+_manifest_folder_locks: dict[str, threading.RLock] = {}
+
+
+def _get_manifest_lock(output_dir: Path) -> threading.RLock:
+    try:
+        key = str(output_dir.resolve())
+    except Exception:
+        key = str(output_dir)
+    with _manifest_folder_locks_guard:
+        lock = _manifest_folder_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _manifest_folder_locks[key] = lock
+        return lock
+
+
+def _load_folder_manifest(output_dir: Path) -> dict[str, Any]:
+    with _get_manifest_lock(output_dir):
+        manifest_path = _resolve_manifest_read_path(output_dir)
+        if manifest_path is not None and manifest_path.exists():
+            try:
+                data = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(data, dict):
+                    data.setdefault("pages", {})
+                    data.setdefault("rolling_context", [])
+                    data.setdefault("phrase_cache", {})
+                    data.setdefault("glossary", [])
+                    data.setdefault("run_history", [])
+                    data.setdefault("batches_log", [])
+                    return _sanitize_loaded_manifest(data)
+            except Exception as exc:
+                logger.warning("Не удалось прочитать %s: %s", manifest_path, exc)
+        return {
+            "pages": {},
+            "rolling_context": [],
+            "phrase_cache": {},
+            "glossary": [],
+            "run_history": [],
+            "batches_log": [],
+        }
 
 
 def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any], sync_disk: bool = True) -> None:
     try:
-        with _manifest_write_lock:
+        with _get_manifest_lock(output_dir), _manifest_write_lock:
             meta_dir = _get_meta_dir(output_dir)
             meta_dir.mkdir(parents=True, exist_ok=True)
             manifest_path = _get_manifest_write_path(output_dir)
@@ -1675,6 +1691,30 @@ def _save_folder_manifest(output_dir: Path, manifest: dict[str, Any], sync_disk:
                 raise
     except Exception as exc:
         logger.warning("Не удалось сохранить %s: %s", META_MANIFEST_FILENAME, exc)
+
+
+def _update_folder_manifest(
+    output_dir: Path,
+    mutator: Callable[[dict[str, Any]], Any],
+    sync_disk: bool = True,
+) -> tuple[dict[str, Any], Any]:
+    """
+    Атомарно (под per-folder lock) загружает манифест, применяет `mutator(manifest)` и сохраняет его на диск.
+    Исключает lost-update гонки чтения-изменения-записи между параллельными запросами.
+    """
+    with _get_manifest_lock(output_dir):
+        manifest = _load_folder_manifest(output_dir)
+        result = mutator(manifest)
+        _save_folder_manifest(output_dir, manifest, sync_disk=sync_disk)
+        return manifest, result
+
+
+async def _update_folder_manifest_async(
+    output_dir: Path,
+    mutator: Callable[[dict[str, Any]], Any],
+    sync_disk: bool = True,
+) -> tuple[dict[str, Any], Any]:
+    return await asyncio.to_thread(_update_folder_manifest, output_dir, mutator, sync_disk)
 
 
 CHAPTER_BOOK_MD_FILENAME = "_chapter_book.md"
@@ -4666,7 +4706,7 @@ async def _run_folder_translation_job(
 
         if open_when_done and os.name == "nt" and output_dir.exists():
             try:
-                os.startfile(str(output_dir))
+                await asyncio.to_thread(os.startfile, str(output_dir))
             except Exception as _exc:
                 logger.debug("Ignored Exception at server.py:4322: %s", _exc)
 
@@ -5085,13 +5125,34 @@ async def update_model_stack_endpoint(payload: ModelStackActionRequest) -> dict[
 
 
 @app.post("/settings")
-async def update_settings_endpoint(payload: ServerSettingsRequest) -> dict[str, Any]:
+async def update_settings_endpoint(payload: ServerSettingsRequest, request: Request = None) -> dict[str, Any]:
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
     if payload.web_save_dir is not None:
         _reject_unc_path(payload.web_save_dir, "web_save_dir")
-        if payload.web_save_dir.strip() and Path(payload.web_save_dir.strip()).is_symlink():
-            raise HTTPException(status_code=400, detail="Символические ссылки для web_save_dir запрещены.")
+        raw_wsd = payload.web_save_dir.strip()
+        if raw_wsd:
+            if Path(raw_wsd).is_symlink():
+                raise HTTPException(status_code=400, detail="Символические ссылки для web_save_dir запрещены.")
+            cand_wsd = Path(raw_wsd).resolve()
+            if _is_filesystem_root(cand_wsd):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Корневая директория диска не может использоваться как папка автосохранения.",
+                )
+            cur_wsd_raw = getattr(translator_engine, "web_save_dir", None)
+            cur_wsd = Path(cur_wsd_raw).resolve() if cur_wsd_raw else (BASE_DIR / "Saved_Manga").resolve()
+            default_saved = (BASE_DIR / "Saved_Manga").resolve()
+            if (
+                _is_browser_origin_request(request)
+                and cand_wsd != cur_wsd
+                and not cand_wsd.is_relative_to(default_saved)
+                and not _is_path_within_allowed_roots(cand_wsd)
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail="Для выбора новой папки автосохранения используйте системный диалог выбора папки.",
+                )
 
     effective_api_key: str | None = None
     explicit_new_key = bool(payload.unsloth_api_key is not None and payload.unsloth_api_key.strip())
@@ -5214,13 +5275,20 @@ async def pick_web_save_folder_endpoint() -> dict[str, Any]:
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
     try:
-        folder_str = await asyncio.to_thread(open_native_folder_picker)
+        pick_res = await asyncio.to_thread(open_native_folder_picker_result)
     except NativePickerBusyError as exc:
         return {"status": "busy", "message": str(exc), "web_save_dir": translator_engine.web_save_dir}
-    if not folder_str:
+    if pick_res.status in ("timeout", "error"):
+        return {
+            "status": pick_res.status,
+            "message": pick_res.error or "Не удалось открыть системное окно выбора папки",
+            "web_save_dir": translator_engine.web_save_dir,
+        }
+    if pick_res.status == "cancelled" or not pick_res.path:
         return {"status": "cancelled", "web_save_dir": translator_engine.web_save_dir}
-    chosen_dir = Path(folder_str).resolve()
+    chosen_dir = Path(pick_res.path).resolve()
     chosen_dir.mkdir(parents=True, exist_ok=True)
+    _register_allowed_root(chosen_dir)
     saved = translator_engine.save_config(web_save_dir=str(chosen_dir))
     return {
         "status": "ok",
@@ -5251,18 +5319,16 @@ async def open_web_save_folder_endpoint(path: str | None = Query(default=None)) 
             and not target.is_relative_to(default_saved)
             and not _is_path_within_allowed_roots(target)
         ):
-            if not target.exists():
-                raise HTTPException(status_code=403, detail="Создание директории вне разрешенных корней запрещено.")
-            if not target.is_dir():
-                raise HTTPException(status_code=400, detail="Разрешено открывать только папки, а не файлы.")
-        else:
-            target.mkdir(parents=True, exist_ok=True)
+            raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
+        if target.exists() and not target.is_dir():
+            raise HTTPException(status_code=400, detail="Разрешено открывать только папки, а не файлы.")
+        target.mkdir(parents=True, exist_ok=True)
     else:
         target = Path(default_dir_str).resolve()
         target.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and hasattr(os, "startfile"):
         try:
-            os.startfile(str(target))
+            await asyncio.to_thread(os.startfile, str(target))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"status": "ok", "web_save_dir": str(target)}
@@ -5283,12 +5349,17 @@ async def shutdown_server() -> dict[str, str]:
 @app.post("/pick_folder")
 async def pick_folder_endpoint(target_lang: str = Query(default="en")) -> dict[str, Any]:
     try:
-        folder_str = await asyncio.to_thread(open_native_folder_picker)
+        pick_res = await asyncio.to_thread(open_native_folder_picker_result)
     except NativePickerBusyError as exc:
         return {"status": "busy", "message": str(exc)}
-    if not folder_str:
+    if pick_res.status in ("timeout", "error"):
+        return {
+            "status": pick_res.status,
+            "message": pick_res.error or "Не удалось открыть системное окно выбора папки",
+        }
+    if pick_res.status == "cancelled" or not pick_res.path:
         return {"status": "cancelled"}
-    source_dir = Path(folder_str).resolve()
+    source_dir = Path(pick_res.path).resolve()
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
     return inspect_folder_pages(source_dir, target_lang=target_lang)
@@ -5297,15 +5368,20 @@ async def pick_folder_endpoint(target_lang: str = Query(default="en")) -> dict[s
 @app.post("/pick_file")
 async def pick_file_endpoint() -> dict[str, Any]:
     try:
-        file_str = await asyncio.to_thread(open_native_file_picker)
+        pick_res = await asyncio.to_thread(open_native_file_picker_result)
     except NativePickerBusyError:
         return {
             "status": "busy",
             "message": "Окно выбора файла уже открыто — проверьте панель задач Windows",
         }
-    if not file_str:
+    if pick_res.status in ("timeout", "error"):
+        return {
+            "status": pick_res.status,
+            "message": pick_res.error or "Не удалось открыть системное окно выбора файла",
+        }
+    if pick_res.status == "cancelled" or not pick_res.path:
         return {"status": "cancelled"}
-    file_path = Path(file_str).resolve()
+    file_path = Path(pick_res.path).resolve()
     if not file_path.exists() or not file_path.is_file():
         raise HTTPException(status_code=400, detail=f"Файл не найден: {file_path}")
     _register_allowed_root(file_path.parent)
@@ -5315,6 +5391,42 @@ async def pick_file_endpoint() -> dict[str, Any]:
         "filename": file_path.name,
         "parent_dir": str(file_path.parent),
     }
+
+
+def _is_filesystem_root(p: Path) -> bool:
+    resolved = p.resolve()
+    return resolved.parent == resolved
+
+
+def _is_browser_origin_request(request: Request = None) -> bool:
+    if request is None:
+        return False
+    return bool(request.headers.get("origin") or request.headers.get("referer"))
+
+
+def _ensure_path_allowed_for_request(
+    target_path: Path,
+    request: Request = None,
+    *,
+    error_detail: str = "Доступ к директории вне разрешенных корней запрещен.",
+) -> None:
+    if _is_filesystem_root(target_path):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
+    if _is_browser_origin_request(request) and not _is_path_within_allowed_roots(target_path):
+        raise HTTPException(status_code=403, detail=error_detail)
+
+
+def _clear_stale_rate_limit_pause_for_interactive_request() -> None:
+    if (
+        translator_engine is not None
+        and getattr(translator_engine, "_cloud_rate_limit_paused", False)
+        and folder_job_state.get("status") not in ("running", "stopping")
+    ):
+        translator_engine._cloud_rate_limit_paused = False
+        translator_engine._cloud_rate_limit_pause_reason = ""
+        translator_engine._consecutive_cloud_429_count = 0
+        translator_engine._cloud_429_cooldown_until_mono = 0.0
+        translator_engine._cloud_429_sleep_active = False
 
 
 @app.post("/open_folder")
@@ -5331,9 +5443,11 @@ async def open_folder_in_explorer_endpoint(path: str = Query(...)) -> dict[str, 
         raise HTTPException(status_code=404, detail="Папка еще не создана")
     if not target.is_dir():
         raise HTTPException(status_code=400, detail="Разрешено открывать только папки, а не файлы")
+    if not _is_path_within_allowed_roots(target):
+        raise HTTPException(status_code=403, detail="Открытие директории вне разрешенных корней запрещено.")
     if os.name == "nt" and hasattr(os, "startfile"):
         try:
-            os.startfile(str(target))
+            await asyncio.to_thread(os.startfile, str(target))
             return {"status": "ok"}
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
@@ -5341,12 +5455,16 @@ async def open_folder_in_explorer_endpoint(path: str = Query(...)) -> dict[str, 
 
 
 @app.post("/folder_inspect")
-async def folder_inspect_endpoint(payload: FolderInspectRequest) -> dict[str, Any]:
+async def folder_inspect_endpoint(payload: FolderInspectRequest, request: Request = None) -> dict[str, Any]:
     _reject_unc_path(payload.folder_path, "folder_path")
     source_dir = Path(payload.folder_path).resolve()
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
-    _register_allowed_root(source_dir)
+    _ensure_path_allowed_for_request(
+        source_dir,
+        request,
+        error_detail="Сначала выберите папку через системный диалог выбора папки.",
+    )
     return inspect_folder_pages(source_dir, target_lang=payload.target_lang)
 
 
@@ -5461,39 +5579,40 @@ def _save_web_translated_page(
         except Exception as _exc:
             logger.debug("Ignored Exception at server.py:5130: %s", _exc)
 
-    manifest = _load_folder_manifest(output_chapter_dir)
-    if not isinstance(manifest.get("pages"), dict):
-        manifest["pages"] = {}
-    if not isinstance(manifest.get("phrase_cache"), dict):
-        manifest["phrase_cache"] = {}
+    with _get_manifest_lock(output_chapter_dir):
+        manifest = _load_folder_manifest(output_chapter_dir)
+        if not isinstance(manifest.get("pages"), dict):
+            manifest["pages"] = {}
+        if not isinstance(manifest.get("phrase_cache"), dict):
+            manifest["phrase_cache"] = {}
 
-    t_lang = (target_lang or "en").lower().strip()
-    for b in blocks:
-        _ensure_block_clean_bbox(b)
-        orig_t = str(b.get("original_text") or "").strip()
-        trans_t = str(b.get("translated_text") or "").strip()
-        rom_t = str(b.get("romaji_text") or "").strip()
-        if orig_t and trans_t:
-            manifest["phrase_cache"][f"{t_lang}||{orig_t}"] = trans_t
-        if orig_t and rom_t:
-            manifest["phrase_cache"][f"romaji||{orig_t}"] = rom_t
+        t_lang = (target_lang or "en").lower().strip()
+        for b in blocks:
+            _ensure_block_clean_bbox(b)
+            orig_t = str(b.get("original_text") or "").strip()
+            trans_t = str(b.get("translated_text") or "").strip()
+            rom_t = str(b.get("romaji_text") or "").strip()
+            if orig_t and trans_t:
+                manifest["phrase_cache"][f"{t_lang}||{orig_t}"] = trans_t
+            if orig_t and rom_t:
+                manifest["phrase_cache"][f"romaji||{orig_t}"] = rom_t
 
-    manifest["source_dir"] = str(source_chapter_dir)
-    manifest["target_lang"] = target_lang
-    manifest["pages"][filename] = {
-        "blocks_count": len(blocks),
-        "free_text_count": sum(1 for b in blocks if b.get("is_free_text")),
-        "detected_lang": detected_lang,
-        "model": active_model,
-        "uppercase": uppercase,
-        "min_font_size": min_font_size,
-        "max_font_size": max_font_size,
-        "ocr_diag": dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {}) if ocr_engine else {},
-        "page_url": page_url,
-        "updated_at": int(time.time()),
-        "blocks": blocks,
-    }
-    _save_folder_manifest(output_chapter_dir, manifest)
+        manifest["source_dir"] = str(source_chapter_dir)
+        manifest["target_lang"] = target_lang
+        manifest["pages"][filename] = {
+            "blocks_count": len(blocks),
+            "free_text_count": sum(1 for b in blocks if b.get("is_free_text")),
+            "detected_lang": detected_lang,
+            "model": active_model,
+            "uppercase": uppercase,
+            "min_font_size": min_font_size,
+            "max_font_size": max_font_size,
+            "ocr_diag": dict(getattr(ocr_engine, "last_page_diagnostics", {}) or {}) if ocr_engine else {},
+            "page_url": page_url,
+            "updated_at": int(time.time()),
+            "blocks": blocks,
+        }
+        _save_folder_manifest(output_chapter_dir, manifest)
     _generate_and_save_folder_report(
         output_chapter_dir, manifest, source_dir=source_chapter_dir, target_lang=target_lang
     )
@@ -5511,6 +5630,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
         or renderer_engine is None
     ):
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    _clear_stale_rate_limit_pause_for_interactive_request()
 
     raw_b64 = payload.image or payload.image_base64
     req_lang = payload.lang.lower().strip()
@@ -5622,6 +5742,8 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
         if payload.save_dir and payload.save_dir.strip():
             _reject_unc_path(payload.save_dir, "save_dir")
             cand_save = Path(payload.save_dir.strip()).resolve()
+            if _is_filesystem_root(cand_save):
+                raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
             default_saved_root = (BASE_DIR / "Saved_Manga").resolve()
             configured_save_root = (
                 Path(translator_engine.web_save_dir).resolve()
@@ -5693,7 +5815,7 @@ async def translate_manga_page(payload: TranslateRequest) -> TranslateResponse:
 
 
 @app.post("/translate_page_file", response_model=TranslateResponse)
-async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> TranslateResponse:
+async def translate_page_file_endpoint(payload: PageFileTranslateRequest, request: Request = None) -> TranslateResponse:
     _reject_unc_path(payload.file_path, "file_path")
     _reject_unc_path(payload.source_dir, "source_dir")
     _reject_unc_path(payload.output_path, "output_path")
@@ -5714,10 +5836,16 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
         or renderer_engine is None
     ):
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    _clear_stale_rate_limit_pause_for_interactive_request()
 
     src_file = Path(payload.file_path).resolve()
     if not src_file.exists() or not src_file.is_file():
         raise HTTPException(status_code=400, detail=f"Исходный файл не найден: {src_file}")
+    _ensure_path_allowed_for_request(
+        src_file,
+        request,
+        error_detail="Доступ к файлу вне разрешенных корней запрещен.",
+    )
 
     req_lang = payload.lang.lower().strip()
     if req_lang not in VALID_SOURCE_LANGS:
@@ -5733,8 +5861,19 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
 
     if payload.output_path:
         dest_path = Path(payload.output_path).resolve()
+        if _is_filesystem_root(dest_path.parent):
+            raise HTTPException(status_code=403, detail="Запись в корневую директорию диска запрещена.")
+        base_src_dir = (
+            _unwrap_output_folder_if_needed(Path(payload.source_dir).resolve())
+            if payload.source_dir
+            else _unwrap_output_folder_if_needed(src_file.parent)
+        )
+        expected_out_dir = get_output_dir_for_folder(base_src_dir, target_lang).resolve()
+        if not dest_path.is_relative_to(expected_out_dir) and not _is_path_within_allowed_roots(dest_path):
+            raise HTTPException(status_code=403, detail="Запись файла вне разрешенных корней запрещена.")
     elif payload.source_dir:
         source_dir = Path(payload.source_dir).resolve()
+        _ensure_path_allowed_for_request(source_dir, request)
         output_dir = get_output_dir_for_folder(source_dir, target_lang)
         try:
             rel = src_file.relative_to(source_dir)
@@ -5808,20 +5947,16 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
     )
 
     if not blocks:
-        shutil.copy2(src_file, dest_path)
+        await asyncio.to_thread(shutil.copy2, src_file, dest_path)
     else:
         save_kwargs: dict[str, Any] = {}
         if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
             save_kwargs["quality"] = 95
-        final_image.save(dest_path, **save_kwargs)
+        await asyncio.to_thread(final_image.save, dest_path, **save_kwargs)
 
     free_cnt = sum(1 for b in blocks if b.get("is_free_text"))
     if output_dir is not None and manifest is not None and rel_norm:
-        if not isinstance(manifest.get("pages"), dict):
-            manifest["pages"] = {}
-        manifest["source_dir"] = str(source_dir) if source_dir else ""
-        manifest["target_lang"] = target_lang
-        manifest["pages"][rel_norm] = {
+        page_entry = {
             "blocks_count": len(blocks),
             "free_text_count": free_cnt,
             "detected_lang": detected_lang,
@@ -5833,10 +5968,26 @@ async def translate_page_file_endpoint(payload: PageFileTranslateRequest) -> Tra
             "updated_at": int(time.time()),
             "blocks": blocks,
         }
-        if translator_engine is not None and translator_engine.recent_context_lines:
-            manifest["rolling_context"] = list(translator_engine.recent_context_lines[-12:])
-        manifest["phrase_cache"] = phrase_cache
-        _save_folder_manifest(output_dir, manifest)
+        ctx_snap = (
+            list(translator_engine.recent_context_lines[-12:])
+            if (translator_engine is not None and translator_engine.recent_context_lines)
+            else None
+        )
+
+        def _mutate_page_file(m: dict[str, Any]) -> None:
+            if not isinstance(m.get("pages"), dict):
+                m["pages"] = {}
+            if not isinstance(m.get("phrase_cache"), dict):
+                m["phrase_cache"] = {}
+            m["source_dir"] = str(source_dir) if source_dir else ""
+            m["target_lang"] = target_lang
+            m["pages"][rel_norm] = page_entry
+            if ctx_snap:
+                m["rolling_context"] = ctx_snap
+            if phrase_cache:
+                m["phrase_cache"].update(phrase_cache)
+
+        manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_page_file)
         await asyncio.to_thread(
             _generate_and_save_folder_report,
             output_dir,
@@ -5875,6 +6026,8 @@ def _resolve_page_paths(
     source_dir_str: str | None,
     dest_path_str: str | None,
     target_lang: str,
+    *,
+    require_allowed_root: bool = False,
 ) -> tuple[Path, Path, Path, Path, str]:
     _reject_unc_path(source_path_str, "source_path")
     _reject_unc_path(source_dir_str, "source_dir")
@@ -5894,14 +6047,26 @@ def _resolve_page_paths(
         t_lang = "en"
 
     if source_dir_str:
-        source_dir = _unwrap_output_folder_if_needed(Path(source_dir_str).resolve())
+        raw_source_dir = Path(source_dir_str).resolve()
+        source_dir = _unwrap_output_folder_if_needed(raw_source_dir)
     else:
-        source_dir = _unwrap_output_folder_if_needed(src_file.parent)
+        raw_source_dir = src_file.parent
+        source_dir = _unwrap_output_folder_if_needed(raw_source_dir)
+
+    if _is_filesystem_root(source_dir) or _is_filesystem_root(raw_source_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
 
     # Если исходный файл был выбран прямо из папки перевода (<Папка>_RU/001.png),
     # а в чистой папке <Папка>/001.png лежит оригинал — берем чистый оригинал!
     if src_file.parent != source_dir and (source_dir / src_file.name).exists():
         src_file = (source_dir / src_file.name).resolve()
+
+    if require_allowed_root:
+        if not _is_path_within_allowed_roots(src_file) or (
+            not _is_path_within_allowed_roots(source_dir)
+            and not _is_path_within_allowed_roots(raw_source_dir)
+        ):
+            raise HTTPException(status_code=403, detail="Доступ к файлу вне разрешенных корней запрещен.")
 
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
     try:
@@ -5912,6 +6077,10 @@ def _resolve_page_paths(
 
     if dest_path_str:
         dest_path = Path(dest_path_str).resolve()
+        if _is_filesystem_root(dest_path.parent):
+            raise HTTPException(status_code=403, detail="Запись в корневую директорию диска запрещена.")
+        if not dest_path.is_relative_to(output_dir.resolve()) and not _is_path_within_allowed_roots(dest_path):
+            raise HTTPException(status_code=403, detail="Запись файла вне разрешенных корней запрещена.")
     else:
         dest_path = output_dir / rel
 
@@ -5919,7 +6088,7 @@ def _resolve_page_paths(
 
 
 @app.post("/page_blocks")
-async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[str, Any]:
+async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest, request: Request = None) -> dict[str, Any]:
     """
     Возвращает список текстовых блоков страницы (оригинал, ромадзи, перевод, координаты) для ручного редактирования.
     - Если блоки уже сохранены в `.translation_state.json`, возвращает их мгновенно.
@@ -5935,6 +6104,7 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
         payload.source_dir,
         payload.dest_path,
         payload.target_lang,
+        require_allowed_root=_is_browser_origin_request(request),
     )
     if not src_file.exists() or not src_file.is_file():
         raise HTTPException(status_code=400, detail=f"Исходный файл не найден: {src_file}")
@@ -6115,18 +6285,28 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
             external_cache=phrase_cache,
         )
 
-    page_meta.update(
-        {
-            "blocks_count": len(blocks),
-            "free_text_count": sum(1 for b in blocks if b.get("is_free_text")),
-            "detected_lang": det_lang,
-            "updated_at": int(time.time()),
-            "blocks": blocks,
-        }
-    )
-    manifest["pages"][rel_norm] = page_meta
-    manifest["phrase_cache"] = phrase_cache
-    _save_folder_manifest(output_dir, manifest)
+    def _mutate_page_blocks(m: dict[str, Any]) -> None:
+        if not isinstance(m.get("pages"), dict):
+            m["pages"] = {}
+        if not isinstance(m.get("phrase_cache"), dict):
+            m["phrase_cache"] = {}
+        pm = m["pages"].get(rel_norm, {})
+        if not isinstance(pm, dict):
+            pm = {}
+        pm.update(
+            {
+                "blocks_count": len(blocks),
+                "free_text_count": sum(1 for b in blocks if b.get("is_free_text")),
+                "detected_lang": det_lang,
+                "updated_at": int(time.time()),
+                "blocks": blocks,
+            }
+        )
+        m["pages"][rel_norm] = pm
+        if phrase_cache:
+            m["phrase_cache"].update(phrase_cache)
+
+    await _update_folder_manifest_async(output_dir, _mutate_page_blocks)
 
     return {
         "status": "ok",
@@ -6140,7 +6320,7 @@ async def get_or_scan_page_blocks_endpoint(payload: PageBlocksRequest) -> dict[s
 
 
 @app.post("/page_romaji")
-async def generate_page_romaji_endpoint(payload: PageRomajiRequest) -> dict[str, Any]:
+async def generate_page_romaji_endpoint(payload: PageRomajiRequest, request: Request = None) -> dict[str, Any]:
     """
     Генерирует или уточняет чтение Ромадзи (`romaji_text`) для всех блоков выбранной страницы
     (локальный словарь + контекстное чтение кандзи через ИИ при `use_llm=True`).
@@ -6160,6 +6340,7 @@ async def generate_page_romaji_endpoint(payload: PageRomajiRequest) -> dict[str,
             payload.source_dir,
             None,
             payload.target_lang,
+            require_allowed_root=_is_browser_origin_request(request),
         )
         manifest = _load_folder_manifest(output_dir)
         if isinstance(manifest.get("phrase_cache"), dict):
@@ -6173,16 +6354,21 @@ async def generate_page_romaji_endpoint(payload: PageRomajiRequest) -> dict[str,
     )
 
     if output_dir is not None and manifest is not None and rel_norm:
-        if not isinstance(manifest.get("pages"), dict):
-            manifest["pages"] = {}
-        page_meta = manifest["pages"].get(rel_norm, {})
-        if not isinstance(page_meta, dict):
-            page_meta = {}
-        page_meta["blocks"] = updated_blocks
-        page_meta["updated_at"] = int(time.time())
-        manifest["pages"][rel_norm] = page_meta
-        manifest["phrase_cache"] = phrase_cache
-        _save_folder_manifest(output_dir, manifest)
+        def _mutate_page_romaji(m: dict[str, Any]) -> None:
+            if not isinstance(m.get("pages"), dict):
+                m["pages"] = {}
+            if not isinstance(m.get("phrase_cache"), dict):
+                m["phrase_cache"] = {}
+            pm = m["pages"].get(rel_norm, {})
+            if not isinstance(pm, dict):
+                pm = {}
+            pm["blocks"] = updated_blocks
+            pm["updated_at"] = int(time.time())
+            m["pages"][rel_norm] = pm
+            if phrase_cache:
+                m["phrase_cache"].update(phrase_cache)
+
+        await _update_folder_manifest_async(output_dir, _mutate_page_romaji)
 
     return {
         "status": "ok",
@@ -6192,7 +6378,7 @@ async def generate_page_romaji_endpoint(payload: PageRomajiRequest) -> dict[str,
 
 
 @app.post("/save_edited_page")
-async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str, Any]:
+async def save_edited_page_endpoint(payload: SaveEditedPageRequest, request: Request = None) -> dict[str, Any]:
     """
     Принимает отредактированные пользователем текстовые блоки страницы (включая новые координаты/размер рамки `bbox`,
     сохраняя очистку оригинала строго на `clean_bbox`), заново очищает бабблы на чистом оригинале,
@@ -6208,6 +6394,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
         payload.source_dir,
         payload.dest_path,
         payload.target_lang,
+        require_allowed_root=_is_browser_origin_request(request),
     )
     if not src_file.exists() or not src_file.is_file():
         raise HTTPException(status_code=400, detail=f"Исходный файл страницы не найден: {src_file}")
@@ -6215,8 +6402,11 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     start_ts = time.perf_counter()
 
-    with Image.open(src_file) as raw_im:
-        pil_image = _pil_to_rgb_clean(raw_im)
+    def _load_src_pil_sync() -> Image.Image:
+        with Image.open(src_file) as raw_im:
+            return _pil_to_rgb_clean(raw_im)
+
+    pil_image = await asyncio.to_thread(_load_src_pil_sync)
 
     blocks_dicts: list[dict[str, Any]] = []
     active_blocks: list[dict[str, Any]] = []
@@ -6264,43 +6454,45 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
         save_kwargs["quality"] = 95
     elif dest_path.suffix.lower() == ".png":
         save_kwargs["compress_level"] = 1
-    final_image.save(dest_path, **save_kwargs)
+    await asyncio.to_thread(final_image.save, dest_path, **save_kwargs)
 
     t_lang = (payload.target_lang or "en").lower().strip()
-    manifest = _load_folder_manifest(output_dir)
-    if not isinstance(manifest.get("pages"), dict):
-        manifest["pages"] = {}
-    if not isinstance(manifest.get("phrase_cache"), dict):
-        manifest["phrase_cache"] = {}
-
+    cache_updates: dict[str, str] = {}
     for bd in blocks_dicts:
         orig_t = str(bd.get("original_text") or "").strip()
         trans_t = str(bd.get("translated_text") or "").strip()
         rom_t = str(bd.get("romaji_text") or "").strip()
         if orig_t and trans_t:
-            manifest["phrase_cache"][f"{t_lang}||{orig_t}"] = trans_t
+            cache_updates[f"{t_lang}||{orig_t}"] = trans_t
             translator_engine.phrase_cache[f"{t_lang}||{orig_t}"] = trans_t
         if orig_t and rom_t:
-            manifest["phrase_cache"][f"romaji||{orig_t}"] = rom_t
+            cache_updates[f"romaji||{orig_t}"] = rom_t
             translator_engine.phrase_cache[f"romaji||{orig_t}"] = rom_t
 
-    prev_meta = manifest["pages"].get(rel_norm, {})
-    if not isinstance(prev_meta, dict):
-        prev_meta = {}
-    prev_meta.update(
-        {
-            "manually_edited": True,
-            "blocks_count": len(blocks_dicts),
-            "free_text_count": sum(1 for b in blocks_dicts if b.get("is_free_text")),
-            "uppercase": payload.uppercase,
-            "min_font_size": payload.min_font_size,
-            "max_font_size": payload.max_font_size,
-            "updated_at": int(time.time()),
-            "blocks": blocks_dicts,
-        }
-    )
-    manifest["pages"][rel_norm] = prev_meta
-    _save_folder_manifest(output_dir, manifest)
+    def _mutate_edited_page(m: dict[str, Any]) -> None:
+        if not isinstance(m.get("pages"), dict):
+            m["pages"] = {}
+        if not isinstance(m.get("phrase_cache"), dict):
+            m["phrase_cache"] = {}
+        m["phrase_cache"].update(cache_updates)
+        pm = m["pages"].get(rel_norm, {})
+        if not isinstance(pm, dict):
+            pm = {}
+        pm.update(
+            {
+                "manually_edited": True,
+                "blocks_count": len(blocks_dicts),
+                "free_text_count": sum(1 for b in blocks_dicts if b.get("is_free_text")),
+                "uppercase": payload.uppercase,
+                "min_font_size": payload.min_font_size,
+                "max_font_size": payload.max_font_size,
+                "updated_at": int(time.time()),
+                "blocks": blocks_dicts,
+            }
+        )
+        m["pages"][rel_norm] = pm
+
+    manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_edited_page)
     threading.Thread(
         target=_generate_and_save_folder_report,
         args=(output_dir, copy.deepcopy(manifest), source_dir, t_lang),
@@ -6343,7 +6535,7 @@ async def save_edited_page_endpoint(payload: SaveEditedPageRequest) -> dict[str,
 
 
 @app.post("/translate_manual_region")
-async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest) -> dict[str, Any]:
+async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest, request: Request = None) -> dict[str, Any]:
     """
     Принудительно распознает (OCR без фильтров) и переводит (через активную ИИ-модель) область `bbox = [x1, y1, x2, y2]`,
     которую пользователь обвел мышкой на странице в редакторе, добавляет новый блок к существующим,
@@ -6357,6 +6549,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
         or renderer_engine is None
     ):
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    _clear_stale_rate_limit_pause_for_interactive_request()
 
     if not payload.bbox or len(payload.bbox) < 4:
         raise HTTPException(status_code=400, detail="Некорректные координаты обведенной области bbox.")
@@ -6366,6 +6559,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
         payload.source_dir,
         payload.dest_path,
         payload.target_lang,
+        require_allowed_root=_is_browser_origin_request(request),
     )
     if not src_file.exists() or not src_file.is_file():
         raise HTTPException(status_code=400, detail=f"Исходный файл не найден: {src_file}")
@@ -6373,8 +6567,11 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     start_ts = time.perf_counter()
 
-    with Image.open(src_file) as raw_im:
-        pil_image = _pil_to_rgb_clean(raw_im)
+    def _load_src_pil_sync() -> Image.Image:
+        with Image.open(src_file) as raw_im:
+            return _pil_to_rgb_clean(raw_im)
+
+    pil_image = await asyncio.to_thread(_load_src_pil_sync)
 
     img_w, img_h = pil_image.size
     x1, y1, x2, y2 = [int(round(c)) for c in payload.bbox[:4]]
@@ -6504,31 +6701,39 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
     save_kwargs: dict[str, Any] = {}
     if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
         save_kwargs["quality"] = 95
-    final_image.save(dest_path, **save_kwargs)
+    await asyncio.to_thread(final_image.save, dest_path, **save_kwargs)
 
     t_lang = (payload.target_lang or "en").lower().strip()
+    cache_updates: dict[str, str] = {}
     if orig_text and new_block.get("translated_text"):
-        manifest["phrase_cache"][f"{t_lang}||{orig_text}"] = new_block["translated_text"]
+        cache_updates[f"{t_lang}||{orig_text}"] = new_block["translated_text"]
         translator_engine.phrase_cache[f"{t_lang}||{orig_text}"] = new_block["translated_text"]
 
-    prev_meta = manifest["pages"].get(rel_norm, {})
-    if not isinstance(prev_meta, dict):
-        prev_meta = {}
-    prev_meta.update(
-        {
-            "manually_edited": True,
-            "blocks_count": len(existing_blocks),
-            "free_text_count": sum(1 for b in existing_blocks if b.get("is_free_text")),
-            "detected_lang": det_lang,
-            "uppercase": payload.uppercase,
-            "min_font_size": payload.min_font_size,
-            "max_font_size": payload.max_font_size,
-            "updated_at": int(time.time()),
-            "blocks": existing_blocks,
-        }
-    )
-    manifest["pages"][rel_norm] = prev_meta
-    _save_folder_manifest(output_dir, manifest)
+    def _mutate_manual_region(m: dict[str, Any]) -> None:
+        if not isinstance(m.get("pages"), dict):
+            m["pages"] = {}
+        if not isinstance(m.get("phrase_cache"), dict):
+            m["phrase_cache"] = {}
+        m["phrase_cache"].update(cache_updates)
+        pm = m["pages"].get(rel_norm, {})
+        if not isinstance(pm, dict):
+            pm = {}
+        pm.update(
+            {
+                "manually_edited": True,
+                "blocks_count": len(existing_blocks),
+                "free_text_count": sum(1 for b in existing_blocks if b.get("is_free_text")),
+                "detected_lang": det_lang,
+                "uppercase": payload.uppercase,
+                "min_font_size": payload.min_font_size,
+                "max_font_size": payload.max_font_size,
+                "updated_at": int(time.time()),
+                "blocks": existing_blocks,
+            }
+        )
+        m["pages"][rel_norm] = pm
+
+    manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_manual_region)
     await asyncio.to_thread(
         _generate_and_save_folder_report,
         output_dir,
@@ -6556,7 +6761,7 @@ async def translate_manual_region_endpoint(payload: ManualRegionTranslateRequest
 
 
 @app.post("/retranslate_single_block")
-async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockRequest) -> dict[str, Any]:
+async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockRequest, request: Request = None) -> dict[str, Any]:
     """
     Принудительно переводит один конкретный блок `#block_id` через активную ИИ-модель
     (с отключенным пропуском вздохов и сбросом кэша для этой фразы) и сразу перерисовывает страницу.
@@ -6570,12 +6775,14 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
         or renderer_engine is None
     ):
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    _clear_stale_rate_limit_pause_for_interactive_request()
 
     src_file, source_dir, output_dir, dest_path, rel_norm = _resolve_page_paths(
         payload.source_path,
         payload.source_dir,
         payload.dest_path,
         payload.target_lang,
+        require_allowed_root=_is_browser_origin_request(request),
     )
     if not src_file.exists() or not src_file.is_file():
         raise HTTPException(status_code=400, detail=f"Исходный файл не найден: {src_file}")
@@ -6583,8 +6790,11 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     dest_path.parent.mkdir(parents=True, exist_ok=True)
     start_ts = time.perf_counter()
 
-    with Image.open(src_file) as raw_im:
-        pil_image = _pil_to_rgb_clean(raw_im)
+    def _load_src_pil_sync() -> Image.Image:
+        with Image.open(src_file) as raw_im:
+            return _pil_to_rgb_clean(raw_im)
+
+    pil_image = await asyncio.to_thread(_load_src_pil_sync)
 
     blocks_dicts: list[dict[str, Any]] = [
         _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
@@ -6723,16 +6933,29 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
     save_kwargs: dict[str, Any] = {}
     if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
         save_kwargs["quality"] = 95
-    final_image.save(dest_path, **save_kwargs)
+    await asyncio.to_thread(final_image.save, dest_path, **save_kwargs)
 
-    prev_meta = manifest["pages"].get(rel_norm, {})
-    if not isinstance(prev_meta, dict):
-        prev_meta = {}
-    prev_meta["manually_edited"] = True
-    prev_meta["blocks"] = blocks_dicts
-    prev_meta["updated_at"] = int(time.time())
-    manifest["pages"][rel_norm] = prev_meta
-    _save_folder_manifest(output_dir, manifest)
+    def _mutate_retranslate_single(m: dict[str, Any]) -> None:
+        if not isinstance(m.get("pages"), dict):
+            m["pages"] = {}
+        if not isinstance(m.get("phrase_cache"), dict):
+            m["phrase_cache"] = {}
+        if orig_t and orig_t != "[Выделенная область]":
+            ck = f"{t_lang}||{orig_t}"
+            new_v = manifest.get("phrase_cache", {}).get(ck)
+            if new_v:
+                m["phrase_cache"][ck] = new_v
+            else:
+                m["phrase_cache"].pop(ck, None)
+        pm = m["pages"].get(rel_norm, {})
+        if not isinstance(pm, dict):
+            pm = {}
+        pm["manually_edited"] = True
+        pm["blocks"] = blocks_dicts
+        pm["updated_at"] = int(time.time())
+        m["pages"][rel_norm] = pm
+
+    manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_retranslate_single)
     await asyncio.to_thread(
         _generate_and_save_folder_report,
         output_dir,
@@ -6759,7 +6982,7 @@ async def retranslate_single_block_endpoint(payload: RetranslateSingleBlockReque
 
 
 @app.post("/auto_diamond_wrap")
-async def auto_diamond_wrap_endpoint(payload: DiamondWrapBlockRequest) -> dict[str, Any]:
+async def auto_diamond_wrap_endpoint(payload: DiamondWrapBlockRequest, request: Request = None) -> dict[str, Any]:
     """
     БЛОК 6.3: Кнопка «💎 Алмазная разбивка»:
     Принудительно пересчитывает `\n` внутри `translated_text` по профилю суперэллипса (2D-DP)
@@ -6807,7 +7030,7 @@ async def auto_diamond_wrap_endpoint(payload: DiamondWrapBlockRequest) -> dict[s
             image_format=payload.image_format,
             blocks=[TextBlock(**b) for b in blocks_dicts],
         )
-        res = await save_edited_page_endpoint(save_req)
+        res = await save_edited_page_endpoint(save_req, request=request)
         res["diamond_text"] = diamond_text
         res["block_id"] = payload.block_id
         return res
@@ -6821,7 +7044,7 @@ async def auto_diamond_wrap_endpoint(payload: DiamondWrapBlockRequest) -> dict[s
 
 
 @app.post("/shorten_block_text")
-async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[str, Any]:
+async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest, request: Request = None) -> dict[str, Any]:
     """
     БЛОК 6.3: Кнопка «✂️ Сократить под бабл (AI)»:
     Отправляет конкретную фразу в ИИ с задачей сократить длину русского/английского текста на 25–35%
@@ -6830,6 +7053,7 @@ async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[
     await _ensure_engines_ready()
     if translator_engine is None or renderer_engine is None or cleaner_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    _clear_stale_rate_limit_pause_for_interactive_request()
 
     blocks_dicts: list[dict[str, Any]] = [
         _ensure_block_clean_bbox(b.model_dump() if hasattr(b, "model_dump") else b.dict()) for b in payload.blocks
@@ -6869,7 +7093,7 @@ async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[
             image_format=payload.image_format,
             blocks=[TextBlock(**b) for b in blocks_dicts],
         )
-        res = await save_edited_page_endpoint(save_req)
+        res = await save_edited_page_endpoint(save_req, request=request)
         res["shortened_text"] = shortened
         res["updated_block"] = TextBlock(**target_blk)
         return res
@@ -6884,7 +7108,7 @@ async def shorten_block_text_endpoint(payload: ShortenBlockTextRequest) -> dict[
 
 
 @app.post("/translate_folder")
-async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str, Any]:
+async def translate_folder_endpoint(payload: FolderTranslateRequest, request: Request = None) -> dict[str, Any]:
     global _folder_task
 
     _reject_unc_path(payload.folder_path, "folder_path")
@@ -6910,17 +7134,34 @@ async def translate_folder_endpoint(payload: FolderTranslateRequest) -> dict[str
     started_task = False
     try:
         folder_str = payload.folder_path
+        picked_via_dialog = False
         if not folder_str:
             try:
-                folder_str = await asyncio.to_thread(open_native_folder_picker)
+                pick_res = await asyncio.to_thread(open_native_folder_picker_result)
             except NativePickerBusyError as exc:
                 return {"status": "busy", "message": str(exc)}
-            if not folder_str:
+            if pick_res.status in ("timeout", "error"):
+                return {
+                    "status": pick_res.status,
+                    "message": pick_res.error or "Не удалось открыть системное окно выбора папки",
+                }
+            if pick_res.status == "cancelled" or not pick_res.path:
                 return {"status": "cancelled", "message": "Выбор папки отменен."}
+            folder_str = pick_res.path
+            picked_via_dialog = True
 
         source_dir = Path(folder_str).resolve()
+        if _is_filesystem_root(source_dir):
+            raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
         if not source_dir.exists() or not source_dir.is_dir():
             raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+        if not picked_via_dialog:
+            _ensure_path_allowed_for_request(
+                source_dir,
+                request,
+                error_detail="Сначала выберите папку через системный диалог выбора папки.",
+            )
+        _register_allowed_root(source_dir)
 
         all_images = collect_images_in_folder(source_dir)
         if not all_images:
@@ -7125,21 +7366,25 @@ async def stream_folder_status(request: Request) -> StreamingResponse:
     async def _event_gen():
         last_seq = -1
         last_sent_mono = 0.0
+        last_is_active = False
         try:
             while True:
+                if _uvicorn_server is not None and bool(getattr(_uvicorn_server, "should_exit", False)):
+                    break
                 if await request.is_disconnected():
                     break
                 cur_seq = _folder_state_seq
-                snap = _snapshot_folder_job_state()
-                is_active = snap.get("status") in ("running", "stopping")
                 now_m = time.monotonic()
-                heartbeat_interval = 0.8 if is_active else 5.0
+                heartbeat_interval = 0.8 if last_is_active else 5.0
                 if cur_seq != last_seq or (now_m - last_sent_mono) >= heartbeat_interval:
+                    snap = _snapshot_folder_job_state()
+                    last_is_active = snap.get("status") in ("running", "stopping")
                     payload_json = json.dumps(snap, ensure_ascii=False)
                     yield f"event: status\ndata: {payload_json}\n\n"
                     last_seq = cur_seq
                     last_sent_mono = now_m
-                await asyncio.sleep(0.25)
+                sleep_s = 0.25 if last_is_active else 0.5
+                await asyncio.sleep(sleep_s)
         except asyncio.CancelledError:
             logger.debug("SSE client /folder_stream cancelled")
             return
@@ -7250,6 +7495,7 @@ def _build_diagnostics_payload() -> dict[str, Any]:
 async def get_glossary_endpoint(
     folder_path: str | None = Query(default=None),
     target_lang: str = Query(default="en"),
+    request: Request = None,
 ) -> dict[str, Any]:
     """Возвращает глобальный глоссарий (из config.json), локальный глоссарий папки и их объединение + экспорт в Sakura/TSV."""
     if translator_engine is None:
@@ -7261,7 +7507,14 @@ async def get_glossary_endpoint(
 
     if folder_path and folder_path.strip():
         _reject_unc_path(folder_path, "folder_path")
-        src_dir = _unwrap_output_folder_if_needed(Path(folder_path.strip()).resolve())
+        raw_dir = Path(folder_path.strip()).resolve()
+        src_dir = _unwrap_output_folder_if_needed(raw_dir)
+        if _is_filesystem_root(raw_dir) or _is_filesystem_root(src_dir):
+            raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
+        if _is_browser_origin_request(request) and not (
+            _is_path_within_allowed_roots(raw_dir) or _is_path_within_allowed_roots(src_dir)
+        ):
+            raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
         if src_dir.exists() and src_dir.is_dir():
             out_dir = get_output_dir_for_folder(src_dir, target_lang)
             resolved_output_dir = str(out_dir)
@@ -7281,7 +7534,7 @@ async def get_glossary_endpoint(
 
 
 @app.post("/glossary")
-async def save_glossary_endpoint(payload: GlossarySaveRequest) -> dict[str, Any]:
+async def save_glossary_endpoint(payload: GlossarySaveRequest, request: Request = None) -> dict[str, Any]:
     """Сохраняет или импортирует глобальный (`config.json`) и папочный (`.translation_state.json`) глоссарий."""
     if translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
@@ -7299,7 +7552,14 @@ async def save_glossary_endpoint(payload: GlossarySaveRequest) -> dict[str, Any]
 
     if payload.folder_path and payload.folder_path.strip():
         _reject_unc_path(payload.folder_path, "folder_path")
-        src_dir = _unwrap_output_folder_if_needed(Path(payload.folder_path.strip()).resolve())
+        raw_dir = Path(payload.folder_path.strip()).resolve()
+        src_dir = _unwrap_output_folder_if_needed(raw_dir)
+        if _is_filesystem_root(raw_dir) or _is_filesystem_root(src_dir):
+            raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
+        if _is_browser_origin_request(request) and not (
+            _is_path_within_allowed_roots(raw_dir) or _is_path_within_allowed_roots(src_dir)
+        ):
+            raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
         if src_dir.exists() and src_dir.is_dir():
             out_dir = get_output_dir_for_folder(src_dir, t_lang)
             manifest = _load_folder_manifest(out_dir)
@@ -7332,8 +7592,10 @@ async def save_glossary_endpoint(payload: GlossarySaveRequest) -> dict[str, Any]
     translator_engine.save_config(glossary=global_list)
 
     if out_dir is not None and manifest is not None:
-        manifest["glossary"] = folder_list
-        _save_folder_manifest(out_dir, manifest)
+        def _mutate_glossary(m: dict[str, Any]) -> None:
+            m["glossary"] = folder_list
+
+        await _update_folder_manifest_async(out_dir, _mutate_glossary)
 
     merged = merge_glossaries(global_list, folder_list)
     return {
@@ -7348,7 +7610,7 @@ async def save_glossary_endpoint(payload: GlossarySaveRequest) -> dict[str, Any]
 
 
 @app.post("/folder_find_replace")
-async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dict[str, Any]:
+async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest, request: Request = None) -> dict[str, Any]:
     """
     Глобальный Поиск и Замена (`Ctrl+F` / `Ctrl+H`) по всем переведенным страницам папки без расхода токенов ИИ.
     - При `dry_run=True` мгновенно сканирует `.translation_state.json` и возвращает список всех совпадений.
@@ -7368,9 +7630,16 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
     _reject_unc_path(raw_folder, "folder_path")
 
-    source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
+    raw_dir = Path(raw_folder).resolve()
+    source_dir = _unwrap_output_folder_if_needed(raw_dir)
+    if _is_filesystem_root(raw_dir) or _is_filesystem_root(source_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+    if _is_browser_origin_request(request) and not (
+        _is_path_within_allowed_roots(raw_dir) or _is_path_within_allowed_roots(source_dir)
+    ):
+        raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
 
     t_lang = (payload.target_lang or "en").strip().lower()
     if t_lang not in VALID_TARGET_LANGS:
@@ -7465,7 +7734,19 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
 
     rerendered_count = 0
     if not payload.dry_run and affected_rel_paths:
-        _save_folder_manifest(output_dir, manifest)
+        updated_pages_fr = {rn: pages_meta[rn] for rn in affected_rel_paths}
+        updated_cache_fr = dict(manifest.get("phrase_cache") or {})
+
+        def _mutate_find_replace(m: dict[str, Any]) -> None:
+            if not isinstance(m.get("pages"), dict):
+                m["pages"] = {}
+            if not isinstance(m.get("phrase_cache"), dict):
+                m["phrase_cache"] = {}
+            m["pages"].update(updated_pages_fr)
+            m["phrase_cache"].update(updated_cache_fr)
+
+        manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_find_replace)
+        pages_meta = manifest.get("pages") or pages_meta
 
         for rel_norm in affected_rel_paths:
             src_file = src_path_by_rel.get(rel_norm) or (source_dir / rel_norm)
@@ -7512,11 +7793,15 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
             save_kwargs: dict[str, Any] = {}
             if dest_path.suffix.lower() in (".jpg", ".jpeg", ".webp"):
                 save_kwargs["quality"] = 95
-            final_image.save(dest_path, **save_kwargs)
+            await asyncio.to_thread(final_image.save, dest_path, **save_kwargs)
             p_meta["blocks"] = p_blocks
             rerendered_count += 1
 
-        _save_folder_manifest(output_dir, manifest)
+        final_pages_fr = {rn: pages_meta[rn] for rn in affected_rel_paths if rn in pages_meta}
+        await _update_folder_manifest_async(
+            output_dir,
+            lambda m: m.setdefault("pages", {}).update(final_pages_fr) if isinstance(m.get("pages"), dict) else m.__setitem__("pages", dict(final_pages_fr)),
+        )
 
     elapsed = round(time.perf_counter() - start_ts, 3)
     affected_pages_unique = len({m["page_rel_path"] for m in matches})
@@ -7532,7 +7817,7 @@ async def folder_find_replace_endpoint(payload: FolderFindReplaceRequest) -> dic
 
 
 @app.post("/folder_clean_noise")
-async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[str, Any]:
+async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest, request: Request = None) -> dict[str, Any]:
     """
     Пакетно очищает все уже переведенные страницы папки от лишних рамок (надписей на фоне вне бабблов,
     коротких вздохов, SFX и пустых блоков) и мгновенно перерисовывает затронутые страницы (0 токенов ИИ!).
@@ -7542,9 +7827,16 @@ async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
 
     _reject_unc_path(payload.source_dir, "source_dir")
-    source_dir = _unwrap_output_folder_if_needed(Path(payload.source_dir).resolve())
+    raw_dir = Path(payload.source_dir).resolve()
+    source_dir = _unwrap_output_folder_if_needed(raw_dir)
+    if _is_filesystem_root(raw_dir) or _is_filesystem_root(source_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=400, detail=f"Папка не найдена: {source_dir}")
+    if _is_browser_origin_request(request) and not (
+        _is_path_within_allowed_roots(raw_dir) or _is_path_within_allowed_roots(source_dir)
+    ):
+        raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
 
     t_lang = (payload.target_lang or "en").lower().strip()
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
@@ -7644,7 +7936,14 @@ async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[
         pages_meta[rel_norm] = p_meta
 
     if affected_pages > 0:
-        _save_folder_manifest(output_dir, manifest)
+        updated_cn_pages = {rn: pages_meta[rn] for rn in pages_meta}
+
+        def _mutate_clean_noise(m: dict[str, Any]) -> None:
+            if not isinstance(m.get("pages"), dict):
+                m["pages"] = {}
+            m["pages"].update(updated_cn_pages)
+
+        manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_clean_noise)
         threading.Thread(
             target=_generate_and_save_folder_report,
             args=(output_dir, copy.deepcopy(manifest), source_dir, t_lang),
@@ -7662,6 +7961,7 @@ async def folder_clean_noise_endpoint(payload: FolderCleanNoiseRequest) -> dict[
 async def get_folder_report_endpoint(
     folder_path: str | None = Query(default=None, description="Путь к исходной или переведенной папке главы"),
     target_lang: str = Query(default="en", description="Целевой язык: en, ru или romaji"),
+    request: Request = None,
 ) -> dict[str, Any]:
     """
     Генерирует (или обновляет на диске) и возвращает содержимое диагностического отчета главы
@@ -7680,10 +7980,17 @@ async def get_folder_report_endpoint(
     _reject_unc_path(raw_folder, "folder_path")
 
     cand_dir = Path(raw_folder).resolve()
+    src_dir = _unwrap_output_folder_if_needed(cand_dir)
+    if _is_filesystem_root(cand_dir) or _is_filesystem_root(src_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
     if not cand_dir.exists() or not cand_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Папка не найдена: {cand_dir}")
+    if folder_path and folder_path.strip():
+        if _is_browser_origin_request(request) and not (
+            _is_path_within_allowed_roots(cand_dir) or _is_path_within_allowed_roots(src_dir)
+        ):
+            raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
 
-    src_dir = _unwrap_output_folder_if_needed(cand_dir)
     out_dir = get_output_dir_for_folder(src_dir, t_lang)
     manifest = _load_folder_manifest(out_dir)
     report_text = await asyncio.to_thread(
@@ -7707,15 +8014,21 @@ async def get_folder_report_endpoint(
 async def open_folder_report_endpoint(
     folder_path: str | None = Query(default=None),
     target_lang: str = Query(default="en"),
+    request: Request = None,
 ) -> dict[str, str]:
     """
     Обновляет `<output_dir>/TRANSLATION_REPORT.txt` и открывает его в стандартном текстовом редакторе (Блокноте) Windows.
     """
-    res = await get_folder_report_endpoint(folder_path=folder_path, target_lang=target_lang)
-    report_file = Path(res["report_path"])
+    res = await get_folder_report_endpoint(folder_path=folder_path, target_lang=target_lang, request=request)
+    report_file = Path(res["report_path"]).resolve()
+    if not (
+        _is_path_within_allowed_roots(Path(res["output_dir"]))
+        or _is_path_within_allowed_roots(Path(res["source_dir"]))
+    ):
+        raise HTTPException(status_code=403, detail="Открытие отчета вне разрешенных корней запрещено.")
     if os.name == "nt" and hasattr(os, "startfile") and report_file.exists():
         try:
-            os.startfile(str(report_file))
+            await asyncio.to_thread(os.startfile, str(report_file))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {
@@ -7878,6 +8191,7 @@ async def get_chapter_book_endpoint(
     folder_path: str | None = Query(default=None),
     target_lang: str = Query(default="en"),
     save_files: bool = Query(default=False),
+    request: Request = None,
 ) -> dict[str, Any]:
     """
     БЛОК 2.2 / 2.3: Формирует (и при необходимости сохраняет в `.miko/`) файлы «Книги перевода» главы:
@@ -7893,10 +8207,17 @@ async def get_chapter_book_endpoint(
     _reject_unc_path(raw_folder, "folder_path")
 
     cand_dir = Path(raw_folder).resolve()
+    src_dir = _unwrap_output_folder_if_needed(cand_dir)
+    if _is_filesystem_root(cand_dir) or _is_filesystem_root(src_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
     if not cand_dir.exists() or not cand_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Папка не найдена: {cand_dir}")
+    if folder_path and folder_path.strip():
+        if _is_browser_origin_request(request) and not (
+            _is_path_within_allowed_roots(cand_dir) or _is_path_within_allowed_roots(src_dir)
+        ):
+            raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
 
-    src_dir = _unwrap_output_folder_if_needed(cand_dir)
     out_dir = get_output_dir_for_folder(src_dir, t_lang)
     manifest = _load_folder_manifest(out_dir)
     should_write = bool(
@@ -7919,7 +8240,7 @@ async def get_chapter_book_endpoint(
 
 
 @app.post("/chapter_book/import")
-async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dict[str, Any]:
+async def import_chapter_book_endpoint(payload: ChapterBookImportRequest, request: Request = None) -> dict[str, Any]:
     """
     БЛОК 2.3: Импортирует отредактированный пользователем текст «Книги главы» (`_chapter_book.md` или двуязычный скрипт),
     обновляет переводы в бабблах и мгновенно перерисовывает только затронутые страницы из кэша очистки (0 запросов к OCR и API!).
@@ -7933,9 +8254,16 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
     _reject_unc_path(raw_folder, "folder_path")
 
-    source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
+    raw_dir = Path(raw_folder).resolve()
+    source_dir = _unwrap_output_folder_if_needed(raw_dir)
+    if _is_filesystem_root(raw_dir) or _is_filesystem_root(source_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Папка не найдена: {source_dir}")
+    if _is_browser_origin_request(request) and not (
+        _is_path_within_allowed_roots(raw_dir) or _is_path_within_allowed_roots(source_dir)
+    ):
+        raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
 
     t_lang = (payload.target_lang or "en").strip().lower()
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
@@ -8002,7 +8330,18 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
 
     rerendered_pages = 0
     if affected_rel_paths:
-        _save_folder_manifest(output_dir, manifest)
+        updated_imp_pages = {rn: pages_meta[rn] for rn in affected_rel_paths}
+        updated_imp_cache = dict(manifest.get("phrase_cache") or {})
+
+        def _mutate_book_import(m: dict[str, Any]) -> None:
+            if not isinstance(m.get("pages"), dict):
+                m["pages"] = {}
+            if not isinstance(m.get("phrase_cache"), dict):
+                m["phrase_cache"] = {}
+            m["pages"].update(updated_imp_pages)
+            m["phrase_cache"].update(updated_imp_cache)
+
+        manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_book_import)
         rerendered_pages = await _rerender_modified_book_pages(
             source_dir=source_dir,
             output_dir=output_dir,
@@ -8013,7 +8352,11 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
             max_font_size=payload.max_font_size,
             overflow_mode=payload.overflow_mode,
         )
-        _save_folder_manifest(output_dir, manifest)
+        post_imp_pages = {rn: manifest["pages"][rn] for rn in affected_rel_paths if rn in (manifest.get("pages") or {})}
+        manifest, _ = await _update_folder_manifest_async(
+            output_dir,
+            lambda m: m.setdefault("pages", {}).update(post_imp_pages) if isinstance(m.get("pages"), dict) else m.__setitem__("pages", dict(post_imp_pages)),
+        )
 
     book_data = await asyncio.to_thread(
         _generate_and_save_chapter_book_files,
@@ -8035,7 +8378,7 @@ async def import_chapter_book_endpoint(payload: ChapterBookImportRequest) -> dic
 
 
 @app.post("/chapter_book/proofread")
-async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) -> dict[str, Any]:
+async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest, request: Request = None) -> dict[str, Any]:
     """
     БЛОК 2.3: «✨ Вычитать стиль всей главы за 1 запрос»:
     Отправляет весь сценарий главы одним JSON-пакетом в ИИ для согласования стиля, пола персонажей и местоимений,
@@ -8044,15 +8387,23 @@ async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) 
     await _ensure_engines_ready()
     if cleaner_engine is None or renderer_engine is None or translator_engine is None:
         raise HTTPException(status_code=503, detail="Сервер еще инициализируется.")
+    _clear_stale_rate_limit_pause_for_interactive_request()
 
     raw_folder = (payload.folder_path or "").strip()
     if not raw_folder:
         raise HTTPException(status_code=400, detail="Сначала выберите папку с главой манги.")
     _reject_unc_path(raw_folder, "folder_path")
 
-    source_dir = _unwrap_output_folder_if_needed(Path(raw_folder).resolve())
+    raw_dir = Path(raw_folder).resolve()
+    source_dir = _unwrap_output_folder_if_needed(raw_dir)
+    if _is_filesystem_root(raw_dir) or _is_filesystem_root(source_dir):
+        raise HTTPException(status_code=403, detail="Корневая директория диска запрещена.")
     if not source_dir.exists() or not source_dir.is_dir():
         raise HTTPException(status_code=404, detail=f"Папка не найдена: {source_dir}")
+    if _is_browser_origin_request(request) and not (
+        _is_path_within_allowed_roots(raw_dir) or _is_path_within_allowed_roots(source_dir)
+    ):
+        raise HTTPException(status_code=403, detail="Доступ к директории вне разрешенных корней запрещен.")
 
     t_lang = (payload.target_lang or "en").strip().lower()
     output_dir = get_output_dir_for_folder(source_dir, t_lang)
@@ -8131,7 +8482,18 @@ async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) 
 
     rerendered_pages = 0
     if affected_rel_paths:
-        _save_folder_manifest(output_dir, manifest)
+        updated_imp_pages = {rn: pages_meta[rn] for rn in affected_rel_paths}
+        updated_imp_cache = dict(manifest.get("phrase_cache") or {})
+
+        def _mutate_book_import(m: dict[str, Any]) -> None:
+            if not isinstance(m.get("pages"), dict):
+                m["pages"] = {}
+            if not isinstance(m.get("phrase_cache"), dict):
+                m["phrase_cache"] = {}
+            m["pages"].update(updated_imp_pages)
+            m["phrase_cache"].update(updated_imp_cache)
+
+        manifest, _ = await _update_folder_manifest_async(output_dir, _mutate_book_import)
         rerendered_pages = await _rerender_modified_book_pages(
             source_dir=source_dir,
             output_dir=output_dir,
@@ -8142,7 +8504,11 @@ async def proofread_chapter_book_endpoint(payload: ChapterBookProofreadRequest) 
             max_font_size=payload.max_font_size,
             overflow_mode=payload.overflow_mode,
         )
-        _save_folder_manifest(output_dir, manifest)
+        post_imp_pages = {rn: manifest["pages"][rn] for rn in affected_rel_paths if rn in (manifest.get("pages") or {})}
+        manifest, _ = await _update_folder_manifest_async(
+            output_dir,
+            lambda m: m.setdefault("pages", {}).update(post_imp_pages) if isinstance(m.get("pages"), dict) else m.__setitem__("pages", dict(post_imp_pages)),
+        )
 
     book_data = await asyncio.to_thread(
         _generate_and_save_chapter_book_files,
@@ -8280,7 +8646,7 @@ async def open_logs_folder_endpoint() -> dict[str, str]:
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     if os.name == "nt" and hasattr(os, "startfile"):
         try:
-            os.startfile(str(LOGS_DIR))
+            await asyncio.to_thread(os.startfile, str(LOGS_DIR))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {"status": "ok", "logs_dir": str(LOGS_DIR), "log_file": str(MAIN_LOG_FILE)}
@@ -8595,8 +8961,11 @@ def _ingest_ux_events_batch(payload: UxEventsBatchRequest) -> dict[str, Any]:
 
         _save_ux_store(store)
 
-        if jsonl_lines:
+        if jsonl_lines and os.environ.get("MIKO_DISABLE_FILE_LOG", "").strip().lower() not in ("1", "true", "yes"):
             try:
+                UX_EVENTS_JSONL_FILE.parent.mkdir(parents=True, exist_ok=True)
+                if UX_EVENTS_JSONL_FILE.exists() and UX_EVENTS_JSONL_FILE.stat().st_size > 2 * 1024 * 1024:
+                    os.replace(UX_EVENTS_JSONL_FILE, UX_EVENTS_JSONL_FILE.with_suffix(".jsonl.1"))
                 with open(UX_EVENTS_JSONL_FILE, "a", encoding="utf-8") as f_jl:
                     f_jl.write("\n".join(jsonl_lines) + "\n")
             except Exception as _exc:
@@ -8962,7 +9331,7 @@ async def open_ux_telemetry_report_endpoint() -> dict[str, str]:
     report_text, _ = await asyncio.to_thread(_generate_ux_usage_report)
     if os.name == "nt" and hasattr(os, "startfile") and UX_REPORT_TXT_FILE.exists():
         try:
-            os.startfile(str(UX_REPORT_TXT_FILE))
+            await asyncio.to_thread(os.startfile, str(UX_REPORT_TXT_FILE))
         except Exception as exc:
             raise HTTPException(status_code=500, detail=str(exc)) from exc
     return {
@@ -9023,5 +9392,13 @@ if __name__ == "__main__":
         sys.exit(0)
 
     print(f"Запуск локального сервера Manga Translator v{APP_VERSION} на 127.0.0.1:5000...", flush=True)
-    _uvicorn_server = uvicorn.Server(uvicorn.Config(app, host="127.0.0.1", port=5000, reload=False))
+    _uvicorn_server = uvicorn.Server(
+        uvicorn.Config(
+            app,
+            host="127.0.0.1",
+            port=5000,
+            reload=False,
+            timeout_graceful_shutdown=3,
+        )
+    )
     _uvicorn_server.run()

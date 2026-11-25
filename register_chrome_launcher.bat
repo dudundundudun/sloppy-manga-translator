@@ -1,4 +1,5 @@
 @echo off
+setlocal
 title Miko-chan Manga Studio v6.1.0 - Register Launcher Protocol
 cd /d "%~dp0"
 

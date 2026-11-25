@@ -278,6 +278,7 @@
       display: flex;
       align-items: center;
       justify-content: center;
+      touch-action: none;
       transition: background 0.15s ease;
     }
     .panel-splitter.v-splitter {
@@ -2636,6 +2637,9 @@
       cursor: none !important;
       user-select: none !important;
     }
+    .img-pin-wrap.mask-brush-active {
+      touch-action: none;
+    }
     .img-pin-wrap.mask-brush-active .bbox-pin {
       pointer-events: none !important;
     }
@@ -2921,14 +2925,43 @@
     }
     @media (max-width: 1100px) {
       :root {
-        --left-sidebar-w: 300px;
-        --right-editor-w: 380px;
+        --left-sidebar-w: 270px;
+        --right-editor-w: 340px;
+      }
+      .topbar {
+        padding: 6px 10px;
+        gap: 6px;
       }
       .summary-chip {
         display: none;
       }
     }
     @media (max-width: 820px) {
+      .bento-workspace {
+        flex-direction: column;
+        overflow-y: auto;
+        gap: 8px;
+      }
+      .bento-left {
+        width: 100% !important;
+        max-width: none;
+        min-width: 0;
+        max-height: 40vh;
+      }
+      .panel-splitter.v-splitter {
+        display: none !important;
+      }
+      .main-stage-wrap.dock-mode-right {
+        flex-direction: column;
+      }
+      .main-stage-wrap.dock-mode-right .text-drawer,
+      .main-stage-wrap.dock-mode-bottom .text-drawer {
+        width: 100% !important;
+        max-width: none;
+      }
+      .inline-bubble-popup {
+        max-width: calc(100vw - 16px);
+      }
       .settings-modal {
         width: 98vw;
         height: 94dvh;
@@ -3097,11 +3130,45 @@
       font-size: 11px;
       text-align: center;
     }
+    #editor-drag-handle,
+    #inline-popup-drag-bar {
+      touch-action: none;
+    }
+    .romaji-copy-btn,
+    .bg-style-btn,
+    .align-btn,
+    .zoom-btn,
+    .pages-filter-btn,
+    .lm-btn {
+      min-height: 24px;
+      min-width: 24px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    button:focus-visible,
+    select:focus-visible,
+    summary:focus-visible,
+    .choice-card:focus-visible,
+    .panel-splitter:focus-visible {
+      outline: 2px solid var(--sakura);
+      outline-offset: 2px;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      *,
+      *::before,
+      *::after {
+        animation-duration: 0.01ms !important;
+        animation-iteration-count: 1 !important;
+        transition-duration: 0.01ms !important;
+        scroll-behavior: auto !important;
+      }
+    }
   </style>
 </head>
 <body>
   <!-- ==================== TOPBAR ==================== -->
-  <div class="topbar">
+  <div class="topbar" role="banner">
     <div class="topbar-left">
       <button class="sidebar-toggle-btn" id="btn-toggle-sidebar" onclick="toggleLeftSidebar()" title="Свернуть или развернуть левую панель со списком страниц и Мико-тян (Горячая клавиша: [ )">
         <span id="sidebar-toggle-icon">◀</span>
@@ -3157,9 +3224,9 @@
   </div>
 
   <!-- ==================== MAIN WORKSPACE ==================== -->
-  <div class="bento-workspace">
+  <div class="bento-workspace" role="main">
     <!-- Left Sidebar (Mascot + Pages List) -->
-    <div class="bento-left" id="bento-left">
+    <div class="bento-left" id="bento-left" role="complementary" aria-label="Список страниц и управление">
       <div class="bento-card mascot-card compact-mascot" id="mascot-card">
         <div class="mascot-avatar-wrap">
           <img src="/mascot.png" alt="Miko-chan" onerror="this.style.display='none'" />
@@ -3172,7 +3239,7 @@
               <button type="button" class="romaji-copy-btn" onclick="toggleCompactMascot()" id="btn-compact-mascot" title="Свернуть/развернуть карточку Мико-тян, чтобы освободить место для списка страниц">↕</button>
             </div>
           </div>
-          <div class="mascot-bubble" id="miko-speech">
+          <div class="mascot-bubble" id="miko-speech" aria-live="polite">
             Выбери папку с мангой и нажми «Перевести папку»! Клик по рамке #N меняет текст, колесико мыши — размер шрифта 🌸
           </div>
         </div>
@@ -3291,15 +3358,12 @@
           <button class="cta-sub" id="btn-edit-page" onclick="openPageEditor()" style="display:none !important;">
             ✏️ Редактировать перевод и Ромадзи
           </button>
-          <button class="cta-sub" id="btn-sidebar-chapter-book" onclick="openSettingsOnTab('tab-book'); loadChapterBookPanel();" style="display:none !important;">
-            📖 Текст главы (Книга)
-          </button>
         </div>
       </div>
     </div>
 
     <!-- Draggable Splitter for Left Sidebar -->
-    <div class="panel-splitter v-splitter" id="left-sidebar-splitter" title="Потяните, чтобы изменить ширину левой панели"></div>
+    <div class="panel-splitter v-splitter" id="left-sidebar-splitter" role="separator" aria-orientation="vertical" tabindex="0" title="Потяните, чтобы изменить ширину левой панели"></div>
 
     <!-- Center Viewer + Dockable Editor Area -->
     <div class="main-stage-wrap dock-mode-right" id="main-stage-wrap">
@@ -3324,7 +3388,7 @@
 
           <!-- Primary Canvas Tools (Streamlined by UX Telemetry: Only Top Used Buttons!) -->
           <div class="toolbar-section">
-            <span class="autosave-status-pill" id="autosave-status-pill" title="Автоматическое обновление страницы после изменения или удаления рамок">⏳ Авто-сохранение...</span>
+            <span class="autosave-status-pill" id="autosave-status-pill" aria-live="polite" title="Автоматическое обновление страницы после изменения или удаления рамок">⏳ Авто-сохранение...</span>
             <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (Колесико мыши по рамке — шрифт, 🗑 на рамке — удалить)">📌 Рамки #N</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице">➕ Обвести</button>
             <button class="pill-btn" id="btn-clean-page-noise" onclick="cleanPageNoiseBlocks(event)" style="border-color:rgba(244, 63, 94, 0.45); color:#fda4af;" title="В 1 клик удалить на этой странице все рамки фона (вне бабблов), вздохи, SFX и пустые блоки (Клавиша X)">🧹 Убрать шум</button>
@@ -3396,7 +3460,7 @@
       </div>
 
       <!-- Draggable Splitter between Viewer and Editor (Right or Bottom) -->
-      <div class="panel-splitter v-splitter hidden" id="editor-splitter" title="Потяните границу, чтобы изменить размер панели редактора"></div>
+      <div class="panel-splitter v-splitter hidden" id="editor-splitter" role="separator" aria-orientation="vertical" tabindex="0" title="Потяните границу, чтобы изменить размер панели редактора"></div>
 
       <!-- Dockable / Floating Editor Panel -->
       <div class="text-drawer" id="text-drawer">
@@ -3636,10 +3700,10 @@
 
   <!-- ==================== REDESIGNED MASTER-DETAIL SETTINGS MODAL ==================== -->
   <div class="modal-backdrop" id="settings-modal" onclick="if(event.target===this) toggleSettingsModal(false)">
-    <div class="settings-modal" id="settings-modal-box">
+    <div class="settings-modal" id="settings-modal-box" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
       <div class="modal-header">
         <div class="modal-header-title">
-          <span>⚙️ Настройки Miko-chan Studio</span>
+          <span id="settings-modal-title">⚙️ Настройки Miko-chan Studio</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
           <button type="button" class="pill-btn" id="btn-settings-wide" onclick="toggleSettingsModalWide()" title="Развернуть окно настроек шире или вернуть стандартный размер">⛶ Шире</button>
@@ -3754,7 +3818,7 @@
                 <div class="field-box" style="display:none;">
                   <input id="inp-custom-model" type="text" />
                 </div>
-                <div id="api-status-banner" style="font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.22); border-radius:9px; padding:7px 10px; line-height:1.4;">
+                <div id="api-status-banner" data-banner-state="idle" style="font-size:11.5px; color:var(--mint); background:rgba(52,211,153,0.08); border:1px solid rgba(52,211,153,0.22); border-radius:9px; padding:7px 10px; line-height:1.4;">
                   💡 Выберите карточку провайдера выше и нажмите «Сохранить настройки» внизу.
                 </div>
                 <div id="cloud-models-preview" style="display:none; margin-top:4px; font-size:11px; line-height:1.45;"></div>
@@ -3796,7 +3860,7 @@
                   <button type="button" id="btn-switch-fast-cloud-model" class="romaji-copy-btn" style="display:none; white-space:nowrap; border-color:rgba(251,191,36,0.55); background:rgba(251,191,36,0.18); color:#fff; font-weight:600;" onclick="switchToDetectedFastCloudModel()">⚡ Переключить</button>
                 </div>
 
-                <div class="field-group" id="row-cloud-fallback-model" style="margin:6px 0 10px;">
+                <div class="field-box" id="row-cloud-fallback-model" style="margin:6px 0 10px;">
                   <label for="sel-cloud-fallback-model">⚡ Облачный резерв (Cloud-to-Cloud без Ollama)</label>
                   <select id="sel-cloud-fallback-model" onchange="onCloudFallbackModelChange()">
                     <option value="auto">🤖 Авто — быстрая модель со шлюза</option>
@@ -4648,6 +4712,7 @@
         } else {
           splitter.classList.remove("hidden", "v-splitter", "h-splitter");
           splitter.classList.add(mode === "right" ? "v-splitter" : "h-splitter");
+          splitter.setAttribute("aria-orientation", mode === "bottom" ? "horizontal" : "vertical");
         }
       }
 
@@ -6058,6 +6123,7 @@
       updateDeepSeekPresetCards(fullId, document.getElementById("inp-unsloth-url")?.value || "");
       const banner = document.getElementById("api-status-banner");
       if (banner) {
+        banner.dataset.bannerState = "preset";
         banner.style.color = "var(--mint)";
         banner.style.background = "rgba(52,211,153,0.1)";
         banner.style.borderColor = "rgba(52,211,153,0.25)";
@@ -6145,6 +6211,7 @@
         if (apiInp) apiInp.value = "";
         updateApiKeyStatusUi(Boolean(data.has_unsloth_key), data.masked_api_key || "");
         if (banner) {
+          banner.dataset.bannerState = "cleared";
           banner.style.color = "var(--amber)";
           banner.style.background = "rgba(251,191,36,0.1)";
           banner.style.borderColor = "rgba(251,191,36,0.3)";
@@ -6155,6 +6222,7 @@
       } catch (e) {
         const msg = (e && e.message) ? e.message : String(e);
         if (banner) {
+          banner.dataset.bannerState = "error";
           banner.style.color = "#fb7185";
           banner.style.background = "rgba(251,113,133,0.1)";
           banner.style.borderColor = "rgba(251,113,133,0.35)";
@@ -6226,21 +6294,38 @@
       if (currentFolder) inspectCurrentFolder();
     }
 
+    let lastFocusedBeforeModal = null;
+
     function toggleSettingsModal(open) {
       const modal = document.getElementById("settings-modal");
       if (!modal) return;
       const wasDirty = Boolean(window._settingsDirty);
+      if (open) {
+        lastFocusedBeforeModal = document.activeElement;
+      }
       modal.classList.toggle("open", open);
       if (open) {
         const custInp = document.getElementById("inp-custom-model");
         if (custInp) custInp.value = "";
         clearSettingsSearch();
         setSettingsDirty(false);
-      } else if (wasDirty) {
-        const custInp = document.getElementById("inp-custom-model");
-        if (custInp) custInp.value = "";
-        setSettingsDirty(false);
-        loadHealth(false, { forceFormSync: true });
+        requestAnimationFrame(() => {
+          const searchInp = document.getElementById("inp-settings-search");
+          if (searchInp && searchInp.offsetParent !== null) {
+            searchInp.focus();
+          }
+        });
+      } else {
+        if (wasDirty) {
+          const custInp = document.getElementById("inp-custom-model");
+          if (custInp) custInp.value = "";
+          setSettingsDirty(false);
+          loadHealth(false, { forceFormSync: true });
+        }
+        if (lastFocusedBeforeModal && typeof lastFocusedBeforeModal.focus === "function" && lastFocusedBeforeModal.isConnected) {
+          lastFocusedBeforeModal.focus();
+        }
+        lastFocusedBeforeModal = null;
       }
     }
 
@@ -6570,6 +6655,7 @@
 
       const banner = document.getElementById("api-status-banner");
       if (banner) {
+        banner.dataset.bannerState = "preset";
         banner.style.color = "var(--mint)";
         banner.style.background = "rgba(52,211,153,0.1)";
         banner.style.borderColor = "rgba(52,211,153,0.25)";
@@ -6627,6 +6713,7 @@
       }
       const banner = document.getElementById("api-status-banner");
       if (banner) {
+        banner.dataset.bannerState = "preset";
         banner.style.color = "var(--mint)";
         banner.innerHTML = `✅ Выбрана модель <b>${escapeHtml(modelName)}</b>. Нажмите «Сохранить настройки» внизу окна!`;
       }
@@ -7052,6 +7139,7 @@
         renderCloudModelsPreview(data.unsloth_status, models);
         const apiBannerEl = document.getElementById("api-status-banner");
         if (apiBannerEl && data.unsloth_status?.is_cloud && data.unsloth_status?.error) {
+          apiBannerEl.dataset.bannerState = "error";
           apiBannerEl.style.color = "#fb7185";
           apiBannerEl.style.background = "rgba(251,113,133,0.1)";
           apiBannerEl.style.borderColor = "rgba(251,113,133,0.35)";
@@ -7061,8 +7149,9 @@
           && data.unsloth_status?.is_cloud
           && Array.isArray(data.unsloth_status?.detected_models)
           && data.unsloth_status.detected_models.length > 0
-          && (apiBannerEl.textContent || "").includes("Кликните по карточке")
+          && (!apiBannerEl.dataset.bannerState || apiBannerEl.dataset.bannerState === "idle" || apiBannerEl.dataset.bannerState === "error")
         ) {
+          apiBannerEl.dataset.bannerState = "ok";
           apiBannerEl.style.color = "var(--mint)";
           apiBannerEl.style.background = "rgba(52,211,153,0.1)";
           apiBannerEl.style.borderColor = "rgba(52,211,153,0.25)";
@@ -7444,6 +7533,7 @@
       const mod = customMod || document.getElementById("sel-model").value;
       const banner = document.getElementById("api-status-banner");
       if (banner) {
+        banner.dataset.bannerState = "checking";
         banner.style.color = "var(--text-primary)";
         banner.style.background = "rgba(129,140,248,0.12)";
         banner.style.borderColor = "rgba(129,140,248,0.3)";
@@ -7496,16 +7586,19 @@
       const probeErr = data.unsloth_status?.error;
       if (banner) {
         if (det.length > 0) {
+          banner.dataset.bannerState = "ok";
           banner.style.color = "var(--mint)";
           banner.style.background = "rgba(52,211,153,0.1)";
           banner.style.borderColor = "rgba(52,211,153,0.25)";
           banner.textContent = `✅ API успешно подключён (${data.unsloth_url})! Доступно моделей: ${det.length}. Активная: ${(data.active_model || "").replace(/^.*?::/, "")}`;
         } else if (probeErr) {
+          banner.dataset.bannerState = "error";
           banner.style.color = "#fb7185";
           banner.style.background = "rgba(251,113,133,0.12)";
           banner.style.borderColor = "rgba(251,113,133,0.4)";
           banner.textContent = `❌ ${data.unsloth_url}: ${probeErr}`;
         } else {
+          banner.dataset.bannerState = "warn";
           banner.style.color = "var(--amber)";
           banner.style.background = "rgba(251,191,36,0.1)";
           banner.style.borderColor = "rgba(251,191,36,0.3)";
@@ -7613,6 +7706,8 @@
         }
         updateApiKeyStatusUi(Boolean(savedData.has_unsloth_key), savedData.masked_api_key || "");
         setSettingsDirty(false);
+        const okBanner = document.getElementById("api-status-banner");
+        if (okBanner) okBanner.dataset.bannerState = "idle";
         // БЛОК 5: Вызываем loadHealth(false), чтобы использовать 5-минутный in-memory кэш моделей без тройного опроса /v1/models
         await loadHealth(false, { forceFormSync: true });
         toggleSettingsModal(false);
@@ -7646,22 +7741,30 @@
         if (!res.ok) {
           let errMsg = `Ошибка сервера (HTTP ${res.status})`;
           try {
-            const errData = await res.json();
-            if (errData && (errData.detail || errData.message)) {
-              errMsg = errData.detail || errData.message;
+            const rawErr = await res.text();
+            if (rawErr) {
+              try {
+                const errData = JSON.parse(rawErr);
+                if (errData && (errData.detail || errData.message)) {
+                  errMsg = errData.detail || errData.message;
+                } else {
+                  errMsg = rawErr.trim().slice(0, 180) || errMsg;
+                }
+              } catch (_) {
+                errMsg = rawErr.trim().slice(0, 180) || errMsg;
+              }
             }
-          } catch (_) {
-            try {
-              const errText = (await res.text() || "").trim();
-              if (errText) errMsg = errText.slice(0, 180);
-            } catch (_2) {}
-          }
+          } catch (_2) {}
           sayMiko(`⚠️ Не удалось открыть выбор папки: ${errMsg}`);
           return;
         }
         const data = await res.json();
         if (data.status === "busy") {
           sayMiko(`⚠️ ${data.message || "Окно выбора папки уже открыто — проверь панель задач Windows!"} 🌸`);
+          return;
+        }
+        if (data.status === "timeout" || data.status === "error") {
+          sayMiko(`⚠️ ${data.message || "Не удалось открыть системное окно выбора папки."} 🌸`);
           return;
         }
         if (data.status === "cancelled") {
@@ -7936,12 +8039,135 @@
       }
     }
 
-    function flushPendingPageSaveBeforeLeave() {
-      if (!selectedPage || !currentBlocks) return;
-      if (!idleAutoSaveTimer && !hasPendingUnsavedPageEdits) return;
+    let pinRelayoutRafId = null;
+
+    function cancelActivePointerInteractions() {
+      isFrameEraserDragging = false;
+      if (activeMaskStrokeState) {
+        activeMaskStrokeState = null;
+      }
+      if (activeDrawState) {
+        if (activeDrawState.boxEl && activeDrawState.boxEl.isConnected) {
+          activeDrawState.boxEl.remove();
+        }
+        activeDrawState = null;
+      }
+      if (pinInteractState) {
+        if (Array.isArray(pinInteractState.cachedTargets)) {
+          pinInteractState.cachedTargets.forEach(t => {
+            if (t.pin) t.pin.classList.remove("dragging-pin");
+          });
+        }
+        pinInteractState = null;
+      }
+      if (typeof window._resetSplitterDrag === "function") {
+        window._resetSplitterDrag();
+      }
+    }
+
+    function scheduleRelayoutBboxPins() {
+      if (pinRelayoutRafId) return;
+      pinRelayoutRafId = requestAnimationFrame(() => {
+        pinRelayoutRafId = null;
+        const drawerOpen = document.getElementById("text-drawer")?.classList.contains("open");
+        const shouldShowPins = drawerOpen || Boolean(uiSettings.always_show_pins);
+        if (!shouldShowPins || !currentBlocks || currentBlocks.length === 0) return;
+
+        const wraps = Array.from(document.querySelectorAll(".img-pin-wrap"));
+        if (wraps.length === 0) return;
+        const validCount = currentBlocks.filter(b => Array.isArray(b.bbox) && b.bbox.length >= 4).length;
+        const canReusePins = wraps.every(w => {
+          const wImg = w.querySelector("img");
+          if (!wImg || !wImg.naturalWidth || !wImg.naturalHeight) return true;
+          return Boolean(w._pinMap && w._pinMap.size === validCount);
+        });
+
+        if (canReusePins) {
+          wraps.forEach(w => {
+            const wImg = w.querySelector("img");
+            if (!wImg || !wImg.naturalWidth) return;
+            const clientW = wImg.clientWidth || wImg.getBoundingClientRect().width;
+            wImg._cachedScale = clientW / Math.max(1, wImg.naturalWidth);
+          });
+          currentBlocks.forEach(b => {
+            if (Array.isArray(b.bbox) && b.bbox.length >= 4) {
+              updatePinDomForBlock(b.id);
+            }
+          });
+        } else {
+          renderBboxPinsOnStage();
+        }
+      });
+    }
+
+    function cancelPageScopedTimers() {
       cancelIdleAutoSaveTimer();
+      if (textHistoryDebounceTimer) {
+        clearTimeout(textHistoryDebounceTimer);
+        textHistoryDebounceTimer = null;
+      }
+      if (bgPadSettleTimer) {
+        clearTimeout(bgPadSettleTimer);
+        bgPadSettleTimer = null;
+      }
+      bgPadHistorySnapshot = null;
+      if (angleSettleTimer) {
+        clearTimeout(angleSettleTimer);
+        angleSettleTimer = null;
+      }
+      angleHistorySnapshot = null;
+      if (dilateLiveTimer) {
+        clearTimeout(dilateLiveTimer);
+        dilateLiveTimer = null;
+      }
+      dilateHistorySnapshot = null;
+      if (wheelSettleTimer) {
+        clearTimeout(wheelSettleTimer);
+        wheelSettleTimer = null;
+      }
+      wheelHistorySnapshot = null;
+      if (wheelRafId) {
+        cancelAnimationFrame(wheelRafId);
+        wheelRafId = null;
+      }
+      wheelPendingBlockId = null;
+      if (pinDragRafId) {
+        cancelAnimationFrame(pinDragRafId);
+        pinDragRafId = null;
+      }
+      if (pinRelayoutRafId) {
+        cancelAnimationFrame(pinRelayoutRafId);
+        pinRelayoutRafId = null;
+      }
+      cancelActivePointerInteractions();
+    }
+
+    function flushPendingPageSaveBeforeLeave() {
+      if (!selectedPage || !currentBlocks) {
+        cancelPageScopedTimers();
+        pendingAutoSaveAfterCurrent = false;
+        return;
+      }
+      const hasPendingTimersOrEdits = Boolean(
+        idleAutoSaveTimer ||
+        bgPadSettleTimer ||
+        angleSettleTimer ||
+        dilateLiveTimer ||
+        wheelSettleTimer ||
+        textHistoryDebounceTimer ||
+        hasPendingUnsavedPageEdits
+      );
+      if (!hasPendingTimersOrEdits) {
+        cancelPageScopedTimers();
+        pendingAutoSaveAfterCurrent = false;
+        return;
+      }
+      syncInputsToCurrentBlocks();
+      cancelPageScopedTimers();
       hasPendingUnsavedPageEdits = false;
+      pendingAutoSaveAfterCurrent = false;
       const leavingPage = selectedPage;
+      const leavingRelPath = leavingPage.rel_path;
       const leavingBlocks = currentBlocks.map(b => ({
         ...b,
         bbox: Array.isArray(b.bbox) ? [...b.bbox] : [0, 0, 0, 0],
@@ -7967,11 +8193,22 @@
         body: JSON.stringify(payload)
       }).then(r => r.json()).then(data => {
         if (data && data.saved_output_path) {
+          const finalBlocks = Array.isArray(data.blocks) ? data.blocks : leavingBlocks;
           leavingPage.dest_path = data.saved_output_path;
+          leavingPage.dest_exists = true;
           leavingPage.is_translated = true;
           leavingPage.has_saved_blocks = true;
-          leavingPage.blocks_count = leavingBlocks.length;
-          leavingPage.blocks = leavingBlocks;
+          leavingPage.blocks_count = finalBlocks.length;
+          leavingPage.blocks = finalBlocks.map(b => ({ ...b, _dirtyPreview: false }));
+          const fp = folderPages ? folderPages.find(x => x.rel_path === leavingRelPath) : null;
+          if (fp && fp !== leavingPage) {
+            fp.dest_path = leavingPage.dest_path;
+            fp.dest_exists = true;
+            fp.is_translated = true;
+            fp.has_saved_blocks = true;
+            fp.blocks_count = finalBlocks.length;
+            fp.blocks = leavingPage.blocks.map(b => ({ ...b }));
+          }
           renderPagesListItems();
         }
       }).catch(() => {});
@@ -7980,6 +8217,9 @@
     function selectPage(p) {
       if (selectedPage && p && selectedPage.rel_path !== p.rel_path) {
         flushPendingPageSaveBeforeLeave();
+      } else {
+        cancelPageScopedTimers();
+        pendingAutoSaveAfterCurrent = false;
       }
       selectedPage = p;
       preloadOrigPageImageForBrush();
@@ -9794,7 +10034,7 @@
           sayMiko(`Ошибка пакетной очистки шума: ${data.detail || "неизвестная ошибка"}`);
           return;
         }
-        await inspectCurrentFolder({ preserveSelection: true });
+        await inspectCurrentFolder({ preserveCurrentSelection: true });
         if (selectedPage) {
           await ensurePageBlocksLoaded(false);
           renderViewer();
@@ -10775,6 +11015,9 @@
       syncInputsToCurrentBlocks();
       if (!currentBlocks) return;
 
+      const targetPage = selectedPage;
+      const targetRelPath = selectedPage.rel_path;
+
       isSavingEdits = true;
       hasPendingUnsavedPageEdits = false;
       const saveRevision = clientEditRevision;
@@ -10795,12 +11038,12 @@
         saveBtn.textContent = "⏳ Сохраняю...";
       }
       if (!opts.isAuto) {
-        sayMiko(`Перерисовываю и сохраняю изменения на странице «${selectedPage.rel_path}»... 💾✨`);
+        sayMiko(`Перерисовываю и сохраняю изменения на странице «${targetPage.rel_path}»... 💾✨`);
       }
 
       const payload = {
-        source_path: selectedPage.source_path,
-        dest_path: selectedPage.dest_path || null,
+        source_path: targetPage.source_path,
+        dest_path: targetPage.dest_path || null,
         source_dir: currentFolder || null,
         target_lang: targetLang,
         uppercase: document.getElementById("chk-uppercase").checked,
@@ -10825,13 +11068,18 @@
           return;
         }
 
-        selectedPage.dest_path = data.saved_output_path || selectedPage.dest_path;
-        selectedPage.dest_exists = true;
-        selectedPage.is_translated = true;
-        selectedPage.has_saved_blocks = true;
+        const stillOnTargetPage = Boolean(selectedPage && selectedPage.rel_path === targetRelPath);
 
-        // Обновляем блоки на месте (сохраняя ссылки на объекты для обработчиков рамок), если не было новых правок
-        if (clientEditRevision === saveRevision) {
+        targetPage.dest_path = data.saved_output_path || targetPage.dest_path;
+        targetPage.dest_exists = true;
+        targetPage.is_translated = true;
+        targetPage.has_saved_blocks = true;
+
+        const savedCleanBlocks = Array.isArray(data.blocks)
+          ? data.blocks.map(nb => ({ ...nb, _dirtyPreview: false }))
+          : snapshotBlocks.map(b => ({ ...b, _dirtyPreview: false }));
+
+        if (stillOnTargetPage && clientEditRevision === saveRevision) {
           if (Array.isArray(data.blocks)) {
             const byId = new Map(currentBlocks.map(b => [b.id, b]));
             currentBlocks = data.blocks.map(nb => {
@@ -10864,25 +11112,37 @@
           if (popupBlockId && !isTypingInEditor) {
             populateInlinePopup(popupBlockId);
           }
+        } else {
+          targetPage.blocks = savedCleanBlocks;
         }
 
-        // Обновляем картинку на сцене через легковесный URL без тяжелого Base64, без сброса скролла и без моргания!
-        updateTranslatedImageSmoothly(data.translated_image_url || data.translated_image);
+        if (stillOnTargetPage) {
+          // Обновляем картинку на сцене через легковесный URL без тяжелого Base64, без сброса скролла и без моргания!
+          updateTranslatedImageSmoothly(data.translated_image_url || data.translated_image);
+        }
 
         // Синхронизируем счетчик в списке страниц слева без повторного вызова selectPage()
-        if (folderPages && selectedPage) {
-          const fp = folderPages.find(x => x.rel_path === selectedPage.rel_path);
+        if (folderPages) {
+          const fp = folderPages.find(x => x.rel_path === targetRelPath);
           if (fp) {
             fp.is_translated = true;
-            fp.dest_path = selectedPage.dest_path;
-            fp.blocks_count = currentBlocks.length;
+            fp.dest_exists = true;
+            fp.dest_path = targetPage.dest_path;
             fp.has_saved_blocks = true;
-            fp.blocks = currentBlocks;
+            if (stillOnTargetPage && clientEditRevision === saveRevision) {
+              fp.blocks_count = currentBlocks.length;
+              fp.blocks = currentBlocks;
+            } else {
+              fp.blocks_count = savedCleanBlocks.length;
+              fp.blocks = savedCleanBlocks.map(b => ({ ...b }));
+            }
             renderPagesListItems();
           }
         }
 
-        sayMiko(`Готово за ${data.processing_time_sec}с! Изменения на странице «${selectedPage.rel_path}» вшиты в картинку и сохранены! 💾🌸`);
+        if (stillOnTargetPage) {
+          sayMiko(`Готово за ${data.processing_time_sec}с! Изменения на странице «${targetPage.rel_path}» вшиты в картинку и сохранены! 💾🌸`);
+        }
       } catch (e) {
         sayMiko(`Ошибка связи при сохранении страницы: ${e.message}`);
       } finally {
@@ -10895,11 +11155,14 @@
         if (pill) {
           pill.className = "autosave-status-pill";
         }
-        if (pendingAutoSaveAfterCurrent || clientEditRevision !== saveRevision) {
+        const stillOnTargetFinally = Boolean(selectedPage && selectedPage.rel_path === targetRelPath);
+        if (stillOnTargetFinally && (pendingAutoSaveAfterCurrent || clientEditRevision !== saveRevision)) {
           pendingAutoSaveAfterCurrent = false;
           if (uiSettings.auto_save_after_idle !== false && !isUserTypingInTextEditor()) {
             scheduleIdleAutoSave(500);
           }
+        } else {
+          pendingAutoSaveAfterCurrent = false;
         }
       }
     }
@@ -11160,7 +11423,7 @@
           cursorRing.innerHTML = `<span class="mask-brush-cursor-lbl">🧹 14px</span>`;
           wrap.appendChild(cursorRing);
         }
-        wrap.onmousemove = (ev) => {
+        wrap.onpointermove = (ev) => {
           if (!isMaskBrushMode || !img || !img.naturalWidth) return;
           const rect = wrap.getBoundingClientRect();
           const relX = ev.clientX - rect.left;
@@ -11184,7 +11447,7 @@
             return false;
           }
         };
-        wrap.onmousedown = (ev) => {
+        wrap.onpointerdown = (ev) => {
           if (isMaskBrushMode && (ev.button === 0 || ev.button === 2)) {
             ev.preventDefault();
             ev.stopPropagation();
@@ -11284,7 +11547,7 @@
       clientEditRevision++;
     }
 
-    window.addEventListener("mousemove", (ev) => {
+    window.addEventListener("pointermove", (ev) => {
       if (activeMaskStrokeState) {
         addMaskBrushPointFromEvent(ev);
         return;
@@ -11306,7 +11569,7 @@
       boxEl.style.height = height + "px";
     });
 
-    window.addEventListener("mouseup", async () => {
+    window.addEventListener("pointerup", async () => {
       if (activeMaskStrokeState) {
         const st = activeMaskStrokeState;
         activeMaskStrokeState = null;
@@ -11737,7 +12000,7 @@
           const cssFs = Math.max(8, Math.round(estFs * scale * 0.85));
           liveEl.style.fontSize = cssFs + "px";
           const ang = Number(blk.angle || 0);
-          liveEl.style.transform = Math.abs(ang) >= 0.5 ? `rotate(${ang}deg)` : "";
+          liveEl.style.transform = Math.abs(ang) >= 0.5 ? `rotate(${-ang}deg)` : "";
           liveEl.style.textAlign = blk.align || "center";
           if (blk.text_color) liveEl.style.color = blk.text_color;
           else liveEl.style.color = "#0f0f0f";
@@ -11985,15 +12248,15 @@
               removeBlockFrameCompletely(b.id, ev);
             }
           });
-          pin.addEventListener("mouseenter", (ev) => {
+          pin.addEventListener("pointerenter", (ev) => {
             if (isFrameEraserMode && isFrameEraserDragging && (ev.buttons & 1) === 1) {
               recordUxEvent("button_click", "bbox-pin-del", "🗑 Ластик рамок (росчерк по рамке #N)", "viewer_stage_pin");
               removeBlockFrameCompletely(b.id, ev);
             }
           });
 
-          // MouseDown on pin or its 8 resize handles (caches geometry & DOM nodes once for 0-reflow dragging!)
-          pin.addEventListener("mousedown", (ev) => {
+          // PointerDown on pin or its 8 resize handles (caches geometry & DOM nodes once for 0-reflow dragging!)
+          pin.addEventListener("pointerdown", (ev) => {
             if (ev.button === 1 || (ev.button === 0 && ev.altKey)) {
               ev.preventDefault();
               ev.stopPropagation();
@@ -12138,8 +12401,8 @@
       });
     }
 
-    // Global mousemove / mouseup handlers for interactive pin move & 8-way resize (rAF throttled, 0 forced reflows!)
-    window.addEventListener("mousemove", (ev) => {
+    // Global pointermove / pointerup handlers for interactive pin move & 8-way resize (rAF throttled, 0 forced reflows!)
+    window.addEventListener("pointermove", (ev) => {
       if (!pinInteractState) return;
       const st = pinInteractState;
       const dxScreen = ev.clientX - st.startClientX;
@@ -12197,7 +12460,7 @@
       }
     });
 
-    window.addEventListener("mouseup", (ev) => {
+    window.addEventListener("pointerup", (ev) => {
       if (isFrameEraserDragging) {
         isFrameEraserDragging = false;
         if (hasPendingUnsavedPageEdits) {
@@ -12264,8 +12527,18 @@
       const editorDragHandle = document.getElementById("editor-drag-handle");
       const popupDragBar = document.getElementById("inline-popup-drag-bar");
 
+      function finishSplitterDrag(saveUi) {
+        if (!dragMode) return;
+        document.body.classList.remove("resizing-panels");
+        if (leftSplitter) leftSplitter.classList.remove("dragging");
+        if (editorSplitter) editorSplitter.classList.remove("dragging");
+        if (saveUi) saveLocalUiSettings();
+        dragMode = null;
+      }
+      window._resetSplitterDrag = () => finishSplitterDrag(false);
+
       if (leftSplitter) {
-        leftSplitter.addEventListener("mousedown", (e) => {
+        leftSplitter.addEventListener("pointerdown", (e) => {
           if (e.button !== 0) return;
           e.preventDefault();
           dragMode = "left-sidebar";
@@ -12277,7 +12550,7 @@
       }
 
       if (editorSplitter) {
-        editorSplitter.addEventListener("mousedown", (e) => {
+        editorSplitter.addEventListener("pointerdown", (e) => {
           if (e.button !== 0) return;
           e.preventDefault();
           const dr = document.getElementById("text-drawer");
@@ -12297,7 +12570,7 @@
       }
 
       if (editorDragHandle) {
-        editorDragHandle.addEventListener("mousedown", (e) => {
+        editorDragHandle.addEventListener("pointerdown", (e) => {
           if (uiSettings.editor_dock_mode !== "floating" || e.button !== 0) return;
           if (e.target.closest("button, select, input")) return;
           e.preventDefault();
@@ -12316,7 +12589,7 @@
       }
 
       if (popupDragBar) {
-        popupDragBar.addEventListener("mousedown", (e) => {
+        popupDragBar.addEventListener("pointerdown", (e) => {
           if (e.button !== 0 || e.target.closest("button, select, input")) return;
           e.preventDefault();
           const pop = document.getElementById("inline-bubble-popup");
@@ -12329,23 +12602,23 @@
         });
       }
 
-      window.addEventListener("mousemove", (e) => {
+      window.addEventListener("pointermove", (e) => {
         if (!dragMode) return;
         if (dragMode === "left-sidebar") {
           const nw = Math.max(250, Math.min(540, startSize + (e.clientX - startX)));
           uiSettings.left_sidebar_width = Math.round(nw);
           document.documentElement.style.setProperty("--left-sidebar-w", uiSettings.left_sidebar_width + "px");
-          renderBboxPinsOnStage();
+          scheduleRelayoutBboxPins();
         } else if (dragMode === "editor-right") {
           const nw = Math.max(310, Math.min(window.innerWidth * 0.68, startSize - (e.clientX - startX)));
           uiSettings.right_panel_width = Math.round(nw);
           document.documentElement.style.setProperty("--right-editor-w", uiSettings.right_panel_width + "px");
-          renderBboxPinsOnStage();
+          scheduleRelayoutBboxPins();
         } else if (dragMode === "editor-bottom") {
           const nh = Math.max(190, Math.min(window.innerHeight * 0.76, startSize - (e.clientY - startY)));
           uiSettings.bottom_panel_height = Math.round(nh);
           document.documentElement.style.setProperty("--bottom-editor-h", uiSettings.bottom_panel_height + "px");
-          renderBboxPinsOnStage();
+          scheduleRelayoutBboxPins();
         } else if (dragMode === "floating-editor") {
           const dr = document.getElementById("text-drawer");
           const nx = Math.max(8, Math.min(window.innerWidth - 180, startLeft + (e.clientX - startX)));
@@ -12361,41 +12634,53 @@
         }
       });
 
-      window.addEventListener("mouseup", () => {
-        if (!dragMode) return;
-        document.body.classList.remove("resizing-panels");
-        if (leftSplitter) leftSplitter.classList.remove("dragging");
-        if (editorSplitter) editorSplitter.classList.remove("dragging");
-        saveLocalUiSettings();
-        dragMode = null;
+      window.addEventListener("pointerup", () => {
+        finishSplitterDrag(true);
       });
 
       window.addEventListener("resize", () => {
-        renderBboxPinsOnStage();
+        scheduleRelayoutBboxPins();
       });
     })();
 
     /* ==================== SINGLE FILE & FOLDER TRANSLATION ==================== */
     async function pickSingleFileDialog() {
-      const res = await fetch("/pick_file", { method: "POST" });
-      const data = await res.json();
-      if (data.status === "cancelled") return;
-      selectedPage = {
-        index: 1,
-        rel_path: data.filename,
-        filename: data.filename,
-        source_path: data.file_path,
-        dest_path: "",
-        is_translated: false,
-        blocks: []
-      };
-      document.getElementById("btn-contextual-page").style.display = "block";
-      document.getElementById("btn-contextual-page").textContent = `🔁 Перевести «${data.filename}» заново`;
-      document.getElementById("btn-edit-page").style.display = "block";
-      document.getElementById("btn-edit-page").textContent = `✏️ Редактировать перевод и Ромадзи`;
-      updateTopPageNav();
-      renderViewer();
-      await translateSelectedPage();
+      try {
+        const res = await fetch("/pick_file", { method: "POST" });
+        if (!res.ok) {
+          sayMiko(`⚠️ Не удалось открыть выбор файла (HTTP ${res.status}).`);
+          return;
+        }
+        const data = await res.json();
+        if (data.status === "busy") {
+          sayMiko(`⚠️ ${data.message || "Окно выбора файла уже открыто — проверь панель задач Windows!"} 🌸`);
+          return;
+        }
+        if (data.status === "timeout" || data.status === "error") {
+          sayMiko(`⚠️ ${data.message || "Не удалось открыть системное окно выбора файла."} 🌸`);
+          return;
+        }
+        if (data.status === "cancelled" || !data.file_path) return;
+        selectedPage = {
+          index: 1,
+          rel_path: data.filename,
+          filename: data.filename,
+          source_path: data.file_path,
+          dest_path: "",
+          is_translated: false,
+          blocks: []
+        };
+        document.getElementById("btn-contextual-page").style.display = "block";
+        document.getElementById("btn-contextual-page").textContent = `🔁 Перевести «${data.filename}» заново`;
+        document.getElementById("btn-edit-page").style.display = "block";
+        document.getElementById("btn-edit-page").textContent = `✏️ Редактировать перевод и Ромадзи`;
+        updateTopPageNav();
+        renderViewer();
+        await translateSelectedPage();
+      } catch (err) {
+        console.error("pickSingleFileDialog error:", err);
+        sayMiko(`⚠️ Ошибка выбора файла: ${err?.message || "нет связи с сервером"}`);
+      }
     }
 
     async function translateSelectedPage() {
@@ -12560,6 +12845,7 @@
     }
 
     let lastFolderPollCurrent = -1;
+    let isFolderPollInspecting = false;
     let folderEventSource = null;
     let lmUserHidden = false;
     const LM_STAGE_ORDER = ["ocr", "pass0", "llm", "micro_retry", "proofread", "render"];
@@ -12621,7 +12907,7 @@
 
       const stepElSec = Number(live.step_elapsed_sec || 0);
       const tokAge = live.last_token_age_sec;
-      const curStage = String(live.stage || "");
+      const curStage = String(live.stage || "idle");
       const isRateWait = curStage === "rate_limit_wait" || Number(live.rate_limit_remaining_sec || 0) > 0;
       const isRatePaused = Boolean(live.rate_limit_paused) || curStage === "paused_429";
       const isStalled = isActive && !isRateWait && !isRatePaused && (stepElSec >= 90 || (tokAge !== null && tokAge !== undefined && Number(tokAge) >= 30));
@@ -12655,7 +12941,6 @@
         totEl.textContent = `${formatLiveDuration(st.elapsed_sec)} · ${st.current || 0}/${st.total || 0}`;
       }
 
-      const curStage = String(live.stage || "idle");
       const curOrderIdx = LM_STAGE_ORDER.indexOf(curStage);
       document.querySelectorAll("#lm-stages .lm-pill").forEach(pill => {
         const pSt = pill.dataset.stage || "";
@@ -12803,14 +13088,18 @@
           mainBtn.classList.add("stopping");
           mainBtn.textContent = "⏸ Пауза (остановить и сохранить прогресс)";
         }
-        if (lastFolderPollCurrent >= 0 && cur > lastFolderPollCurrent) {
+        if (cur !== lastFolderPollCurrent && (cur > 0 || lastFolderPollCurrent > cur)) {
           lastFolderPollCurrent = cur;
-          await inspectCurrentFolder({ preserveCurrentSelection: true });
+          if (!isFolderPollInspecting) {
+            isFolderPollInspecting = true;
+            try {
+              await inspectCurrentFolder({ preserveCurrentSelection: true });
+            } finally {
+              isFolderPollInspecting = false;
+            }
+          }
         } else if (lastFolderPollCurrent < 0) {
           lastFolderPollCurrent = cur;
-          if (cur > 0) {
-            await inspectCurrentFolder({ preserveCurrentSelection: true });
-          }
         }
         sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
       } else {
@@ -12841,9 +13130,7 @@
         folderEventSource.close();
         folderEventSource = null;
       }
-      lastFolderPollCurrent = Array.isArray(folderPages)
-        ? folderPages.filter(p => Boolean(p.is_translated)).length
-        : -1;
+      lastFolderPollCurrent = -1;
 
       if (typeof EventSource === "undefined") {
         startFolderPolling();
@@ -12906,9 +13193,7 @@
 
     function startFolderPolling() {
       if (pollTimer) clearInterval(pollTimer);
-      lastFolderPollCurrent = Array.isArray(folderPages)
-        ? folderPages.filter(p => Boolean(p.is_translated)).length
-        : -1;
+      lastFolderPollCurrent = -1;
       pollTimer = setInterval(async () => {
         try {
           const res = await fetch("/folder_status");
@@ -12922,11 +13207,28 @@
     }
 
     async function pickWebSaveDirInStudio() {
-      const res = await fetch("/pick_web_save_folder", { method: "POST" });
-      const data = await res.json();
-      if (data.status === "ok" && data.web_save_dir) {
-        document.getElementById("inp-web-save-dir").value = data.web_save_dir;
-        sayMiko(`Папка автосохранения из браузера изменена на: ${data.web_save_dir} 💾🌸`);
+      try {
+        const res = await fetch("/pick_web_save_folder", { method: "POST" });
+        if (!res.ok) {
+          sayMiko(`⚠️ Не удалось открыть выбор папки автосохранения (HTTP ${res.status}).`);
+          return;
+        }
+        const data = await res.json();
+        if (data.status === "busy") {
+          sayMiko(`⚠️ ${data.message || "Окно выбора папки уже открыто — проверь панель задач Windows!"} 🌸`);
+          return;
+        }
+        if (data.status === "timeout" || data.status === "error") {
+          sayMiko(`⚠️ ${data.message || "Не удалось открыть окно выбора папки автосохранения."} 🌸`);
+          return;
+        }
+        if (data.status === "ok" && data.web_save_dir) {
+          document.getElementById("inp-web-save-dir").value = data.web_save_dir;
+          sayMiko(`Папка автосохранения из браузера изменена на: ${data.web_save_dir} 💾🌸`);
+        }
+      } catch (err) {
+        console.error("pickWebSaveDirInStudio error:", err);
+        sayMiko(`⚠️ Ошибка при выборе папки автосохранения: ${err?.message || "нет связи с сервером"}`);
       }
     }
 
@@ -13045,7 +13347,32 @@
         }
       }
 
-      if (modalOpen) return;
+      if (modalOpen) {
+        if (e.key === "Tab") {
+          const modalBox = document.getElementById("settings-modal-box");
+          if (modalBox) {
+            const focusable = Array.from(
+              modalBox.querySelectorAll(
+                'button:not([disabled]), [href], input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), summary, [tabindex]:not([tabindex="-1"])'
+              )
+            ).filter(el => el.offsetParent !== null);
+            if (focusable.length > 0) {
+              const firstEl = focusable[0];
+              const lastEl = focusable[focusable.length - 1];
+              if (e.shiftKey) {
+                if (activeEl === firstEl || !modalBox.contains(activeEl)) {
+                  e.preventDefault();
+                  lastEl.focus();
+                }
+              } else if (activeEl === lastEl || !modalBox.contains(activeEl)) {
+                e.preventDefault();
+                firstEl.focus();
+              }
+            }
+          }
+        }
+        return;
+      }
 
       // Save page: Ctrl+S
       if ((e.ctrlKey || e.metaKey) && (e.key === "s" || e.key === "S" || e.key === "ы" || e.key === "Ы")) {
@@ -13095,19 +13422,22 @@
         }
       }
 
-      // Tab / Shift+Tab: cycle through #N blocks on the page (including inside block textarea / inline popup!)
+      // Tab / Shift+Tab: cycle through #N blocks only inside canvas / block-editing context
       if (e.key === "Tab" && selectedPage && currentBlocks && currentBlocks.length > 0) {
-        const isBlockTa = activeEl && (activeEl.id === "popup-textarea" || activeEl.id?.startsWith("edit-ta-"));
-        if (!inInput || isBlockTa) {
+        const isBlockTa = Boolean(activeEl && (activeEl.id === "popup-textarea" || activeEl.id?.startsWith("edit-ta-")));
+        const inCanvasOrBlockContext = isBlockTa || !activeEl || activeEl === document.body || Boolean(activeEl.closest && activeEl.closest("#viewer-stage, #inline-bubble-popup"));
+        if (inCanvasOrBlockContext) {
           e.preventDefault();
           stepActiveBlockWithTab(e.shiftKey ? -1 : 1);
           return;
         }
       }
 
-      // Hold-to-Compare Original: Space or V (when focus is NOT in an input/textarea)
-      if (!inInput && !e.ctrlKey && !e.altKey && !e.metaKey && (
-        e.code === "Space" || e.key === " " || e.key === "v" || e.key === "V" || e.key === "м" || e.key === "М"
+      // Hold-to-Compare Original: Space or V (only when focus is NOT in input or interactive control)
+      const isSpaceKey = (e.code === "Space" || e.key === " ");
+      const inInteractiveControl = Boolean(activeEl && activeEl.closest && activeEl.closest("button, a, summary, select, details, [role='button'], input[type='checkbox'], input[type='radio'], input[type='range'], .choice-card"));
+      if (!inInput && !(isSpaceKey && inInteractiveControl) && !e.ctrlKey && !e.altKey && !e.metaKey && (
+        isSpaceKey || e.key === "v" || e.key === "V" || e.key === "м" || e.key === "М"
       )) {
         if (selectedPage) {
           e.preventDefault();
@@ -13219,10 +13549,15 @@
       if (isHoldCompareActive) {
         setHoldCompareMode(false);
       }
+      cancelActivePointerInteractions();
+    });
+
+    window.addEventListener("pointercancel", () => {
+      cancelActivePointerInteractions();
     });
 
     // Close inline popup when clicking on empty stage background
-    document.getElementById("viewer-stage").addEventListener("mousedown", (e) => {
+    document.getElementById("viewer-stage").addEventListener("pointerdown", (e) => {
       if (isFrameEraserMode && e.button === 0) { isFrameEraserDragging = true; }
       if (!e.target.closest("#toolbar-more-details")) closeToolbarMoreMenu();
       if (!e.target.closest(".bbox-pin") && !e.target.closest(".inline-bubble-popup")) {

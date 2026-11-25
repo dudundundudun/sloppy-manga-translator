@@ -1,7 +1,7 @@
 """
-Локальное графическое приложение (GUI) «Miko-chan Manga Studio» (v5.3.0).
+Локальное графическое приложение (GUI) «Miko-chan Manga Studio» (v6.1.0).
 
-Изменения v5.3.0:
+Возможности v6.1.0:
 1. В окно «⚙️ Настройки» добавлена секция скачивания в 1 клик лучших моделей манги
    (Shisa V2.1 14B, Shisa V2.1 8B, Shisa V2 12B Uncensored, Gemma 3 12B, Qwen 2.5 14B)
    напрямую через локальный сервер Ollama с прогресс-баром и автоматической установкой по умолчанию!
@@ -107,7 +107,7 @@ OVERFLOW_LABEL_BY_CODE = {v: k for k, v in OVERFLOW_MODE_MAP.items()}
 
 
 class MikoMangaStudioGUI:
-    """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v5.3.0)."""
+    """Минималистичный Bento-интерфейс переводчика манги с кавайным маскотом Мико-тян (v6.1.0)."""
 
     def __init__(self, root: tk.Tk) -> None:
         print("[GUI] Инициализация окна Miko-chan Manga Studio v6.1.0...", flush=True)
@@ -244,24 +244,40 @@ class MikoMangaStudioGUI:
             except Exception as exc:
                 logger.warning("Не удалось загрузить %s: %s", GUI_SETTINGS_FILE, exc)
 
+    @staticmethod
+    def _safe_int_var(var: Any, default: int, lo: int, hi: int) -> int:
+        try:
+            val = int(float(var.get()))
+        except (tk.TclError, ValueError, TypeError):
+            return default
+        return max(lo, min(hi, val))
+
+    @staticmethod
+    def _safe_float_var(var: Any, default: float, lo: float, hi: float) -> float:
+        try:
+            val = float(var.get())
+        except (tk.TclError, ValueError, TypeError):
+            return default
+        return max(lo, min(hi, val))
+
     def _save_gui_settings(self) -> None:
         data = {
             "lang": SOURCE_LANG_MAP.get(self.var_source_lang.get(), "auto"),
             "target_lang": self.target_lang,
             "pipeline_mode": self.pipeline_mode,
             "use_image_context": self.use_image_context,
-            "min_font_size": int(self.var_min_font.get()),
-            "max_font_size": int(self.var_max_font.get()),
+            "min_font_size": self._safe_int_var(self.var_min_font, 12, 8, 48),
+            "max_font_size": self._safe_int_var(self.var_max_font, 32, 12, 72),
             "uppercase": bool(self.var_uppercase.get()),
             "overflow_mode": self.var_overflow_mode.get(),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
             "detect_free_text": bool(self.var_detect_free_text.get()),
-            "min_text_length": int(self.var_min_text_len.get()),
+            "min_text_length": self._safe_int_var(self.var_min_text_len, 2, 1, 20),
             "skip_existing": bool(self.var_skip_existing.get()),
             "auto_save_boxes": bool(self.var_auto_save_boxes.get()),
-            "auto_save_sec": float(self.var_auto_save_sec.get() or 2.5),
+            "auto_save_sec": self._safe_float_var(self.var_auto_save_sec, 2.5, 0.5, 30.0),
             "unsloth_url": self.var_unsloth_url.get().strip(),
             "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
             "last_folder": str(self.current_folder) if self.current_folder else None,
@@ -530,7 +546,7 @@ class MikoMangaStudioGUI:
 
         self.lbl_miko_speech = tk.Label(
             speech_wrap,
-            text="Привет! Версия v5.3.0 готова: двухконтурный детектор RT-DETR-v2, мультиязычный HayaiOCR v2.5 Nova, VLM-OCR и пресеты DeepSeek Flash/Pro~ 🌸",
+            text="Привет! Версия v6.1.0 готова: двухконтурный детектор RT-DETR-v2, мультиязычный HayaiOCR v2.5 Nova, VLM-OCR и облачные/локальные модели~ 🌸",
             bg="#141122",
             fg=FG_PRIMARY,
             font=("Segoe UI", 9),
@@ -941,7 +957,7 @@ class MikoMangaStudioGUI:
         self._save_gui_settings()
         self._update_summary_chip()
         if rerender:
-            self._apply_model_async()
+            self._post_partial_settings({"overflow_mode": mode})
             if self.selected_page and self.last_blocks:
                 self._auto_save_edited_blocks_now()
 
@@ -1101,13 +1117,43 @@ class MikoMangaStudioGUI:
     def _open_settings_modal(self) -> None:
         win = tk.Toplevel(self.root)
         win.title("⚙️ Настройки DeepSeek API, фильтрации текста и шрифта")
-        win.geometry("560x730")
+        win.geometry("580x680")
+        win.minsize(480, 420)
         win.configure(bg=BG_BENTO)
         win.transient(self.root)
         win.grab_set()
 
-        pad = tk.Frame(win, bg=BG_BENTO, padx=20, pady=16)
-        pad.pack(fill=tk.BOTH, expand=True)
+        footer = tk.Frame(win, bg=BG_BENTO, padx=20, pady=10)
+        footer.pack(side=tk.BOTTOM, fill=tk.X)
+
+        scroll_host = tk.Frame(win, bg=BG_BENTO)
+        scroll_host.pack(side=tk.TOP, fill=tk.BOTH, expand=True)
+
+        canvas = tk.Canvas(scroll_host, bg=BG_BENTO, highlightthickness=0, bd=0)
+        vbar = ttk.Scrollbar(scroll_host, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vbar.set)
+        vbar.pack(side=tk.RIGHT, fill=tk.Y)
+        canvas.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+
+        pad = tk.Frame(canvas, bg=BG_BENTO, padx=20, pady=16)
+        win_id = canvas.create_window((0, 0), window=pad, anchor="nw")
+
+        def _sync_scrollregion(_event: Any = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _sync_canvas_width(event: Any) -> None:
+            canvas.itemconfigure(win_id, width=max(320, int(event.width)))
+
+        def _on_modal_mousewheel(event: Any) -> None:
+            if not win.winfo_exists():
+                return
+            delta = int(-1 * (event.delta / 120)) if getattr(event, "delta", 0) else 0
+            if delta:
+                canvas.yview_scroll(delta, "units")
+
+        pad.bind("<Configure>", _sync_scrollregion)
+        canvas.bind("<Configure>", _sync_canvas_width)
+        win.bind("<MouseWheel>", _on_modal_mousewheel)
 
         # 1. Автоскачивание Shisa и топ-моделей через Ollama
         tk.Label(
@@ -1136,8 +1182,9 @@ class MikoMangaStudioGUI:
 
             def _pull_worker() -> None:
                 try:
+                    is_vlm_only = any(v in tag.lower() for v in ("glm-ocr", "qwen3-vl", "vl:"))
                     with httpx.Client(trust_env=False, timeout=15.0) as client:
-                        client.post(f"{SERVER_URL}/pull_model", json={"model": tag, "set_as_default": "glm-ocr" not in tag.lower()})
+                        client.post(f"{SERVER_URL}/pull_model", json={"model": tag, "set_as_default": not is_vlm_only})
                     while True:
                         time.sleep(1.3)
                         with httpx.Client(trust_env=False, timeout=8.0) as client:
@@ -1203,9 +1250,7 @@ class MikoMangaStudioGUI:
         def _on_preset_selected(_event: Any = None) -> None:
             pair = CLOUD_PRESET_MAP.get(self.var_cloud_preset.get())
             if pair:
-                cur_u = self.var_unsloth_url.get().strip()
-                if not cur_u or "127.0.0.1" in cur_u or "localhost" in cur_u:
-                    self.var_unsloth_url.set(pair[0])
+                self.var_unsloth_url.set(pair[0])
                 self.var_custom_model.set(pair[1])
 
         cb_preset.bind("<<ComboboxSelected>>", _on_preset_selected)
@@ -1412,17 +1457,19 @@ class MikoMangaStudioGUI:
         ).pack(anchor="w", pady=(1, 8))
 
         def _save_and_close() -> None:
-            mn = int(self.var_min_font.get())
-            mx = int(self.var_max_font.get())
-            if mn > mx:
-                self.var_max_font.set(mn)
+            mn = self._safe_int_var(self.var_min_font, 12, 8, 48)
+            mx = self._safe_int_var(self.var_max_font, 32, 12, 72)
+            self.var_min_font.set(mn)
+            self.var_max_font.set(max(mn, mx))
+            self.var_min_text_len.set(self._safe_int_var(self.var_min_text_len, 2, 1, 20))
+            self.var_auto_save_sec.set(self._safe_float_var(self.var_auto_save_sec, 2.5, 0.5, 30.0))
             self._save_gui_settings()
             self._apply_model_async()
             self._update_summary_chip()
             win.destroy()
 
         tk.Button(
-            pad,
+            footer,
             text="✅ Сохранить настройки",
             bg=ACCENT_SAKURA,
             fg="#ffffff",
@@ -1977,14 +2024,23 @@ class MikoMangaStudioGUI:
                 resp.raise_for_status()
                 data = resp.json()
                 running_ver = str(data.get("version") or "")
-                if running_ver not in ("6.1.0", "6.1"):
-                    print(f"[GUI] На порту 5000 запущена старая версия сервера (v{running_ver}). Перезапускаю на v6.1.0...", flush=True)
+                if not running_ver.startswith("6."):
+                    print(f"[GUI] На порту 5000 запущена несовместимая версия сервера (v{running_ver}). Перезапускаю на v6.1.0...", flush=True)
                     try:
                         client.post(f"{SERVER_URL}/shutdown", timeout=2.0)
                     except Exception:
                         pass
                     time.sleep(1.5)
                     return False
+                if force_models:
+                    try:
+                        m_resp = client.get(f"{SERVER_URL}/models?refresh=true", timeout=15.0)
+                        if m_resp.is_success:
+                            m_data = m_resp.json()
+                            if isinstance(m_data, dict) and isinstance(m_data.get("models"), list):
+                                data["models"] = m_data["models"]
+                    except Exception as m_exc:
+                        logger.debug("Не удалось принудительно обновить список моделей (/models?refresh=true): %s", m_exc)
                 self.server_online = True
                 if not self._closing:
                     self.root.after(0, lambda d=data: self._on_server_healthy(d))
@@ -2007,6 +2063,46 @@ class MikoMangaStudioGUI:
             self.var_unsloth_url.set(str(data["unsloth_url"]))
         if "anti_censorship_prompt" in data:
             self.var_anti_censorship_prompt.set(bool(data.get("anti_censorship_prompt", False)))
+        if "overflow_mode" in data:
+            ovf_m = str(data.get("overflow_mode") or "shrink").strip().lower()
+            if ovf_m in ("shrink", "overflow", "expand_bubble"):
+                self.var_overflow_mode.set(ovf_m)
+                for olbl, ocode in OVERFLOW_MODE_MAP.items():
+                    if ocode == ovf_m:
+                        self.var_overflow_label.set(olbl)
+                        break
+                for code, btn in getattr(self, "overflow_mode_btns", {}).items():
+                    if code == ovf_m:
+                        btn.config(bg=ACCENT_MINT, fg="#ffffff")
+                    else:
+                        btn.config(bg=BG_INNER, fg=FG_SECONDARY)
+        try:
+            if "min_font_size" in data and data["min_font_size"] is not None:
+                self.var_min_font.set(int(data["min_font_size"]))
+            if "max_font_size" in data and data["max_font_size"] is not None:
+                self.var_max_font.set(int(data["max_font_size"]))
+            if "min_text_length" in data and data["min_text_length"] is not None:
+                self.var_min_text_len.set(int(data["min_text_length"]))
+        except Exception:
+            pass
+        if "uppercase" in data:
+            self.var_uppercase.set(bool(data["uppercase"]))
+        if "detect_free_text" in data:
+            self.var_detect_free_text.set(bool(data["detect_free_text"]))
+        if "skip_sighs" in data:
+            self.var_skip_sighs.set(bool(data["skip_sighs"]))
+        if "skip_sfx" in data:
+            self.var_skip_sfx.set(bool(data["skip_sfx"]))
+        if "text_filter_mode" in data:
+            tf_code = str(data.get("text_filter_mode") or "").strip()
+            for lbl, m_code in TEXT_FILTER_MODE_MAP.items():
+                if m_code == tf_code:
+                    self.var_text_filter_label.set(lbl)
+                    break
+        if "auto_save_web_pages" in data:
+            self.var_auto_save_web.set(bool(data["auto_save_web_pages"]))
+        if data.get("web_save_dir"):
+            self.var_web_save_dir.set(str(data["web_save_dir"]))
         self._update_summary_chip()
         if self.current_folder and not self.folder_pages:
             self._refresh_folder_inspection_async()
@@ -2027,18 +2123,44 @@ class MikoMangaStudioGUI:
                 return str(m["id"])
         return "auto"
 
+    def _post_partial_settings(self, payload: dict[str, Any]) -> None:
+        clean_payload = {k: v for k, v in payload.items() if v is not None}
+        if not clean_payload:
+            return
+
+        def _worker() -> None:
+            try:
+                with httpx.Client(trust_env=False, timeout=12.0) as client:
+                    resp = client.post(f"{SERVER_URL}/settings", json=clean_payload)
+                    if not resp.is_success:
+                        logger.warning(
+                            "Ошибка частичного обновления настроек (HTTP %s): %s",
+                            resp.status_code,
+                            resp.text[:300],
+                        )
+            except Exception as exc:
+                logger.warning("Не удалось отправить частичные настройки на сервер: %s", exc)
+
+        threading.Thread(target=_worker, daemon=True).start()
+
     def _apply_model_async(self) -> None:
         settings_payload: dict[str, Any] = {
             "selected_model": self._get_selected_model_id(),
             "anti_censorship_prompt": bool(self.var_anti_censorship_prompt.get()),
             "auto_save_web_pages": bool(self.var_auto_save_web.get()),
-            "web_save_dir": self.var_web_save_dir.get().strip(),
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
             "detect_free_text": bool(self.var_detect_free_text.get()),
-            "min_text_length": int(self.var_min_text_len.get()),
+            "min_text_length": self._safe_int_var(self.var_min_text_len, 2, 1, 20),
+            "overflow_mode": self.var_overflow_mode.get(),
+            "min_font_size": self._safe_int_var(self.var_min_font, 12, 8, 48),
+            "max_font_size": self._safe_int_var(self.var_max_font, 32, 12, 72),
+            "uppercase": bool(self.var_uppercase.get()),
         }
+        web_save_dir = self.var_web_save_dir.get().strip()
+        if web_save_dir:
+            settings_payload["web_save_dir"] = web_save_dir
         u_url = self.var_unsloth_url.get().strip()
         if u_url:
             settings_payload["unsloth_url"] = u_url
@@ -2690,8 +2812,8 @@ class MikoMangaStudioGUI:
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
-            "min_font_size": int(self.var_min_font.get()),
-            "max_font_size": int(self.var_max_font.get()),
+            "min_font_size": self._safe_int_var(self.var_min_font, 12, 8, 48),
+            "max_font_size": self._safe_int_var(self.var_max_font, 32, 12, 72),
             "overflow_mode": self.var_overflow_mode.get(),
             "pipeline_mode": self.pipeline_mode,
             "use_image_context": self.use_image_context,
@@ -2699,7 +2821,7 @@ class MikoMangaStudioGUI:
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
-            "min_text_length": int(self.var_min_text_len.get()),
+            "min_text_length": self._safe_int_var(self.var_min_text_len, 2, 1, 20),
             "skip_existing": bool(self.var_skip_existing.get()),
             "batch_pages": 15,
             "force_retranslate": not bool(self.var_skip_existing.get()),
@@ -2764,6 +2886,8 @@ class MikoMangaStudioGUI:
         if not selected:
             return
         fpath = Path(selected).resolve()
+        self.current_folder = None
+        self.current_output_dir = fpath.parent
         self.selected_page = {
             "index": 1,
             "rel_path": fpath.name,
@@ -2780,18 +2904,19 @@ class MikoMangaStudioGUI:
             return
         self.is_translating_single = True
         page = self.selected_page
+        target_src = page["source_path"]
         self.btn_context_page.config(state=tk.DISABLED)
         self._say_miko(f"Старательно перевожу страницу «{page['rel_path']}»... Подожди чуточку~ ✍️✨")
 
         payload = {
-            "file_path": page["source_path"],
+            "file_path": target_src,
             "source_dir": str(self.current_folder) if self.current_folder else None,
             "lang": SOURCE_LANG_MAP.get(self.var_source_lang.get(), "auto"),
             "target_lang": self.target_lang,
             "ollama_model": self._get_selected_model_id(),
             "uppercase": bool(self.var_uppercase.get()),
-            "min_font_size": int(self.var_min_font.get()),
-            "max_font_size": int(self.var_max_font.get()),
+            "min_font_size": self._safe_int_var(self.var_min_font, 12, 8, 48),
+            "max_font_size": self._safe_int_var(self.var_max_font, 32, 12, 72),
             "overflow_mode": self.var_overflow_mode.get(),
             "pipeline_mode": self.pipeline_mode,
             "use_image_context": self.use_image_context,
@@ -2799,7 +2924,7 @@ class MikoMangaStudioGUI:
             "text_filter_mode": TEXT_FILTER_MODE_MAP.get(self.var_text_filter_label.get(), "dialogue_only"),
             "skip_sighs": bool(self.var_skip_sighs.get()),
             "skip_sfx": bool(self.var_skip_sfx.get()),
-            "min_text_length": int(self.var_min_text_len.get()),
+            "min_text_length": self._safe_int_var(self.var_min_text_len, 2, 1, 20),
             "force_retranslate": True,
             "return_image": True,
             "image_format": "webp",
@@ -2820,6 +2945,14 @@ class MikoMangaStudioGUI:
                         trans_pil = dec_im.convert("RGB")
 
                 def _done() -> None:
+                    if not self.selected_page or self.selected_page.get("source_path") != target_src:
+                        return
+                    saved_out = data.get("saved_output_path")
+                    if saved_out:
+                        try:
+                            self.current_output_dir = Path(saved_out).resolve().parent
+                        except Exception:
+                            pass
                     self.preview_trans_pil = trans_pil
                     self.last_blocks = data.get("blocks", [])
                     self.btn_show_phrases.config(text=f"✏️ Редактор текста ({len(self.last_blocks)})")

@@ -99,8 +99,8 @@ def run_select_model(server_url: str = "http://127.0.0.1:5000") -> int:
 def run_test_page(
     img_path_str: str,
     target_lang: str = "en",
-    min_font_size: int = 12,
-    max_font_size: int = 32,
+    min_font_size: int | None = None,
+    max_font_size: int | None = None,
     detect_free_text: bool | None = None,
     server_url: str = "http://127.0.0.1:5000",
 ) -> int:
@@ -116,10 +116,12 @@ def run_test_page(
                 "file_path": str(img_path),
                 "lang": "auto",
                 "target_lang": target_lang,
-                "min_font_size": min_font_size,
-                "max_font_size": max_font_size,
                 "return_image": False,
             }
+            if min_font_size is not None:
+                req_payload["min_font_size"] = min_font_size
+            if max_font_size is not None:
+                req_payload["max_font_size"] = max_font_size
             if detect_free_text is not None:
                 req_payload["detect_free_text"] = detect_free_text
             resp = client.post(
@@ -158,8 +160,8 @@ def run_translate_folder(
     target_lang: str = "en",
     folder_path: str | None = None,
     skip_existing: bool = True,
-    min_font_size: int = 12,
-    max_font_size: int = 32,
+    min_font_size: int | None = None,
+    max_font_size: int | None = None,
     detect_free_text: bool | None = None,
     server_url: str = "http://127.0.0.1:5000",
 ) -> int:
@@ -169,11 +171,13 @@ def run_translate_folder(
             payload: dict[str, object] = {
                 "lang": "auto",
                 "target_lang": target_lang,
-                "min_font_size": min_font_size,
-                "max_font_size": max_font_size,
                 "skip_existing": skip_existing,
                 "open_when_done": True,
             }
+            if min_font_size is not None:
+                payload["min_font_size"] = min_font_size
+            if max_font_size is not None:
+                payload["max_font_size"] = max_font_size
             if detect_free_text is not None:
                 payload["detect_free_text"] = detect_free_text
             if folder_path:

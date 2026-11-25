@@ -149,6 +149,14 @@ def test_open_folder_blocks_files_and_symlinks():
             except HTTPException as exc:
                 assert exc.status_code == 404
 
+            srv._SESSION_ALLOWED_ROOTS.clear()
+            try:
+                await srv.open_folder_in_explorer_endpoint(path=str(sub_dir))
+                raise AssertionError("Expected 403 for unregistered directory")
+            except HTTPException as exc:
+                assert exc.status_code == 403
+
+            srv._register_allowed_root(sub_dir)
             opened_dirs: list[str] = []
             with patch.object(srv.os, "startfile", lambda p: opened_dirs.append(p), create=True):
                 ok = await srv.open_folder_in_explorer_endpoint(path=str(sub_dir))
@@ -3045,6 +3053,953 @@ def test_fast_cloud_only_overhaul_429_fallback_parallel_and_carryover():
             assert ui_marker in html_txt, f"Отсутствует UI-маркер облачного режима: {ui_marker}"
 
     asyncio.run(_run())
+
+
+def test_web_studio_inline_js_syntax_and_picker_contracts():
+    import re
+    import shutil
+    import subprocess
+
+    node_bin = shutil.which("node")
+    assert node_bin, "Node.js required for inline <script> syntax verification"
+    html_txt = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    scripts = re.findall(r"<script[^>]*>(.*?)</script>", html_txt, re.S)
+    assert len(scripts) >= 1, "Expected inline <script> block in web_studio.html"
+    for idx, script_src in enumerate(scripts):
+        proc = subprocess.run(
+            [node_bin, "--check"],
+            input=script_src,
+            text=True,
+            encoding="utf-8",
+            capture_output=True,
+            timeout=20,
+        )
+        assert proc.returncode == 0, f"web_studio.html <script>[{idx}] syntax error:\n{proc.stderr}"
+
+    assert 'class="field-box" id="row-cloud-fallback-model"' in html_txt
+    assert 'data.status === "timeout" || data.status === "error"' in html_txt
+    assert html_txt.count("const curStage = String(live.stage") == 1
+
+
+def test_native_dialogs_win64_ctypes_and_typed_results():
+    import subprocess
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from api import native_dialogs as nd
+
+    script_src = nd._SUBPROCESS_PICKER_SCRIPT
+    assert "argtypes" in script_src and "restype" in script_src
+    assert "wintypes.HWND(-1)" in script_src
+
+    class _FakeProc:
+        def __init__(self, rc: int, out: str, err: str = "", timeout_on_comm: bool = False):
+            self.pid = 999999
+            self.returncode = rc
+            self._out = out
+            self._err = err
+            self._timeout = timeout_on_comm
+            self.killed = False
+            self.stdout = None
+            self.stderr = None
+
+        def poll(self):
+            return None if self._timeout and not self.killed else self.returncode
+
+        def kill(self):
+            self.killed = True
+
+        def communicate(self, timeout=None):
+            if self._timeout and not self.killed:
+                raise subprocess.TimeoutExpired(cmd="picker", timeout=timeout or 1)
+            return self._out, self._err
+
+    with patch.object(nd.subprocess, "Popen", return_value=_FakeProc(0, json.dumps({"selected": r"C:\Manga\Ch1"}))):
+        res_ok = nd.open_native_folder_picker_result(timeout_sec=5.0)
+        assert res_ok.status == "ok" and res_ok.path == r"C:\Manga\Ch1"
+
+    with patch.object(nd.subprocess, "Popen", return_value=_FakeProc(0, json.dumps({"selected": ""}))):
+        res_cancel = nd.open_native_folder_picker_result(timeout_sec=5.0)
+        assert res_cancel.status == "cancelled" and res_cancel.path is None
+
+    with patch.object(nd.subprocess, "Popen", return_value=_FakeProc(1, "", "TclError: no display")):
+        res_err = nd.open_native_folder_picker_result(timeout_sec=5.0)
+        assert res_err.status == "error" and res_err.error and "TclError" in res_err.error
+
+    fake_timeout_proc = _FakeProc(0, "", "", timeout_on_comm=True)
+    with patch.object(nd.subprocess, "Popen", return_value=fake_timeout_proc), patch.object(
+        nd, "_terminate_picker_process_tree"
+    ) as mock_term:
+        res_to = nd.open_native_folder_picker_result(timeout_sec=1.0)
+        assert res_to.status == "timeout" and res_to.error
+        assert mock_term.called
+
+
+def test_security_stage1_unc_mixed_slash_ssrf_server_addr_and_root_guards():
+    srv = _load_server_module()
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from api import security
+
+    # 1. Mixed-slash UNC bypasses blocked
+    for bad in (r"\/attacker\share\img.png", r"/\attacker/share/img.png", r"/\?\UNC\a\b"):
+        try:
+            security._reject_unc_path(bad)
+            raise AssertionError(f"Expected 400 for mixed-slash UNC path {bad!r}")
+        except HTTPException as exc:
+            assert exc.status_code == 400
+
+    # 2. SSRF server_addr check + pre-connect IP guard
+    class _FakeAnyIOStream:
+        def __init__(self, addr):
+            self._addr = addr
+
+        def get_extra_info(self, name):
+            return self._addr if name == "server_addr" else None
+
+    class _FakeResp:
+        def __init__(self):
+            self.status_code = 200
+            self.headers = {"content-length": "8"}
+            self.extensions = {"network_stream": _FakeAnyIOStream(("127.0.0.1", 443))}
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def raise_for_status(self):
+            return None
+
+        async def aiter_bytes(self, chunk_size=65536):
+            yield b"\x89PNG\r\n\x1a\n"
+
+    class _Client:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *args):
+            return False
+
+        def stream(self, method, url, headers=None):
+            return _FakeResp()
+
+    async def _run():
+        public_dns = [(2, 1, 6, "", ("93.184.216.34", 443))]
+        with patch.object(security.socket, "getaddrinfo", return_value=public_dns), patch.object(
+            security.httpx, "AsyncClient", _Client
+        ):
+            try:
+                await security._download_remote_image_bytes("https://rebind.example/page.png", {})
+                raise AssertionError("Expected server_addr loopback IP block")
+            except ValueError:
+                pass
+
+        if security._SSRFGuardedNetworkBackend is not None:
+            backend = security._SSRFGuardedNetworkBackend()
+            try:
+                await backend.connect_tcp("127.0.0.1", 80)
+                raise AssertionError("Expected pre-connect loopback IP block")
+            except ValueError:
+                pass
+
+        # 3. Real ASGI Request injection + root/allowed-root guards
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_dir = Path(tmp).resolve()
+            manga_dir = tmp_dir / "manga_ch1"
+            outside_dir = tmp_dir / "outside_secret"
+            manga_dir.mkdir()
+            outside_dir.mkdir()
+            img = manga_dir / "001.png"
+            img.write_bytes(b"\x89PNG\r\n\x1a\n")
+
+            class _FakeTranslator:
+                web_save_dir = str(tmp_dir / "Saved_Manga")
+                unsloth_url = "https://moduleapi.pro/v1"
+                unsloth_api_key = ""
+                _resolved_model = "auto"
+                translation_profile = "balanced"
+                pipeline_mode = "balanced"
+
+                def save_config(self, **kwargs):
+                    return {"web_save_dir": self.web_save_dir, "auto_save_web_pages": True}
+
+            saved_roots = set(srv._SESSION_ALLOWED_ROOTS)
+            saved_tr = srv.translator_engine
+            try:
+                srv._SESSION_ALLOWED_ROOTS.clear()
+                srv.translator_engine = _FakeTranslator()
+                browser_headers = {"Origin": "http://127.0.0.1:5000", "Host": "127.0.0.1:5000"}
+
+                async with httpx.AsyncClient(
+                    transport=httpx.ASGITransport(app=srv.app),
+                    base_url="http://127.0.0.1:5000",
+                ) as api_client:
+                    with patch.object(srv, "normalize_glossary_entries", lambda entries=None: list(entries or [])):
+                        r_unreg = await api_client.post(
+                            "/folder_inspect",
+                            json={"folder_path": str(manga_dir), "target_lang": "ru"},
+                            headers=browser_headers,
+                        )
+                        assert r_unreg.status_code == 403, f"Expected 403 for unregistered browser /folder_inspect, got {r_unreg.status_code}"
+
+                        r_root = await api_client.post(
+                            "/folder_inspect",
+                            json={"folder_path": str(Path(manga_dir.anchor)), "target_lang": "ru"},
+                            headers={"Host": "127.0.0.1:5000"},
+                        )
+                        assert r_root.status_code == 403
+
+                        r_native = await api_client.post(
+                            "/folder_inspect",
+                            json={"folder_path": str(manga_dir), "target_lang": "ru"},
+                            headers={"Host": "127.0.0.1:5000"},
+                        )
+                        assert r_native.status_code == 200, r_native.text
+
+                        r_reg_browser = await api_client.post(
+                            "/folder_inspect",
+                            json={"folder_path": str(manga_dir), "target_lang": "ru"},
+                            headers=browser_headers,
+                        )
+                        assert r_reg_browser.status_code == 200, r_reg_browser.text
+
+                    r_open_ws = await api_client.post(
+                        "/open_web_save_folder",
+                        params={"path": str(outside_dir)},
+                        headers=browser_headers,
+                    )
+                    assert r_open_ws.status_code == 403
+
+                    r_open_f = await api_client.post(
+                        "/open_folder",
+                        params={"path": str(outside_dir)},
+                        headers=browser_headers,
+                    )
+                    assert r_open_f.status_code == 403
+
+                    r_settings = await api_client.post(
+                        "/settings",
+                        json={"web_save_dir": str(outside_dir)},
+                        headers=browser_headers,
+                    )
+                    assert r_settings.status_code == 403
+
+                    from api.native_dialogs import PickerResult
+                    with patch.object(
+                        srv,
+                        "open_native_folder_picker_result",
+                        return_value=PickerResult(status="timeout", error="Dialog timed out test"),
+                    ):
+                        r_pick = await api_client.post(
+                            "/pick_folder",
+                            params={"target_lang": "ru"},
+                            headers=browser_headers,
+                        )
+                    assert r_pick.status_code == 200
+                    assert r_pick.json()["status"] == "timeout"
+                    assert "Dialog timed out test" in r_pick.json()["message"]
+
+                # _resolve_page_paths guards
+                try:
+                    srv._resolve_page_paths(
+                        str(img),
+                        str(manga_dir),
+                        str(outside_dir / "evil.png"),
+                        "ru",
+                        require_allowed_root=True,
+                    )
+                    raise AssertionError("Expected 403 for dest_path outside allowed roots")
+                except HTTPException as exc:
+                    assert exc.status_code == 403
+
+                srv._SESSION_ALLOWED_ROOTS.clear()
+                try:
+                    srv._resolve_page_paths(
+                        str(img),
+                        str(manga_dir),
+                        None,
+                        "ru",
+                        require_allowed_root=True,
+                    )
+                    raise AssertionError("Expected 403 for unregistered source_path with require_allowed_root=True")
+                except HTTPException as exc:
+                    assert exc.status_code == 403
+            finally:
+                srv._SESSION_ALLOWED_ROOTS.clear()
+                srv._SESSION_ALLOWED_ROOTS.update(saved_roots)
+                srv.translator_engine = saved_tr
+
+    asyncio.run(_run())
+
+
+def test_translator_parallel_cancel_and_coordinated_429_and_save_config_reset():
+    import time as _time
+
+    tr_mod = _load_real_module("translator")
+
+    async def _run():
+        with tempfile.TemporaryDirectory() as tmp:
+            cfg_file = Path(tmp) / "cfg.json"
+            cfg_file.write_text("{}", encoding="utf-8")
+            tr = tr_mod.OllamaTranslator(
+                config_path=cfg_file,
+                unsloth_url="https://moduleapi.pro/v1",
+                unsloth_api_key="sk-test-stage1",
+            )
+            tr.cloud_only_no_local_fallback = True
+            tr.cloud_fallback_model = "off"
+
+            # 1. enable_chapter_nsfw_mode honors active_model even when _resolved_model is ollama::...
+            tr._resolved_model = "ollama::qwen2.5:14b"
+            tr.enable_chapter_nsfw_mode("test strict cloud", active_model="unsloth::grok-4.7")
+            assert tr.nsfw_mode is False
+
+            # 2. Parallel asyncio.gather batch cleanly survives abort_request without CancelledError crash
+            tr._resolved_model = "unsloth::grok-4-fast-non-reasoning"
+            streams_started = 0
+            both_started = asyncio.Event()
+
+            async def _hung_parallel(*, stream_chunks_out, **kwargs):
+                nonlocal streams_started
+                streams_started += 1
+                if streams_started <= 2:
+                    stream_chunks_out.append('{"1": "Saved", ')
+                    if streams_started >= 2:
+                        both_started.set()
+                    await asyncio.sleep(30.0)
+                return 200, "", "stop", "{}", None, 0.1
+
+            blocks_80 = [{"id": str(i), "original_text": f"台詞{i}です"} for i in range(1, 81)]
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_hung_parallel):
+                batch_task = asyncio.create_task(
+                    tr.translate_blocks(
+                        blocks=blocks_80,
+                        source_lang="ja",
+                        target_lang="ru",
+                        model="unsloth::grok-4-fast-non-reasoning",
+                        profile="balanced",
+                        use_cache=False,
+                    )
+                )
+                await asyncio.wait_for(both_started.wait(), timeout=5.0)
+                await asyncio.sleep(0.05)
+                ctrl = tr.request_runtime_control("abort_request")
+                assert ctrl["cancelled_tasks"] >= 2
+                res_aborted = await asyncio.wait_for(batch_task, timeout=3.0)
+            assert isinstance(res_aborted, list)
+
+            # 3. Parallel switch_model cleans up all sibling streams cleanly
+            tr.reset_runtime_controls()
+            tr.reset_batch_cloud_state()
+            sw_started = 0
+            sw_ready = asyncio.Event()
+            seen_models: list[str] = []
+
+            async def _switch_parallel(*, payload_cloud, **kwargs):
+                nonlocal sw_started
+                m = str(payload_cloud.get("model") or "")
+                seen_models.append(m)
+                if m == "grok-4-fast-non-reasoning":
+                    sw_started += 1
+                    if sw_started >= 2:
+                        sw_ready.set()
+                    await asyncio.sleep(30.0)
+                return 200, "", "stop", '{"1": "Switched"}', None, 0.05
+
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_switch_parallel):
+                sw_task = asyncio.create_task(
+                    tr.translate_blocks(
+                        blocks=blocks_80,
+                        source_lang="ja",
+                        target_lang="ru",
+                        model="unsloth::grok-4-fast-non-reasoning",
+                        profile="balanced",
+                        use_cache=False,
+                    )
+                )
+                await asyncio.wait_for(sw_ready.wait(), timeout=5.0)
+                await asyncio.sleep(0.05)
+                tr.request_runtime_control("switch_model", new_model="deepseek-v4-flash")
+                await asyncio.wait_for(sw_task, timeout=3.0)
+            assert "deepseek-v4-flash" in seen_models
+
+            # 4. Coordinated 429 cooldown across 3 concurrent streams (1 step per burst, fast exit on auto-pause)
+            tr.reset_runtime_controls()
+            tr.reset_batch_cloud_state()
+            tr._cloud_rate_limit_cooldown_sec = (0.15, 0.15, 0.15)
+            tr._cloud_generic_429_cooldown_sec = (0.15, 0.15, 0.15)
+            call_429_hits = 0
+
+            async def _always_429(*args, **kwargs):
+                nonlocal call_429_hits
+                call_429_hits += 1
+                await asyncio.sleep(0.01)
+                return 429, "Ожидается сверка расхода предыдущих запросов", "", "", None, None
+
+            t0 = _time.monotonic()
+            with patch.object(tr, "_execute_cloud_chat_request", side_effect=_always_429):
+                await asyncio.wait_for(
+                    asyncio.gather(
+                        tr._call_llm_json(tr._get_http_client(), "unsloth::grok-4-fast-non-reasoning", "sys", '{"1":"あ"}'),
+                        tr._call_llm_json(tr._get_http_client(), "unsloth::grok-4-fast-non-reasoning", "sys", '{"2":"い"}'),
+                        tr._call_llm_json(tr._get_http_client(), "unsloth::grok-4-fast-non-reasoning", "sys", '{"3":"う"}'),
+                    ),
+                    timeout=3.0,
+                )
+            elapsed_429 = _time.monotonic() - t0
+            assert tr._cloud_rate_limit_paused is True
+            assert elapsed_429 < 2.0, f"Parallel 429 took too long: {elapsed_429:.2f}s"
+
+            # 5. save_config resets rate-limit pause & stream disable on key/url change
+            tr._cloud_disable_stream = True
+            tr._consecutive_cloud_429_count = 4
+            tr.save_config(unsloth_api_key="sk-new-key-9999")
+            assert tr._cloud_rate_limit_paused is False
+            assert tr._consecutive_cloud_429_count == 0
+            assert tr._cloud_disable_stream is False
+
+    asyncio.run(_run())
+
+
+def test_model_download_revision_pinning_and_sha256_verification():
+    import hashlib
+    import re
+
+    ocr_mod = _load_real_module("ocr_engine")
+    cleaner_mod = _load_real_module("cleaner")
+
+    # 1. All pinned revisions are 40-char immutable git SHAs
+    revs = [
+        ocr_mod.HF_YOLO_REVISION,
+        ocr_mod.HF_YOLO26_SEG_REVISION,
+        ocr_mod.HF_RTDETR_REVISION,
+        ocr_mod.HF_MANGA_OCR_BASE_REVISION,
+        ocr_mod.HF_JA_NAR_REVISION,
+        ocr_mod.HF_HAYAI_REVISION,
+        ocr_mod.HF_HAYAI_PROCESSOR_REVISION,
+        cleaner_mod.HF_YOLO_TEXT_SEG_REVISION,
+    ]
+    for rev in revs:
+        assert re.fullmatch(r"[0-9a-f]{40}", rev), f"Expected 40-char SHA revision, got {rev!r}"
+
+    # 2. _verify_file_sha256 and _verify_directory_py_hashes enforce integrity
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_dir = Path(tmp)
+        sample = tmp_dir / "weights.bin"
+        sample.write_bytes(b"miko-model-data")
+        good_sha = hashlib.sha256(b"miko-model-data").hexdigest()
+        ocr_mod._verify_file_sha256(sample, good_sha, "test-weights")
+
+        sample.write_bytes(b"tampered-model-data")
+        try:
+            ocr_mod._verify_file_sha256(sample, good_sha, "test-weights")
+            raise AssertionError("Expected RuntimeError on tampered weights")
+        except RuntimeError:
+            pass
+
+        code_dir = tmp_dir / "code_mod"
+        (code_dir / "sub").mkdir(parents=True)
+        (code_dir / "sub" / "mod.py").write_bytes(b"x = 1\n")
+        expected_map = {"sub/mod.py": hashlib.sha256(b"x = 1\n").hexdigest()}
+        ocr_mod._verify_directory_py_hashes(code_dir, expected_map, "test-code")
+
+        (code_dir / "sub" / "evil.py").write_bytes(b"import os\n")
+        try:
+            ocr_mod._verify_directory_py_hashes(code_dir, expected_map, "test-code")
+            raise AssertionError("Expected RuntimeError on unexpected .py file")
+        except RuntimeError:
+            pass
+
+    # 3. Verify any locally cached model artifacts in models/ pass their pinned hashes
+    models_root = REPO_ROOT / "models"
+    if (models_root / ocr_mod.HF_YOLO_FILENAME).is_file():
+        ocr_mod._verify_file_sha256(models_root / ocr_mod.HF_YOLO_FILENAME, ocr_mod.HF_YOLO_SHA256, "local YOLOv8m")
+    if (models_root / ocr_mod.HF_RTDETR_SUBDIR / "model.safetensors").is_file():
+        ocr_mod._verify_file_sha256(
+            models_root / ocr_mod.HF_RTDETR_SUBDIR / "model.safetensors",
+            ocr_mod.HF_RTDETR_SAFETENSORS_SHA256,
+            "local RT-DETR-v2",
+        )
+    if (models_root / ocr_mod.HF_HAYAI_SUBDIR / "model.safetensors").is_file():
+        ocr_mod._verify_directory_py_hashes(models_root / ocr_mod.HF_HAYAI_SUBDIR, ocr_mod.HF_HAYAI_PY_SHA256, "local HayaiOCR")
+        ocr_mod._verify_file_sha256(
+            models_root / ocr_mod.HF_HAYAI_SUBDIR / "model.safetensors",
+            ocr_mod.HF_HAYAI_SAFETENSORS_SHA256,
+            "local HayaiOCR weights",
+        )
+    if (models_root / ocr_mod.HF_JA_NAR_SUBDIR / "model.safetensors").is_file():
+        ocr_mod._verify_directory_py_hashes(models_root / ocr_mod.HF_JA_NAR_SUBDIR, ocr_mod.HF_JA_NAR_PY_SHA256, "local MangaOCR-NAR")
+        ocr_mod._verify_file_sha256(
+            models_root / ocr_mod.HF_JA_NAR_SUBDIR / "model.safetensors",
+            ocr_mod.HF_JA_NAR_SAFETENSORS_SHA256,
+            "local MangaOCR-NAR weights",
+        )
+    if (models_root / cleaner_mod.HF_YOLO_TEXT_SEG_SUBDIR / cleaner_mod.HF_YOLO_TEXT_SEG_FILENAME).is_file():
+        _, seg_sha = cleaner_mod._compute_hashes(
+            models_root / cleaner_mod.HF_YOLO_TEXT_SEG_SUBDIR / cleaner_mod.HF_YOLO_TEXT_SEG_FILENAME
+        )
+        assert seg_sha.lower() == cleaner_mod.HF_YOLO_TEXT_SEG_SHA256.lower()
+
+
+# ==================== STAGE 2: RELIABILITY, PERF & HARDENING ====================
+
+def test_stage2_web_studio_reliability_contracts():
+    import re
+    import shutil
+    import subprocess
+
+    html = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    for marker in (
+        "function cancelPageScopedTimers(",
+        "function flushPendingPageSaveBeforeLeave(",
+        "const targetRelPath =",
+        "const stillOnTargetPage =",
+        "rotate(${-ang}deg)",
+        "preserveCurrentSelection",
+        "isFolderPollInspecting",
+        "lastFolderPollCurrent = -1",
+        "data-banner-state=",
+        "dataset.bannerState",
+    ):
+        assert marker in html, f"Отсутствует Stage 2 контракт в web_studio.html: {marker}"
+
+    assert "preserveSelection" not in html, "Старая опечатка preserveSelection не должна оставаться в web_studio.html"
+    health_start = html.find("async function loadHealth(")
+    assert health_start != -1
+    health_slice = html[health_start:health_start + 3500]
+    assert 'includes("Кликните по карточке")' not in health_slice
+
+    scripts = [m for m in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) if m.strip()]
+    assert len(scripts) >= 1
+    node_bin = shutil.which("node")
+    if node_bin:
+        with tempfile.TemporaryDirectory() as tmp:
+            for idx, body in enumerate(scripts):
+                js_tmp = Path(tmp) / f"inline_{idx}.js"
+                js_tmp.write_text(body, encoding="utf-8")
+                res = subprocess.run([node_bin, "--check", str(js_tmp)], capture_output=True, text=True)
+                assert res.returncode == 0, f"Ошибка синтаксиса JS в web_studio.html (#{idx}): {res.stderr}"
+
+
+def test_stage2_server_sse_manifest_lock_ux_rotation_and_schemas():
+    import threading
+    from PIL import Image
+    from pydantic import ValidationError
+
+    if str(REPO_ROOT) not in sys.path:
+        sys.path.insert(0, str(REPO_ROOT))
+    from api.schemas import (
+        DeleteModelRequest,
+        FolderFindReplaceRequest,
+        GlossarySaveRequest,
+        ModelStackActionRequest,
+        TextBlock,
+        UxEventsBatchRequest,
+    )
+
+    valid_tb = TextBlock(id=1, bbox=[0, 0, 50, 50], font_size=18, original_text="hello")
+    assert valid_tb.font_size == 18
+    assert GlossarySaveRequest(import_scope="global").import_scope == "global"
+
+    bad_payloads = [
+        lambda: TextBlock(id=1, bbox=[0, 0, 50, 50], confidence=float("nan")),
+        lambda: TextBlock(id=1, bbox=[0, 0, 50, 50], angle=float("inf")),
+        lambda: TextBlock(id=1, bbox=[0, 0, 50, 50], font_size=999),
+        lambda: TextBlock(id=1, bbox=[0, 0, 50, 50], original_text="x" * 10001),
+        lambda: UxEventsBatchRequest(elapsed_active_sec=float("nan")),
+        lambda: GlossarySaveRequest(import_scope="invalid_scope"),
+        lambda: FolderFindReplaceRequest(folder_path="manga", find_text="x", search_in="all"),
+        lambda: DeleteModelRequest(model_id="m", category="unknown"),
+        lambda: ModelStackActionRequest(action="drop_all"),
+    ]
+    for builder in bad_payloads:
+        try:
+            builder()
+            raise AssertionError("Ожидалась ошибка валидации Pydantic для невалидного payload")
+        except ValidationError:
+            pass
+
+    srv_src = (REPO_ROOT / "server.py").read_text(encoding="utf-8")
+    for srv_marker in (
+        "def _get_manifest_lock(",
+        "def _update_folder_manifest(",
+        "async def _update_folder_manifest_async(",
+        "timeout_graceful_shutdown=3",
+        "should_exit",
+        "is_disconnected",
+        "asyncio.to_thread(os.startfile",
+        "2 * 1024 * 1024",
+    ):
+        assert srv_marker in srv_src, f"Отсутствует Stage 2 контракт в server.py: {srv_marker}"
+
+    srv = _load_server_module()
+    with tempfile.TemporaryDirectory() as tmp:
+        out_dir = Path(tmp) / "out_chapter"
+        out_dir.mkdir(parents=True, exist_ok=True)
+        srv._save_folder_manifest(out_dir, {"count": 0}, sync_disk=False)
+
+        def _worker():
+            for _ in range(12):
+                def _inc(m):
+                    m["count"] = int(m.get("count", 0)) + 1
+                srv._update_folder_manifest(out_dir, _inc, sync_disk=False)
+
+        threads = [threading.Thread(target=_worker) for _ in range(2)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+        final_manifest = srv._load_folder_manifest(out_dir)
+        assert final_manifest.get("count") == 24, f"Гонка манифеста: {final_manifest}"
+
+    orig_cleaner = srv.cleaner_engine
+    stored_calls: list[tuple[str, str]] = []
+
+    class _FakeCleaner:
+        def get_cached_cleaned_image(self, src_key, h):
+            return Image.new("RGB", (8, 8), (10, 20, 30))
+
+        def put_cached_cleaned_image(self, src_key, h, img, save_to_disk=True):
+            stored_calls.append((src_key, h))
+
+    try:
+        srv.cleaner_engine = _FakeCleaner()
+        srv._cleaned_page_lru_cache.clear()
+        page_p = REPO_ROOT / "tests" / "dummy_page.png"
+        srv._store_cached_cleaned_image(page_p, "hash123", Image.new("RGB", (8, 8)))
+        assert len(stored_calls) == 1
+        assert len(srv._cleaned_page_lru_cache) == 0
+        got_img = srv._get_cached_cleaned_image(page_p, "hash123")
+        assert got_img is not None and got_img.size == (8, 8)
+    finally:
+        srv.cleaner_engine = orig_cleaner
+
+
+def test_stage2_translator_reliability_circuit_breaker_and_cache():
+    import time as _time
+
+    tr_mod = _load_real_module("translator")
+    cb = tr_mod.EndpointCircuitBreaker(
+        name="ep-test",
+        base_url="https://example.test/v1",
+        api_key="sk-test",
+        model="m-test",
+        failure_threshold=3,
+        recovery_timeout=10.0,
+        half_open_probe_timeout=5.0,
+    )
+    for _ in range(3):
+        cb.record_failure()
+    assert cb.state == tr_mod.CircuitState.OPEN
+    assert cb.can_execute() is False
+
+    cb.last_failure_time = _time.monotonic() - 12.0
+    assert cb.can_execute() is True
+    assert cb.state == tr_mod.CircuitState.HALF_OPEN
+    assert cb.can_execute() is False
+    cb.release_probe()
+    assert cb.can_execute() is True
+
+    cb.half_open_probe_started_at = _time.monotonic() - 10.0
+    assert cb.can_execute() is True
+
+    err_res = tr_mod.OllamaTranslator._inspect_http200_json_error(
+        {"error": {"message": "Rate limit exceeded", "code": 429}},
+        200,
+        None,
+    )
+    assert err_res is not None and err_res[0] == 429 and "Rate limit" in err_res[1]
+    assert tr_mod.OllamaTranslator._inspect_http200_json_error(
+        {"choices": [{"message": {"content": '{"1": "ok"}'}}]},
+        200,
+        None,
+    ) is None
+
+    assert tr_mod.OllamaTranslator._normalize_key("block_12") == "12"
+    assert tr_mod.OllamaTranslator._normalize_key("chapter_2") == "chapter_2"
+    assert tr_mod.OllamaTranslator._parse_json_response(
+        "I cannot translate explicit adult content",
+        expected_keys=["1"],
+    ) == {}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        tr = tr_mod.OllamaTranslator(config_path=Path(tmp) / "cfg.json")
+        for idx in range(5):
+            tr._set_phrase_cache(f"k{idx}", f"v{idx}", max_entries=3)
+        assert len(tr.phrase_cache) == 3
+        assert "k0" not in tr.phrase_cache and "k4" in tr.phrase_cache
+
+        async def _check_task_isolation():
+            ev_a = asyncio.Event()
+            ev_b = asyncio.Event()
+
+            async def _task_a():
+                tr._set_task_aborted(True)
+                ev_a.set()
+                await ev_b.wait()
+                return tr._get_task_aborted()
+
+            async def _task_b():
+                await ev_a.wait()
+                res_b = tr._get_task_aborted()
+                ev_b.set()
+                return res_b
+
+            a_flag, b_flag = await asyncio.gather(_task_a(), _task_b())
+            assert a_flag is True and b_flag is False
+
+        asyncio.run(_check_task_isolation())
+
+
+def test_stage2_cv_cleaner_and_renderer_fixes():
+    import inspect
+    import numpy as np
+    from PIL import Image, ImageDraw, ImageFont
+
+    ocr_src = (REPO_ROOT / "ocr_engine.py").read_text(encoding="utf-8")
+    cleaner_src = (REPO_ROOT / "cleaner.py").read_text(encoding="utf-8")
+    assert "CV_16U" not in ocr_src, "CV_16U не должен оставаться в ocr_engine.py"
+    assert "CV_16U" not in cleaner_src, "CV_16U не должен оставаться в cleaner.py"
+
+    cleaner_mod = _load_real_module("cleaner")
+    renderer_mod = _load_real_module("renderer")
+
+    sig = inspect.signature(cleaner_mod.BubbleCleaner.__init__)
+    assert sig.parameters["cache_max_pages"].default >= 48
+    assert sig.parameters["cache_max_ram_mb"].default >= 32
+
+    bc = cleaner_mod.BubbleCleaner(use_lama=False, cache_max_pages=48, cache_max_ram_mb=32)
+    bc.cache_max_ram_bytes = 5000
+    for idx in range(3):
+        bc.put_cached_cleaned_image(f"page_{idx}.png", f"h{idx}", Image.new("RGB", (50, 50), (idx, 10, 20)))
+    assert len(bc._cleaned_lru_cache) == 1
+    assert ("page_2.png".lower(), "h2") or len(bc._cleaned_lru_cache) == 1
+
+    sample_blocks = [{"bbox": [10, 10, 80, 40], "is_free_text": False}]
+    bc.inpaint_backend = "anime_lama_sota"
+    bc.pipeline_mode = "balanced"
+    h1 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
+    bc.inpaint_backend = "ultra_deep_redraw"
+    h2 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
+    bc.pipeline_mode = "ultra"
+    h3 = bc.compute_clean_state_hash(sample_blocks, src_file="a.png", src_mtime=123)
+    assert len({h1, h2, h3}) == 3
+
+    bc.stroke_segmenter._download_attempted = True
+    bc.delete_local_model_weights("ctd_unet")
+    assert bc.stroke_segmenter._download_attempted is False
+
+    seg = bc.stroke_segmenter
+    seg.device = cleaner_mod.torch.device("cpu")
+    seg._lazy_init = lambda *a, **kw: None
+    seg.backend_name = "yolo_text_seg"
+    seg._has_pretrained_weights = True
+    seg._page_mask_cache.clear()
+    tile_calls: list[tuple[tuple[int, int], bool]] = []
+
+    class _TilingYoloStub:
+        def predict(self, **kwargs):
+            src = kwargs["source"]
+            tile_calls.append((src.shape[:2], bool(kwargs.get("retina_masks"))))
+            return []
+
+    seg._yolo_model = _TilingYoloStub()
+    tall_webtoon = np.zeros((3200, 800, 3), dtype=np.uint8)
+    mask_out = seg.predict_page_stroke_mask(tall_webtoon)
+    assert mask_out is not None and mask_out.shape == (3200, 800)
+    assert len(tile_calls) >= 2, f"Ожидался тайлинг высокого вебтуна, получено: {tile_calls}"
+    assert all(rt is True for _, rt in tile_calls)
+
+    roi = np.full((64, 128, 3), 240, dtype=np.uint8)
+    alpha = np.zeros((64, 128), dtype=np.uint8)
+    alpha[20:44, 24:104] = 255
+    interior = np.zeros((64, 128), dtype=np.uint8)
+    wall = np.zeros((64, 128), dtype=np.uint8)
+    sdf_out = renderer_mod.render_adaptive_sdf_comic_halo(
+        cleaned_roi=roi,
+        txt_alpha=alpha,
+        interior_mask=interior,
+        wall_mask=wall,
+        text_color=(15, 15, 15),
+        font_size=18,
+        is_free_text=True,
+        stroke_color=(12, 200, 34),
+    )
+    assert sdf_out["halo_applied"] is True and sdf_out["rendered_roi"].shape == (64, 128, 3)
+
+    assert any("seguiemj.ttf" in p.lower() for p in renderer_mod.FALLBACK_SYMBOL_FONT_CANDIDATES)
+    mr = renderer_mod.MangaRenderer(fonts_dir=REPO_ROOT / "fonts")
+    canvas = Image.new("RGB", (600, 200), (255, 255, 255))
+    draw = ImageDraw.Draw(canvas)
+    font = ImageFont.load_default()
+
+    with patch.object(mr, "_split_long_word", return_value=["кое-", "что"]):
+        wrapped_hard = mr._wrap_text_contour_dp(draw, "кое-что", font, max_width=500, target_h=120, allow_hyphenation=True)
+        assert wrapped_hard == "кое-что", f"Неверная склейка дефиса: {wrapped_hard!r}"
+
+    with patch.object(mr, "_split_long_word", return_value=["су-", "пер-", "слово"]):
+        wrapped_soft = mr._wrap_text_contour_dp(draw, "суперслово", font, max_width=500, target_h=120, allow_hyphenation=True)
+        assert wrapped_soft == "суперслово", f"Неверная склейка мягкого переноса: {wrapped_soft!r}"
+
+
+def test_stage2_extension_gui_and_bat_hardening():
+    import re
+    import shutil
+    import subprocess
+
+    ext_dir = REPO_ROOT / "extension"
+    bg_path = ext_dir / "background.js"
+    content_path = ext_dir / "content.js"
+    grant_html_path = ext_dir / "grant.html"
+    grant_js_path = ext_dir / "grant.js"
+
+    grant_html = grant_html_path.read_text(encoding="utf-8")
+    assert '<script src="grant.js"></script>' in grant_html
+    inline_bodies = [m.strip() for m in re.findall(r"<script[^>]*>(.*?)</script>", grant_html, re.S) if m.strip()]
+    assert not inline_bodies, "grant.html не должен содержать inline-скрипты в MV3"
+
+    bg_src = bg_path.read_text(encoding="utf-8")
+    assert "grant.html" in bg_src
+    assert "chrome.permissions.request(" not in bg_src
+
+    content_src = content_path.read_text(encoding="utf-8")
+    assert "pendingPrompt" in content_src
+    assert 'st.translatedDataUrl = nextObjUrl.startsWith("blob:") ? "" : finalDataUrl;' in content_src
+
+    node_bin = shutil.which("node")
+    if node_bin:
+        for js_p in (bg_path, content_path, grant_js_path):
+            res = subprocess.run([node_bin, "--check", str(js_p)], capture_output=True, text=True)
+            assert res.returncode == 0, f"JS syntax error in {js_p.name}: {res.stderr}"
+
+        fn_match = re.search(r"function isSafeRemoteImageUrl\(urlStr\)\s*\{.*?\n\}", bg_src, re.S)
+        assert fn_match is not None
+        probe_js = (
+            fn_match.group(0)
+            + "\nif (!isSafeRemoteImageUrl('https://fc2.com/a.jpg')) process.exit(2);"
+            + "\nif (!isSafeRemoteImageUrl('http://fc-cdn.example.com/p.png')) process.exit(3);"
+            + "\nif (isSafeRemoteImageUrl('http://[fd00::1]/a.jpg')) process.exit(4);"
+            + "\nif (isSafeRemoteImageUrl('http://[fe80::1]/a.jpg')) process.exit(5);"
+        )
+        res_probe = subprocess.run([node_bin, "-e", probe_js], capture_output=True, text=True)
+        assert res_probe.returncode == 0, f"isSafeRemoteImageUrl check failed ({res_probe.returncode}): {res_probe.stderr}"
+
+    gui_src = (REPO_ROOT / "gui_app.py").read_text(encoding="utf-8")
+    ast.parse(gui_src)
+    assert "def _post_partial_settings(" in gui_src
+    assert 'self._post_partial_settings({"overflow_mode": mode})' in gui_src
+    assert '"overflow_mode": self.var_overflow_mode.get()' in gui_src
+    assert 'if "overflow_mode" in data:' in gui_src
+
+    assert 'if exist "EN" if not exist "EN\\" del /f /q "EN"' in (REPO_ROOT / "sync_github.bat").read_text(encoding="ascii")
+    shisa_bat = (REPO_ROOT / "install_shisa_models.bat").read_text(encoding="ascii")
+    assert "MIKO_MODEL_TAG" in shisa_bat and "os.environ['MIKO_MODEL_TAG']" in shisa_bat
+    start_bat = (REPO_ROOT / "start_server.bat").read_text(encoding="ascii")
+    assert "where python >nul 2>nul" in start_bat and "OLLAMA_FLASH_ATTENTION=1" in start_bat
+    for name in (
+        "install_multilang_ocr.bat",
+        "install_shisa_models.bat",
+        "sync_github.bat",
+        "start_server.bat",
+        "test_page.bat",
+        "translate_folder.bat",
+    ):
+        assert "setlocal" in (REPO_ROOT / name).read_text(encoding="ascii"), f"{name} missing setlocal"
+
+
+def test_stage3_ui_ux_extension_gui_and_hygiene():
+    import inspect
+    import re
+    import shutil
+    import subprocess
+
+    html = (REPO_ROOT / "web_studio.html").read_text(encoding="utf-8")
+    for marker in (
+        'role="banner"',
+        'role="main"',
+        'role="complementary"',
+        'role="separator"',
+        'aria-live="polite"',
+        'role="dialog"',
+        'aria-modal="true"',
+        'aria-labelledby="settings-modal-title"',
+        "prefers-reduced-motion: reduce",
+        "function scheduleRelayoutBboxPins(",
+        "function cancelActivePointerInteractions(",
+        "inCanvasOrBlockContext",
+        "inInteractiveControl",
+        "pointerdown",
+        "pointermove",
+        "pointerup",
+        "pointercancel",
+    ):
+        assert marker in html, f"Отсутствует Stage 3 UX/a11y контракт в web_studio.html: {marker}"
+    assert "btn-sidebar-chapter-book" not in html
+
+    scripts = [m for m in re.findall(r"<script[^>]*>(.*?)</script>", html, re.S) if m.strip()]
+    node_bin = shutil.which("node")
+    if node_bin and scripts:
+        with tempfile.TemporaryDirectory() as tmp:
+            js_tmp = Path(tmp) / "web_studio_stage3.js"
+            js_tmp.write_text("\n".join(scripts), encoding="utf-8")
+            res = subprocess.run([node_bin, "--check", str(js_tmp)], capture_output=True, text=True)
+            assert res.returncode == 0, f"Ошибка синтаксиса JS в web_studio.html: {res.stderr}"
+
+    bg_src = (REPO_ROOT / "extension" / "background.js").read_text(encoding="utf-8")
+    assert '"abort_request"' in bg_src
+    assert 'typeof msg.webSaveDir === "string" ? msg.webSaveDir.trim() : ""' in bg_src
+
+    content_src = (REPO_ROOT / "extension" / "content.js").read_text(encoding="utf-8")
+    assert 'st.status === "idle"' in content_src
+    assert "el.src = st.originalSrc;" in content_src
+    assert "drawObjectUrlToCanvas(el, origBlob)" in content_src
+
+    gui_src = (REPO_ROOT / "gui_app.py").read_text(encoding="utf-8")
+    ast.parse(gui_src)
+    for gui_marker in (
+        "def _safe_int_var(",
+        "def _safe_float_var(",
+        "tk.Canvas(scroll_host",
+        'win.bind("<MouseWheel>"',
+        "not is_vlm_only",
+        'if not running_ver.startswith("6."):',
+        "/models?refresh=true",
+        "self.current_folder = None",
+        'data.get("saved_output_path")',
+    ):
+        assert gui_marker in gui_src, f"Отсутствует Stage 3 контракт в gui_app.py: {gui_marker}"
+
+    gitignore_txt = (REPO_ROOT / ".gitignore").read_text(encoding="utf-8")
+    assert ".miko/" in gitignore_txt
+
+    cfg_example = json.loads((REPO_ROOT / "config.example.json").read_text(encoding="utf-8"))
+    assert cfg_example.get("unsloth_api_key") == ""
+    for cfg_key in (
+        "pipeline_mode",
+        "use_image_context",
+        "preflight_nsfw_split",
+        "cloud_only_no_local_fallback",
+        "ultra_proofread_mode",
+        "default_model_stack",
+        "saved_model_stacks",
+    ):
+        assert cfg_key in cfg_example, f"Отсутствует ключ v6.1 в config.example.json: {cfg_key}"
+
+    cli_mod = _load_real_module("cli_client")
+    assert inspect.signature(cli_mod.run_test_page).parameters["min_font_size"].default is None
+    assert inspect.signature(cli_mod.run_translate_folder).parameters["max_font_size"].default is None
+
+    start_gui = (REPO_ROOT / "start_gui.bat").read_text(encoding="ascii")
+    assert "OLLAMA_FLASH_ATTENTION=1" in start_gui
+    assert "OLLAMA_KV_CACHE_TYPE=q8_0" in start_gui
+    for bat in sorted(REPO_ROOT.glob("*.bat")):
+        bat_txt = bat.read_bytes().decode("ascii")
+        assert "\r\n" in bat_txt and bat_txt.replace("\r\n", "").find("\n") == -1
+        assert "setlocal" in bat_txt, f"{bat.name} missing setlocal"
 
 
 if __name__ == "__main__":

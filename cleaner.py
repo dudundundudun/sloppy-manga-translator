@@ -95,6 +95,35 @@ except ImportError:
     verify_bubble_and_text_candidate = None  # type: ignore[assignment]
 
 
+def _ensure_ocr_geometry_helpers() -> None:
+    """Догружает геометрические хелперы из ocr_engine после снятия циклического импорта."""
+    if (
+        BubblePolygonSolver is not None
+        and group_text_boxes_by_bubble_cavity is not None
+        and segment_dashed_bubble_roi is not None
+        and segment_open_wispy_bubble_roi is not None
+    ):
+        return
+    try:
+        import ocr_engine as _ocr_mod
+    except Exception:
+        return
+    g = globals()
+    for name in (
+        "BubbleGeometryContext",
+        "BubblePolygonSolver",
+        "build_bubble_geometry_context",
+        "decompose_overlapping_bubbles",
+        "estimate_and_deskew_tilted_text_block",
+        "group_text_boxes_by_bubble_cavity",
+        "segment_dashed_bubble_roi",
+        "segment_open_wispy_bubble_roi",
+        "verify_bubble_and_text_candidate",
+    ):
+        if g.get(name) is None and hasattr(_ocr_mod, name):
+            g[name] = getattr(_ocr_mod, name)
+
+
 def _torch_inference_mode():
     if torch is not None and hasattr(torch, "inference_mode"):
         return torch.inference_mode()
@@ -490,6 +519,7 @@ class StandaloneLaMaInpainter:
             .permute(1, 2, 0)
             .clamp_(0.0, 1.0)
             .mul_(255.0)
+            .float()
             .cpu()
             .numpy()
             .astype(np.uint8)
@@ -558,7 +588,7 @@ class StandaloneLaMaInpainter:
 
             pred_t = self._run_model_safe(img_t, mask_t)
 
-            pred_np = pred_t.clamp_(0.0, 1.0).mul_(255.0).cpu().numpy().astype(np.uint8)
+            pred_np = pred_t.clamp_(0.0, 1.0).mul_(255.0).float().cpu().numpy().astype(np.uint8)
 
             # 3. Вставка очищенных ROI обратно в страницу строго по пикселям маски
             for idx, (cx1, cy1, cx2, cy2, s_rgb, s_mask) in enumerate(batch_items):
@@ -661,6 +691,8 @@ def hermite_wall_bridge(
 
 HF_YOLO_TEXT_SEG_REPO = "ogkalu/comic-text-segmenter-yolov8m"
 HF_YOLO_TEXT_SEG_FILENAME = "comic-text-segmenter.pt"
+HF_YOLO_TEXT_SEG_REVISION = "5aff9096ce0c892cefe3aca07440cff9b482e30f"
+HF_YOLO_TEXT_SEG_SHA256 = "f2dded0d2f5aaa25eed49f1c34a4720f1c1cd40da8bc3138fde1abb202de625e"
 HF_YOLO_TEXT_SEG_SUBDIR = "comic-text-segmenter"
 HF_SAM_TS_L_REPO = "mayocream/koharu-text-sam-ts-l"
 HF_SAM_TS_L_SUBDIR = "koharu-text-sam-ts-l"
@@ -720,11 +752,28 @@ class ComicTextStrokeSegmenter:
         h_digest = hashlib.blake2b(sample.tobytes(), digest_size=12).hexdigest()
         return f"{h}x{w}:{h_digest}"
 
+    @staticmethod
+    def _verify_yolo_seg_sha256(pt_path: Path) -> bool:
+        if not pt_path.is_file() or pt_path.stat().st_size <= 1024 * 1024:
+            return False
+        _, actual_sha = _compute_hashes(pt_path)
+        if actual_sha.lower() != HF_YOLO_TEXT_SEG_SHA256.lower():
+            logger.warning(
+                "Нарушена целостность YOLO text-segmenter (%s): SHA256=%s... (ожидался %s...)",
+                pt_path.name,
+                actual_sha[:16],
+                HF_YOLO_TEXT_SEG_SHA256[:16],
+            )
+            return False
+        return True
+
     def _find_or_download_yolo_seg(self, allow_download: bool) -> Optional[Path]:
         seg_dir = self.models_dir / HF_YOLO_TEXT_SEG_SUBDIR
         local_pt = seg_dir / HF_YOLO_TEXT_SEG_FILENAME
-        if local_pt.is_file() and local_pt.stat().st_size > 1024 * 1024:
-            return local_pt
+        if local_pt.is_file():
+            if self._verify_yolo_seg_sha256(local_pt):
+                return local_pt
+            return None
         if not allow_download or self._download_attempted:
             return None
         self._download_attempted = True
@@ -735,10 +784,11 @@ class ComicTextStrokeSegmenter:
             dl = hf_hub_download(
                 repo_id=HF_YOLO_TEXT_SEG_REPO,
                 filename=HF_YOLO_TEXT_SEG_FILENAME,
+                revision=HF_YOLO_TEXT_SEG_REVISION,
                 local_dir=str(seg_dir),
             )
             dl_p = Path(dl)
-            if dl_p.is_file() and dl_p.stat().st_size > 1024 * 1024:
+            if self._verify_yolo_seg_sha256(dl_p):
                 return dl_p
         except Exception as exc:
             logger.debug("YOLO text-segmenter недоступен онлайн (%s), пробую резервный сегментатор.", exc)
@@ -826,7 +876,7 @@ class ComicTextStrokeSegmenter:
             if torch is not None and importlib.util.find_spec("ultralytics") is not None:
                 try:
                     yolo_pt = self._find_or_download_yolo_seg(allow_download=eff_allow_dl)
-                    if yolo_pt is not None:
+                    if yolo_pt is not None and self._verify_yolo_seg_sha256(yolo_pt):
                         from ultralytics import YOLO  # type: ignore
 
                         self._yolo_model = YOLO(str(yolo_pt))
@@ -883,37 +933,57 @@ class ComicTextStrokeSegmenter:
             src_bgr = cv2.cvtColor(image_rgb, cv2.COLOR_RGB2BGR) if image_rgb.ndim == 3 else image_rgb
             dev_arg: Any = 0 if (self.device is not None and getattr(self.device, "type", "cpu") == "cuda") else "cpu"
             use_half = dev_arg == 0
-            predict_kwargs: dict[str, Any] = {
-                "source": src_bgr,
-                "imgsz": 1024,
-                "conf": 0.18,
-                "iou": 0.45,
-                "retina_masks": True,
-                "verbose": False,
-                "device": dev_arg,
-                "half": use_half,
-            }
-            try:
-                res = self._yolo_model.predict(**predict_kwargs)
-            except Exception as half_exc:
-                if not use_half:
-                    raise
-                logger.debug("Сегментатор текста не принял half=True (%s), повторяю в FP32.", half_exc)
-                predict_kwargs["half"] = False
-                res = self._yolo_model.predict(**predict_kwargs)
             mask_u8 = np.zeros((H, W), dtype=np.uint8)
-            if res and len(res) > 0:
-                r0 = res[0]
-                masks_obj = getattr(r0, "masks", None)
-                m_data = getattr(masks_obj, "data", None) if masks_obj is not None else None
-                if m_data is not None and len(m_data) > 0:
-                    if hasattr(m_data, "amax"):
-                        merged = m_data.amax(dim=0).clamp(0.0, 1.0).cpu().numpy()
-                    else:
-                        merged = np.clip(np.max(np.asarray(m_data, dtype=np.float32), axis=0), 0.0, 1.0)
-                    if merged.shape[:2] != (H, W):
-                        merged = cv2.resize(merged.astype(np.float32), (W, H), interpolation=cv2.INTER_LINEAR)
-                    mask_u8 = np.clip(merged * 255.0, 0.0, 255.0).round().astype(np.uint8)
+            if H > 2400 and (H / max(1, W)) > 2.2:
+                tile_h = min(2048, max(1280, int(W * 1.8)))
+                overlap = 192
+                step = max(256, tile_h - overlap)
+                tiles: list[tuple[int, int]] = []
+                y0 = 0
+                while y0 < H:
+                    y1 = min(H, y0 + tile_h)
+                    tiles.append((y0, y1))
+                    if y1 >= H:
+                        break
+                    y0 += step
+            else:
+                tiles = [(0, H)]
+
+            for y0, y1 in tiles:
+                th = max(1, y1 - y0)
+                tile_bgr = src_bgr[y0:y1, :] if len(tiles) > 1 else src_bgr
+                predict_kwargs: dict[str, Any] = {
+                    "source": tile_bgr,
+                    "imgsz": 1024,
+                    "conf": 0.18,
+                    "iou": 0.45,
+                    "retina_masks": bool((th * W) <= 4_000_000),
+                    "verbose": False,
+                    "device": dev_arg,
+                    "half": use_half,
+                }
+                try:
+                    res = self._yolo_model.predict(**predict_kwargs)
+                except Exception as half_exc:
+                    if not use_half:
+                        raise
+                    logger.debug("Сегментатор текста не принял half=True (%s), повторяю в FP32.", half_exc)
+                    use_half = False
+                    predict_kwargs["half"] = False
+                    res = self._yolo_model.predict(**predict_kwargs)
+                if res and len(res) > 0:
+                    r0 = res[0]
+                    masks_obj = getattr(r0, "masks", None)
+                    m_data = getattr(masks_obj, "data", None) if masks_obj is not None else None
+                    if m_data is not None and len(m_data) > 0:
+                        if hasattr(m_data, "amax"):
+                            merged = m_data.amax(dim=0).clamp(0.0, 1.0).float().cpu().numpy()
+                        else:
+                            merged = np.clip(np.max(np.asarray(m_data, dtype=np.float32), axis=0), 0.0, 1.0)
+                        if merged.shape[:2] != (th, W):
+                            merged = cv2.resize(merged.astype(np.float32), (W, th), interpolation=cv2.INTER_LINEAR)
+                        tile_u8 = np.clip(merged * 255.0, 0.0, 255.0).round().astype(np.uint8)
+                        mask_u8[y0:y1, :] = np.maximum(mask_u8[y0:y1, :], tile_u8)
         except Exception as exc:
             logger.debug("Ошибка полностраничной нейросетевой сегментации текста: %s", exc)
             return None
@@ -1395,7 +1465,7 @@ def clean_overhanging_text_zero_bleed(
     # 1. Выделение сохранившихся фрагментов черной стенки баббла
     dark_ink = (roi_gray < 30).astype(np.uint8) * 255
     num_l, labels, stats, _ = cv2.connectedComponentsWithStats(
-        dark_ink, connectivity=8, ltype=cv2.CV_16U
+        dark_ink, connectivity=8, ltype=cv2.CV_32S
     )
     w_c, h_c = stats[:, cv2.CC_STAT_WIDTH], stats[:, cv2.CC_STAT_HEIGHT]
     wall_cids = np.nonzero((w_c > 0.45 * W) | (h_c > 0.45 * H))[0]
@@ -2644,6 +2714,7 @@ def analyze_bubble_geometry(
     edges = cv2.Canny(roi_gray, 50, 140)
     k_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
     closed_edges = cv2.morphologyEx(edges, cv2.MORPH_CLOSE, k_close, iterations=1)
+    _ensure_ocr_geometry_helpers()
     if median_lum >= 210.0 and segment_dashed_bubble_roi is not None and center_crop.shape[0] >= 24 and center_crop.shape[1] >= 24:
         pad_dg = min(28, max(12, int(min(box_w, box_h) * 0.14)))
         dg_x1 = max(0, tb_x1 - pad_dg)
@@ -2925,6 +2996,7 @@ def analyze_bubble_geometry(
     sx1_roi, sx2_roi = int(np.min(xs_s)), int(np.max(xs_s) + 1)
     sy1_roi, sy2_roi = int(np.min(ys_s)), int(np.max(ys_s) + 1)
 
+    _ensure_ocr_geometry_helpers()
     cnts_s, _ = cv2.findContours(safe_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if cnts_s and BubblePolygonSolver is not None:
         main_cnt_s = max(cnts_s, key=cv2.contourArea)
@@ -3084,6 +3156,7 @@ class BubbleCleaner:
         box_margin_ratio: float = 0.03,
         crop_padding: int = 48,
         cache_max_pages: int = 48,
+        cache_max_ram_mb: int = 384,
         disk_cache_dir: str | Path | None = None,
         models_dir: str | Path | None = None,
         device: str | None = None,
@@ -3096,6 +3169,7 @@ class BubbleCleaner:
         self.box_margin_ratio = box_margin_ratio
         self.crop_padding = max(16, int(crop_padding))
         self.cache_max_pages = max(1, int(cache_max_pages))
+        self.cache_max_ram_bytes = max(32, int(cache_max_ram_mb)) * 1024 * 1024
         self.models_dir = (
             Path(models_dir).resolve()
             if models_dir is not None
@@ -3106,6 +3180,7 @@ class BubbleCleaner:
         self._cache_lock = threading.Lock()
         self._model_lock = threading.RLock()
         self._cleaned_lru_cache: OrderedDict[tuple[str, str], Image.Image] = OrderedDict()
+        self._cleaned_cache_bytes: int = 0
         self._base_page_cache: OrderedDict[tuple[str, str], tuple[np.ndarray, np.ndarray]] = OrderedDict()
         self._block_crop_cache: OrderedDict[tuple[Any, ...], tuple[np.ndarray, np.ndarray]] = OrderedDict()
         self._block_crop_cache_max = 256
@@ -3295,6 +3370,7 @@ class BubbleCleaner:
                 self.stroke_segmenter.backend_name = "uninitialized"
                 self.stroke_segmenter._init_done = False
                 self.stroke_segmenter._has_pretrained_weights = False
+                self.stroke_segmenter._download_attempted = False
                 self.stroke_segmenter._page_mask_cache.clear()
             target_paths.extend([
                 self.models_dir / HF_YOLO_TEXT_SEG_SUBDIR / HF_YOLO_TEXT_SEG_FILENAME,
@@ -3511,6 +3587,8 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
+            "inpaint_backend": str(self.inpaint_backend),
+            "pipeline_mode": str(self.pipeline_mode),
             "clean_ver": "v5.4-hybrid-lir",
             "base_clean_blocks": [
                 [list(coords), is_free, mdil]
@@ -3552,6 +3630,8 @@ class BubbleCleaner:
             "src_file": src_key,
             "mtime": int(src_mtime or 0),
             "dilate_size": int(self.dilate_size),
+            "inpaint_backend": str(self.inpaint_backend),
+            "pipeline_mode": str(self.pipeline_mode),
             "clean_ver": "v5.4-hybrid-lir",
             "active_clean_blocks": [
                 [list(coords), is_free, mdil, [list(st) for st in strokes]]
@@ -3567,6 +3647,24 @@ class BubbleCleaner:
         stem = Path(src_key).stem if src_key else "page"
         safe_stem = "".join(ch if (ch.isalnum() or ch in ("_", "-")) else "_" for ch in stem)[:32] or "page"
         return self.disk_cache_dir / f"clean_{safe_stem}_{clean_state_hash}.png"
+
+    @staticmethod
+    def _estimate_image_bytes(img: Image.Image) -> int:
+        bands = len(img.getbands()) if hasattr(img, "getbands") else 3
+        return max(1, int(img.width) * int(img.height) * max(1, bands))
+
+    def _store_cleaned_lru_locked(self, cache_key: tuple[str, str], img: Image.Image) -> None:
+        prev = self._cleaned_lru_cache.pop(cache_key, None)
+        if prev is not None:
+            self._cleaned_cache_bytes = max(0, self._cleaned_cache_bytes - self._estimate_image_bytes(prev))
+        self._cleaned_lru_cache[cache_key] = img
+        self._cleaned_lru_cache.move_to_end(cache_key)
+        self._cleaned_cache_bytes += self._estimate_image_bytes(img)
+        while len(self._cleaned_lru_cache) > self.cache_max_pages or (
+            len(self._cleaned_lru_cache) > 1 and self._cleaned_cache_bytes > self.cache_max_ram_bytes
+        ):
+            _, evicted = self._cleaned_lru_cache.popitem(last=False)
+            self._cleaned_cache_bytes = max(0, self._cleaned_cache_bytes - self._estimate_image_bytes(evicted))
 
     def get_cached_cleaned_image(
         self,
@@ -3589,10 +3687,7 @@ class BubbleCleaner:
                 with Image.open(disk_path) as im:
                     loaded = im.convert("RGB").copy()
                 with self._cache_lock:
-                    self._cleaned_lru_cache[cache_key] = loaded.copy()
-                    self._cleaned_lru_cache.move_to_end(cache_key)
-                    while len(self._cleaned_lru_cache) > self.cache_max_pages:
-                        self._cleaned_lru_cache.popitem(last=False)
+                    self._store_cleaned_lru_locked(cache_key, loaded.copy())
                 return loaded
             except Exception as exc:
                 logger.debug("Не удалось прочитать кэш очищенного слоя с диска (%s): %s", disk_path, exc)
@@ -3611,10 +3706,7 @@ class BubbleCleaner:
         cache_key = (src_key, clean_state_hash)
         rgb_copy = cleaned_image.convert("RGB").copy()
         with self._cache_lock:
-            self._cleaned_lru_cache[cache_key] = rgb_copy
-            self._cleaned_lru_cache.move_to_end(cache_key)
-            while len(self._cleaned_lru_cache) > self.cache_max_pages:
-                self._cleaned_lru_cache.popitem(last=False)
+            self._store_cleaned_lru_locked(cache_key, rgb_copy)
 
         if save_to_disk and self.disk_cache_dir is not None:
             disk_path = self._get_disk_cache_path(src_key, clean_state_hash)
@@ -3691,6 +3783,7 @@ class BubbleCleaner:
         if best_label == -1:
             return light_pixels
 
+        _ensure_ocr_geometry_helpers()
         if best_edge_touches >= 2 and rh >= 24 and rw >= 24 and segment_dashed_bubble_roi is not None:
             dash_res = segment_dashed_bubble_roi(roi_gray, None)
             if dash_res.get("is_dashed_bubble"):
@@ -4186,6 +4279,7 @@ class BubbleCleaner:
                 is_dashed_bubble_block = False
                 dash_wall_full = np.zeros((rh, rw), dtype=np.uint8)
                 dash_clean_ink_full = np.zeros((rh, rw), dtype=np.uint8)
+                _ensure_ocr_geometry_helpers()
                 if segment_dashed_bubble_roi is not None and rh >= 24 and rw >= 24:
                     dash_res_c = segment_dashed_bubble_roi(core_gray, None, scale_f=1.0)
                     dash_res_r = (
@@ -4681,6 +4775,7 @@ class BubbleCleaner:
                 cavity_sub = self._extract_bubble_interior_mask(core_sub, p75_core)
                 dash_wall_inpaint = np.zeros((ch, cw), dtype=np.uint8)
                 is_dashed_inpaint = False
+                _ensure_ocr_geometry_helpers()
                 if segment_dashed_bubble_roi is not None and core_sub.shape[0] >= 24 and core_sub.shape[1] >= 24:
                     d_res_inp = segment_dashed_bubble_roi(core_sub, None)
                     if d_res_inp.get("is_dashed_bubble"):
@@ -5078,13 +5173,16 @@ class BubbleCleaner:
                 # прогоняем их за один батчевый вызов GPU `StandaloneLaMaInpainter.inpaint_rois_batch`.
                 pre_batched_lama_rgb: np.ndarray | None = None
                 textured_rois_set: set[tuple[int, int, int, int]] = set()
+                is_ultra_redraw = (self.pipeline_mode == "ultra") or (self.inpaint_backend == "ultra_deep_redraw")
                 if (
                     len(uncached_blocks) >= 2
                     and self.inpaint_backend != "fast_telea"
+                    and not is_ultra_redraw
                     and self.lama_model is not None
                     and hasattr(self.lama_model, "inpaint_rois_batch")
                 ):
                     cavity_map_page = None
+                    _ensure_ocr_geometry_helpers()
                     if group_text_boxes_by_bubble_cavity is not None:
                         try:
                             tb_inputs = [
@@ -5202,7 +5300,7 @@ class BubbleCleaner:
                                             inpainted_crop[crop_mask > 0] = med_col
                                 except Exception:
                                     inpainted_crop = None
-                            if inpainted_crop is None and getattr(self, "ultra_deep_redraw", False) and is_free_text:
+                            if inpainted_crop is None and (self.pipeline_mode == "ultra" or self.inpaint_backend == "ultra_deep_redraw") and is_free_text:
                                 inpainted_crop = self._inpaint_with_flux_klein_4b(crop_rgb, crop_mask)
                             if inpainted_crop is None:
                                 inpainted_crop = self._inpaint_crop(

@@ -272,14 +272,20 @@ SYSTEM_FONT_PRESETS: dict[str, list[str]] = {
 
 FALLBACK_SYMBOL_FONT_CANDIDATES: list[str] = [
     "C:/Windows/Fonts/seguisym.ttf",
+    "C:/Windows/Fonts/seguiemj.ttf",
     "C:/Windows/Fonts/seguisb.ttf",
     "C:/Windows/Fonts/trebucbd.ttf",
     "C:/Windows/Fonts/segoeui.ttf",
+    "C:/Windows/Fonts/meiryo.ttc",
+    "C:/Windows/Fonts/YuGothM.ttc",
+    "C:/Windows/Fonts/msgothic.ttc",
     "C:/Windows/Fonts/malgun.ttf",
     "C:/Windows/Fonts/msyh.ttc",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
     "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
     "/usr/share/fonts/truetype/noto/NotoSans-Bold.ttf",
+    "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+    "/usr/share/fonts/truetype/noto/NotoColorEmoji.ttf",
     "/usr/share/fonts/truetype/liberation/LiberationSans-Bold.ttf",
 ]
 
@@ -588,6 +594,7 @@ def render_adaptive_sdf_comic_halo(
     font_size: int = 18,
     is_overhanging: bool = False,
     is_free_text: bool = False,
+    stroke_color: tuple[int, int, int] | None = None,
 ) -> dict[str, np.ndarray | bool | float]:
     """
     Проблема №5б + Deep Research v5.4 (WCAG 2.x Background-Aware Adaptive Stroke & Halo):
@@ -674,7 +681,9 @@ def render_adaptive_sdf_comic_halo(
     )
 
     inside_pixels = bg_rgb_roi[interior_mask > 0]
-    if text_luma <= 0.45:
+    if stroke_color is not None and len(stroke_color) >= 3:
+        stroke_rgb = (int(stroke_color[0]), int(stroke_color[1]), int(stroke_color[2]))
+    elif text_luma <= 0.45:
         if len(inside_pixels) >= 16:
             cand_c = np.percentile(inside_pixels, 88, axis=0)
             stroke_rgb = (255, 255, 255) if float(np.min(cand_c)) >= 232.0 else tuple(int(round(v)) for v in cand_c)
@@ -1809,92 +1818,11 @@ class MangaRenderer:
         pad = max(14, stroke_w * 2 + 10)
         layer_w = max(16, int(math.ceil(max_line_w + pad * 2)))
         layer_h = max(16, int(math.ceil(total_h + pad * 2)))
-        layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
-        l_draw = ImageDraw.Draw(layer)
-
         sym_advance = float(max(8, int(round(fs * 0.88))))
-
-        for pass_idx in (0, 1):
-            if pass_idx == 0 and stroke_w <= 0:
-                continue
-            for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
-                if not ln:
-                    continue
-                if align == "left":
-                    cur_x = float(pad)
-                elif align == "right":
-                    cur_x = float(pad) + (max_line_w - lw)
-                else:
-                    cur_x = float(pad) + (max_line_w - lw) / 2.0
-
-                cur_y = float(pad - min(0, ref_y0) + idx * step_y)
-                run_buf = ""
-
-                def _flush_run(x_pos: float, text_run: str) -> float:
-                    if not text_run:
-                        return x_pos
-                    if pass_idx == 0:
-                        l_draw.text(
-                            (x_pos, cur_y),
-                            text_run,
-                            font=font,
-                            fill=(*stroke_fill, 255),
-                            stroke_width=stroke_w,
-                            stroke_fill=(*stroke_fill, 255),
-                        )
-                    else:
-                        l_draw.text(
-                            (x_pos, cur_y),
-                            text_run,
-                            font=font,
-                            fill=(*text_fill, 255),
-                            stroke_width=0,
-                        )
-                    return x_pos + float(l_draw.textlength(text_run, font=font))
-
-                for ch in ln:
-                    if ch in VECTOR_MANGA_SYMBOLS:
-                        cur_x = _flush_run(cur_x, run_buf)
-                        run_buf = ""
-                        if pass_idx == 1:
-                            icon = self._get_vector_symbol_icon(ch, fs, text_fill, stroke_fill, stroke_w)
-                            iw, ih = icon.size
-                            ix = int(round(cur_x + (sym_advance - iw) / 2.0))
-                            iy = int(round(cur_y + ref_y0 + (glyph_h - ih) / 2.0))
-                            layer.alpha_composite(icon, dest=(max(0, ix), max(0, iy)))
-                            l_draw = ImageDraw.Draw(layer)
-                        cur_x += sym_advance
-                    elif self._is_glyph_missing(font, ch):
-                        cur_x = _flush_run(cur_x, run_buf)
-                        run_buf = ""
-                        fb_font = self._get_fallback_font_for_char(ch, fs)
-                        if fb_font is not None:
-                            if pass_idx == 0:
-                                l_draw.text(
-                                    (cur_x, cur_y),
-                                    ch,
-                                    font=fb_font,
-                                    fill=(*stroke_fill, 255),
-                                    stroke_width=stroke_w,
-                                    stroke_fill=(*stroke_fill, 255),
-                                )
-                            else:
-                                l_draw.text(
-                                    (cur_x, cur_y),
-                                    ch,
-                                    font=fb_font,
-                                    fill=(*text_fill, 255),
-                                    stroke_width=0,
-                                )
-                            cur_x += float(l_draw.textlength(ch, font=fb_font))
-                    else:
-                        run_buf += ch
-
-                cur_x = _flush_run(cur_x, run_buf)
 
         if stroke_w > 0:
             # Рендерим чистую альфа-маску глифов (без векторных самопересечений FT_Stroker) и строим
-            # симметричный внешний EDT-контур (Effects -> Stroke -> Fill)
+            # симметричный внешний EDT-контур (Effects -> Stroke -> Fill) за один проход
             glyph_only = Image.new("L", (layer_w, layer_h), 0)
             g_draw = ImageDraw.Draw(glyph_only)
             for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
@@ -1931,7 +1859,7 @@ class MangaRenderer:
 
             glyph_np = np.array(glyph_only, dtype=np.uint8)
             if np.any(glyph_np > 0):
-                edt_layer = render_edt_supersampled_layer(
+                layer = render_edt_supersampled_layer(
                     glyph_alpha_u8=glyph_np,
                     text_rgb=text_fill,
                     stroke_rgb=stroke_fill,
@@ -1940,28 +1868,86 @@ class MangaRenderer:
                     outer_glow_alpha=0.40,
                     supersample_scale=2,
                 )
-                # Поверх EDT-текста накладываем векторные иконки манги (♥, ★, ♪), если они встречались в строке
-                if any(ch in VECTOR_MANGA_SYMBOLS for ch in wrapped_text):
-                    for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
-                        if not ln:
-                            continue
-                        cx_g = float(pad) if align == "left" else (float(pad) + (max_line_w - lw) if align == "right" else float(pad) + (max_line_w - lw) / 2.0)
-                        cy_g = float(pad - min(0, ref_y0) + idx * step_y)
-                        for ch in ln:
-                            if ch in VECTOR_MANGA_SYMBOLS:
-                                icon = self._get_vector_symbol_icon(ch, fs, text_fill, stroke_fill, stroke_w)
-                                iw, ih = icon.size
-                                ix = int(round(cx_g + (sym_advance - iw) / 2.0))
-                                iy = int(round(cy_g + ref_y0 + (glyph_h - ih) / 2.0))
-                                edt_layer.alpha_composite(icon, dest=(max(0, ix), max(0, iy)))
-                                cx_g += sym_advance
-                            elif self._is_glyph_missing(font, ch):
-                                fb_f = self._get_fallback_font_for_char(ch, fs)
-                                if fb_f is not None:
-                                    cx_g += float(g_draw.textlength(ch, font=fb_f))
-                            else:
-                                cx_g += float(g_draw.textlength(ch, font=font))
-                layer = edt_layer
+            else:
+                layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+
+            # Поверх EDT-текста накладываем векторные иконки манги (♥, ★, ♪), если они встречались в строке
+            if any(ch in VECTOR_MANGA_SYMBOLS for ch in wrapped_text):
+                for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
+                    if not ln:
+                        continue
+                    cx_g = float(pad) if align == "left" else (float(pad) + (max_line_w - lw) if align == "right" else float(pad) + (max_line_w - lw) / 2.0)
+                    cy_g = float(pad - min(0, ref_y0) + idx * step_y)
+                    for ch in ln:
+                        if ch in VECTOR_MANGA_SYMBOLS:
+                            icon = self._get_vector_symbol_icon(ch, fs, text_fill, stroke_fill, stroke_w)
+                            iw, ih = icon.size
+                            ix = int(round(cx_g + (sym_advance - iw) / 2.0))
+                            iy = int(round(cy_g + ref_y0 + (glyph_h - ih) / 2.0))
+                            layer.alpha_composite(icon, dest=(max(0, ix), max(0, iy)))
+                            cx_g += sym_advance
+                        elif self._is_glyph_missing(font, ch):
+                            fb_f = self._get_fallback_font_for_char(ch, fs)
+                            if fb_f is not None:
+                                cx_g += float(g_draw.textlength(ch, font=fb_f))
+                        else:
+                            cx_g += float(g_draw.textlength(ch, font=font))
+        else:
+            layer = Image.new("RGBA", (layer_w, layer_h), (0, 0, 0, 0))
+            l_draw = ImageDraw.Draw(layer)
+            for idx, (ln, lw) in enumerate(zip(lines, line_widths)):
+                if not ln:
+                    continue
+                if align == "left":
+                    cur_x = float(pad)
+                elif align == "right":
+                    cur_x = float(pad) + (max_line_w - lw)
+                else:
+                    cur_x = float(pad) + (max_line_w - lw) / 2.0
+
+                cur_y = float(pad - min(0, ref_y0) + idx * step_y)
+                run_buf = ""
+
+                def _flush_run(x_pos: float, text_run: str) -> float:
+                    if not text_run:
+                        return x_pos
+                    l_draw.text(
+                        (x_pos, cur_y),
+                        text_run,
+                        font=font,
+                        fill=(*text_fill, 255),
+                        stroke_width=0,
+                    )
+                    return x_pos + float(l_draw.textlength(text_run, font=font))
+
+                for ch in ln:
+                    if ch in VECTOR_MANGA_SYMBOLS:
+                        cur_x = _flush_run(cur_x, run_buf)
+                        run_buf = ""
+                        icon = self._get_vector_symbol_icon(ch, fs, text_fill, stroke_fill, 0)
+                        iw, ih = icon.size
+                        ix = int(round(cur_x + (sym_advance - iw) / 2.0))
+                        iy = int(round(cur_y + ref_y0 + (glyph_h - ih) / 2.0))
+                        layer.alpha_composite(icon, dest=(max(0, ix), max(0, iy)))
+                        l_draw = ImageDraw.Draw(layer)
+                        cur_x += sym_advance
+                    elif self._is_glyph_missing(font, ch):
+                        cur_x = _flush_run(cur_x, run_buf)
+                        run_buf = ""
+                        fb_font = self._get_fallback_font_for_char(ch, fs)
+                        if fb_font is not None:
+                            l_draw.text(
+                                (cur_x, cur_y),
+                                ch,
+                                font=fb_font,
+                                fill=(*text_fill, 255),
+                                stroke_width=0,
+                            )
+                            cur_x += float(l_draw.textlength(ch, font=fb_font))
+                    else:
+                        run_buf += ch
+
+                cur_x = _flush_run(cur_x, run_buf)
 
         alpha_bbox = layer.getbbox()
         if alpha_bbox is not None:
@@ -2542,6 +2528,7 @@ class MangaRenderer:
 
         words: list[str] = []
         is_soft_hyph: list[bool] = []
+        is_hard_hyph: list[bool] = []
         for w in tokens:
             w_len = self._measure_line_width(draw, w, font)
             has_inner_hyph = ("-" in w and not w.startswith("-") and not w.endswith("-") and len(w) > 6)
@@ -2560,18 +2547,21 @@ class MangaRenderer:
             )
             if should_try_split:
                 parts = self._split_long_word(draw, w, font, safe_w, safe_w=safe_w, safe_h=safe_h)
-                if len(parts) == 2 and parts[0].endswith("-") and not has_inner_hyph:
-                    words.append(parts[0])
-                    is_soft_hyph.append(True)
-                    words.append(parts[1])
-                    is_soft_hyph.append(False)
+                if len(parts) >= 2:
+                    for pt_i, pt in enumerate(parts):
+                        is_non_last = pt_i < (len(parts) - 1)
+                        words.append(pt)
+                        is_soft_hyph.append(bool(is_non_last and (not has_inner_hyph) and pt.endswith("-")))
+                        is_hard_hyph.append(bool(is_non_last and has_inner_hyph and pt.endswith("-")))
                 else:
                     for pt in parts:
                         words.append(pt)
                         is_soft_hyph.append(False)
+                        is_hard_hyph.append(False)
             else:
                 words.append(w)
                 is_soft_hyph.append(False)
+                is_hard_hyph.append(False)
 
         n = len(words)
         if n == 1:
@@ -2596,12 +2586,15 @@ class MangaRenderer:
             out_parts: list[str] = []
             idx = p_idx
             while idx < i_idx:
-                if is_soft_hyph[idx] and (idx + 1) < i_idx and words[idx].endswith("-"):
-                    out_parts.append(words[idx][:-1] + words[idx + 1])
-                    idx += 2
-                else:
-                    out_parts.append(words[idx])
+                cur = words[idx]
+                while (idx + 1) < i_idx and cur.endswith("-") and (is_soft_hyph[idx] or is_hard_hyph[idx]):
+                    if is_soft_hyph[idx]:
+                        cur = cur[:-1] + words[idx + 1]
+                    else:
+                        cur = cur + words[idx + 1]
                     idx += 1
+                out_parts.append(cur)
+                idx += 1
             return " ".join(out_parts)
 
         def _line_width(p_idx: int, i_idx: int) -> float:
@@ -2609,13 +2602,16 @@ class MangaRenderer:
             items_cnt = 0
             idx = p_idx
             while idx < i_idx:
-                if is_soft_hyph[idx] and (idx + 1) < i_idx:
-                    total += stem_widths[idx] + word_widths[idx + 1]
-                    idx += 2
-                else:
-                    total += word_widths[idx]
+                seg_w = word_widths[idx]
+                while (idx + 1) < i_idx and words[idx].endswith("-") and (is_soft_hyph[idx] or is_hard_hyph[idx]):
+                    if is_soft_hyph[idx]:
+                        seg_w = seg_w - word_widths[idx] + stem_widths[idx] + word_widths[idx + 1]
+                    else:
+                        seg_w += word_widths[idx + 1]
                     idx += 1
+                total += seg_w
                 items_cnt += 1
+                idx += 1
             raw_total = total + space_w * max(0, items_cnt - 1)
             # Оптическое выравнивание полей (Hanging Punctuation 35..50%) на первом и последнем слове строки
             first_w = words[p_idx]
@@ -2678,7 +2674,7 @@ class MangaRenderer:
                 for i in range(k, n - (K - k) + 1):
                     if is_last_line and i != n:
                         continue
-                    if is_last_line and is_soft_hyph[i - 1]:
+                    if is_last_line and (is_soft_hyph[i - 1] or is_hard_hyph[i - 1]):
                         continue
                     last_tok = words[i - 1]
                     hanging_pen = (
@@ -2686,7 +2682,7 @@ class MangaRenderer:
                         if (not is_last_line and self._is_hanging_short_word(last_tok))
                         else 0.0
                     )
-                    hyph_pen = 28.0 if (not is_last_line and is_soft_hyph[i - 1]) else 0.0
+                    hyph_pen = 28.0 if (not is_last_line and (is_soft_hyph[i - 1] or is_hard_hyph[i - 1])) else 0.0
 
                     candidates_for_i: list[tuple[float, int, float, int]] = []
                     for p in range(k - 1, i):
@@ -3959,6 +3955,7 @@ class MangaRenderer:
             custom_stroke_rgb = self._parse_hex_color(block.get("stroke_color"))
             item["text_fill"] = custom_text_rgb if custom_text_rgb is not None else default_text_fill
             item["stroke_fill"] = custom_stroke_rgb if custom_stroke_rgb is not None else default_stroke_fill
+            item["custom_stroke_rgb"] = custom_stroke_rgb
             item["bg_fill"] = bg_fill
             item["center_x"] = float(item["opt_cx"])
             item["center_y"] = float(item["opt_cy"])
@@ -4283,6 +4280,7 @@ class MangaRenderer:
                             font_size=chosen_fs,
                             is_overhanging=bool(is_overflowing_box),
                             is_free_text=bool(is_free_text),
+                            stroke_color=item.get("custom_stroke_rgb"),
                         )
                         canvas.paste(Image.fromarray(sdf_res["rendered_roi"], mode="RGB"), (px1, py1))
                         draw = ImageDraw.Draw(canvas)

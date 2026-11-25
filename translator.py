@@ -44,6 +44,7 @@ import subprocess
 import sys
 import threading
 import time
+import weakref
 from dataclasses import dataclass, field
 from enum import Enum
 import math
@@ -805,6 +806,8 @@ class EndpointCircuitBreaker:
     failure_count: int = 0
     last_failure_time: float = 0.0
     half_open_probe_in_flight: bool = False
+    half_open_probe_started_at: float = 0.0
+    half_open_probe_timeout: float = 90.0
 
     def can_execute(self) -> bool:
         now = time.monotonic()
@@ -814,24 +817,35 @@ class EndpointCircuitBreaker:
             if now - self.last_failure_time >= self.recovery_timeout:
                 self.state = CircuitState.HALF_OPEN
                 self.half_open_probe_in_flight = True
+                self.half_open_probe_started_at = now
                 return True
             return False
         if self.state == CircuitState.HALF_OPEN:
-            if not self.half_open_probe_in_flight:
+            if (
+                not self.half_open_probe_in_flight
+                or (now - self.half_open_probe_started_at) >= self.half_open_probe_timeout
+            ):
                 self.half_open_probe_in_flight = True
+                self.half_open_probe_started_at = now
                 return True
             return False
         return False
+
+    def release_probe(self) -> None:
+        self.half_open_probe_in_flight = False
+        self.half_open_probe_started_at = 0.0
 
     def record_success(self) -> None:
         self.failure_count = 0
         self.state = CircuitState.CLOSED
         self.half_open_probe_in_flight = False
+        self.half_open_probe_started_at = 0.0
 
     def record_failure(self) -> None:
         self.failure_count += 1
         self.last_failure_time = time.monotonic()
         self.half_open_probe_in_flight = False
+        self.half_open_probe_started_at = 0.0
         if self.state == CircuitState.HALF_OPEN or self.failure_count >= self.failure_threshold:
             self.state = CircuitState.OPEN
 
@@ -3094,6 +3108,10 @@ class OllamaTranslator:
         self._last_call_was_refusal: bool = False
         self._last_call_was_network_error: bool = False
         self._last_call_was_rate_limited: bool = False
+        self._last_call_was_aborted: bool = False
+        self._task_last_network_error: weakref.WeakKeyDictionary[asyncio.Task[Any], bool] = weakref.WeakKeyDictionary()
+        self._task_last_aborted: weakref.WeakKeyDictionary[asyncio.Task[Any], bool] = weakref.WeakKeyDictionary()
+        self._task_stage_labels: weakref.WeakKeyDictionary[asyncio.Task[Any], str] = weakref.WeakKeyDictionary()
         self.last_refusal_message: str = ""
         self.last_local_fallback_model: str = ""
         self.nsfw_mode: bool = False
@@ -3105,12 +3123,17 @@ class OllamaTranslator:
         self._cloud_rate_limit_pause_reason: str = ""
         self._cloud_rate_limit_cooldown_sec: tuple[float, ...] = (20.0, 45.0, 90.0)
         self._cloud_generic_429_cooldown_sec: tuple[float, ...] = (5.0, 15.0, 35.0)
+        self._cloud_429_cooldown_until_mono: float = 0.0
+        self._cloud_429_epoch: int = 0
+        self._cloud_429_sleep_active: bool = False
+        self._cloud_429_locks: dict[int, asyncio.Lock] = {}
         self._consecutive_cloud_successes: int = 0
         self._batch_cloud_fallback_model: str | None = None
         self._batch_cloud_timeouts_count: int = 0
         self._cloud_disable_stream: bool = False
         self.live_progress_cb: Callable[[dict[str, Any]], None] | None = None
         self._active_llm_tasks: set[asyncio.Task[Any]] = set()
+        self._task_cancel_reasons: dict[asyncio.Task[Any], tuple[str, str | None]] = {}
         self._control_signal: str = ""
         self._runtime_model_override: str | None = None
         self._skip_current_stage: str = ""
@@ -3331,16 +3354,33 @@ class OllamaTranslator:
             return max(32, base // 2)
         return base
 
-    def enable_chapter_nsfw_mode(self, reason: str = "100% цензурный отказ облачного провайдера", is_network_outage: bool = False) -> None:
+    def _get_cloud_429_lock(self) -> asyncio.Lock:
+        """Возвращает asyncio.Lock для текущего event loop, координируя 429 cooldown между потоками."""
+        loop_id = id(asyncio.get_running_loop())
+        lock = self._cloud_429_locks.get(loop_id)
+        if lock is None:
+            if len(self._cloud_429_locks) > 8:
+                self._cloud_429_locks.clear()
+            lock = asyncio.Lock()
+            self._cloud_429_locks[loop_id] = lock
+        return lock
+
+    def enable_chapter_nsfw_mode(
+        self,
+        reason: str = "100% цензурный отказ облачного провайдера",
+        is_network_outage: bool = False,
+        *,
+        active_model: str | None = None,
+    ) -> None:
         """
         Автоматически включает режим обхода облака (nsfw_mode = True) на всю текущую папку/главу
         при первом же 100%-м отказе цензуры или серии сетевых сбоев облачного шлюза (v5.4.0).
         """
-        if self._is_strict_cloud_mode():
+        if self._is_strict_cloud_mode(active_model):
             logger.info(
                 "☁️ [ТОЛЬКО ОБЛАКО] Пропуск переключения главы в локальный nsfw_mode (причина: %s) — продолжаем в облаке (%s).",
                 reason,
-                self._resolved_model or self.unsloth_url,
+                active_model or self._resolved_model or self.unsloth_url,
             )
             return
         self.nsfw_mode_reason = (reason or ("Cloud gateway network outage" if is_network_outage else "NSFW chapter bypass")).strip()
@@ -3386,10 +3426,86 @@ class OllamaTranslator:
         self._consecutive_cloud_429_count = 0
         self._cloud_rate_limit_paused = False
         self._cloud_rate_limit_pause_reason = ""
+        self._cloud_429_cooldown_until_mono = 0.0
+        self._cloud_429_sleep_active = False
         self._consecutive_cloud_successes = 0
         self._consecutive_primary_cloud_failures = 0
         self._batch_cloud_fallback_model = None
         self._active_llm_tasks.clear()
+        self._task_cancel_reasons.clear()
+        self._last_call_was_aborted = False
+        self._task_last_network_error.clear()
+        self._task_last_aborted.clear()
+        self._task_stage_labels.clear()
+
+    def _set_phrase_cache(self, key: str, value: str, max_entries: int = 10000) -> None:
+        if not key or not value:
+            return
+        if key in self.phrase_cache:
+            self.phrase_cache.pop(key, None)
+        self.phrase_cache[key] = value
+        while len(self.phrase_cache) > max_entries:
+            oldest_k = next(iter(self.phrase_cache))
+            self.phrase_cache.pop(oldest_k, None)
+
+    def _set_task_network_error(self, flag: bool) -> None:
+        val = bool(flag)
+        self._last_call_was_network_error = val
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:
+            cur = None
+        if cur is not None:
+            self._task_last_network_error[cur] = val
+
+    def _get_task_network_error(self) -> bool:
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:
+            cur = None
+        if cur is not None and cur in self._task_last_network_error:
+            return bool(self._task_last_network_error[cur])
+        return bool(getattr(self, "_last_call_was_network_error", False))
+
+    def _set_task_aborted(self, flag: bool) -> None:
+        val = bool(flag)
+        self._last_call_was_aborted = val
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:
+            cur = None
+        if cur is not None:
+            self._task_last_aborted[cur] = val
+
+    def _get_task_aborted(self) -> bool:
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:
+            cur = None
+        if cur is not None:
+            return bool(self._task_last_aborted.get(cur, False))
+        return bool(getattr(self, "_last_call_was_aborted", False))
+
+    def _set_task_stage_label(self, label: str) -> None:
+        val = str(label or "").strip()
+        self._current_stage_label = val
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:
+            cur = None
+        if cur is not None:
+            self._task_stage_labels[cur] = val
+
+    def _get_task_stage_label(self, default: str = "llm") -> str:
+        try:
+            cur = asyncio.current_task()
+        except RuntimeError:
+            cur = None
+        if cur is not None and cur in self._task_stage_labels:
+            lbl = self._task_stage_labels[cur]
+            if lbl:
+                return lbl
+        return str(getattr(self, "_current_stage_label", "") or default).strip() or default
 
     def reset_batch_cloud_state(self) -> None:
         """Сбрасывает преходящие счётчики сетевых сбоев облака перед новой пачкой, не сбрасывая nsfw_mode главы."""
@@ -3399,10 +3515,12 @@ class OllamaTranslator:
         self._consecutive_primary_cloud_failures = 0
         self._batch_cloud_fallback_model = None
 
-    def _cancel_active_llm_tasks(self) -> int:
+    def _cancel_active_llm_tasks(self, reason: str = "", new_model: str | None = None) -> int:
         cancelled = 0
         for task in list(self._active_llm_tasks):
             if task is not None and not task.done():
+                if reason:
+                    self._task_cancel_reasons[task] = (reason, new_model)
                 task.cancel()
                 cancelled += 1
         return cancelled
@@ -3419,12 +3537,22 @@ class OllamaTranslator:
         cancelled = 0
         if sig == "abort_request":
             self._control_signal = "abort_request"
-            cancelled = self._cancel_active_llm_tasks()
+            cancelled = self._cancel_active_llm_tasks(reason="abort_request")
         elif sig == "switch_model":
             if new_model and new_model.strip():
-                self._runtime_model_override = new_model.strip()
+                nm = new_model.strip()
+                if (
+                    "::" not in nm
+                    and bool(getattr(self, "cloud_only_no_local_fallback", False))
+                    and (self.translation_profile or "").strip().lower() != "local_only"
+                ):
+                    nm = f"unsloth::{nm}"
+                self._runtime_model_override = nm
             self._control_signal = "switch_model"
-            cancelled = self._cancel_active_llm_tasks()
+            cancelled = self._cancel_active_llm_tasks(
+                reason="switch_model",
+                new_model=self._runtime_model_override,
+            )
         elif sig == "skip_stage":
             target_st = (stage or self._current_stage_label or "").strip().lower()
             self._skip_current_stage = target_st
@@ -3432,11 +3560,11 @@ class OllamaTranslator:
                 cur_lbl = (self._current_stage_label or "").lower()
                 if (target_st == cur_lbl) or (target_st == "micro_retry" and "доперевод" in cur_lbl):
                     self._control_signal = "skip_stage"
-                    cancelled = self._cancel_active_llm_tasks()
+                    cancelled = self._cancel_active_llm_tasks(reason="skip_stage")
         elif sig == "stop":
             self.stop_requested = True
             self._control_signal = "stop"
-            cancelled = self._cancel_active_llm_tasks()
+            cancelled = self._cancel_active_llm_tasks(reason="stop")
         return {
             "signal": sig,
             "cancelled_tasks": cancelled,
@@ -3455,6 +3583,9 @@ class OllamaTranslator:
         self._consecutive_cloud_429_count = 0
         self._cloud_rate_limit_paused = False
         self._cloud_rate_limit_pause_reason = ""
+        self._cloud_429_cooldown_until_mono = 0.0
+        self._cloud_429_sleep_active = False
+        self._task_cancel_reasons.clear()
         self._consecutive_cloud_successes = 0
         self._batch_cloud_fallback_model = None
         self._batch_cloud_timeouts_count = 0
@@ -3470,6 +3601,9 @@ class OllamaTranslator:
         self._consecutive_cloud_429_count = 0
         self._cloud_rate_limit_paused = False
         self._cloud_rate_limit_pause_reason = ""
+        self._cloud_429_cooldown_until_mono = 0.0
+        self._cloud_429_sleep_active = False
+        self._task_cancel_reasons.clear()
         self._consecutive_cloud_successes = 0
         self._batch_cloud_fallback_model = None
         self._batch_cloud_timeouts_count = 0
@@ -4036,6 +4170,14 @@ class OllamaTranslator:
             self._cloud_down_until_ts = 0.0
             self._consecutive_cloud_failures = 0
             self._consecutive_cloud_refusals = 0
+            self._cloud_rate_limit_paused = False
+            self._cloud_rate_limit_pause_reason = ""
+            self._consecutive_cloud_429_count = 0
+            self._cloud_429_cooldown_until_mono = 0.0
+            self._cloud_429_sleep_active = False
+            self._batch_cloud_timeouts_count = 0
+            self._batch_cloud_fallback_model = None
+            self._cloud_disable_stream = False
         if self.unsloth_url != prev_url:
             self._cloud_omit_response_format = False
 
@@ -5327,8 +5469,14 @@ class OllamaTranslator:
         m_book = re.match(r"^(P\d+_\d+)$", s, flags=re.IGNORECASE)
         if m_book:
             return m_book.group(1).upper()
-        digits = re.sub(r"\D+", "", s)
-        return digits if digits else s
+        m_id = re.match(
+            r"^(?:block|id|bubble|line|phrase|item|key|блок|фраза|реплика)?[\s_\-#]*(\d+)$",
+            s,
+            flags=re.IGNORECASE,
+        )
+        if m_id:
+            return m_id.group(1)
+        return s
 
     @classmethod
     def _is_refusal_response(cls, raw_text: str) -> bool:
@@ -5841,7 +5989,11 @@ class OllamaTranslator:
             if m_key_hint:
                 target_single_key = cls._normalize_key(m_key_hint.group(1))
 
-        if target_single_key:
+        if (
+            target_single_key
+            and not cls._is_refusal_response(cleaned)
+            and not any(m in low_clean for m in chatty_conversational_markers)
+        ):
             # 1) Извлекаем выделенный жирным перевод **...** (например: 「トウマ(32)」は **Touma (32)** です)
             bold_matches = [
                 b.strip()
@@ -5850,7 +6002,7 @@ class OllamaTranslator:
             ]
             if bold_matches:
                 rescued_val = bold_matches[-1].strip('"\x27«»„“”')
-                if rescued_val:
+                if rescued_val and not cls._is_bubble_refusal_value(rescued_val) and not cls._is_refusal_response(rescued_val):
                     logger.info("Блок 4: Извлечен перевод '%s' из markdown **...** для ключа %s", rescued_val, target_single_key)
                     return {target_single_key: rescued_val}
 
@@ -5862,7 +6014,12 @@ class OllamaTranslator:
             )
             if m_means and not CJK_REGEX.search(m_means.group(1)):
                 rescued_val = m_means.group(1).strip()
-                if rescued_val and rescued_val != target_single_key:
+                if (
+                    rescued_val
+                    and rescued_val != target_single_key
+                    and not cls._is_bubble_refusal_value(rescued_val)
+                    and not cls._is_refusal_response(rescued_val)
+                ):
                     logger.info("Блок 4: Извлечен перевод '%s' из кавычек объяснения для ключа %s", rescued_val, target_single_key)
                     return {target_single_key: rescued_val}
 
@@ -5875,7 +6032,7 @@ class OllamaTranslator:
                 and not cls._is_refusal_response(cleaned)
             ):
                 plain_val = cleaned.strip('"\x27«»„“”` ')
-                if plain_val:
+                if plain_val and not cls._is_bubble_refusal_value(plain_val):
                     return {target_single_key: plain_val}
 
         logger.warning("Не удалось распарсить JSON от LLM. Сырой ответ: %s", cleaned[:240])
@@ -6555,7 +6712,7 @@ class OllamaTranslator:
         t_lang = (target_lang or "en").lower().strip()
         is_spec_loc = is_specialized_local_translator_model(loc_model)
         for sub_idx, sub_map in enumerate(sub_chunks, start=1):
-            if self.stop_requested:
+            if self.stop_requested or self._get_task_aborted():
                 break
             clean_sub_map = {
                 str(k): self._strip_metadata_and_prompt_leaks(str(v), orig_text=str(v)) or str(v)
@@ -6579,6 +6736,10 @@ class OllamaTranslator:
                     user_prompt=usr_p,
                     persist_as_default=False,
                 )
+                if self.stop_requested or self._get_task_aborted():
+                    if loc_res:
+                        combined_res.update(loc_res)
+                    break
                 loc_refused = bool(loc_res.pop("__refusal__", None))
                 if not loc_res or loc_refused:
                     min_sys, min_usr = self._get_minimal_retry_prompts(t_lang, sub_json)
@@ -6592,6 +6753,8 @@ class OllamaTranslator:
                     loc_res.pop("__refusal__", None)
                 if loc_res:
                     combined_res.update(loc_res)
+                if self.stop_requested or self._get_task_aborted():
+                    break
             except Exception as loc_exc:
                 logger.warning(
                     "Ошибка при переводе цензурного куска (%d/%d) через локальную модель %s: %s",
@@ -6623,8 +6786,22 @@ class OllamaTranslator:
             if clean_ja:
                 clean_items.append((self._normalize_key(k), clean_ja))
 
-        if not clean_items:
+        if not clean_items or self.stop_requested:
             return out_map
+
+        async def _post_sugoi(req_payload: dict[str, Any]) -> httpx.Response:
+            async def _inner() -> httpx.Response:
+                if self.gpu_lock_acquire is not None:
+                    async with self.gpu_lock_acquire(2):
+                        return await client.post(f"{self.base_url}/api/generate", json=req_payload)
+                return await client.post(f"{self.base_url}/api/generate", json=req_payload)
+
+            s_task = asyncio.create_task(_inner())
+            self._active_llm_tasks.add(s_task)
+            try:
+                return await s_task
+            finally:
+                self._active_llm_tasks.discard(s_task)
 
         # Шаг 1: Если в батче >= 2 реплик, переводим их одним плоским нумерованным списком (1. <ja> / 2. <ja>...)
         if len(clean_items) >= 2:
@@ -6650,11 +6827,7 @@ class OllamaTranslator:
                 },
             }
             try:
-                if self.gpu_lock_acquire is not None:
-                    async with self.gpu_lock_acquire(2):
-                        resp_b = await client.post(f"{self.base_url}/api/generate", json=payload_batch)
-                else:
-                    resp_b = await client.post(f"{self.base_url}/api/generate", json=payload_batch)
+                resp_b = await _post_sugoi(payload_batch)
                 if resp_b.status_code == 200:
                     raw_b = THINK_REGEX.sub("", str(resp_b.json().get("response") or "")).strip()
                     by_idx: dict[int, str] = {}
@@ -6699,6 +6872,8 @@ class OllamaTranslator:
             "Output ONLY the English translation without quotes, notes, or explanations."
         )
         for norm_k, clean_ja in missing_items:
+            if self.stop_requested or self._get_task_aborted():
+                break
             payload_line: dict[str, Any] = {
                 "model": clean_name,
                 "system": sugoi_sys,
@@ -6714,11 +6889,7 @@ class OllamaTranslator:
                 },
             }
             try:
-                if self.gpu_lock_acquire is not None:
-                    async with self.gpu_lock_acquire(2):
-                        resp = await client.post(f"{self.base_url}/api/generate", json=payload_line)
-                else:
-                    resp = await client.post(f"{self.base_url}/api/generate", json=payload_line)
+                resp = await _post_sugoi(payload_line)
                 if resp.status_code == 200:
                     raw_ans = str(resp.json().get("response") or "").strip()
                     cleaned_ans = THINK_REGEX.sub("", raw_ans).strip()
@@ -6770,8 +6941,11 @@ class OllamaTranslator:
         user_prompt: str,
         persist_as_default: bool = True,
         page_image_b64: str | None = None,
+        stage_label: str | None = None,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
+        self._set_task_network_error(False)
+        self._set_task_aborted(False)
         clean_name = ollama_model_name.strip()
         if clean_name.startswith("ollama::"):
             clean_name = clean_name.split("ollama::", 1)[1]
@@ -6810,11 +6984,25 @@ class OllamaTranslator:
                 return {}
             # Для пачек Sugoi до 12 блоков включительно сразу используем плоский режим без JSON-схемы и метаданных формы (v5.4.0)!
             if 0 < len(extracted_input_dict) <= 12:
-                direct_sugoi_map = await self._call_sugoi_plain_lines(client, clean_name, extracted_input_dict)
+                eff_sg_stage = (stage_label or self._get_task_stage_label("llm")).strip()
+                try:
+                    direct_sugoi_map = await self._call_sugoi_plain_lines(client, clean_name, extracted_input_dict)
+                except asyncio.CancelledError:
+                    cur_t = asyncio.current_task()
+                    r_info = self._task_cancel_reasons.pop(cur_t, None) if cur_t is not None else None
+                    sig_val = r_info[0] if r_info else str(getattr(self, "_control_signal", "") or "")
+                    if not self._task_cancel_reasons:
+                        self._control_signal = ""
+                    if sig_val in ("abort_request", "skip_stage", "stop", "rate_limit_paused") or self.stop_requested:
+                        self._set_task_aborted(True)
+                        return {}
+                    raise
                 if direct_sugoi_map:
                     _el_s = time.perf_counter() - _t0_ol
                     self._record_api_call("ollama", clean_name, _el_s, len(direct_sugoi_map), "OK")
                     return direct_sugoi_map
+                if self.stop_requested or self._get_task_aborted():
+                    return {}
 
         # Для специализированных локальных моделей (sugoi, translategemma, aya-expanse) вычищаем все блоки метаданных формы и ролей из system_prompt
         eff_system_prompt = system_prompt
@@ -6844,6 +7032,8 @@ class OllamaTranslator:
             items_all = list(extracted_input_dict.items())
             merged_micro: dict[str, str] = {}
             for idx_m in range(0, len(items_all), max_direct_chunk):
+                if self.stop_requested:
+                    break
                 sub_d = dict(items_all[idx_m : idx_m + max_direct_chunk])
                 sub_usr = json.dumps(sub_d, ensure_ascii=False, separators=(",", ":"))
                 part_res = await self._call_ollama_direct(
@@ -6853,9 +7043,12 @@ class OllamaTranslator:
                     user_prompt=sub_usr,
                     persist_as_default=persist_as_default,
                     page_image_b64=page_image_b64,
+                    stage_label=stage_label,
                 )
                 part_res.pop("__refusal__", None)
                 merged_micro.update(part_res)
+                if self.stop_requested or self._get_task_aborted():
+                    break
             return merged_micro
 
         is_vision_ollama = any(
@@ -6888,7 +7081,6 @@ class OllamaTranslator:
             return await client.post(f"{self.base_url}/api/generate", json=req_payload)
 
         async def _post_ollama_generate(req_payload: dict[str, Any]) -> httpx.Response:
-            eff_st = str(getattr(self, "_current_stage_label", "") or "llm")
             ol_task = asyncio.create_task(_post_ollama_generate_inner(req_payload))
             self._active_llm_tasks.add(ol_task)
             try:
@@ -6896,7 +7088,7 @@ class OllamaTranslator:
             finally:
                 self._active_llm_tasks.discard(ol_task)
 
-        eff_ol_stage = str(getattr(self, "_current_stage_label", "") or "llm")
+        eff_ol_stage = (stage_label or self._get_task_stage_label("llm")).strip()
         logger.info(
             "🤖 [%s] Старт локального запроса -> ollama::%s (%d фраз)",
             eff_ol_stage,
@@ -6962,10 +7154,23 @@ class OllamaTranslator:
                 except Exception as exc:
                     logger.debug("Ollama retry without json format skipped: %s", exc)
         except asyncio.CancelledError:
-            ctrl_sig = str(getattr(self, "_control_signal", "") or "")
-            if ctrl_sig == "switch_model" and getattr(self, "_runtime_model_override", None):
-                new_mod = str(self._runtime_model_override)
-                self._control_signal = ""
+            cur_t = asyncio.current_task()
+            reason_info = self._task_cancel_reasons.pop(cur_t, None) if cur_t is not None else None
+            if reason_info is not None:
+                ctrl_sig, ctrl_new_model = reason_info
+            else:
+                ctrl_sig = str(getattr(self, "_control_signal", "") or "")
+                ctrl_new_model = getattr(self, "_runtime_model_override", None)
+            if ctrl_sig == "rate_limit_paused" or self._cloud_rate_limit_paused:
+                if not self._task_cancel_reasons:
+                    self._control_signal = ""
+                self._set_task_aborted(True)
+                return {}
+            cand_new_model = str(ctrl_new_model or getattr(self, "_runtime_model_override", "") or "").strip()
+            if ctrl_sig == "switch_model" and cand_new_model:
+                new_mod = cand_new_model
+                if not self._task_cancel_reasons:
+                    self._control_signal = ""
                 logger.info("🔀 [%s] Переключение локальной модели ollama::%s -> %s", eff_ol_stage, clean_name, new_mod)
                 return await self._call_llm_json(
                     client,
@@ -6976,8 +7181,9 @@ class OllamaTranslator:
                     stage_label=eff_ol_stage,
                 )
             if ctrl_sig in ("abort_request", "skip_stage", "stop") or self.stop_requested:
-                if ctrl_sig in ("abort_request", "skip_stage"):
+                if not self._task_cancel_reasons:
                     self._control_signal = ""
+                self._set_task_aborted(True)
                 logger.info("⏹ [%s] Локальный запрос ollama::%s прерван (%s).", eff_ol_stage, clean_name, ctrl_sig or "stop")
                 self._emit_live(
                     "llm_request_end",
@@ -7065,6 +7271,42 @@ class OllamaTranslator:
         has_reasoning = bool(isinstance(reasoning_val, str) and reasoning_val)
         return fr, content_str, None, has_reasoning
 
+    @classmethod
+    def _inspect_http200_json_error(
+        cls,
+        data: Any,
+        status_code: int,
+        response: Any,
+    ) -> tuple[int, str, str, str, Any, float | None] | None:
+        """Проверяет HTTP 200 JSON без choices на встроенный объект {"error": ...}."""
+        if not isinstance(data, dict) or data.get("choices") or not data.get("error"):
+            return None
+        err_obj = data.get("error")
+        err_code: int | None = None
+        if isinstance(err_obj, dict):
+            msg = str(err_obj.get("message") or err_obj.get("error") or err_obj).strip()
+            raw_code = err_obj.get("code") or err_obj.get("status")
+            try:
+                if raw_code is not None and str(raw_code).strip().isdigit():
+                    err_code = int(str(raw_code).strip())
+            except Exception:
+                err_code = None
+        else:
+            msg = str(err_obj).strip()
+        if not msg:
+            msg = f"HTTP {status_code} upstream JSON error"
+        if CLOUD_CENSORSHIP_ERROR_REGEX.search(msg) or cls._is_refusal_response(msg):
+            return status_code, "", "content_filter", msg, response, None
+        low_msg = msg.lower()
+        if (
+            err_code == 429
+            or CLOUD_BILLING_RECONCILE_429_REGEX.search(msg)
+            or "rate limit" in low_msg
+            or "too many requests" in low_msg
+        ):
+            return 429, msg, "", "", response, None
+        raise httpx.RemoteProtocolError(f"HTTP {status_code} upstream error ({err_code or 'err'}): {msg[:180]}")
+
     async def _execute_cloud_chat_request(
         self,
         client: httpx.AsyncClient,
@@ -7146,26 +7388,40 @@ class OllamaTranslator:
 
                 body_bytes = await response.aread()
                 body_text = body_bytes.decode("utf-8", errors="replace")
-                if body_text.lstrip().startswith("data:"):
+                body_lstrip = body_text.lstrip()
+                if body_lstrip.startswith(("data:", ":", "event:")) and "data:" in body_text:
                     try:
                         data = json.loads(body_text)
                     except Exception:
                         finish_reason = ""
+                        sse_error_msg_fb: str | None = None
                         for raw_line in body_text.splitlines():
                             line_s = raw_line.strip()
-                            if not line_s.startswith("data:"):
+                            if not line_s or line_s.startswith(":") or not line_s.startswith("data:"):
                                 continue
                             data_str = line_s[5:].strip()
                             if data_str == "[DONE]":
                                 break
-                            fr, content_piece, _, _ = self._extract_sse_chunk_fields(data_str)
+                            fr, content_piece, err_msg, _ = self._extract_sse_chunk_fields(data_str)
                             if fr:
                                 finish_reason = fr
                             if content_piece:
                                 stream_chunks_out.append(content_piece)
+                            elif err_msg and not sse_error_msg_fb:
+                                sse_error_msg_fb = err_msg
+                        if not stream_chunks_out and sse_error_msg_fb:
+                            if CLOUD_CENSORSHIP_ERROR_REGEX.search(sse_error_msg_fb) or self._is_refusal_response(sse_error_msg_fb):
+                                return status_code, "", "content_filter", sse_error_msg_fb, response, None
+                            low_se = sse_error_msg_fb.lower()
+                            if CLOUD_BILLING_RECONCILE_429_REGEX.search(sse_error_msg_fb) or "rate limit" in low_se or "too many requests" in low_se:
+                                return 429, sse_error_msg_fb, "", "", response, None
+                            raise httpx.RemoteProtocolError(f"SSE upstream error: {sse_error_msg_fb[:180]}")
                         return status_code, "", finish_reason, ("".join(stream_chunks_out) or "{}"), response, None
                 else:
                     data = json.loads(body_text) if body_text.strip() else {}
+                err200 = self._inspect_http200_json_error(data, status_code, response)
+                if err200 is not None:
+                    return err200
                 choices = data.get("choices", []) if isinstance(data, dict) else []
                 first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
                 finish_reason = str(first_choice.get("finish_reason") or "").lower().strip()
@@ -7183,6 +7439,9 @@ class OllamaTranslator:
         if status_code >= 400:
             return status_code, (response.text or ""), "", "", response, None
         data = response.json()
+        err200 = self._inspect_http200_json_error(data, status_code, response)
+        if err200 is not None:
+            return err200
         choices = data.get("choices", []) if isinstance(data, dict) else []
         first_choice = choices[0] if choices and isinstance(choices[0], dict) else {}
         finish_reason = str(first_choice.get("finish_reason") or "").lower().strip()
@@ -7199,8 +7458,15 @@ class OllamaTranslator:
         self._active_llm_tasks.add(sleep_task)
         try:
             await sleep_task
+        except asyncio.CancelledError:
+            reason_tuple = self._task_cancel_reasons.pop(sleep_task, None)
+            cur = asyncio.current_task()
+            if reason_tuple is not None and cur is not None:
+                self._task_cancel_reasons[cur] = reason_tuple
+            raise
         finally:
             self._active_llm_tasks.discard(sleep_task)
+            self._task_cancel_reasons.pop(sleep_task, None)
 
     async def _try_strict_cloud_fallback(
         self,
@@ -7303,9 +7569,10 @@ class OllamaTranslator:
         _allow_cloud_fallback: bool = True,
     ) -> dict[str, str]:
         self._last_call_was_refusal = False
-        self._last_call_was_network_error = False
+        self._set_task_network_error(False)
+        self._set_task_aborted(False)
         self._last_call_was_rate_limited = False
-        eff_stage = (stage_label or getattr(self, "_current_stage_label", "") or "llm").strip()
+        eff_stage = (stage_label or self._get_task_stage_label("llm")).strip()
         if not allow_mt_fallback and is_mt_only_local_model(full_model_id):
             logger.info("⏭ [allow_mt_fallback=False] Отменен вызов узкой MT-модели '%s' для JSON-задачи.", full_model_id)
             return {}
@@ -7314,7 +7581,7 @@ class OllamaTranslator:
             if not allow_mt_fallback and is_mt_only_local_model(real_ollama):
                 return {}
             logger.info("Перенаправление прокси-модели '%s' напрямую в Ollama (%s)...", full_model_id, real_ollama)
-            return await self._call_ollama_direct(client, real_ollama, system_prompt, user_prompt, page_image_b64=page_image_b64)
+            return await self._call_ollama_direct(client, real_ollama, system_prompt, user_prompt, page_image_b64=page_image_b64, stage_label=eff_stage)
 
         if full_model_id.startswith("unsloth::"):
             model_name = full_model_id.split("unsloth::", 1)[1].strip()
@@ -7476,9 +7743,12 @@ class OllamaTranslator:
                 cloud_headers = self._unsloth_headers()
                 attempt = 0
                 rate_limit_waits = 0
+                cloud_fallback_tried_429 = False
                 while attempt < max_attempts:
                     if self.stop_requested or (self._cloud_rate_limit_paused and not is_optional_pass):
                         return {}
+                    req_429_epoch = self._cloud_429_epoch
+                    req_task: asyncio.Task[Any] | None = None
                     _t0_cloud = time.perf_counter()
                     stream_chunks: list[str] = []
                     logger.info(
@@ -7589,13 +7859,14 @@ class OllamaTranslator:
                                     if fb_ref_res is not None:
                                         return fb_ref_res
                                 self.enable_chapter_nsfw_mode(
-                                    f"HTTP {status_code} цензурный отказ облачного шлюза {model_name}: {err_snippet[:90]}"
+                                    f"HTTP {status_code} цензурный отказ облачного шлюза {model_name}: {err_snippet[:90]}",
+                                    active_model=full_model_id,
                                 )
                                 return {"__refusal__": self.last_refusal_message}
 
                         if status_code == 429:
                             self._last_call_was_rate_limited = True
-                            self._last_call_was_network_error = True
+                            self._set_task_network_error(True)
                             err_sn = (err_body or "").strip()[:200]
                             is_billing_lock = bool(CLOUD_BILLING_RECONCILE_429_REGEX.search(err_sn))
                             if is_optional_pass:
@@ -7609,7 +7880,13 @@ class OllamaTranslator:
                                 )
                                 logger.warning("⏭ [%s] Необязательный проход '%s' получил HTTP 429 — пропуск.", eff_stage, model_name)
                                 return {}
-                            if not is_billing_lock and strict_cloud and _allow_cloud_fallback:
+                            if (
+                                not is_billing_lock
+                                and strict_cloud
+                                and _allow_cloud_fallback
+                                and not cloud_fallback_tried_429
+                            ):
+                                cloud_fallback_tried_429 = True
                                 fb_429_res = await self._try_strict_cloud_fallback(
                                     client=client,
                                     current_model_id=full_model_id,
@@ -7628,88 +7905,137 @@ class OllamaTranslator:
                                     return fb_429_res
                                 if self._cloud_rate_limit_paused:
                                     return {}
-                            self._consecutive_cloud_429_count += 1
                             schedule = (
                                 self._cloud_rate_limit_cooldown_sec
                                 if is_billing_lock
                                 else self._cloud_generic_429_cooldown_sec
                             )
-                            if (
-                                self._consecutive_cloud_429_count <= len(schedule)
-                                and rate_limit_waits < len(schedule)
-                                and not self.stop_requested
-                            ):
-                                wait_s = float(schedule[min(self._consecutive_cloud_429_count - 1, len(schedule) - 1)])
-                                rate_limit_waits += 1
-                                self.diagnostics_stats["rate_limit_waits_count"] = (
-                                    int(self.diagnostics_stats.get("rate_limit_waits_count") or 0) + 1
-                                )
-                                self.diagnostics_stats["network_retries_count"] = (
-                                    int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
-                                )
-                                self._record_incident(
-                                    "CLOUD_HTTP_429_COOLDOWN",
-                                    model_name,
-                                    f"Шлюз вернул HTTP 429 ({'сверка расхода' if is_billing_lock else 'лимит'}), пауза {wait_s:.0f}с ({self._consecutive_cloud_429_count}/{len(schedule)})",
-                                    details=err_sn,
-                                )
-                                self._emit_live(
-                                    "rate_limit_wait",
-                                    stage="rate_limit_wait",
-                                    model=f"unsloth::{model_name}",
-                                    wait_sec=wait_s,
-                                    until_ts=time.time() + wait_s,
-                                    attempt=self._consecutive_cloud_429_count,
-                                    max_waits=len(schedule),
-                                    is_billing_lock=is_billing_lock,
-                                    reason=err_sn[:140],
-                                )
-                                logger.warning(
-                                    "⏳ [HTTP 429] Шлюз %s (%s) — пауза %.0fс перед проверкой (%d/%d)...",
-                                    self.unsloth_url,
-                                    err_sn[:120] or "rate limit",
-                                    wait_s,
-                                    self._consecutive_cloud_429_count,
-                                    len(schedule),
-                                )
-                                await self._cancellable_sleep(wait_s)
-                                continue
                             has_local_fb = False
                             if not strict_cloud:
                                 fb_check = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                                 has_local_fb = bool(fb_check and (allow_mt_fallback or not is_mt_only_local_model(fb_check)))
-                            if strict_cloud or not has_local_fb:
-                                self._cloud_rate_limit_paused = True
-                                self._cloud_rate_limit_pause_reason = (
-                                    f"HTTP 429 ({'сверка расхода' if is_billing_lock else 'лимит шлюза'}): {err_sn[:140]}"
-                                )
-                                self._record_api_call(
-                                    "cloud",
-                                    model_name,
-                                    time.perf_counter() - _t0_cloud,
-                                    0,
-                                    "RATE_LIMIT_PAUSED",
-                                    self._cloud_rate_limit_pause_reason,
-                                )
-                                self._record_incident(
-                                    "CLOUD_RATE_LIMIT_PAUSED",
-                                    model_name,
-                                    "Авто-пауза прогона после повторных HTTP 429 от шлюза",
-                                    details=self._cloud_rate_limit_pause_reason,
-                                )
-                                self._emit_live(
-                                    "rate_limit_paused",
-                                    stage="paused_429",
-                                    model=f"unsloth::{model_name}",
-                                    reason=self._cloud_rate_limit_pause_reason,
-                                    is_billing_lock=is_billing_lock,
-                                )
-                                logger.warning(
-                                    "⏸ [АВТО-ПАУЗА HTTP 429] Шлюз %s продолжает возвращать 429 после ожидания — останавливаю запросы, чтобы не тратить пачки впустую (%s).",
-                                    self.unsloth_url,
-                                    self._cloud_rate_limit_pause_reason,
-                                )
-                                return {}
+
+                            wait_action: tuple[str, float, int] = ("pause", 0.0, 0)
+                            async with self._get_cloud_429_lock():
+                                if self._cloud_rate_limit_paused:
+                                    return {}
+                                now_m_429 = time.monotonic()
+                                if (
+                                    req_429_epoch < self._cloud_429_epoch
+                                    and not self.stop_requested
+                                    and rate_limit_waits < len(schedule)
+                                ):
+                                    rate_limit_waits += 1
+                                    if self._cloud_429_sleep_active:
+                                        rem_wait = max(0.05, self._cloud_429_cooldown_until_mono - now_m_429)
+                                        wait_action = ("coalesce", rem_wait, self._cloud_429_epoch)
+                                    else:
+                                        wait_action = ("retry_epoch", 0.0, self._cloud_429_epoch)
+                                else:
+                                    self._consecutive_cloud_429_count += 1
+                                    if (
+                                        self._consecutive_cloud_429_count <= len(schedule)
+                                        and rate_limit_waits < len(schedule)
+                                        and not self.stop_requested
+                                    ):
+                                        wait_s = float(schedule[min(self._consecutive_cloud_429_count - 1, len(schedule) - 1)])
+                                        rate_limit_waits += 1
+                                        self._cloud_429_epoch += 1
+                                        leader_epoch = self._cloud_429_epoch
+                                        self._cloud_429_sleep_active = True
+                                        self._cloud_429_cooldown_until_mono = now_m_429 + wait_s
+                                        self.diagnostics_stats["rate_limit_waits_count"] = (
+                                            int(self.diagnostics_stats.get("rate_limit_waits_count") or 0) + 1
+                                        )
+                                        self.diagnostics_stats["network_retries_count"] = (
+                                            int(self.diagnostics_stats.get("network_retries_count") or 0) + 1
+                                        )
+                                        self._record_incident(
+                                            "CLOUD_HTTP_429_COOLDOWN",
+                                            model_name,
+                                            f"Шлюз вернул HTTP 429 ({'сверка расхода' if is_billing_lock else 'лимит'}), пауза {wait_s:.0f}с ({self._consecutive_cloud_429_count}/{len(schedule)})",
+                                            details=err_sn,
+                                        )
+                                        self._emit_live(
+                                            "rate_limit_wait",
+                                            stage="rate_limit_wait",
+                                            model=f"unsloth::{model_name}",
+                                            wait_sec=wait_s,
+                                            until_ts=time.time() + wait_s,
+                                            attempt=self._consecutive_cloud_429_count,
+                                            max_waits=len(schedule),
+                                            is_billing_lock=is_billing_lock,
+                                            reason=err_sn[:140],
+                                        )
+                                        logger.warning(
+                                            "⏳ [HTTP 429] Шлюз %s (%s) — пауза %.0fс перед проверкой (%d/%d)...",
+                                            self.unsloth_url,
+                                            err_sn[:120] or "rate limit",
+                                            wait_s,
+                                            self._consecutive_cloud_429_count,
+                                            len(schedule),
+                                        )
+                                        wait_action = ("leader", wait_s, leader_epoch)
+                                    elif strict_cloud or not has_local_fb:
+                                        self._cloud_rate_limit_paused = True
+                                        self._cloud_rate_limit_pause_reason = (
+                                            f"HTTP 429 ({'сверка расхода' if is_billing_lock else 'лимит шлюза'}): {err_sn[:140]}"
+                                        )
+                                        self._cloud_429_sleep_active = False
+                                        self._cloud_429_cooldown_until_mono = 0.0
+                                        self._record_api_call(
+                                            "cloud",
+                                            model_name,
+                                            time.perf_counter() - _t0_cloud,
+                                            0,
+                                            "RATE_LIMIT_PAUSED",
+                                            self._cloud_rate_limit_pause_reason,
+                                        )
+                                        self._record_incident(
+                                            "CLOUD_RATE_LIMIT_PAUSED",
+                                            model_name,
+                                            "Авто-пауза прогона после повторных HTTP 429 от шлюза",
+                                            details=self._cloud_rate_limit_pause_reason,
+                                        )
+                                        self._emit_live(
+                                            "rate_limit_paused",
+                                            stage="paused_429",
+                                            model=f"unsloth::{model_name}",
+                                            reason=self._cloud_rate_limit_pause_reason,
+                                            is_billing_lock=is_billing_lock,
+                                        )
+                                        logger.warning(
+                                            "⏸ [АВТО-ПАУЗА HTTP 429] Шлюз %s продолжает возвращать 429 после ожидания — останавливаю запросы, чтобы не тратить пачки впустую (%s).",
+                                            self.unsloth_url,
+                                            self._cloud_rate_limit_pause_reason,
+                                        )
+                                        self._cancel_active_llm_tasks(reason="rate_limit_paused")
+                                        return {}
+                                    else:
+                                        wait_action = ("raise", 0.0, 0)
+
+                            if wait_action[0] == "leader":
+                                if self._cloud_rate_limit_paused or self.stop_requested:
+                                    if self._cloud_429_epoch == wait_action[2]:
+                                        self._cloud_429_sleep_active = False
+                                        self._cloud_429_cooldown_until_mono = 0.0
+                                    return {}
+                                try:
+                                    await self._cancellable_sleep(wait_action[1])
+                                finally:
+                                    if self._cloud_429_epoch == wait_action[2]:
+                                        self._cloud_429_sleep_active = False
+                                        self._cloud_429_cooldown_until_mono = 0.0
+                                continue
+                            if wait_action[0] == "coalesce":
+                                if self._cloud_rate_limit_paused or self.stop_requested:
+                                    return {}
+                                await self._cancellable_sleep(wait_action[1])
+                                continue
+                            if wait_action[0] == "retry_epoch":
+                                if self._cloud_rate_limit_paused or self.stop_requested:
+                                    return {}
+                                continue
                             req_obj = getattr(response_obj, "request", None) or httpx.Request("POST", cloud_url)
                             raise httpx.HTTPStatusError(
                                 f"HTTP 429: {err_sn}",
@@ -7763,6 +8089,59 @@ class OllamaTranslator:
                         for rk in refusal_keys:
                             parsed.pop(rk, None)
                         is_filter_stop = finish_reason in ("content_filter", "safety", "moderation", "sensitive")
+                        if (
+                            finish_reason == "length"
+                            and not parsed
+                            and not refusal_keys
+                            and not is_filter_stop
+                            and not self._is_refusal_response(raw_output)
+                        ):
+                            trunc_msg = f"Empty JSON after finish_reason=length on {items_cnt} bubbles (output/reasoning truncated)"
+                            self._set_task_network_error(True)
+                            self._record_incident(
+                                "MAX_TOKENS_EMPTY",
+                                model_name,
+                                f"Модель '{model_name}' исчерпала max_tokens (finish_reason=length) до выдачи JSON ({items_cnt} фраз)",
+                                details=trunc_msg,
+                                affected_count=items_cnt,
+                            )
+                            self._record_api_call("cloud", model_name, _el_cloud, 0, "TRUNCATED", trunc_msg)
+                            self._emit_live(
+                                "llm_request_end",
+                                stage=eff_stage,
+                                model=f"unsloth::{model_name}",
+                                status="TRUNCATED",
+                                elapsed_sec=round(_el_cloud, 2),
+                                ttft_sec=ttft_sec,
+                                parsed_keys=0,
+                                expected_keys=items_cnt,
+                                error=trunc_msg,
+                            )
+                            logger.warning(
+                                "⚠️ [%s] MAX_TOKENS_EMPTY для '%s' (finish_reason=length, 0/%d фраз) — не считается цензурой.",
+                                eff_stage,
+                                model_name,
+                                items_cnt,
+                            )
+                            if strict_cloud and _allow_cloud_fallback and not is_optional_pass:
+                                fb_trunc_res = await self._try_strict_cloud_fallback(
+                                    client=client,
+                                    current_model_id=full_model_id,
+                                    system_prompt=system_prompt,
+                                    user_prompt=user_prompt,
+                                    page_image_b64=page_image_b64,
+                                    allow_mt_fallback=allow_mt_fallback,
+                                    max_attempts_override=max_attempts_override,
+                                    timeout_override_sec=timeout_override_sec,
+                                    use_stream=use_stream,
+                                    stage_label=eff_stage,
+                                    reason=trunc_msg,
+                                    incident_type="CLOUD_TO_CLOUD_TRUNCATED_FALLBACK",
+                                    is_refusal=False,
+                                )
+                                if fb_trunc_res is not None:
+                                    return fb_trunc_res
+                            return {}
                         if not parsed and not refusal_keys and items_cnt >= 8 and not is_filter_stop and not self._is_refusal_response(raw_output):
                             self._last_call_was_refusal = True
                             self._consecutive_cloud_refusals += 1
@@ -7799,7 +8178,8 @@ class OllamaTranslator:
                                     return fb_ref_res
                             if self._consecutive_cloud_refusals >= 2:
                                 self.enable_chapter_nsfw_mode(
-                                    f"Повторный пустой ответ облака {model_name} ({self._consecutive_cloud_refusals} раза подряд на {items_cnt} блоках)"
+                                    f"Повторный пустой ответ облака {model_name} ({self._consecutive_cloud_refusals} раза подряд на {items_cnt} блоках)",
+                                    active_model=full_model_id,
                                 )
                             return {"__refusal__": self.last_refusal_message}
                         if refusal_keys or (not parsed and (is_filter_stop or self._is_refusal_response(raw_output))):
@@ -7846,12 +8226,14 @@ class OllamaTranslator:
                                     if fb_ref_res is not None:
                                         return fb_ref_res
                                 self.enable_chapter_nsfw_mode(
-                                    f"100% цензурный отказ облака {model_name} ({items_cnt}/{items_cnt} блоков: {self.last_refusal_message[:90]})"
+                                    f"100% цензурный отказ облака {model_name} ({items_cnt}/{items_cnt} блоков: {self.last_refusal_message[:90]})",
+                                    active_model=full_model_id,
                                 )
                                 return {"__refusal__": self.last_refusal_message}
                             if self._consecutive_cloud_refusals >= 2 and len(refusal_keys) >= max(2, items_cnt // 2):
                                 self.enable_chapter_nsfw_mode(
-                                    f"Массовый цензурный отказ облака {model_name} ({len(refusal_keys)}/{items_cnt} блоков, {self._consecutive_cloud_refusals} раза подряд)"
+                                    f"Массовый цензурный отказ облака {model_name} ({len(refusal_keys)}/{items_cnt} блоков, {self._consecutive_cloud_refusals} раза подряд)",
+                                    active_model=full_model_id,
                                 )
                             parsed["__partial_refusal__"] = self.last_refusal_message
                             self._record_api_call("cloud", model_name, _el_cloud, len(parsed) - 1, "PARTIAL_REFUSAL", self.last_refusal_message)
@@ -7870,7 +8252,9 @@ class OllamaTranslator:
                         if _allow_cloud_fallback:
                             self._consecutive_primary_cloud_failures = 0
                         self._consecutive_cloud_429_count = 0
-                        self._last_call_was_network_error = False
+                        self._cloud_429_sleep_active = False
+                        self._cloud_429_cooldown_until_mono = 0.0
+                        self._set_task_network_error(False)
                         self._last_call_was_rate_limited = False
                         self._cloud_rate_limit_paused = False
                         self._cloud_rate_limit_pause_reason = ""
@@ -7911,11 +8295,47 @@ class OllamaTranslator:
                                 cand_partial.pop(rk_p, None)
                             if cand_partial and not self._is_refusal_response(partial_raw):
                                 partial_salvaged = cand_partial
-                        ctrl_sig = str(getattr(self, "_control_signal", "") or "")
+                        cur_task = asyncio.current_task()
+                        reason_info = (
+                            self._task_cancel_reasons.pop(req_task, None)
+                            if req_task is not None
+                            else None
+                        ) or (
+                            self._task_cancel_reasons.pop(cur_task, None)
+                            if cur_task is not None
+                            else None
+                        )
+                        if reason_info is not None:
+                            ctrl_sig, ctrl_new_model = reason_info
+                        else:
+                            ctrl_sig = str(getattr(self, "_control_signal", "") or "")
+                            ctrl_new_model = getattr(self, "_runtime_model_override", None)
                         _el_abort = round(time.perf_counter() - _t0_cloud, 2)
-                        if ctrl_sig == "switch_model" and getattr(self, "_runtime_model_override", None):
-                            new_mod = str(self._runtime_model_override)
-                            self._control_signal = ""
+                        if ctrl_sig == "rate_limit_paused" or self._cloud_rate_limit_paused:
+                            if not self._task_cancel_reasons:
+                                self._control_signal = ""
+                            self._set_task_aborted(True)
+                            self._emit_live(
+                                "llm_request_end",
+                                stage=eff_stage,
+                                model=f"unsloth::{model_name}",
+                                status="RATE_LIMIT_PAUSED",
+                                elapsed_sec=_el_abort,
+                                parsed_keys=len(partial_salvaged),
+                                expected_keys=items_cnt,
+                            )
+                            return partial_salvaged
+                        cand_new_model = str(ctrl_new_model or getattr(self, "_runtime_model_override", "") or "").strip()
+                        if ctrl_sig == "switch_model" and cand_new_model:
+                            new_mod = cand_new_model
+                            if (
+                                "::" not in new_mod
+                                and bool(getattr(self, "cloud_only_no_local_fallback", False))
+                                and (self.translation_profile or "").strip().lower() != "local_only"
+                            ):
+                                new_mod = f"unsloth::{new_mod}"
+                            if not self._task_cancel_reasons:
+                                self._control_signal = ""
                             logger.info(
                                 "🔀 [%s] Переключение модели во время запроса '%s' -> '%s' (спасено %d/%d фраз)",
                                 eff_stage,
@@ -7950,7 +8370,9 @@ class OllamaTranslator:
                                 stage_label=eff_stage,
                             )
                         if ctrl_sig in ("abort_request", "skip_stage"):
-                            self._control_signal = ""
+                            if not self._task_cancel_reasons:
+                                self._control_signal = ""
+                            self._set_task_aborted(True)
                             logger.info(
                                 "⏹ [%s] Запрос к '%s' прерван пользователем (%s, спасено %d/%d фраз)",
                                 eff_stage,
@@ -7970,6 +8392,9 @@ class OllamaTranslator:
                             )
                             return partial_salvaged
                         if ctrl_sig == "stop" or self.stop_requested:
+                            if not self._task_cancel_reasons:
+                                self._control_signal = ""
+                            self._set_task_aborted(True)
                             self._emit_live(
                                 "llm_request_end",
                                 stage=eff_stage,
@@ -7998,7 +8423,7 @@ class OllamaTranslator:
                             for rk_p in [kp for kp, vp in list(partial_parsed.items()) if self._is_bubble_refusal_value(vp)]:
                                 partial_parsed.pop(rk_p, None)
                             if partial_parsed and not self._is_refusal_response(partial_raw):
-                                self._last_call_was_network_error = True
+                                self._set_task_network_error(True)
                                 if not is_optional_pass:
                                     self._batch_cloud_timeouts_count = int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) + 1
                                 _el_partial = time.perf_counter() - _t0_cloud
@@ -8030,7 +8455,7 @@ class OllamaTranslator:
                                 return partial_parsed
 
                         last_cloud_err = net_exc
-                        self._last_call_was_network_error = True
+                        self._set_task_network_error(True)
                         if not is_optional_pass:
                             self._batch_cloud_timeouts_count = int(getattr(self, "_batch_cloud_timeouts_count", 0) or 0) + 1
                         if attempt < max_attempts - 1:
@@ -8077,7 +8502,7 @@ class OllamaTranslator:
                         break
                 if last_cloud_err is not None:
                     err_last_detail = self._format_network_error(last_cloud_err)
-                    self._last_call_was_network_error = True
+                    self._set_task_network_error(True)
                     self._emit_live(
                         "llm_request_end",
                         stage=eff_stage,
@@ -8135,13 +8560,33 @@ class OllamaTranslator:
                             model_name,
                         )
                         if not self._cloud_rate_limit_paused and self._consecutive_cloud_failures >= 2:
-                            await self._cancellable_sleep(1.0)
+                            try:
+                                await self._cancellable_sleep(1.0)
+                            except asyncio.CancelledError:
+                                cur_t = asyncio.current_task()
+                                sig_tuple = (
+                                    self._task_cancel_reasons.pop(cur_t, None)
+                                    if cur_t is not None
+                                    else None
+                                )
+                                sig_val = sig_tuple[0] if sig_tuple else str(getattr(self, "_control_signal", "") or "")
+                                if (
+                                    sig_val in ("abort_request", "switch_model", "skip_stage", "stop", "rate_limit_paused")
+                                    or self.stop_requested
+                                    or self._cloud_rate_limit_paused
+                                ):
+                                    if not self._task_cancel_reasons:
+                                        self._control_signal = ""
+                                    self._set_task_aborted(True)
+                                    return {}
+                                raise
                         return {}
                     self._cloud_down_until_ts = time.time() + 60.0
                     if self._consecutive_cloud_failures >= 2:
                         self.enable_chapter_nsfw_mode(
                             f"Серия сетевых сбоев облачного шлюза {self.unsloth_url} ({err_last_detail}, {self._consecutive_cloud_failures} пачки подряд)",
                             is_network_outage=True,
+                            active_model=full_model_id,
                         )
                     fallback_ollama = await self._resolve_local_fallback_model(target_lang=hint_tgt, source_lang=hint_src)
                     if fallback_ollama:
@@ -8170,6 +8615,7 @@ class OllamaTranslator:
                             system_prompt,
                             user_prompt,
                             persist_as_default=False,
+                            stage_label=eff_stage,
                         )
                     raise last_cloud_err
 
@@ -8238,7 +8684,7 @@ class OllamaTranslator:
                     )
                 raise
 
-        return await self._call_ollama_direct(client, full_model_id, system_prompt, user_prompt, page_image_b64=page_image_b64)
+        return await self._call_ollama_direct(client, full_model_id, system_prompt, user_prompt, page_image_b64=page_image_b64, stage_label=eff_stage)
 
     async def _translate_batch_chunk(
         self,
@@ -8258,8 +8704,8 @@ class OllamaTranslator:
         if self.stop_requested or not chunk_blocks:
             return {}
 
-        prev_stage_lbl = getattr(self, "_current_stage_label", "")
-        self._current_stage_label = stage_prefix
+        prev_stage_lbl = self._get_task_stage_label("llm")
+        self._set_task_stage_label(stage_prefix)
 
         is_spec_local_active = is_specialized_local_translator_model(active_model)
         source_map: dict[str, str] = {
@@ -8333,6 +8779,7 @@ class OllamaTranslator:
         partial_refusal = False
         inline_refusal_keys: list[str] = []
         chunk_had_network_error = False
+        chunk_was_aborted = False
 
         if cloud_source_map:
             padded_source_map, anchor_keys = (
@@ -8380,7 +8827,8 @@ class OllamaTranslator:
                 page_image_b64=(page_image_b64 if use_image_context else None),
                 stage_label=stage_prefix,
             )
-            chunk_had_network_error = bool(getattr(self, "_last_call_was_network_error", False))
+            chunk_had_network_error = self._get_task_network_error()
+            chunk_was_aborted = self._get_task_aborted()
             if getattr(self, "_runtime_model_override", None):
                 active_model = str(self._runtime_model_override)
             for ak in anchor_keys:
@@ -8489,7 +8937,8 @@ class OllamaTranslator:
                 and len(refused_sub_map) >= max(1, int(len(cloud_source_map) * 0.85))
             ):
                 self.enable_chapter_nsfw_mode(
-                    f"100% отказ цензуры облачного API {active_model} на пачке ({len(refused_sub_map)}/{len(cloud_source_map)} блоков)"
+                    f"100% отказ цензуры облачного API {active_model} на пачке ({len(refused_sub_map)}/{len(cloud_source_map)} блоков)",
+                    active_model=active_model,
                 )
             sample_phrases = ", ".join(f"«{v[:18]}»" for v in list(refused_sub_map.values())[:3])
             self._record_incident(
@@ -8645,7 +9094,7 @@ class OllamaTranslator:
         # сбрасываем подозрительные ключи и отправляем их на изолированный штучный переперевод!
         bad_reason_by_k: dict[str, str] = {}
         misaligned_keys_set: set[str] = set()
-        if not self.stop_requested and t_lang in ("ru", "en"):
+        if not self.stop_requested and not chunk_was_aborted and t_lang in ("ru", "en"):
             audit_flags = self._detect_batch_misalignment_and_hallucinations(
                 source_map=source_map,
                 translated_map=translated_map,
@@ -8671,7 +9120,7 @@ class OllamaTranslator:
         # Если доперевод через API натыкается на цензуру (или если это остатки после цензурного куска),
         # сразу переводим эти фразы через локальную модель Ollama и возвращаемся к API!
         carried_over_keys: set[str] = set()
-        if not self.stop_requested:
+        if not self.stop_requested and not chunk_was_aborted:
             bad_keys: list[str] = []
             for k in source_map:
                 cand_v1 = translated_map.get(k, "")
@@ -8815,7 +9264,7 @@ class OllamaTranslator:
                 if str(getattr(self, "_skip_current_stage", "") or "").lower() == "micro_retry":
                     bad_sublists = []
                 if bad_sublists:
-                    self._current_stage_label = "micro_retry"
+                    self._set_task_stage_label("micro_retry")
                     self._emit_live(
                         "stage_change",
                         stage="micro_retry",
@@ -8825,6 +9274,7 @@ class OllamaTranslator:
                 for b_sub in bad_sublists:
                     if (
                         self.stop_requested
+                        or self._get_task_aborted()
                         or self._cloud_rate_limit_paused
                         or str(getattr(self, "_skip_current_stage", "") or "").lower() == "micro_retry"
                     ):
@@ -8901,10 +9351,20 @@ class OllamaTranslator:
                                 max_attempts_override=(1 if chunk_had_network_error else None),
                                 stage_label="micro_retry",
                             )
-                            if not retry_map and getattr(self, "_last_call_was_network_error", False):
+                            if not retry_map and self._get_task_network_error():
                                 consec_retry_net_errors += 1
                             elif retry_map:
                                 consec_retry_net_errors = 0
+                            if self._get_task_aborted():
+                                if retry_map:
+                                    for k_ab, v_ab in retry_map.items():
+                                        if k_ab in b_sub and v_ab and not self._is_bubble_refusal_value(v_ab):
+                                            translated_map[k_ab] = v_ab
+                                            chunk_prov[k_ab] = {
+                                                "source": "llm_micro_retry",
+                                                "note": "Частично сохранено до отмены",
+                                            }
+                                break
                             retry_refused = bool(retry_map.pop("__refusal__", None)) or bool(retry_map.pop("__partial_refusal__", None))
                             for rk_r in [kr for kr, vr in list(retry_map.items()) if self._is_bubble_refusal_value(vr)]:
                                 retry_map.pop(rk_r, None)
@@ -9104,7 +9564,7 @@ class OllamaTranslator:
         if provenance_out is not None:
             provenance_out.update(chunk_prov)
 
-        self._current_stage_label = prev_stage_lbl
+        self._set_task_stage_label(prev_stage_lbl)
         return final_map
 
     async def translate_blocks(
@@ -9319,7 +9779,7 @@ class OllamaTranslator:
                     cached_cand = enforce_glossary_on_translated_text(orig_raw, cached_cand, merged_gloss_for_cache, t_lang)
                     if cached_cand == "*sigh*" and ("ううん" in orig_raw):
                         cached_cand = "Nope!☆" if "☆" in orig_raw else "Nope!"
-                    self.phrase_cache[cache_key] = cached_cand
+                    self._set_phrase_cache(cache_key, cached_cand)
                     if external_cache is not None:
                         external_cache[cache_key] = cached_cand
                     translated_map[k] = cached_cand
@@ -9495,7 +9955,7 @@ class OllamaTranslator:
                     orig_raw = (b.get("original_text") or "").strip()
                     t_val = chunk_map.get(k, "")
                     if t_val and orig_raw and not self._is_bubble_refusal_value(t_val):
-                        self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
+                        self._set_phrase_cache(f"{t_lang}||{orig_raw}", t_val)
                         if external_cache is not None:
                             external_cache[f"{t_lang}||{orig_raw}"] = t_val
                         if len(orig_raw) >= 4 and len(t_val) >= 4:
@@ -9638,7 +10098,7 @@ class OllamaTranslator:
                     t_val = chunk_map.get(k, "")
                     if t_val and orig_raw and not self._is_bubble_refusal_value(t_val):
                         chunk_done_cnt += 1
-                        self.phrase_cache[f"{t_lang}||{orig_raw}"] = t_val
+                        self._set_phrase_cache(f"{t_lang}||{orig_raw}", t_val)
                         if external_cache is not None:
                             external_cache[f"{t_lang}||{orig_raw}"] = t_val
                         if len(orig_raw) >= 4 and len(t_val) >= 4:
@@ -9675,8 +10135,6 @@ class OllamaTranslator:
 
         if t_lang in ("en", "ru"):
             self.recent_context_lines = list(running_context[-8:])
-        if external_cache is not None:
-            external_cache.update(self.phrase_cache)
 
         enriched_blocks: list[dict[str, Any]] = []
         for block in blocks:
@@ -9718,7 +10176,7 @@ class OllamaTranslator:
                 fresh_rom = cached_rom or existing_blk_rom or japanese_to_romaji_local(orig_raw)
                 block_copy["romaji_text"] = fresh_rom
                 if orig_raw and fresh_rom:
-                    self.phrase_cache[f"romaji||{orig_raw}"] = fresh_rom
+                    self._set_phrase_cache(f"romaji||{orig_raw}", fresh_rom)
                     if external_cache is not None:
                         external_cache[f"romaji||{orig_raw}"] = fresh_rom
             enriched_blocks.append(block_copy)
@@ -9791,9 +10249,10 @@ class OllamaTranslator:
             if not cur_rom:
                 cur_rom = japanese_to_romaji_local(orig_raw)
             b["romaji_text"] = cur_rom
-
-        if external_cache is not None:
-            external_cache.update(self.phrase_cache)
+            if orig_raw and cur_rom and not self._contains_cjk(cur_rom):
+                self._set_phrase_cache(f"romaji||{orig_raw}", cur_rom)
+                if external_cache is not None:
+                    external_cache[f"romaji||{orig_raw}"] = cur_rom
 
         return blocks_copy
 
@@ -10768,6 +11227,9 @@ class HybridMangaTranslator:
                         await self.aimd.on_success()
                         return
 
+                    except asyncio.CancelledError:
+                        ep.release_probe()
+                        raise
                     except SafetyFilterRejectedError:
                         ep.record_success()
                         raise

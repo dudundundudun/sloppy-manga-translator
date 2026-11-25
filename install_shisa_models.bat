@@ -1,4 +1,5 @@
 @echo off
+setlocal
 title Miko-chan Manga Studio v6.1.0 - Download Shisa and Top Models (with VPN 198.18.x.x Bypass)
 cd /d "%~dp0"
 
@@ -25,7 +26,7 @@ echo   [12] Qwen 3 30B-A3B MoE (Top-3 JP-TL-Bench 84.3% WR Translator, ~16.0 GB)
 echo ==========================================================================
 set "CHOICE=1"
 set /p "CHOICE=Select model to download [1-12] (Enter=1): "
-set "CHOICE=%CHOICE:"=%"
+if defined CHOICE set "CHOICE=%CHOICE:"=%"
 
 set "MODEL_TAG="
 set "SET_DEFAULT=True"
@@ -55,9 +56,18 @@ if not defined MODEL_TAG (
     exit /b 1
 )
 
+where python >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] Python is not found in PATH. Please install Python 3.10+.
+    pause
+    exit /b 1
+)
+
 echo.
 echo [1/1] Downloading and registering "%MODEL_TAG%" (with automatic Python GGUF bypass if Ollama blocks VPN redirect)...
-python -c "import asyncio, sys; from translator import OllamaTranslator; t = OllamaTranslator(); res = asyncio.run(t.pull_ollama_model('%MODEL_TAG%', set_as_default=%SET_DEFAULT%)); sys.exit(0 if res.get('status') == 'completed' else 1)"
+set "MIKO_MODEL_TAG=%MODEL_TAG%"
+set "MIKO_SET_DEFAULT=%SET_DEFAULT%"
+python -c "import asyncio, os, sys; from translator import OllamaTranslator; t = OllamaTranslator(); res = asyncio.run(t.pull_ollama_model(os.environ['MIKO_MODEL_TAG'], set_as_default=(os.environ.get('MIKO_SET_DEFAULT', 'True') == 'True'))); sys.exit(0 if res.get('status') == 'completed' else 1)"
 if errorlevel 1 (
     echo.
     echo [ERROR] Failed to download or register model. Make sure Ollama is running!

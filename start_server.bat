@@ -1,4 +1,5 @@
 @echo off
+setlocal
 title Manga Translator Local Server v6.1.0 (Port 5000)
 cd /d "%~dp0"
 
@@ -14,6 +15,13 @@ echo   Starting Manga Translator Local Server v6.1.0...
 echo   Miko-chan Web Studio: http://127.0.0.1:5000/
 echo   Folder: %CD%
 echo ===================================================
+
+where python >nul 2>nul
+if errorlevel 1 (
+    echo [ERROR] Python is not found in PATH. Please install Python 3.10+.
+    pause
+    exit /b 1
+)
 
 python "%~dp0server.py" --open-gui
 if errorlevel 1 (

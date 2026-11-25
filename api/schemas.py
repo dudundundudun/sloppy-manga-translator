@@ -83,10 +83,12 @@ class TextBlock(BaseModel):
     bbox: list[int] = Field(..., min_length=4, max_length=4)
     clean_bbox: list[int] | None = Field(
         default=None,
+        max_length=4,
         description="Исходные координаты оригинального текста для инпейнтинга (не смещаются при перетаскивании рамки перевода)",
     )
     text_bbox: list[int] | None = Field(
         default=None,
+        max_length=4,
         description="Точный внутренний контур букв внутри баббла (от двухконтурного детектора RT-DETR-v2 / TightInkCrop)",
     )
     bbox_modified: bool = Field(
@@ -101,16 +103,16 @@ class TextBlock(BaseModel):
         default=False,
         description="Если True, блок создан объединением нескольких соседних рамок (M)",
     )
-    confidence: float = 1.0
-    original_text: str
-    romaji_text: str = ""
-    translated_text: str = ""
+    confidence: float = Field(default=1.0, allow_inf_nan=False)
+    original_text: str = Field(..., max_length=10000)
+    romaji_text: str = Field(default="", max_length=10000)
+    translated_text: str = Field(default="", max_length=10000)
     is_free_text: bool = False
     is_deleted: bool = Field(
         default=False,
         description="Если True, перевод этого блока удален пользователем — на картинке сохраняется оригинальный текст/рисунок",
     )
-    font_size: int | None = Field(default=None, description="Индивидуальный размер шрифта для этого блока (px), если задан вручную")
+    font_size: int | None = Field(default=None, ge=6, le=300, description="Индивидуальный размер шрифта для этого блока (px), если задан вручную")
     rendered_font_size: int | None = Field(default=None, description="Фактический кегль шрифта (px), рассчитанный при верстке")
     font_family: str | None = Field(
         default=None,
@@ -138,6 +140,7 @@ class TextBlock(BaseModel):
         default=0.0,
         ge=-45.0,
         le=45.0,
+        allow_inf_nan=False,
         description="Угол поворота текста в градусах (-45..+45)",
     )
     style_preset: str = Field(
@@ -176,14 +179,17 @@ class TextBlock(BaseModel):
     )
     safe_bbox: list[int] | None = Field(
         default=None,
+        max_length=4,
         description="Безопасная внутренняя зона бабла с учетом отступов [sx1, sy1, sx2, sy2]",
     )
     bubble_bbox: list[int] | None = Field(
         default=None,
+        max_length=4,
         description="Границы сегментированной полости бабла [bx1, by1, bx2, by2]",
     )
     lir_bbox: list[int] | None = Field(
         default=None,
+        max_length=4,
         description="Максимальный вписанный прямоугольник LIR [lx1, ly1, lx2, ly2] внутри полигона баббла (v5.4.0)",
     )
     decomp_mode: str | None = Field(
@@ -192,10 +198,12 @@ class TextBlock(BaseModel):
     )
     optical_center: list[int] | None = Field(
         default=None,
+        max_length=2,
         description="Оптический центр бабла [cx, cy] по Pole of Inaccessibility",
     )
     aspect_ratio: float | None = Field(
         default=None,
+        allow_inf_nan=False,
         description="Отношение ширины к высоте бабла",
     )
     shape_hint: str | None = Field(
@@ -220,12 +228,14 @@ class TextBlock(BaseModel):
     )
     tail_vector: list[float] | None = Field(
         default=None,
+        max_length=2,
         description="Единичный вектор направления хвостика баббла [tail_dx, tail_dy]",
     )
     condense_ratio: float | None = Field(
         default=None,
         ge=0.5,
         le=1.0,
+        allow_inf_nan=False,
         description="Коэффициент горизонтального анаморфного сжатия строк (0.88..1.00) при полиграфическом тайпсеттинге",
     )
     mask_dilate: int | None = Field(
@@ -312,7 +322,7 @@ class FolderTranslateRequest(BaseModel):
         default=None,
         description="Если True, добавляет в самое начало системного промпта для DeepSeek усиленный анти-цензурный блок",
     )
-    selected_files: list[str] | None = Field(default=None)
+    selected_files: list[str] | None = Field(default=None, max_length=5000)
     open_when_done: bool = Field(default=True)
 
 
@@ -364,12 +374,12 @@ class PageFileTranslateRequest(BaseModel):
 
 class DeleteModelRequest(BaseModel):
     model_id: str = Field(description="ID или тег модели (например, 'ollama::qwen3:14b' или 'yolo26_seg')")
-    category: str = Field(default="auto", description="'ollama', 'local_weights' или 'auto'")
+    category: Literal["auto", "ollama", "local_weights"] = Field(default="auto", description="'ollama', 'local_weights' или 'auto'")
     delete_gguf_cache: bool = Field(default=True, description="Удалять ли также скачанный .gguf файл из models/gguf/")
 
 
 class ModelStackActionRequest(BaseModel):
-    action: str = Field(
+    action: Literal["apply_only", "apply_and_set_default", "save_preset", "delete_preset"] = Field(
         default="apply_and_set_default",
         description="'apply_only', 'apply_and_set_default', 'save_preset', 'delete_preset'",
     )
@@ -543,16 +553,18 @@ class ShortenBlockTextRequest(BaseModel):
     return_image: bool = Field(default=True)
     prefer_url: bool = Field(default=True)
     image_format: str = Field(default="webp")
-    blocks: list[TextBlock] = Field(default_factory=list)
+    blocks: list[TextBlock] = Field(default_factory=list, max_length=500)
 
 
 class GlossarySaveRequest(BaseModel):
     global_glossary: list[dict[str, Any]] | None = Field(
         default=None,
+        max_length=5000,
         description="Полный список записей глобального глоссария (config.json)",
     )
     folder_glossary: list[dict[str, Any]] | None = Field(
         default=None,
+        max_length=5000,
         description="Полный список записей локального глоссария выбранной главы (.translation_state.json)",
     )
     folder_path: str | None = Field(
@@ -562,9 +574,10 @@ class GlossarySaveRequest(BaseModel):
     target_lang: str = Field(default="en")
     import_text: str | None = Field(
         default=None,
+        max_length=2_000_000,
         description="Сырой текст для импорта (.json, .tsv или формат Sakura `термин->перевод #примечание`)",
     )
-    import_scope: str = Field(
+    import_scope: Literal["global", "folder", "both"] = Field(
         default="both",
         description="Куда импортировать записи из import_text: 'global', 'folder' или 'both'",
     )
@@ -577,10 +590,10 @@ class GlossarySaveRequest(BaseModel):
 class FolderFindReplaceRequest(BaseModel):
     folder_path: str = Field(description="Путь к папке главы манги")
     target_lang: str = Field(default="en")
-    find_text: str = Field(description="Искомая подстрока (например, имя персонажа или термин)")
-    replace_text: str = Field(default="", description="Текст замены")
+    find_text: str = Field(max_length=2000, description="Искомая подстрока (например, имя персонажа или термин)")
+    replace_text: str = Field(default="", max_length=2000, description="Текст замены")
     match_case: bool = Field(default=False, description="Учитывать ли регистр символов при поиске и замене")
-    search_in: str = Field(
+    search_in: Literal["translated", "original"] = Field(
         default="translated",
         description="Где искать: 'translated' (в переведенном тексте) или 'original' (в японском/корейском оригинале)",
     )
@@ -626,19 +639,20 @@ class ChapterBookProofreadRequest(BaseModel):
 class UxEventItem(BaseModel):
     event_type: str = Field(
         default="button_click",
+        max_length=64,
         description="Тип события: button_click, control_change, hotkey_use, canvas_action, text_edit, dwell_tick",
     )
-    action_id: str = Field(default="", description="Уникальный ключ элемента или действия")
-    label: str = Field(default="", description="Понятное название нажатой кнопки или действия")
-    zone: str = Field(default="other", description="Зона интерфейса, где произошло действие")
-    feature_key: str | None = Field(default=None, description="Ключ из KNOWN_UI_FEATURES_CATALOG")
-    hotkey: str | None = Field(default=None, description="Нажатая комбинация клавиш, если это hotkey_use")
+    action_id: str = Field(default="", max_length=256, description="Уникальный ключ элемента или действия")
+    label: str = Field(default="", max_length=512, description="Понятное название нажатой кнопки или действия")
+    zone: str = Field(default="other", max_length=64, description="Зона интерфейса, где произошло действие")
+    feature_key: str | None = Field(default=None, max_length=128, description="Ключ из KNOWN_UI_FEATURES_CATALOG")
+    hotkey: str | None = Field(default=None, max_length=64, description="Нажатая комбинация клавиш, если это hotkey_use")
     meta: dict[str, Any] | None = Field(default=None, description="Дополнительные параметры (режим докинга, вид и т.д.)")
     timestamp_ms: int | None = Field(default=None)
 
 
 class UxEventsBatchRequest(BaseModel):
     events: list[UxEventItem] = Field(default_factory=list, max_length=500)
-    active_dock_mode: str | None = Field(default=None)
-    active_view_mode: str | None = Field(default=None)
-    elapsed_active_sec: float = Field(default=0.0, description="Активное время работы пользователя за батч (сек)")
+    active_dock_mode: str | None = Field(default=None, max_length=64)
+    active_view_mode: str | None = Field(default=None, max_length=64)
+    elapsed_active_sec: float = Field(default=0.0, ge=0.0, le=86400.0, allow_inf_nan=False, description="Активное время работы пользователя за батч (сек)")

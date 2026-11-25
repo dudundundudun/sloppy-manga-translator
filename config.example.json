@@ -1,10 +1,20 @@
 {
+  "filter_v109_migrated": true,
   "unsloth_url": "https://moduleapi.pro/v1",
   "unsloth_api_key": "",
   "selected_model": "auto",
   "translation_profile": "balanced",
+  "pipeline_mode": "balanced",
+  "use_image_context": false,
   "local_fallback_model_multilang": "auto",
+  "anti_censorship_prompt": false,
+  "anti_censorship_custom_prompt": "",
+  "preflight_nsfw_split": true,
+  "cloud_only_no_local_fallback": false,
+  "cloud_fallback_model": "auto",
+  "ultra_proofread_mode": "selective",
   "auto_save_web_pages": true,
+  "auto_export_chapter_book": false,
   "web_save_dir": "Saved_Manga",
   "text_filter_mode": "bubbles_only",
   "skip_sighs": false,
@@ -14,6 +24,7 @@
   "min_font_size": 12,
   "max_font_size": 32,
   "uppercase": false,
+  "overflow_mode": "shrink",
   "batch_pages": 15,
   "ui_settings": {
     "editor_dock_mode": "right",
@@ -29,8 +40,12 @@
     "left_sidebar_width": 360,
     "auto_save_after_idle": true
   },
-  "overflow_mode": "shrink",
-  "filter_v109_migrated": true,
-  "anti_censorship_prompt": false,
-  "anti_censorship_custom_prompt": ""
+  "glossary": [],
+  "default_model_stack": {
+    "pipeline_mode": "balanced",
+    "translation_profile": "balanced",
+    "translation_model": "auto",
+    "local_fallback_model_multilang": "auto"
+  },
+  "saved_model_stacks": []
 }

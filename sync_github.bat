@@ -1,4 +1,5 @@
 @echo off
+setlocal
 title Miko-chan Manga Studio v6.1.0 - GitHub Quick Sync
 cd /d "%~dp0"
 
@@ -21,7 +22,7 @@ if errorlevel 1 (
     exit /b 1
 )
 
-if exist "EN" del /f /q "EN"
+if exist "EN" if not exist "EN\" del /f /q "EN"
 git check-ignore -q config.json
 if errorlevel 1 (
     echo [ERROR] config.json is NOT ignored by .gitignore! Aborting.
@@ -38,6 +39,7 @@ git status --short
 echo.
 set "CONFIRM="
 set /p "CONFIRM=Review git status above. Stage tracked changes and push? [y/N]: "
+if defined CONFIRM set "CONFIRM=%CONFIRM:"=%"
 if /i not "%CONFIRM%"=="y" (
     echo [CANCELLED] Aborted by user.
     pause

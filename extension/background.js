@@ -60,12 +60,14 @@ function isSafeRemoteImageUrl(urlStr) {
       return false;
     }
     if (
-      host === "::1" ||
-      host === "::" ||
-      host.startsWith("fe80:") ||
-      host.startsWith("fc") ||
-      host.startsWith("fd") ||
-      host.includes("::ffff:")
+      host.includes(":") &&
+      (
+        host === "::1" ||
+        host === "::" ||
+        host.startsWith("fe80:") ||
+        /^f[cd][0-9a-f]{2}:/i.test(host) ||
+        host.includes("::ffff:")
+      )
     ) {
       return false;
     }
@@ -326,11 +328,31 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             sendResponse({ ok: false, error: "Некорректный origin для разрешения CORS" });
             break;
           }
-          let granted = await chrome.permissions.contains({ origins: [pattern] });
-          if (!granted) {
-            granted = await chrome.permissions.request({ origins: [pattern] });
+          const granted = await chrome.permissions.contains({ origins: [pattern] });
+          if (granted) {
+            sendResponse({ ok: true, data: { granted: true, originPattern: pattern } });
+            break;
           }
-          sendResponse({ ok: true, data: { granted: Boolean(granted), originPattern: pattern } });
+          const grantUrl = `${chrome.runtime.getURL("grant.html")}?origin=${encodeURIComponent(pattern)}`;
+          try {
+            if (chrome.windows && chrome.windows.create) {
+              await chrome.windows.create({
+                url: grantUrl,
+                type: "popup",
+                width: 460,
+                height: 280,
+                focused: true,
+              });
+            } else {
+              await chrome.tabs.create({ url: grantUrl });
+            }
+          } catch (_) {
+            await chrome.tabs.create({ url: grantUrl });
+          }
+          sendResponse({
+            ok: true,
+            data: { granted: false, pendingPrompt: true, originPattern: pattern },
+          });
           break;
         }
 
@@ -353,6 +375,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
                 cancelled += 1;
               }
             }
+          }
+          if (cancelled > 0 || !msg.requestId) {
+            callLocalServer(
+              "/folder_control",
+              {
+                method: "POST",
+                body: JSON.stringify({ action: "abort_request" }),
+              },
+              2500
+            ).catch(() => {});
           }
           sendResponse({ ok: true, data: { cancelled } });
           break;
@@ -403,7 +435,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
             payload.auto_save_web_pages = Boolean(msg.autoSaveWeb);
           }
           if (msg.webSaveDir !== undefined) {
-            payload.web_save_dir = msg.webSaveDir || null;
+            payload.web_save_dir = typeof msg.webSaveDir === "string" ? msg.webSaveDir.trim() : "";
           }
           if (typeof msg.textFilterMode === "string" && msg.textFilterMode) {
             payload.text_filter_mode = msg.textFilterMode;

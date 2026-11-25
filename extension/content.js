@@ -1484,6 +1484,8 @@
       });
       if (res && res.ok && res.data && res.data.granted) {
         statusText.textContent = `🔓 Доступ CORS разрешён для ${location.host}!`;
+      } else if (res && res.ok && res.data && res.data.pendingPrompt) {
+        statusText.textContent = "🪟 Подтвердите CORS-доступ в открывшемся окне...";
       } else {
         statusText.textContent = `⚠️ ${(res && res.error) || "Доступ не выдан пользователем"}`;
       }
@@ -2255,9 +2257,9 @@
     const curSrc = (el.getAttribute("src") || el.currentSrc || el.src || "").trim();
     if (!curSrc) return false;
     if (
-      curSrc === st.translatedObjectUrl ||
-      curSrc === st.translatedDataUrl ||
-      curSrc === st.originalSrc
+      (st.translatedObjectUrl && curSrc === st.translatedObjectUrl) ||
+      (st.translatedDataUrl && curSrc === st.translatedDataUrl) ||
+      (st.originalSrc && curSrc === st.originalSrc)
     ) {
       return false;
     }
@@ -2406,11 +2408,29 @@
     return pageNum;
   }
 
+  async function blobUrlToDataUrl(blobUrl) {
+    if (!blobUrl || typeof blobUrl !== "string" || !blobUrl.startsWith("blob:")) return null;
+    try {
+      const res = await fetch(blobUrl);
+      if (!res.ok) return null;
+      const blob = await res.blob();
+      if (!blob || blob.size < 16) return null;
+      return await new Promise((resolve) => {
+        const reader = new FileReader();
+        reader.onloadend = () => resolve(typeof reader.result === "string" ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(blob);
+      });
+    } catch (_) {
+      return null;
+    }
+  }
+
   async function translateSingleImage(el, badge, explicitPageIndex = null) {
     resetElementStateIfSrcChanged(el);
     const st = getMediaState(el);
     if (st.busy) return { ok: false, skipped: true };
-    const srcUrl = st.isCanvas ? location.href : resolveImageUrl(el);
+    const srcUrl = st.isCanvas ? location.href : (st.originalSrc || resolveImageUrl(el));
     if (!srcUrl && !st.isCanvas) return { ok: false, error: "Пустой URL картинки" };
 
     const pageIndex = explicitPageIndex || resolveCandidatePageIndex(el);
@@ -2427,18 +2447,24 @@
     activeTranslateRequestId = reqId;
     try {
       const isRetranslate = Boolean(st.translated);
-      let imageB64 = isRetranslate ? (st.originalBase64 || null) : tryExtractCanvasBase64(el);
-      if (imageB64 && !st.originalBase64 && !isRetranslate) {
-        st.originalBase64 = imageB64;
-      }
+      let imageB64 = st.isCanvas
+        ? (isRetranslate
+            ? (st.originalBase64 || (st.originalBlobUrl ? await blobUrlToDataUrl(st.originalBlobUrl) : null))
+            : tryExtractCanvasBase64(el))
+        : null;
       if (st.isCanvas && imageB64 && !st.originalBlobUrl) {
         st.originalBlobUrl = dataUrlToBlobUrl(imageB64);
       }
+      if (st.isCanvas && st.originalBlobUrl && st.originalBlobUrl.startsWith("blob:")) {
+        st.originalBase64 = "";
+      } else if (imageB64 && !st.originalBase64 && !isRetranslate) {
+        st.originalBase64 = imageB64;
+      }
       if (!imageB64 && !st.isCanvas && srcUrl) {
         imageB64 = await tryFetchInPageContext(srcUrl);
-        if (imageB64 && !st.originalBase64) {
-          st.originalBase64 = imageB64;
-        }
+      }
+      if (!st.isCanvas) {
+        st.originalBase64 = "";
       }
 
       const response = await safeSendMessage({
@@ -2486,7 +2512,7 @@
       if (st.translatedObjectUrl) {
         revokeManagedUrl(st.translatedObjectUrl);
       }
-      st.translatedDataUrl = finalDataUrl;
+      st.translatedDataUrl = nextObjUrl.startsWith("blob:") ? "" : finalDataUrl;
       st.translatedObjectUrl = nextObjUrl;
       st.translated = true;
 
@@ -2959,6 +2985,12 @@
         folderProgressText.textContent = `❌ Ошибка: ${st.error}`;
         folderBtn.disabled = false;
         folderStopBtn.style.display = "none";
+      } else if (st.status === "idle") {
+        clearInterval(folderPollTimer);
+        folderPollTimer = null;
+        folderProgressWrap.style.display = "none";
+        folderBtn.disabled = false;
+        folderStopBtn.style.display = "none";
       }
     }, 1000);
   }
@@ -3116,7 +3148,30 @@
     window.removeEventListener("mousemove", onGlobalPointerMove);
     window.removeEventListener("mousemove", onWindowMouseMove);
     window.removeEventListener("mouseup", onWindowMouseUp);
-    trackedImages.forEach((el) => cleanupDisconnectedElement(el));
+    const deferredRevokeUrls = new Set();
+    Array.from(trackedImages).forEach((el) => {
+      const st = imgStateMap.get(el);
+      if (el.isConnected && st && st.translated) {
+        if (st.isCanvas) {
+          const origBlob = st.originalBlobUrl;
+          if (origBlob) {
+            deferredRevokeUrls.add(origBlob);
+            activeObjectUrls.delete(origBlob);
+            st.originalBlobUrl = "";
+            drawObjectUrlToCanvas(el, origBlob)
+              .catch(() => {})
+              .finally(() => revokeManagedUrl(origBlob));
+          }
+        } else if (st.originalSrc) {
+          el.src = st.originalSrc;
+          if (st.originalSrcset) {
+            el.setAttribute("srcset", st.originalSrcset);
+          }
+          restorePictureSources(el, st);
+        }
+      }
+      cleanupDisconnectedElement(el);
+    });
     hookedLoadTargets.forEach((el) => {
       const st = imgStateMap.get(el);
       if (st && Array.isArray(st.listeners)) {
@@ -3129,7 +3184,9 @@
     hookedLoadTargets.clear();
     visibleTrackedImages.clear();
     trackedImages.clear();
-    Array.from(activeObjectUrls).forEach((url) => revokeManagedUrl(url));
+    Array.from(activeObjectUrls).forEach((url) => {
+      if (!deferredRevokeUrls.has(url)) revokeManagedUrl(url);
+    });
     activeObjectUrls.clear();
     if (scrollScanTimer) clearTimeout(scrollScanTimer);
     if (mutationScanTimer) clearTimeout(mutationScanTimer);

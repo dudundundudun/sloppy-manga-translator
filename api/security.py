@@ -148,13 +148,14 @@ def _is_trusted_referer(referer: str | None) -> bool:
 
 
 def _reject_unc_path(raw_path: str | None, field_name: str = "path") -> None:
-    """Блокирует сетевые UNC-пути (NTLM-утечки) и NUL-байты во входных путях."""
+    """Блокирует сетевые UNC-пути (NTLM-утечки, включая смешанные слэши) и NUL-байты во входных путях."""
     if raw_path is None:
         return
     s = str(raw_path).strip()
     if not s:
         return
-    if "\x00" in s or s.startswith("\\\\") or s.startswith("//") or s.lower().startswith("\\\\?\\unc\\"):
+    norm = s.replace("/", "\\")
+    if "\x00" in s or norm.startswith("\\\\"):
         raise HTTPException(
             status_code=400,
             detail=f"Сетевые UNC-пути и недопустимые символы в '{field_name}' запрещены.",
@@ -216,13 +217,11 @@ def _is_blocked_ip(ip_obj: ipaddress.IPv4Address | ipaddress.IPv6Address) -> boo
     )
 
 
-def _validate_remote_image_url(raw_url: str) -> str:
-    url_str = (raw_url or "").strip()
-    parsed = urlparse(url_str)
-    scheme = (parsed.scheme or "").lower()
-    if scheme not in ("http", "https"):
-        raise ValueError("Разрешены только HTTP и HTTPS ссылки на изображения.")
-    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+def _resolve_and_validate_host_ips(raw_host: str, port: int) -> list[str]:
+    """Проверяет домен/IP и возвращает список разрешенных публичных IP-адресов (без локальных/приватных)."""
+    hostname = (raw_host or "").strip().lower().rstrip(".")
+    if hostname.startswith("[") and hostname.endswith("]"):
+        hostname = hostname[1:-1]
     if not hostname:
         raise ValueError("URL изображения не содержит корректного домена.")
     if hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
@@ -236,9 +235,8 @@ def _validate_remote_image_url(raw_url: str) -> str:
     if literal_ip is not None:
         if _is_blocked_ip(literal_ip):
             raise ValueError("Доступ к локальным и приватным IP-адресам запрещен.")
-        return url_str
+        return [str(literal_ip)]
 
-    port = parsed.port or (443 if scheme == "https" else 80)
     try:
         addr_infos = socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM)
     except OSError as exc:
@@ -247,6 +245,7 @@ def _validate_remote_image_url(raw_url: str) -> str:
     if not addr_infos:
         raise ValueError(f"Домен '{hostname}' не вернул IP-адресов.")
 
+    validated_ips: list[str] = []
     for info in addr_infos:
         sockaddr = info[4]
         if not sockaddr:
@@ -258,7 +257,87 @@ def _validate_remote_image_url(raw_url: str) -> str:
             raise ValueError(f"Некорректный IP-адрес '{ip_str}' для '{hostname}'.") from exc
         if _is_blocked_ip(resolved_ip):
             raise ValueError("Доступ к локальным и приватным IP-адресам запрещен.")
+        norm_ip = str(resolved_ip)
+        if norm_ip not in validated_ips:
+            validated_ips.append(norm_ip)
+    if not validated_ips:
+        raise ValueError(f"Домен '{hostname}' не вернул корректных IP-адресов.")
+    return validated_ips
+
+
+def _validate_remote_image_url(raw_url: str) -> str:
+    url_str = (raw_url or "").strip()
+    parsed = urlparse(url_str)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        raise ValueError("Разрешены только HTTP и HTTPS ссылки на изображения.")
+    hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+    if not hostname:
+        raise ValueError("URL изображения не содержит корректного домена.")
+    port = parsed.port or (443 if scheme == "https" else 80)
+    _resolve_and_validate_host_ips(hostname, port)
     return url_str
+
+
+try:
+    import httpcore  # type: ignore
+
+    class _SSRFGuardedNetworkBackend(httpcore.AsyncNetworkBackend):
+        """Сетевой бэкенд httpcore с проверкой и пиннингом IP до установки TCP-соединения (защита от DNS-rebinding)."""
+
+        def __init__(self) -> None:
+            self._inner = httpcore.AnyIOBackend()
+
+        async def connect_tcp(
+            self,
+            host: str,
+            port: int,
+            timeout: float | None = None,
+            local_address: str | None = None,
+            socket_options: Iterable[object] | None = None,
+        ) -> httpcore.AsyncNetworkStream:
+            validated_ips = await asyncio.to_thread(_resolve_and_validate_host_ips, host, port)
+            last_exc: Exception | None = None
+            for target_ip in validated_ips:
+                try:
+                    return await self._inner.connect_tcp(
+                        host=target_ip,
+                        port=port,
+                        timeout=timeout,
+                        local_address=local_address,
+                        socket_options=socket_options,
+                    )
+                except Exception as exc:
+                    last_exc = exc
+            if last_exc is not None:
+                raise last_exc
+            raise ValueError("Не удалось подключиться ни к одному проверенному IP-адресу.")
+
+        async def connect_unix_socket(
+            self,
+            path: str,
+            timeout: float | None = None,
+            socket_options: Iterable[object] | None = None,
+        ) -> httpcore.AsyncNetworkStream:
+            raise ValueError("Доступ к Unix-сокетам запрещен.")
+
+        async def sleep(self, seconds: float) -> None:
+            await self._inner.sleep(seconds)
+
+    class _SSRFGuardedAsyncTransport(httpx.AsyncHTTPTransport):
+        """HTTP-транспорт httpx с принудительным IP-пиннингом против DNS-rebinding TOCTOU."""
+
+        def __init__(self) -> None:
+            super().__init__(trust_env=False)
+            ssl_ctx = httpx.create_ssl_context(verify=True, trust_env=False)
+            self._pool = httpcore.AsyncConnectionPool(
+                ssl_context=ssl_ctx,
+                network_backend=_SSRFGuardedNetworkBackend(),
+            )
+
+except Exception:
+    _SSRFGuardedNetworkBackend = None  # type: ignore[assignment,misc]
+    _SSRFGuardedAsyncTransport = None  # type: ignore[assignment,misc]
 
 
 async def _download_remote_image_bytes(
@@ -268,13 +347,20 @@ async def _download_remote_image_bytes(
     max_redirects: int = _MAX_REMOTE_IMAGE_REDIRECTS,
 ) -> bytes:
     current_url = await asyncio.to_thread(_validate_remote_image_url, image_url)
-    async with httpx.AsyncClient(trust_env=False, follow_redirects=False, timeout=30.0) as dl_client:
+    client_kwargs: dict[str, object] = {
+        "trust_env": False,
+        "follow_redirects": False,
+        "timeout": 30.0,
+    }
+    if _SSRFGuardedAsyncTransport is not None:
+        client_kwargs["transport"] = _SSRFGuardedAsyncTransport()
+    async with httpx.AsyncClient(**client_kwargs) as dl_client:  # type: ignore[arg-type]
         for _hop in range(max_redirects + 1):
             async with dl_client.stream("GET", current_url, headers=headers) as dl_resp:
                 exts = getattr(dl_resp, "extensions", None)
                 net_stream = exts.get("network_stream") if isinstance(exts, dict) else None
                 if net_stream is not None and hasattr(net_stream, "get_extra_info"):
-                    peer = net_stream.get_extra_info("peername")
+                    peer = net_stream.get_extra_info("server_addr") or net_stream.get_extra_info("peername")
                     if peer and isinstance(peer, (tuple, list)) and peer[0]:
                         peer_ip = ipaddress.ip_address(str(peer[0]).split("%", 1)[0])
                         if _is_blocked_ip(peer_ip):
