@@ -1,0 +1,458 @@
+use crate::prompts::{
+    build_translation_prompts, compute_translation_cache_key, detect_source_language,
+    is_refusal_response, kana_to_romaji, parse_flat_json_translations,
+};
+use crate::EndpointCircuitBreaker;
+use miko_core::{GlossaryEntry, StudioDb, TextBlock};
+use serde::Deserialize;
+use serde_json::{json, Value};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+pub enum TranslatorError {
+    #[error("Ошибка HTTP-запроса к LLM: {0}")]
+    Http(#[from] reqwest::Error),
+    #[error("LLM-сервер вернул статус {status}: {body}")]
+    ApiStatus { status: u16, body: String },
+    #[error("Не удалось получить переводы (сервер недоступен или вернул отказ)")]
+    UnavailableOrRefused,
+}
+
+#[derive(Debug, Clone)]
+pub struct TranslateBatchRequest {
+    pub blocks: Vec<TextBlock>,
+    pub target_lang: String,
+    pub model: String,
+    pub cloud_url: String,
+    pub cloud_api_key: String,
+    pub glossary: Vec<GlossaryEntry>,
+    pub context_lines: Vec<String>,
+    pub anti_censorship: bool,
+    pub use_cache: bool,
+}
+
+impl Default for TranslateBatchRequest {
+    fn default() -> Self {
+        Self {
+            blocks: Vec::new(),
+            target_lang: "ru".to_string(),
+            model: "auto".to_string(),
+            cloud_url: String::new(),
+            cloud_api_key: String::new(),
+            glossary: Vec::new(),
+            context_lines: Vec::new(),
+            anti_censorship: false,
+            use_cache: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct TranslateBatchResult {
+    pub blocks: Vec<TextBlock>,
+    pub active_model: String,
+    pub detected_lang: String,
+    pub cache_hits: usize,
+    pub api_calls: usize,
+    pub elapsed_ms: u128,
+}
+
+/// Нативный async HTTP-переводчик манги (OpenAI-compatible Cloud + Local Ollama + SQLite WAL).
+pub struct RustTranslator {
+    http_cloud: reqwest::Client,
+    http_local: reqwest::Client,
+    ollama_base_url: String,
+    cloud_breaker: EndpointCircuitBreaker,
+    ollama_breaker: EndpointCircuitBreaker,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagsResp {
+    models: Option<Vec<OllamaTagItem>>,
+}
+
+#[derive(Deserialize)]
+struct OllamaTagItem {
+    name: String,
+}
+
+impl RustTranslator {
+    pub fn new(ollama_base_url: Option<String>) -> Self {
+        let base = ollama_base_url
+            .unwrap_or_else(|| "http://127.0.0.1:11434".to_string())
+            .trim_end_matches('/')
+            .to_string();
+
+        let http_cloud = reqwest::Client::builder()
+            .timeout(Duration::from_secs(45))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        let http_local = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(60))
+            .build()
+            .unwrap_or_else(|_| reqwest::Client::new());
+
+        Self {
+            http_cloud,
+            http_local,
+            ollama_base_url: base,
+            cloud_breaker: EndpointCircuitBreaker::new(3, Duration::from_secs(45)),
+            ollama_breaker: EndpointCircuitBreaker::new(3, Duration::from_secs(30)),
+        }
+    }
+
+    pub fn ollama_base_url(&self) -> &str {
+        &self.ollama_base_url
+    }
+
+    /// Возвращает список установленных моделей в локальной Ollama (пустой вектор, если выключена).
+    pub async fn list_ollama_models(&self) -> Vec<String> {
+        let url = format!("{}/api/tags", self.ollama_base_url);
+        let Ok(resp) = self
+            .http_local
+            .get(url)
+            .timeout(Duration::from_secs(2))
+            .send()
+            .await
+        else {
+            return Vec::new();
+        };
+        if !resp.status().is_success() {
+            return Vec::new();
+        }
+        let Ok(parsed) = resp.json::<OllamaTagsResp>().await else {
+            return Vec::new();
+        };
+        parsed
+            .models
+            .unwrap_or_default()
+            .into_iter()
+            .map(|m| m.name)
+            .collect()
+    }
+
+    async fn call_cloud_openai(
+        &self,
+        cloud_url: &str,
+        api_key: &str,
+        model: &str,
+        sys_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, TranslatorError> {
+        let endpoint = format!("{}/chat/completions", cloud_url.trim_end_matches('/'));
+        let body = json!({
+            "model": model,
+            "temperature": 0.25,
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        });
+
+        let mut req = self.http_cloud.post(endpoint).json(&body);
+        if !api_key.trim().is_empty() {
+            req = req.bearer_auth(api_key.trim());
+        }
+        let resp = req.send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(TranslatorError::ApiStatus { status, body: txt });
+        }
+        let val: Value = resp.json().await?;
+        let content = val["choices"][0]["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string();
+        if is_refusal_response(&content) {
+            return Err(TranslatorError::UnavailableOrRefused);
+        }
+        Ok(content)
+    }
+
+    async fn call_ollama_chat(
+        &self,
+        model: &str,
+        sys_prompt: &str,
+        user_prompt: &str,
+    ) -> Result<String, TranslatorError> {
+        let endpoint = format!("{}/api/chat", self.ollama_base_url);
+        let body = json!({
+            "model": model,
+            "stream": false,
+            "format": "json",
+            "options": {"temperature": 0.25},
+            "messages": [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt}
+            ]
+        });
+        let resp = self.http_local.post(endpoint).json(&body).send().await?;
+        let status = resp.status().as_u16();
+        if !resp.status().is_success() {
+            let txt = resp.text().await.unwrap_or_default();
+            return Err(TranslatorError::ApiStatus { status, body: txt });
+        }
+        let val: Value = resp.json().await?;
+        Ok(val["message"]["content"]
+            .as_str()
+            .unwrap_or("")
+            .to_string())
+    }
+
+    fn resolve_cloud_model(requested: &str) -> &str {
+        let r = requested.trim();
+        if r.is_empty() || r.eq_ignore_ascii_case("auto") {
+            "deepseek-chat"
+        } else {
+            r
+        }
+    }
+
+    fn is_pure_kana_ascii(text: &str) -> bool {
+        text.chars().all(|c| {
+            let cp = c as u32;
+            (0x3040..=0x30FF).contains(&cp)
+                || c.is_ascii()
+                || matches!(c, '。' | '、' | '！' | '？' | '「' | '」' | '・' | '…')
+        })
+    }
+
+    /// Переводит список блоков с детекцией языка, SQLite-кэшем, батчингом и Cloud->Ollama фоллбэком.
+    pub async fn translate_blocks(
+        &self,
+        req: TranslateBatchRequest,
+        db: Option<&StudioDb>,
+    ) -> Result<TranslateBatchResult, TranslatorError> {
+        let t0 = Instant::now();
+        let mut blocks = req.blocks;
+        let t_lang = req.target_lang.trim().to_ascii_lowercase();
+        let all_texts: Vec<String> = blocks
+            .iter()
+            .filter(|b| !b.is_deleted && !b.original_text.trim().is_empty())
+            .map(|b| b.original_text.clone())
+            .collect();
+        let detected_lang = detect_source_language(&all_texts).to_string();
+
+        let has_cloud = !req.cloud_url.trim().is_empty() && !self.cloud_breaker.is_open();
+        let cloud_model = Self::resolve_cloud_model(&req.model).to_string();
+        let mut active_model = if has_cloud {
+            cloud_model.clone()
+        } else if !req.model.trim().is_empty() && !req.model.trim().eq_ignore_ascii_case("auto") {
+            req.model.trim().to_string()
+        } else {
+            "sugoi-14b-ultra".to_string()
+        };
+
+        let mut cache_hits = 0usize;
+        let mut api_calls = 0usize;
+        let mut missing_indices: Vec<usize> = Vec::new();
+
+        for (idx, blk) in blocks.iter_mut().enumerate() {
+            if blk.is_deleted {
+                continue;
+            }
+            let src = blk.original_text.trim().to_string();
+            if src.is_empty() {
+                continue;
+            }
+
+            // Всегда заполняем быстрый romaji для японской каны, если поле пустое
+            if blk.romaji_text.trim().is_empty() && Self::is_pure_kana_ascii(&src) {
+                blk.romaji_text = kana_to_romaji(&src);
+            }
+
+            if t_lang == "romaji" && Self::is_pure_kana_ascii(&src) {
+                blk.translated_text = kana_to_romaji(&src);
+                blk.romaji_text = blk.translated_text.clone();
+                cache_hits += 1;
+                continue;
+            }
+
+            if req.use_cache {
+                if let Some(store) = db {
+                    let ckey =
+                        compute_translation_cache_key(&src, &t_lang, &active_model, &req.glossary);
+                    if let Ok(Some(cached)) = store.get_cached_translation(&ckey) {
+                        if !cached.trim().is_empty() {
+                            blk.translated_text = cached;
+                            cache_hits += 1;
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            missing_indices.push(idx);
+        }
+
+        if !missing_indices.is_empty() {
+            let chunk_size = 18usize;
+            for chunk in missing_indices.chunks(chunk_size) {
+                let mut items = Vec::with_capacity(chunk.len());
+                let mut expected_keys = Vec::with_capacity(chunk.len());
+                for (pos, &b_idx) in chunk.iter().enumerate() {
+                    let k = pos.to_string();
+                    expected_keys.push(k.clone());
+                    let b = &blocks[b_idx];
+                    let bw = (b.bbox[2] - b.bbox[0]).max(20) as usize;
+                    let bh = (b.bbox[3] - b.bbox[1]).max(20) as usize;
+                    let budget = Some(((bw * bh) / 380).clamp(18, 95));
+                    items.push((k, b.original_text.trim().to_string(), budget));
+                }
+
+                let (sys_p, user_p) = build_translation_prompts(
+                    &t_lang,
+                    &items,
+                    &req.glossary,
+                    &req.context_lines,
+                    req.anti_censorship,
+                );
+
+                let mut parsed_map: HashMap<String, String> = HashMap::new();
+                if has_cloud && !self.cloud_breaker.is_open() {
+                    api_calls += 1;
+                    match self
+                        .call_cloud_openai(
+                            &req.cloud_url,
+                            &req.cloud_api_key,
+                            &cloud_model,
+                            &sys_p,
+                            &user_p,
+                        )
+                        .await
+                    {
+                        Ok(raw) => {
+                            let m = parse_flat_json_translations(&raw, &expected_keys);
+                            if !m.is_empty() {
+                                self.cloud_breaker.record_success();
+                                active_model = cloud_model.clone();
+                                parsed_map = m;
+                            } else {
+                                self.cloud_breaker.record_failure();
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("Облачный переводчик не ответил: {}", err);
+                            self.cloud_breaker.record_failure();
+                        }
+                    }
+                }
+
+                if parsed_map.is_empty() && !self.ollama_breaker.is_open() {
+                    let ollama_model = if req.model.trim().is_empty()
+                        || req.model.trim().eq_ignore_ascii_case("auto")
+                        || req.model.starts_with("deepseek")
+                    {
+                        let tags = self.list_ollama_models().await;
+                        tags.into_iter()
+                            .next()
+                            .unwrap_or_else(|| "sugoi-14b-ultra".to_string())
+                    } else {
+                        req.model.trim().to_string()
+                    };
+                    api_calls += 1;
+                    match self.call_ollama_chat(&ollama_model, &sys_p, &user_p).await {
+                        Ok(raw) => {
+                            let m = parse_flat_json_translations(&raw, &expected_keys);
+                            if !m.is_empty() {
+                                self.ollama_breaker.record_success();
+                                active_model = ollama_model;
+                                parsed_map = m;
+                            } else {
+                                self.ollama_breaker.record_failure();
+                            }
+                        }
+                        Err(err) => {
+                            tracing::warn!("Ollama не ответила: {}", err);
+                            self.ollama_breaker.record_failure();
+                        }
+                    }
+                }
+
+                for (pos, &b_idx) in chunk.iter().enumerate() {
+                    let k = pos.to_string();
+                    if let Some(tr) = parsed_map.get(&k) {
+                        blocks[b_idx].translated_text = tr.clone();
+                        if let Some(store) = db {
+                            let ckey = compute_translation_cache_key(
+                                blocks[b_idx].original_text.trim(),
+                                &t_lang,
+                                &active_model,
+                                &req.glossary,
+                            );
+                            let _ = store.put_cached_translation(
+                                &ckey,
+                                blocks[b_idx].original_text.trim(),
+                                &t_lang,
+                                tr,
+                                &active_model,
+                            );
+                        }
+                    } else if t_lang == "romaji" {
+                        blocks[b_idx].translated_text =
+                            kana_to_romaji(blocks[b_idx].original_text.trim());
+                    }
+                }
+            }
+        }
+
+        Ok(TranslateBatchResult {
+            blocks,
+            active_model,
+            detected_lang,
+            cache_hits,
+            api_calls,
+            elapsed_ms: t0.elapsed().as_millis(),
+        })
+    }
+
+    pub async fn translate_single_text(
+        &self,
+        text: &str,
+        target_lang: &str,
+        model: &str,
+        cloud_url: &str,
+        cloud_api_key: &str,
+        glossary: &[GlossaryEntry],
+        anti_censorship: bool,
+        db: Option<&StudioDb>,
+    ) -> Result<String, TranslatorError> {
+        let blk = TextBlock {
+            id: 1,
+            bbox: [0, 0, 200, 120],
+            original_text: text.to_string(),
+            ..Default::default()
+        };
+        let res = self
+            .translate_blocks(
+                TranslateBatchRequest {
+                    blocks: vec![blk],
+                    target_lang: target_lang.to_string(),
+                    model: model.to_string(),
+                    cloud_url: cloud_url.to_string(),
+                    cloud_api_key: cloud_api_key.to_string(),
+                    glossary: glossary.to_vec(),
+                    context_lines: Vec::new(),
+                    anti_censorship,
+                    use_cache: true,
+                },
+                db,
+            )
+            .await?;
+        let translated = res
+            .blocks
+            .into_iter()
+            .next()
+            .map(|b| b.translated_text)
+            .unwrap_or_default();
+        if translated.trim().is_empty() && !text.trim().is_empty() {
+            return Err(TranslatorError::UnavailableOrRefused);
+        }
+        Ok(translated)
+    }
+}

@@ -1,0 +1,15 @@
+[package]
+name = "miko-renderer"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ab_glyph.workspace = true
+image.workspace = true
+miko-cleaner = { path = "../miko-cleaner" }
+miko-core = { path = "../miko-core" }
+regex.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
