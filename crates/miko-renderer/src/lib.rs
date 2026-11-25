@@ -182,4 +182,72 @@ mod tests {
         }
         assert!(light_in_dark > 40, "expected bright text in dark bubble, got {light_in_dark}");
     }
+
+    #[test]
+    fn test_conjoined_bubbles_with_shared_polygon_never_stack_text() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let img = image::RgbImage::from_pixel(240, 600, image::Rgb([255, 255, 255]));
+        // Один гигантский общий полигон на все 3 баббла (имитация старого состояния 005.webp)
+        let shared_poly = vec![[30, 30], [210, 30], [210, 560], [30, 560]];
+        let mut blocks = vec![
+            TextBlock {
+                id: 1,
+                bbox: [40, 30, 200, 190],
+                text_bbox: Some([55, 50, 185, 175]),
+                bubble_polygon: Some(shared_poly.clone()),
+                original_text: "俺ぁ家族の為に".into(),
+                translated_text: "I work hard for my family".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 2,
+                bbox: [40, 185, 145, 285],
+                text_bbox: Some([55, 195, 130, 275]),
+                bubble_polygon: Some(shared_poly.clone()),
+                original_text: "って?".into(),
+                translated_text: "Huh?".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 3,
+                bbox: [35, 280, 205, 560],
+                text_bbox: Some([50, 300, 190, 530]),
+                bubble_polygon: Some(shared_poly),
+                original_text: "うおおおおお?!".into(),
+                translated_text: "WHOOOOOOA?!".into(),
+                ..Default::default()
+            },
+        ];
+
+        let res = engine
+            .render_page(&img, &mut blocks, &RenderOptions::default())
+            .expect("render conjoined");
+        assert_eq!(res.blocks_rendered, 3);
+
+        // В каждом из трёх вертикальных диапазонов должен быть свой отрендеренный текст!
+        let count_ink_band = |y0: u32, y1: u32| -> usize {
+            let mut cnt = 0usize;
+            for y in y0..y1 {
+                for x in 35..205 {
+                    if res.rendered.get_pixel(x, y)[0] < 120 {
+                        cnt += 1;
+                    }
+                }
+            }
+            cnt
+        };
+        let top_ink = count_ink_band(40, 180);
+        let mid_ink = count_ink_band(190, 280);
+        let bot_ink = count_ink_band(300, 550);
+        assert!(top_ink > 30, "top bubble missing text: {top_ink}");
+        assert!(mid_ink > 15, "mid bubble missing text: {mid_ink}");
+        assert!(bot_ink > 30, "bottom bubble missing text: {bot_ink}");
+    }
 }

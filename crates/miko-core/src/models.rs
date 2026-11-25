@@ -182,6 +182,122 @@ pub fn normalize_clean_bbox(block: &mut TextBlock) {
     }
 }
 
+/// Абсолютная площадь произвольного 2D-полигона по формуле шнурования Гаусса.
+pub fn polygon_area_abs(poly: &[[i32; 2]]) -> f64 {
+    if poly.len() < 3 {
+        return 0.0;
+    }
+    let mut sum: i64 = 0;
+    let n = poly.len();
+    for i in 0..n {
+        let [x1, y1] = poly[i];
+        let [x2, y2] = poly[(i + 1) % n];
+        sum += (x1 as i64) * (y2 as i64) - (x2 as i64) * (y1 as i64);
+    }
+    (sum.abs() as f64) * 0.5
+}
+
+/// Отсекает произвольный (в т.ч. невыпуклый) полигон по осевому прямоугольнику `rect = [x1, y1, x2, y2]`
+/// методом Сазерленда–Ходжмана без превращения талии баббла в выпуклую оболочку.
+pub fn clip_polygon_to_rect(poly: &[[i32; 2]], rect: [i32; 4]) -> Vec<[i32; 2]> {
+    if poly.len() < 3 || rect[0] >= rect[2] || rect[1] >= rect[3] {
+        return Vec::new();
+    }
+    let [rx1, ry1, rx2, ry2] = [
+        rect[0] as f64,
+        rect[1] as f64,
+        rect[2] as f64,
+        rect[3] as f64,
+    ];
+
+    let clip_plane = |pts: Vec<[f64; 2]>,
+                      inside: &dyn Fn([f64; 2]) -> bool,
+                      intersect: &dyn Fn([f64; 2], [f64; 2]) -> [f64; 2]|
+     -> Vec<[f64; 2]> {
+        if pts.is_empty() {
+            return Vec::new();
+        }
+        let mut out = Vec::with_capacity(pts.len() + 4);
+        let mut prev = *pts.last().expect("non-empty");
+        let mut prev_in = inside(prev);
+        for &cur in &pts {
+            let cur_in = inside(cur);
+            if cur_in {
+                if !prev_in {
+                    out.push(intersect(prev, cur));
+                }
+                out.push(cur);
+            } else if prev_in {
+                out.push(intersect(prev, cur));
+            }
+            prev = cur;
+            prev_in = cur_in;
+        }
+        out
+    };
+
+    let mut pts: Vec<[f64; 2]> = poly.iter().map(|&[x, y]| [x as f64, y as f64]).collect();
+
+    // 1. x >= rx1
+    pts = clip_plane(
+        pts,
+        &|p| p[0] >= rx1,
+        &|a, b| {
+            let dx = b[0] - a[0];
+            let t = if dx.abs() > 1e-9 { (rx1 - a[0]) / dx } else { 0.0 };
+            [rx1, a[1] + t * (b[1] - a[1])]
+        },
+    );
+    // 2. x <= rx2
+    pts = clip_plane(
+        pts,
+        &|p| p[0] <= rx2,
+        &|a, b| {
+            let dx = b[0] - a[0];
+            let t = if dx.abs() > 1e-9 { (rx2 - a[0]) / dx } else { 0.0 };
+            [rx2, a[1] + t * (b[1] - a[1])]
+        },
+    );
+    // 3. y >= ry1
+    pts = clip_plane(
+        pts,
+        &|p| p[1] >= ry1,
+        &|a, b| {
+            let dy = b[1] - a[1];
+            let t = if dy.abs() > 1e-9 { (ry1 - a[1]) / dy } else { 0.0 };
+            [a[0] + t * (b[0] - a[0]), ry1]
+        },
+    );
+    // 4. y <= ry2
+    pts = clip_plane(
+        pts,
+        &|p| p[1] <= ry2,
+        &|a, b| {
+            let dy = b[1] - a[1];
+            let t = if dy.abs() > 1e-9 { (ry2 - a[1]) / dy } else { 0.0 };
+            [a[0] + t * (b[0] - a[0]), ry2]
+        },
+    );
+
+    let mut res: Vec<[i32; 2]> = Vec::with_capacity(pts.len());
+    for p in pts {
+        let q = [
+            p[0].round().clamp(rx1, rx2) as i32,
+            p[1].round().clamp(ry1, ry2) as i32,
+        ];
+        if res.last().copied() != Some(q) {
+            res.push(q);
+        }
+    }
+    if res.len() >= 2 && res.first() == res.last() {
+        res.pop();
+    }
+    if res.len() < 3 || polygon_area_abs(&res) < 16.0 {
+        return Vec::new();
+    }
+    res
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GlossaryEntry {
     pub src: String,
@@ -385,13 +501,18 @@ pub struct FolderJobState {
     pub status: String,
     pub total: usize,
     pub done: usize,
+    pub current: usize,
+    pub elapsed_sec: u64,
     pub current_file: String,
     pub phase: String,
     pub active_model: String,
     pub folder_path: String,
+    pub source_dir: String,
     pub output_dir: String,
+    pub target_lang: String,
     pub message: String,
     pub logs: Vec<String>,
+    pub live: serde_json::Value,
 }
 
 impl Default for FolderJobState {
@@ -400,13 +521,18 @@ impl Default for FolderJobState {
             status: "idle".to_string(),
             total: 0,
             done: 0,
+            current: 0,
+            elapsed_sec: 0,
             current_file: String::new(),
             phase: "idle".to_string(),
             active_model: String::new(),
             folder_path: String::new(),
+            source_dir: String::new(),
             output_dir: String::new(),
+            target_lang: "en".to_string(),
             message: "Готово к работе (Rust-ядро v7.0)".to_string(),
             logs: Vec::new(),
+            live: serde_json::json!({}),
         }
     }
 }

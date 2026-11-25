@@ -20,6 +20,19 @@ pub enum TranslatorError {
     UnavailableOrRefused,
 }
 
+/// Отделяет внутренний префикс провайдера (`unsloth::`, `cloud::`, `openai::`, `ollama::`) от имени модели.
+pub fn strip_model_prefix(raw: &str) -> (Option<&str>, &str) {
+    let trimmed = raw.trim();
+    for pref in ["unsloth", "cloud", "openai", "ollama"] {
+        if let Some(rest) = trimmed.strip_prefix(pref) {
+            if let Some(bare) = rest.strip_prefix("::") {
+                return (Some(pref), bare.trim());
+            }
+        }
+    }
+    (None, trimmed)
+}
+
 #[derive(Debug, Clone)]
 pub struct TranslateBatchRequest {
     pub blocks: Vec<TextBlock>,
@@ -205,12 +218,21 @@ impl RustTranslator {
     }
 
     fn resolve_cloud_model(requested: &str) -> &str {
-        let r = requested.trim();
-        if r.is_empty() || r.eq_ignore_ascii_case("auto") {
+        let (prefix, bare) = strip_model_prefix(requested);
+        if matches!(prefix, Some("ollama")) || bare.is_empty() || bare.eq_ignore_ascii_case("auto") {
             "deepseek-chat"
         } else {
-            r
+            bare
         }
+    }
+
+    fn pick_best_ollama_tag(tags: &[String]) -> Option<String> {
+        for pref in ["sugoi", "shisa", "qwen", "aya", "gemma"] {
+            if let Some(hit) = tags.iter().find(|t| t.to_ascii_lowercase().contains(pref)) {
+                return Some(hit.clone());
+            }
+        }
+        tags.first().cloned()
     }
 
     fn is_pure_kana_ascii(text: &str) -> bool {
@@ -238,12 +260,15 @@ impl RustTranslator {
             .collect();
         let detected_lang = detect_source_language(&all_texts).to_string();
 
-        let has_cloud = !req.cloud_url.trim().is_empty() && !self.cloud_breaker.is_open();
+        let (req_prefix, req_bare) = strip_model_prefix(&req.model);
+        let is_explicit_ollama = matches!(req_prefix, Some("ollama"));
+        let has_cloud =
+            !is_explicit_ollama && !req.cloud_url.trim().is_empty() && !self.cloud_breaker.is_open();
         let cloud_model = Self::resolve_cloud_model(&req.model).to_string();
         let mut active_model = if has_cloud {
             cloud_model.clone()
-        } else if !req.model.trim().is_empty() && !req.model.trim().eq_ignore_ascii_case("auto") {
-            req.model.trim().to_string()
+        } else if !req_bare.is_empty() && !req_bare.eq_ignore_ascii_case("auto") && !req_bare.starts_with("deepseek") {
+            req_bare.to_string()
         } else {
             "sugoi-14b-ultra".to_string()
         };
@@ -344,32 +369,29 @@ impl RustTranslator {
                 }
 
                 if parsed_map.is_empty() && !self.ollama_breaker.is_open() {
-                    let ollama_model = if req.model.trim().is_empty()
-                        || req.model.trim().eq_ignore_ascii_case("auto")
-                        || req.model.starts_with("deepseek")
-                    {
-                        let tags = self.list_ollama_models().await;
-                        tags.into_iter()
-                            .next()
-                            .unwrap_or_else(|| "sugoi-14b-ultra".to_string())
+                    let ollama_model_opt = if is_explicit_ollama && !req_bare.is_empty() {
+                        Some(req_bare.to_string())
                     } else {
-                        req.model.trim().to_string()
+                        let tags = self.list_ollama_models().await;
+                        Self::pick_best_ollama_tag(&tags)
                     };
-                    api_calls += 1;
-                    match self.call_ollama_chat(&ollama_model, &sys_p, &user_p).await {
-                        Ok(raw) => {
-                            let m = parse_flat_json_translations(&raw, &expected_keys);
-                            if !m.is_empty() {
-                                self.ollama_breaker.record_success();
-                                active_model = ollama_model;
-                                parsed_map = m;
-                            } else {
+                    if let Some(ollama_model) = ollama_model_opt {
+                        api_calls += 1;
+                        match self.call_ollama_chat(&ollama_model, &sys_p, &user_p).await {
+                            Ok(raw) => {
+                                let m = parse_flat_json_translations(&raw, &expected_keys);
+                                if !m.is_empty() {
+                                    self.ollama_breaker.record_success();
+                                    active_model = ollama_model;
+                                    parsed_map = m;
+                                } else {
+                                    self.ollama_breaker.record_failure();
+                                }
+                            }
+                            Err(err) => {
+                                tracing::warn!("Ollama не ответила: {}", err);
                                 self.ollama_breaker.record_failure();
                             }
-                        }
-                        Err(err) => {
-                            tracing::warn!("Ollama не ответила: {}", err);
-                            self.ollama_breaker.record_failure();
                         }
                     }
                 }

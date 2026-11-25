@@ -6,7 +6,10 @@ pub mod preprocess;
 pub mod reading_order;
 pub mod tight_ink;
 
-pub use detectors::{box_iomin, box_iou, fuse_detections, nms_boxes, BubbleDetection};
+pub use detectors::{
+    box_iomin, box_iou, fuse_detections, nms_boxes, trace_concave_scanline_polygon,
+    BalloonPolygon, BubbleDetection,
+};
 pub use filter::{
     classify_filter_reason, is_hallucinated_ocr_text, is_punct_only, FilterReason,
     OcrBackendInfo,
@@ -86,5 +89,104 @@ mod tests {
         ];
         sort_detections_reading_order(&mut dets, true);
         assert_eq!(dets[0].bbox[0], 150, "RTL должен ставить правый баббл первым");
+    }
+
+    #[test]
+    fn test_concave_scanline_and_conjoined_triple_bubble_split() {
+        // Регрессия 005.webp: 3 вертикально соприкасающихся баббла на одном общем полигоне YOLO26s-seg
+        let mut rows = Vec::new();
+        for y in 490..=1540 {
+            let (lx, rx) = if (750..=880).contains(&y) {
+                (978, 1054) // узкая талия среднего баббла #3 (справа на x=1060..1155 волосы и рамка!)
+            } else {
+                (962, 1158)
+            };
+            rows.push((y, lx, rx));
+        }
+        let concave_poly = trace_concave_scanline_polygon(&rows, 96);
+        assert!(concave_poly.len() >= 8);
+        // Проверяем, что в районе талии y=810 правая стенка не натянулась до 1158 (как делал convex_hull_2d)
+        let waist_max_x = concave_poly
+            .iter()
+            .filter(|&&[_, y]| (780..=850).contains(&y))
+            .map(|&[x, _]| x)
+            .max()
+            .unwrap_or(0);
+        assert!(
+            waist_max_x <= 1065,
+            "expected concave waist <= 1065, got {waist_max_x}"
+        );
+
+        let rt0 = vec![
+            BubbleDetection {
+                bbox: [997, 483, 1164, 789],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.92,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [974, 749, 1058, 883],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.89,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [950, 874, 1153, 1566],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.95,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+        ];
+        let rt1 = vec![
+            BubbleDetection {
+                bbox: [997, 521, 1133, 787],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.91,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [1000, 749, 1050, 871],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.88,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [950, 884, 1153, 1499],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.94,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+        ];
+        let seg = vec![BalloonPolygon {
+            bbox: [962, 490, 1158, 1542],
+            confidence: 0.90,
+            polygon: concave_poly,
+        }];
+
+        let fused = fuse_detections(rt0, rt1, vec![], vec![], &seg, 0.35, false);
+        assert_eq!(fused.len(), 3);
+        let p0 = fused[0].bubble_polygon.as_ref().expect("poly #0");
+        let p1 = fused[1].bubble_polygon.as_ref().expect("poly #1");
+        let p2 = fused[2].bubble_polygon.as_ref().expect("poly #2");
+
+        let max_y0 = p0.iter().map(|p| p[1]).max().unwrap();
+        let min_y1 = p1.iter().map(|p| p[1]).min().unwrap();
+        let max_y1 = p1.iter().map(|p| p[1]).max().unwrap();
+        let min_y2 = p2.iter().map(|p| p[1]).min().unwrap();
+        assert!(max_y0 <= 795, "top bubble leaked down to {max_y0}");
+        assert!(min_y1 >= 743 && max_y1 <= 882, "mid bubble y={min_y1}..{max_y1}");
+        assert!(min_y2 >= 870, "bottom bubble leaked up to {min_y2}");
     }
 }

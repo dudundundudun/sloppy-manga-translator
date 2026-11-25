@@ -7,9 +7,10 @@ use crate::cv::{
 use crate::disk_cache::CleanDiskCache;
 use crate::segmenter::NeuralStrokeSegmenter;
 use image::RgbImage;
-use miko_core::TextBlock;
+use miko_core::{clip_polygon_to_rect, TextBlock};
 use miko_ort::OrtError;
 use serde::Serialize;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use thiserror::Error;
@@ -103,16 +104,36 @@ fn effective_clean_bbox(blk: &TextBlock) -> [i32; 4] {
     cb
 }
 
-fn has_tract_a_polygon(blk: &TextBlock) -> bool {
-    !blk.is_free_text
-        && !blk.clean_bbox_modified
-        && blk
-            .bubble_polygon
-            .as_ref()
-            .is_some_and(|p| p.len() >= 3)
+fn clipped_block_polygon(blk: &TextBlock, img_w: i32, img_h: i32) -> Option<Vec<[i32; 2]>> {
+    if blk.is_free_text || blk.clean_bbox_modified {
+        return None;
+    }
+    let poly = blk.bubble_polygon.as_ref()?;
+    if poly.len() < 3 {
+        return None;
+    }
+    let eb = effective_clean_bbox(blk);
+    let clip_rect = [
+        (eb[0] - 8).clamp(0, (img_w - 1).max(0)),
+        (eb[1] - 8).clamp(0, (img_h - 1).max(0)),
+        (eb[2] + 8).clamp(1, img_w.max(1)),
+        (eb[3] + 8).clamp(1, img_h.max(1)),
+    ];
+    let clipped = clip_polygon_to_rect(poly, clip_rect);
+    if clipped.len() >= 3 {
+        Some(clipped)
+    } else {
+        None
+    }
 }
 
-fn block_crop_rect(blk: &TextBlock, img_w: i32, img_h: i32, pad: i32) -> [i32; 4] {
+fn block_crop_rect(
+    blk: &TextBlock,
+    clipped_poly: Option<&[[i32; 2]]>,
+    img_w: i32,
+    img_h: i32,
+    pad: i32,
+) -> [i32; 4] {
     let mut b = effective_clean_bbox(blk);
     if let Some(tb) = blk.text_bbox {
         b[0] = b[0].min(tb[0]);
@@ -120,14 +141,12 @@ fn block_crop_rect(blk: &TextBlock, img_w: i32, img_h: i32, pad: i32) -> [i32; 4
         b[2] = b[2].max(tb[2]);
         b[3] = b[3].max(tb[3]);
     }
-    if has_tract_a_polygon(blk) {
-        if let Some(ref poly) = blk.bubble_polygon {
-            for &[px, py] in poly {
-                b[0] = b[0].min(px);
-                b[1] = b[1].min(py);
-                b[2] = b[2].max(px);
-                b[3] = b[3].max(py);
-            }
+    if let Some(poly) = clipped_poly {
+        for &[px, py] in poly {
+            b[0] = b[0].min(px);
+            b[1] = b[1].min(py);
+            b[2] = b[2].max(px);
+            b[3] = b[3].max(py);
         }
     }
     let x1 = (b[0] - pad).clamp(0, (img_w - 1).max(0));
@@ -165,6 +184,242 @@ fn copy_crop_u8(plane: &[u8], full_w: usize, rect: [i32; 4]) -> Vec<u8> {
     out
 }
 
+/// Растеризует полигон баббла и доращивает полость внутри `effective_clean_bbox`,
+/// если YOLO26s-seg обрезал хвост высокого баббла (как `ああ!!` на `002.webp`), останавливаясь строго у тёмных стенок.
+fn build_effective_poly_mask(
+    crop_rgb: &[u8],
+    cw: usize,
+    ch: usize,
+    x0: i32,
+    y0: i32,
+    blk: &TextBlock,
+    local_poly: &[[i32; 2]],
+) -> Vec<u8> {
+    let mut poly_mask = fill_polygon(local_poly, cw, ch);
+    let n = cw * ch;
+    if n == 0 {
+        return poly_mask;
+    }
+
+    let eb = effective_clean_bbox(blk);
+    let bx1 = (eb[0] - x0).clamp(0, cw as i32) as usize;
+    let by1 = (eb[1] - y0).clamp(0, ch as i32) as usize;
+    let bx2 = (eb[2] - x0).clamp(bx1 as i32, cw as i32) as usize;
+    let by2 = (eb[3] - y0).clamp(by1 as i32, ch as i32) as usize;
+    if bx2 <= bx1 + 8 || by2 <= by1 + 8 {
+        return poly_mask;
+    }
+
+    let seed_eroded = erode_ellipse(&poly_mask, cw, ch, 3);
+    let seed_ref = if seed_eroded.iter().any(|&v| v > 0) {
+        &seed_eroded
+    } else {
+        &poly_mask
+    };
+    let Some((bg_rgb, _)) = compute_rgb_median_and_std(crop_rgb, seed_ref) else {
+        return poly_mask;
+    };
+    let bg_lum = rgb_lum(bg_rgb[0], bg_rgb[1], bg_rgb[2]);
+    if bg_lum < 200 {
+        return poly_mask;
+    }
+
+    // Проверяем, осталась ли часть `text_bbox` или `clean_bbox` со светлой полостью снаружи `poly_mask`
+    let check_box = blk.text_bbox.unwrap_or(eb);
+    let tx1 = (check_box[0] - x0).clamp(bx1 as i32, bx2 as i32) as usize;
+    let ty1 = (check_box[1] - y0).clamp(by1 as i32, by2 as i32) as usize;
+    let tx2 = (check_box[2] - x0).clamp(tx1 as i32, bx2 as i32) as usize;
+    let ty2 = (check_box[3] - y0).clamp(ty1 as i32, by2 as i32) as usize;
+    let mut uncovered_bright = 0usize;
+    for ry in ty1..ty2 {
+        let row = ry * cw;
+        for rx in tx1..tx2 {
+            let i = row + rx;
+            if poly_mask[i] == 0 {
+                let r = crop_rgb[i * 3];
+                let g = crop_rgb[i * 3 + 1];
+                let b = crop_rgb[i * 3 + 2];
+                if rgb_lum(r, g, b) >= 205 && rgb_l1_dist(r, g, b, bg_rgb) <= 45 {
+                    uncovered_bright += 1;
+                }
+            }
+        }
+    }
+    if uncovered_bright < 24 {
+        return poly_mask;
+    }
+
+    // 4-связный BFS по светлой полости баббла внутри `eb`, строго запертый тёмными стенками баббла
+    let mut walkable = vec![false; n];
+    for ry in by1..by2 {
+        let row = ry * cw;
+        for rx in bx1..bx2 {
+            let i = row + rx;
+            let r = crop_rgb[i * 3];
+            let g = crop_rgb[i * 3 + 1];
+            let b = crop_rgb[i * 3 + 2];
+            let lum = rgb_lum(r, g, b);
+            if lum >= 205 && rgb_l1_dist(r, g, b, bg_rgb) <= 48 {
+                walkable[i] = true;
+            }
+        }
+    }
+
+    let mut cav_flood = vec![0u8; n];
+    let mut q: VecDeque<(usize, usize)> = VecDeque::new();
+    for ry in by1..by2 {
+        let row = ry * cw;
+        for rx in bx1..bx2 {
+            let i = row + rx;
+            if seed_ref[i] > 0 && walkable[i] {
+                cav_flood[i] = 255;
+                q.push_back((rx, ry));
+            }
+        }
+    }
+    while let Some((x, y)) = q.pop_front() {
+        let nbrs = [
+            (x.wrapping_sub(1), y, x > bx1),
+            (x + 1, y, x + 1 < bx2),
+            (x, y.wrapping_sub(1), y > by1),
+            (x, y + 1, y + 1 < by2),
+        ];
+        for (nx, ny, ok) in nbrs {
+            if !ok {
+                continue;
+            }
+            let ni = ny * cw + nx;
+            if cav_flood[ni] == 0 && walkable[ni] {
+                cav_flood[ni] = 255;
+                q.push_back((nx, ny));
+            }
+        }
+    }
+
+    // Защита от открытых/облачных бабблов: если разлитая полость касается рамки `eb` слишком широко, отклоняем!
+    let mut perim_touch = 0usize;
+    for rx in bx1..bx2 {
+        if cav_flood[by1 * cw + rx] > 0 {
+            perim_touch += 1;
+        }
+        if cav_flood[(by2 - 1) * cw + rx] > 0 {
+            perim_touch += 1;
+        }
+    }
+    for ry in by1..by2 {
+        if cav_flood[ry * cw + bx1] > 0 {
+            perim_touch += 1;
+        }
+        if cav_flood[ry * cw + (bx2 - 1)] > 0 {
+            perim_touch += 1;
+        }
+    }
+    let perim_total = 2 * ((bx2 - bx1) + (by2 - by1)).max(1);
+    // У сдвоенных бабблов (005.webp) узкий белый перешеек в другой баббл даёт ~5–12% касания периметра `eb`;
+    // открытый же фон без рамки даёт > 22% касания. Порог 14% безопасно доращивает полость у перешейков!
+    if perim_touch * 100 > perim_total * 14 {
+        return poly_mask;
+    }
+
+    // Заполняем внутренние дырки внутри `cav_flood` (сами чёрные буквы `ああ!!`, полностью окружённые белой полостью)
+    let mut ext_vis = vec![false; n];
+    let mut eq: VecDeque<(usize, usize)> = VecDeque::new();
+    for x in 0..cw {
+        for &y in &[0usize, ch.saturating_sub(1)] {
+            let i = y * cw + x;
+            if cav_flood[i] == 0 && !ext_vis[i] {
+                ext_vis[i] = true;
+                eq.push_back((x, y));
+            }
+        }
+    }
+    for y in 0..ch {
+        for &x in &[0usize, cw.saturating_sub(1)] {
+            let i = y * cw + x;
+            if cav_flood[i] == 0 && !ext_vis[i] {
+                ext_vis[i] = true;
+                eq.push_back((x, y));
+            }
+        }
+    }
+    while let Some((x, y)) = eq.pop_front() {
+        let nbrs = [
+            (x.wrapping_sub(1), y, x > 0),
+            (x + 1, y, x + 1 < cw),
+            (x, y.wrapping_sub(1), y > 0),
+            (x, y + 1, y + 1 < ch),
+        ];
+        for (nx, ny, ok) in nbrs {
+            if !ok {
+                continue;
+            }
+            let ni = ny * cw + nx;
+            if !ext_vis[ni] && cav_flood[ni] == 0 {
+                ext_vis[ni] = true;
+                eq.push_back((nx, ny));
+            }
+        }
+    }
+
+    let mut cav_filled = vec![0u8; n];
+    for i in 0..n {
+        if !ext_vis[i] {
+            cav_filled[i] = 255;
+        }
+    }
+    // Лёгкое расширение на 1px, чтобы `erode_ellipse` в `build_tract_a_crop_mask` отступил ровно от чёрной стенки
+    let cav_padded = dilate_ellipse(&cav_filled, cw, ch, 1);
+    for i in 0..n {
+        if cav_padded[i] > 0 {
+            poly_mask[i] = 255;
+        }
+    }
+    poly_mask
+}
+
+/// Вычисляет робастный цвет и признак однородности плоского баббла, игнорируя <= 20% краевых антиалиас-пикселей,
+/// чтобы чистые белые/однотонные бабблы никогда не проваливались в размытие Лапласа (`inpaint_laplace_sor`).
+fn evaluate_flat_bubble_bg(crop_rgb: &[u8], selector: &[u8]) -> ([u8; 3], bool) {
+    let Some((mut bg_rgb, bg_std)) = compute_rgb_median_and_std(crop_rgb, selector) else {
+        return ([255, 255, 255], true);
+    };
+    let mut total = 0usize;
+    let mut inliers = 0usize;
+    let mut sum_lum = 0.0f64;
+    let mut sum_lum_sq = 0.0f64;
+    for (i, &sel) in selector.iter().enumerate() {
+        if sel == 0 {
+            continue;
+        }
+        total += 1;
+        let r = crop_rgb[i * 3];
+        let g = crop_rgb[i * 3 + 1];
+        let b = crop_rgb[i * 3 + 2];
+        if rgb_l1_dist(r, g, b, bg_rgb) <= 36 {
+            inliers += 1;
+            let lum = rgb_lum(r, g, b) as f64;
+            sum_lum += lum;
+            sum_lum_sq += lum * lum;
+        }
+    }
+    let inlier_ratio = if total > 0 {
+        (inliers as f32) / (total as f32)
+    } else {
+        1.0
+    };
+    let inlier_std = if inliers > 1 {
+        let m = sum_lum / (inliers as f64);
+        ((sum_lum_sq / (inliers as f64) - m * m).max(0.0)).sqrt() as f32
+    } else {
+        0.0
+    };
+    if bg_rgb[0] >= 244 && bg_rgb[1] >= 244 && bg_rgb[2] >= 244 {
+        bg_rgb = [255, 255, 255];
+    }
+    let is_flat = bg_std <= 10.0 || (inlier_ratio >= 0.80 && inlier_std <= 6.5);
+    (bg_rgb, is_flat)
+}
+
 fn build_tract_a_crop_mask(
     crop_rgb: &[u8],
     cw: usize,
@@ -177,17 +432,28 @@ fn build_tract_a_crop_mask(
     default_dilate: u8,
 ) -> (Vec<u8>, Vec<u8>) {
     let local_poly: Vec<[i32; 2]> = poly.iter().map(|&[px, py]| [px - x0, py - y0]).collect();
-    let poly_mask = fill_polygon(&local_poly, cw, ch);
+    let poly_mask = build_effective_poly_mask(crop_rgb, cw, ch, x0, y0, blk, &local_poly);
 
-    let mut min_px = i32::MAX;
-    let mut max_px = i32::MIN;
-    let mut min_py = i32::MAX;
-    let mut max_py = i32::MIN;
-    for &[lx, ly] in &local_poly {
-        min_px = min_px.min(lx);
-        max_px = max_px.max(lx);
-        min_py = min_py.min(ly);
-        max_py = max_py.max(ly);
+    let mut min_px = cw as i32;
+    let mut max_px = 0i32;
+    let mut min_py = ch as i32;
+    let mut max_py = 0i32;
+    for ry in 0..ch {
+        let row = ry * cw;
+        for rx in 0..cw {
+            if poly_mask[row + rx] > 0 {
+                min_px = min_px.min(rx as i32);
+                max_px = max_px.max(rx as i32 + 1);
+                min_py = min_py.min(ry as i32);
+                max_py = max_py.max(ry as i32 + 1);
+            }
+        }
+    }
+    if max_px <= min_px {
+        min_px = 0;
+        max_px = cw as i32;
+        min_py = 0;
+        max_py = ch as i32;
     }
     let min_dim = (max_px - min_px).min(max_py - min_py).max(1);
     let poly_w = (max_px - min_px).max(1) as usize;
@@ -210,32 +476,67 @@ fn build_tract_a_crop_mask(
     let bg_lum = rgb_lum(bg_rgb[0], bg_rgb[1], bg_rgb[2]);
     let is_dark_bubble = bg_lum < 110;
 
+    // Если есть явный `text_bbox`, чистый CV-контраст без нейроподтверждения работает строго в окрестности текста (+18px),
+    // чтобы не стирать линии рамок, хвостики бабблов и волосы на периферии полигона!
+    let cv_roi_local: Option<[usize; 4]> = blk.text_bbox.and_then(|tb| {
+        if (tb[2] - tb[0]) >= 6 && (tb[3] - tb[1]) >= 6 {
+            let rx1 = (tb[0] - x0 - 18).clamp(0, cw as i32) as usize;
+            let ry1 = (tb[1] - y0 - 18).clamp(0, ch as i32) as usize;
+            let rx2 = (tb[2] - x0 + 18).clamp(rx1 as i32, cw as i32) as usize;
+            let ry2 = (tb[3] - y0 + 18).clamp(ry1 as i32, ch as i32) as usize;
+            Some([rx1, ry1, rx2, ry2])
+        } else {
+            None
+        }
+    });
+    let tb_core_local: Option<[usize; 4]> = blk.text_bbox.and_then(|tb| {
+        if (tb[2] - tb[0]) >= 6 && (tb[3] - tb[1]) >= 6 {
+            let rx1 = (tb[0] - x0 + 2).clamp(0, cw as i32) as usize;
+            let ry1 = (tb[1] - y0 + 2).clamp(0, ch as i32) as usize;
+            let rx2 = (tb[2] - x0 - 2).clamp(rx1 as i32, cw as i32) as usize;
+            let ry2 = (tb[3] - y0 - 2).clamp(ry1 as i32, ch as i32) as usize;
+            Some([rx1, ry1, rx2, ry2])
+        } else {
+            None
+        }
+    });
+
     let n = cw * ch;
     let mut cand_ink = vec![0u8; n];
-    for i in 0..n {
-        if shrunk_poly[i] == 0 {
-            continue;
-        }
-        let r = crop_rgb[i * 3];
-        let g = crop_rgb[i * 3 + 1];
-        let b = crop_rgb[i * 3 + 2];
-        let lum = rgb_lum(r, g, b);
-        let chroma = rgb_chroma(r, g, b);
-        let l1 = rgb_l1_dist(r, g, b, bg_rgb);
+    for ry in 0..ch {
+        let row = ry * cw;
+        for rx in 0..cw {
+            let i = row + rx;
+            if shrunk_poly[i] == 0 {
+                continue;
+            }
+            let in_cv_roi = cv_roi_local
+                .is_none_or(|b| rx >= b[0] && rx < b[2] && ry >= b[1] && ry < b[3]);
+            let nn_hit = neural_crop.is_some_and(|nm| nm[i] >= 100);
+            if !in_cv_roi && !nn_hit {
+                continue;
+            }
 
-        let contrast_hit = if is_dark_bubble {
-            lum > bg_lum.saturating_add(36)
-        } else {
-            lum.saturating_add(36) < bg_lum
-        };
-        let color_hit = chroma >= 42 && l1 >= 60;
-        let nn_hit = neural_crop.is_some_and(|nm| nm[i] >= 100);
-        if contrast_hit || color_hit || nn_hit {
-            cand_ink[i] = 255;
+            let r = crop_rgb[i * 3];
+            let g = crop_rgb[i * 3 + 1];
+            let b = crop_rgb[i * 3 + 2];
+            let lum = rgb_lum(r, g, b);
+            let chroma = rgb_chroma(r, g, b);
+            let l1 = rgb_l1_dist(r, g, b, bg_rgb);
+
+            let contrast_hit = if is_dark_bubble {
+                lum > bg_lum.saturating_add(36)
+            } else {
+                lum.saturating_add(36) < bg_lum
+            };
+            let color_hit = chroma >= 42 && l1 >= 60;
+            if nn_hit || (in_cv_roi && (contrast_hit || color_hit)) {
+                cand_ink[i] = 255;
+            }
         }
     }
 
-    // Защита чиби-арта и толстого контура баббла внутри shrunk_poly
+    // Защита чиби-арта, волос и толстого контура баббла внутри shrunk_poly
     let cc = connected_components(&cand_ink, cw, ch);
     if !cc.stats.is_empty() {
         let dt = distance_transform_l2(&cand_ink, cw, ch);
@@ -264,11 +565,23 @@ fn build_tract_a_crop_mask(
             let idx = (st.label - 1) as usize;
             let nn_ratio = (nn_hits[idx] as f32) / (st.area.max(1) as f32);
             let rim_ratio = (rim_hits[idx] as f32) / (st.area.max(1) as f32);
-            let is_wall_rim = rim_ratio >= 0.75
-                && (st.width * 100 >= poly_w * 70 || st.height * 100 >= poly_h * 70)
-                && (neural_crop.is_none() || nn_ratio < 0.25);
+            let strictly_in_tb = tb_core_local.is_some_and(|tb| {
+                st.left >= tb[0]
+                    && (st.left + st.width) <= tb[2]
+                    && st.top >= tb[1]
+                    && (st.top + st.height) <= tb[3]
+            });
 
-            if is_wall_rim {
+            let is_wall_rim = rim_ratio >= 0.65
+                && (st.width * 100 >= poly_w * 60 || st.height * 100 >= poly_h * 60)
+                && (neural_crop.is_none() || nn_ratio < 0.30);
+            let is_hair_or_panel_intrusion = !strictly_in_tb
+                && rim_hits[idx] >= 3
+                && st.area >= 95
+                && max_dt[idx] >= 4.2
+                && (neural_crop.is_none() || nn_ratio < 0.35);
+
+            if is_wall_rim || is_hair_or_panel_intrusion {
                 reject_lbl[st.label as usize] = true;
                 any_rejected = true;
             } else if st.area >= 450 && max_dt[idx] >= 11.5 {
@@ -621,6 +934,31 @@ fn repair_broken_bubble_walls(
 
         let p_a = contour[a_idx];
         let p_b = contour[b_idx];
+        // Строим мост Эрмита ТОЛЬКО если оба конца разрыва реально лежат на тёмной стенке баббла,
+        // а не на искусственном срезе полигона в белом перешейке сдвоенного баббла (005.webp)!
+        let has_dark_anchor = |pt: [f32; 2]| -> bool {
+            let cx = pt[0].round() as i32;
+            let cy = pt[1].round() as i32;
+            for dy in -2..=2 {
+                for dx in -2..=2 {
+                    let x = cx + dx;
+                    let y = cy + dy;
+                    if x >= 0 && y >= 0 && (x as usize) < cw && (y as usize) < ch {
+                        let k = (y as usize) * cw + (x as usize);
+                        if crop_mask[k] == 0
+                            && rgb_lum(crop_rgb[k * 3], crop_rgb[k * 3 + 1], crop_rgb[k * 3 + 2])
+                                < 135
+                        {
+                            return true;
+                        }
+                    }
+                }
+            }
+            false
+        };
+        if !has_dark_anchor(p_a) || !has_dark_anchor(p_b) {
+            continue;
+        }
         let t_a = norm_tan(contour[a_prev], p_a);
         let t_b = norm_tan(p_b, contour[b_next]);
         let bridge_pts = hermite_wall_bridge(p_a, t_a, p_b, t_b, (gap_len * 2).max(10));
@@ -704,7 +1042,8 @@ impl RustCleanerEngine {
             if is_block_skipped(blk) {
                 continue;
             }
-            let rect = block_crop_rect(blk, w as i32, h as i32, 24);
+            let cpoly = clipped_block_polygon(blk, w as i32, h as i32);
+            let rect = block_crop_rect(blk, cpoly.as_deref(), w as i32, h as i32, 24);
             let x0 = rect[0] as usize;
             let y0 = rect[1] as usize;
             let cw = (rect[2] - rect[0]) as usize;
@@ -712,8 +1051,7 @@ impl RustCleanerEngine {
             let crop_rgb = copy_crop_rgb(img, rect);
             let nn_crop = nn_slice.map(|nm| copy_crop_u8(nm, wu, rect));
 
-            let crop_mask = if has_tract_a_polygon(blk) {
-                let poly = blk.bubble_polygon.as_ref().expect("polygon present");
+            let crop_mask = if let Some(ref poly) = cpoly {
                 let (m, _) = build_tract_a_crop_mask(
                     &crop_rgb,
                     cw,
@@ -788,7 +1126,7 @@ impl RustCleanerEngine {
                     sf,
                     src_mtime,
                     opts.dilate_size,
-                    "rust_harmonic_v1",
+                    "rust_harmonic_v2",
                     &opts.pipeline_mode,
                 )
             })
@@ -857,6 +1195,7 @@ impl RustCleanerEngine {
         let t_inpaint = Instant::now();
         let mut cleaned = img.clone();
         let orig_raw = img.as_raw();
+        let nn_slice = neural_mask.filter(|nm| nm.len() >= wu * (h as usize));
         let mut blocks_cleaned = 0usize;
 
         for blk in blocks {
@@ -865,26 +1204,80 @@ impl RustCleanerEngine {
             }
             blocks_cleaned += 1;
 
-            let rect = block_crop_rect(blk, w as i32, h as i32, 24);
+            let cpoly = clipped_block_polygon(blk, w as i32, h as i32);
+            let rect = block_crop_rect(blk, cpoly.as_deref(), w as i32, h as i32, 24);
             let x0 = rect[0] as usize;
             let y0 = rect[1] as usize;
             let cw = (rect[2] - rect[0]) as usize;
             let ch = (rect[3] - rect[1]) as usize;
             let n = cw * ch;
 
-            let crop_mask = copy_crop_u8(&full_mask, wu, rect);
+            // Строим СОБСТВЕННУЮ маску текущего блока (чтобы `pad=24` никогда не захватывал чужую `full_mask`
+            // соседнего сдвоенного баббла как мнимую `outside_mask` — именно это давало серый след `224` на `005.webp`!),
+            // с наложением ручных кистей `add` / `erase` текущего блока и глобального `full_mask` (для учёта ластика).
+            let orig_crop_rgb = copy_crop_rgb(img, rect);
+            let nn_crop = nn_slice.map(|nm| copy_crop_u8(nm, wu, rect));
+            let mut crop_mask = if let Some(ref poly) = cpoly {
+                let (m, _) = build_tract_a_crop_mask(
+                    &orig_crop_rgb,
+                    cw,
+                    ch,
+                    rect[0],
+                    rect[1],
+                    blk,
+                    poly,
+                    nn_crop.as_deref(),
+                    opts.dilate_size,
+                );
+                m
+            } else {
+                build_tract_b_crop_mask(
+                    &orig_crop_rgb,
+                    cw,
+                    ch,
+                    rect[0],
+                    rect[1],
+                    blk,
+                    nn_crop.as_deref(),
+                    opts.dilate_size,
+                )
+            };
+            if let Some(ref strokes) = blk.custom_mask_strokes {
+                for s in strokes {
+                    let val = if s.mode.eq_ignore_ascii_case("erase") {
+                        0
+                    } else {
+                        255
+                    };
+                    draw_circle(
+                        &mut crop_mask,
+                        cw,
+                        ch,
+                        s.x - rect[0],
+                        s.y - rect[1],
+                        s.r.clamp(1, 80),
+                        val,
+                    );
+                }
+            }
+            let global_crop_mask = copy_crop_u8(&full_mask, wu, rect);
+            for i in 0..n {
+                if global_crop_mask[i] == 0 {
+                    crop_mask[i] = 0;
+                }
+            }
             if !crop_mask.iter().any(|&v| v > 0) {
                 continue;
             }
 
             let mut crop_rgb = copy_crop_rgb(&cleaned, rect);
-            if has_tract_a_polygon(blk) {
-                let poly = blk.bubble_polygon.as_ref().expect("polygon present");
+            if let Some(ref poly) = cpoly {
                 let local_poly: Vec<[i32; 2]> = poly
                     .iter()
                     .map(|&[px, py]| [px - rect[0], py - rect[1]])
                     .collect();
-                let poly_mask = fill_polygon(&local_poly, cw, ch);
+                let mut poly_mask =
+                    build_effective_poly_mask(&crop_rgb, cw, ch, rect[0], rect[1], blk, &local_poly);
 
                 let mut inside_mask = vec![0u8; n];
                 let mut outside_mask = vec![0u8; n];
@@ -903,7 +1296,81 @@ impl RustCleanerEngine {
                     }
                 }
 
-                // 1. Очистка текста ВНУТРИ баббла (медианная заливка для плоских, SOR Лаплас для градиентов)
+                // Если компонента `outside_mask` окружена тем же чистым светлым фоном баббла (например, в белом перешейке
+                // сдвоенного баббла `005.webp`, где грубая маска YOLO26s-seg чуть уже реальной белой полости),
+                // переводим её во внутреннюю заливку `inside_mask`, чтобы в белый баббл НЕ затекал серый скринтон с рубашки!
+                if has_outside {
+                    let probe_inner = erode_ellipse(&poly_mask, cw, ch, 2);
+                    let probe_ref = if probe_inner.iter().any(|&v| v > 0) {
+                        &probe_inner
+                    } else {
+                        &poly_mask
+                    };
+                    let probe_bg = compute_rgb_median_and_std(&crop_rgb, probe_ref)
+                        .map(|(c, _)| c)
+                        .unwrap_or([255, 255, 255]);
+                    let probe_lum = rgb_lum(probe_bg[0], probe_bg[1], probe_bg[2]);
+                    if probe_lum >= 225 {
+                        let out_cc = connected_components(&outside_mask, cw, ch);
+                        if !out_cc.stats.is_empty() {
+                            let mut promote_lbl = vec![false; out_cc.stats.len() + 1];
+                            for st in &out_cc.stats {
+                                let x_a = st.left.saturating_sub(4);
+                                let y_a = st.top.saturating_sub(4);
+                                let x_b = (st.left + st.width + 4).min(cw);
+                                let y_b = (st.top + st.height + 4).min(ch);
+                                let mut non_wall_cnt = 0usize;
+                                let mut match_cnt = 0usize;
+                                for ry in y_a..y_b {
+                                    let row = ry * cw;
+                                    for rx in x_a..x_b {
+                                        let k = row + rx;
+                                        if crop_mask[k] != 0 {
+                                            continue;
+                                        }
+                                        let near = (rx >= st.left.saturating_sub(4)
+                                            && rx < (st.left + st.width + 4).min(cw))
+                                            && (ry >= st.top.saturating_sub(4)
+                                                && ry < (st.top + st.height + 4).min(ch));
+                                        if near {
+                                            let r = crop_rgb[k * 3];
+                                            let g = crop_rgb[k * 3 + 1];
+                                            let b = crop_rgb[k * 3 + 2];
+                                            let lum = rgb_lum(r, g, b);
+                                            // Игнорируем сам чёрный контур баббла (`lum < 75`), сравнивая только фон полости vs внешний фон
+                                            if lum >= 75 {
+                                                non_wall_cnt += 1;
+                                                if lum >= 235
+                                                    && rgb_l1_dist(r, g, b, probe_bg) <= 36
+                                                {
+                                                    match_cnt += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                if non_wall_cnt >= 6 && match_cnt * 100 >= non_wall_cnt * 55 {
+                                    promote_lbl[st.label as usize] = true;
+                                }
+                            }
+                            has_outside = false;
+                            for (i, &lbl) in out_cc.labels.iter().enumerate() {
+                                if lbl > 0 {
+                                    if promote_lbl[lbl as usize] {
+                                        outside_mask[i] = 0;
+                                        inside_mask[i] = 255;
+                                        poly_mask[i] = 255;
+                                        has_inside = true;
+                                    } else {
+                                        has_outside = true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // 1. Очистка текста ВНУТРИ баббла (робастная чистая заливка для плоских бабблов, SOR Лаплас для градиентов)
                 if has_inside {
                     let interior_only = erode_ellipse(&poly_mask, cw, ch, 3);
                     let mut clean_interior_sel = vec![0u8; n];
@@ -921,15 +1388,14 @@ impl RustCleanerEngine {
                             }
                         }
                     }
-                    let (bg_rgb, bg_std) =
-                        compute_rgb_median_and_std(&crop_rgb, &clean_interior_sel)
-                            .unwrap_or(([255, 255, 255], 0.0));
+                    let (bg_rgb, is_flat_bubble) =
+                        evaluate_flat_bubble_bg(&crop_rgb, &clean_interior_sel);
 
-                    if bg_std <= 10.0 {
+                    if is_flat_bubble {
                         fill_masked_with_rgb(&mut crop_rgb, &inside_mask, bg_rgb);
                     } else {
                         let mut work_in = crop_rgb.clone();
-                        // Щит для внешности, чтобы внешний фон не затекал внутрь баббла
+                        // Щит для внешности и неснятых тёмных линий у рамки, чтобы тёмный цвет не затекал в полость
                         for i in 0..n {
                             if poly_mask[i] == 0 {
                                 work_in[i * 3] = bg_rgb[0];
@@ -984,8 +1450,30 @@ impl RustCleanerEngine {
                     );
                 }
             } else {
-                // Tract B / Free-text: чистый Лаплас строго в пределах маски (alpha=1.0, без ореола)
-                inpaint_laplace_sor(&mut crop_rgb, &crop_mask, cw, ch, 160, 1.75);
+                // Tract B: если это обычный светлый закрытый баббл (`!is_free_text`) с чистым однотонным фоном вокруг букв,
+                // заливаем его резким фоновым цветом без размытия Лапласа; для текстур и free-text — Лаплас SOR!
+                let mut did_flat_fill = false;
+                if !blk.is_free_text {
+                    let ring = dilate_ellipse(&crop_mask, cw, ch, 4);
+                    let mut ring_sel = vec![0u8; n];
+                    let mut ring_cnt = 0usize;
+                    for i in 0..n {
+                        if ring[i] > 0 && crop_mask[i] == 0 {
+                            ring_sel[i] = 255;
+                            ring_cnt += 1;
+                        }
+                    }
+                    if ring_cnt >= 16 {
+                        let (bg_rgb, is_flat) = evaluate_flat_bubble_bg(&crop_rgb, &ring_sel);
+                        if is_flat && rgb_lum(bg_rgb[0], bg_rgb[1], bg_rgb[2]) >= 232 {
+                            fill_masked_with_rgb(&mut crop_rgb, &crop_mask, bg_rgb);
+                            did_flat_fill = true;
+                        }
+                    }
+                }
+                if !did_flat_fill {
+                    inpaint_laplace_sor(&mut crop_rgb, &crop_mask, cw, ch, 160, 1.75);
+                }
             }
 
             let dst_raw = cleaned.as_mut();

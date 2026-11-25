@@ -1,7 +1,9 @@
 param(
     [string]$HostAddr = "127.0.0.1",
     [int]$Port = 8000,
-    [switch]$Rebuild
+    [switch]$Rebuild,
+    [switch]$OpenBrowser,
+    [switch]$SelfCheck
 )
 
 $ErrorActionPreference = "Stop"
@@ -33,8 +35,17 @@ if ($Rebuild -or -not (Test-Path $ExePath)) {
     if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 
-Write-Host "Starting Miko-chan Manga Studio (Rust) at http://$HostAddr`:$Port" -ForegroundColor Green
+if ($SelfCheck) {
+    & $ExePath --base-dir $Root --self-check
+    exit $LASTEXITCODE
+}
+
+$TargetUrl = "http://$HostAddr`:$Port"
+Write-Host "Starting Miko-chan Manga Studio (Rust) at $TargetUrl" -ForegroundColor Green
 if ($env:MIKO_CUDA_DLL_DIR) {
     Write-Host "CUDA DLL dir: $env:MIKO_CUDA_DLL_DIR" -ForegroundColor DarkGray
+}
+if ($OpenBrowser) {
+    Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoProfile -Command `"Start-Sleep -Seconds 2; Start-Process '$TargetUrl'`""
 }
 & $ExePath --base-dir $Root --host $HostAddr --port $Port

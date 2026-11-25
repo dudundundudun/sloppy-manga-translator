@@ -441,6 +441,7 @@ async fn test_health_glossary_and_security_middleware() {
     assert!(book_val["script_text"].as_str().unwrap().contains("Новое слово!"));
 
     let ctrl_res = app5
+        .clone()
         .oneshot(
             Request::builder()
                 .method("POST")
@@ -453,6 +454,84 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(ctrl_res.status(), StatusCode::OK);
+
+    // 7. Full UI contract for /folder_inspect, /open_folder security, and /pick_folder CSRF guard
+    let inspect_res = app5
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/folder_inspect")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "ru"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inspect_res.status(), StatusCode::OK);
+    let insp_val: Value =
+        serde_json::from_slice(&to_bytes(inspect_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert_eq!(insp_val["total_pages"], 1);
+    assert_eq!(insp_val["translated_pages"], 1);
+    assert_eq!(insp_val["pages"][0]["filename"], "001.png");
+    assert_eq!(insp_val["pages"][0]["is_translated"], true);
+    assert_eq!(insp_val["pages"][0]["has_saved_blocks"], true);
+    assert!(insp_val["source_dir"].as_str().is_some());
+    assert!(insp_val["output_dir"].as_str().is_some());
+
+    let open_unc = app5
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/open_folder?path=%2F%2Fevil%2Fshare")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(open_unc.status(), StatusCode::BAD_REQUEST);
+
+    let pick_csrf = app5
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/pick_folder?target_lang=en")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(pick_csrf.status(), StatusCode::FORBIDDEN);
+
+    let fs_res = app5
+        .oneshot(
+            Request::builder()
+                .uri("/folder_status")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fs_res.status(), StatusCode::OK);
+    let fs_val: Value =
+        serde_json::from_slice(&to_bytes(fs_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert!(fs_val.get("current").is_some());
+    assert!(fs_val.get("elapsed_sec").is_some());
+    assert!(fs_val.get("source_dir").is_some());
+    assert!(fs_val.get("live").is_some());
 
     let _ = std::fs::remove_dir_all(&ch_dir);
     let _ = std::fs::remove_dir_all(&ch_out);

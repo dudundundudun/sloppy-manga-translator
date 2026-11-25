@@ -300,4 +300,110 @@ mod tests {
         assert_eq!(count_webp, 2);
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn test_truncated_tall_bubble_polygon_cleans_tail_without_erasing_wall() {
+        // Регрессия 002.webp: высокий баббл [20..80, 10..230] с чёрной рамкой,
+        // где полигон от YOLO26s-seg обрезан на y=150, а текст `ああ!!` доходит до y=215!
+        let mut img = image::RgbImage::from_pixel(100, 250, image::Rgb([110, 110, 115]));
+        for y in 10..231 {
+            for x in 20..81 {
+                let wall = x <= 22 || x >= 78 || y <= 12 || y >= 228;
+                img.put_pixel(
+                    x,
+                    y,
+                    if wall {
+                        image::Rgb([12, 12, 12])
+                    } else {
+                        image::Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+        // Текст в верхней части (внутри обрезанного полигона) и хвост `ああ!!` внизу (y=185..212)
+        for &(y0, y1) in &[(45u32, 80u32), (185u32, 212u32)] {
+            for y in y0..y1 {
+                for x in 42..58 {
+                    if (x + y) % 2 == 0 {
+                        img.put_pixel(x, y, image::Rgb([15, 15, 15]));
+                    }
+                }
+            }
+        }
+
+        let blk = TextBlock {
+            id: 1,
+            bbox: [20, 10, 80, 230],
+            clean_bbox: Some([20, 10, 80, 230]),
+            text_bbox: Some([40, 40, 60, 215]),
+            // Обрезанный полигон (заканчивается на y=150 вместо 230!)
+            bubble_polygon: Some(vec![[22, 12], [78, 12], [78, 150], [22, 150]]),
+            original_text: "孫ができたーああ!!".into(),
+            translated_text: "У Маго будет ребёнок!".into(),
+            ..Default::default()
+        };
+
+        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_tall"));
+        let opts = CleanOptions {
+            use_neural_segmenter: false,
+            use_cache: false,
+            ..Default::default()
+        };
+        let res = engine.clean_image_with_neural_mask(&img, &[blk], None, &opts);
+
+        // Нижний хвост `ああ!!` на y=198 полностью очищен в чисто белый [255, 255, 255]!
+        let tail_px = res.cleaned.get_pixel(50, 198);
+        assert!(
+            tail_px[0] >= 250 && tail_px[1] >= 250,
+            "tail characters left uncleaned: {:?}",
+            tail_px
+        );
+        // Нижняя чёрная рамка баббла y=229 осталась нетронутой!
+        assert!(res.cleaned.get_pixel(50, 229)[0] < 30);
+    }
+
+    #[test]
+    fn test_oversized_shared_polygon_clips_to_clean_bbox_without_hair_blur() {
+        // Регрессия 005.webp: общий полигон охватывает y=10..230, включая чёрные волосы на y=105..145,
+        // но текущий блок имеет clean_bbox [20, 10, 90, 95]. Волосы и рамка на y=120 не должны стираться!
+        let mut img = image::RgbImage::from_pixel(120, 240, image::Rgb([255, 255, 255]));
+        // Чёрные волосы / рамка панели между бабблами на y=105..145
+        for y in 105..145 {
+            for x in 20..90 {
+                img.put_pixel(x, y, image::Rgb([18, 18, 20]));
+            }
+        }
+        // Текст внутри верхнего баббла y=40..70
+        for y in 40..70 {
+            for x in 45..65 {
+                if x % 3 == 0 {
+                    img.put_pixel(x, y, image::Rgb([15, 15, 15]));
+                }
+            }
+        }
+
+        let blk = TextBlock {
+            id: 2,
+            bbox: [20, 10, 90, 95],
+            clean_bbox: Some([20, 10, 90, 95]),
+            text_bbox: Some([42, 38, 68, 72]),
+            bubble_polygon: Some(vec![[20, 10], [90, 10], [90, 230], [20, 230]]),
+            original_text: "テスト".into(),
+            translated_text: "Test".into(),
+            ..Default::default()
+        };
+
+        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_noblur"));
+        let opts = CleanOptions {
+            use_neural_segmenter: false,
+            use_cache: false,
+            ..Default::default()
+        };
+        let res = engine.clean_image_with_neural_mask(&img, &[blk], None, &opts);
+
+        // Текст в верхнем баббле чисто белый без серого блюра
+        assert_eq!(res.cleaned.get_pixel(48, 55)[0], 255);
+        // Чёрные волосы / рамка на y=125 побайтово целы!
+        assert_eq!(res.cleaned.get_pixel(55, 125)[0], 18);
+    }
 }

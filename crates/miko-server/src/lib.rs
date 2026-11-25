@@ -50,6 +50,7 @@ pub struct AppState {
     pub renderer: Arc<RustRendererEngine>,
     pub folder_stop_flag: Arc<AtomicBool>,
     pub folder_pause_flag: Arc<AtomicBool>,
+    pub picker_busy: Arc<AtomicBool>,
     pub shutdown_notify: Notify,
 }
 
@@ -92,6 +93,7 @@ impl AppState {
             renderer,
             folder_stop_flag: Arc::new(AtomicBool::new(false)),
             folder_pause_flag: Arc::new(AtomicBool::new(false)),
+            picker_busy: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Notify::new(),
         }))
     }
@@ -127,6 +129,7 @@ impl AppState {
             renderer,
             folder_stop_flag: Arc::new(AtomicBool::new(false)),
             folder_pause_flag: Arc::new(AtomicBool::new(false)),
+            picker_busy: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Notify::new(),
         }))
     }
@@ -345,7 +348,16 @@ async fn stream_folder_status(
         (state, rx, false),
         |(st, mut rx, sent_initial)| async move {
             if sent_initial {
-                let _ = tokio::time::timeout(Duration::from_secs(5), rx.changed()).await;
+                let is_active = st
+                    .folder_job
+                    .read()
+                    .is_ok_and(|j| matches!(j.status.as_str(), "running" | "stopping"));
+                let wait = if is_active {
+                    Duration::from_secs(1)
+                } else {
+                    Duration::from_secs(5)
+                };
+                let _ = tokio::time::timeout(wait, rx.changed()).await;
             }
             let snap = st.folder_job.read().expect("job rwlock").clone();
             let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_string());
@@ -799,7 +811,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/ocr_rust", post(run_ocr_rust))
         .route("/clean_rust", post(run_clean_rust))
         .route("/local_image", get(studio::local_image))
-        .route("/folder_inspect", post(studio::folder_inspect))
+        .route("/folder_inspect", post(folder_job::folder_inspect))
+        .route("/pick_folder", post(folder_job::pick_folder))
+        .route("/pick_file", post(folder_job::pick_file))
+        .route("/pick_web_save_folder", post(folder_job::pick_web_save_folder))
+        .route("/open_folder", post(folder_job::open_folder))
+        .route("/open_web_save_folder", post(folder_job::open_web_save_folder))
         .route("/auto_diamond_wrap", post(studio::auto_diamond_wrap))
         .route("/retranslate_single_block", post(studio::retranslate_single_block))
         .route("/translate", post(studio::translate_page))

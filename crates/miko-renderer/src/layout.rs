@@ -102,7 +102,8 @@ pub fn find_optimal_box_center(
         return c;
     }
 
-    // Фоллбэк: самая глубокая точка внутри полости по L2 Distance Transform
+    // Фоллбэк: самая глубокая точка внутри полости по L2 Distance Transform,
+    // зажатая так, чтобы текстовый блок `(bw x bh)` не вылезал за верх/низ/края узкого баббла!
     if area > 0 {
         let dt = distance_transform_l2(mask, w, h);
         let mut max_d = -1.0f32;
@@ -116,7 +117,15 @@ pub fn find_optimal_box_center(
                 }
             }
         }
-        return peak;
+        let half_w = (bw / 2) as i32;
+        let half_h = (bh / 2) as i32;
+        let lo_x = half_w.min(w as i32 / 2);
+        let hi_x = ((w as i32) - half_w).max(lo_x);
+        let lo_y = (half_h + 2).min(h as i32 / 2);
+        let hi_y = ((h as i32) - half_h - 2).max(lo_y);
+        // По вертикали в узких высоких бабблах держимся ближе к центроиду полости, а не к случайному расширению у края
+        let blended_y = (peak[1] + centroid[1] * 2) / 3;
+        return [peak[0].clamp(lo_x, hi_x), blended_y.clamp(lo_y, hi_y)];
     }
 
     centroid
@@ -229,7 +238,21 @@ pub fn solve_bubble_layout<F: Fn(&str, f32) -> f32>(
         }
     }
 
-    best_layout.unwrap_or_else(|| try_fs(lo_init).1)
+    if let Some(lay) = best_layout {
+        return lay;
+    }
+
+    // Если даже `min_fs` чуть шире узкого баббла (например, узкий крик `Shut uuuup!` на `002.webp`),
+    // аккуратно пробуем спуститься до 9px, чтобы слова не залезали на чёрный контур баббла!
+    let emergency_lo = lo_init.min(9).max(8);
+    for fs_try in (emergency_lo..lo_init).rev() {
+        let (ok, lay) = try_fs(fs_try);
+        if ok {
+            return lay;
+        }
+    }
+
+    try_fs(emergency_lo).1
 }
 
 /// Двухпроходная гармонизация кеглей на уровне страницы: гасит аномально огромные шрифты в коротких репликах.

@@ -6,7 +6,7 @@ use crate::typography::format_comic_typography;
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use image::RgbImage;
 use miko_cleaner::{compute_rgb_median_and_std, dilate_ellipse, erode_ellipse, fill_polygon};
-use miko_core::TextBlock;
+use miko_core::{clip_polygon_to_rect, TextBlock};
 use serde::Serialize;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -66,50 +66,7 @@ fn rgb_lum(c: [u8; 3]) -> u8 {
     (((77u32 * c[0] as u32) + (150u32 * c[1] as u32) + (29u32 * c[2] as u32)) >> 8) as u8
 }
 
-fn build_cavity_mask(
-    blk: &TextBlock,
-    img_w: i32,
-    img_h: i32,
-) -> ([i32; 4], Vec<u8>, usize, usize) {
-    let b = blk.bbox;
-    let x1 = b[0].clamp(0, (img_w - 1).max(0));
-    let y1 = b[1].clamp(0, (img_h - 1).max(0));
-    let x2 = b[2].clamp(x1 + 1, img_w.max(1));
-    let y2 = b[3].clamp(y1 + 1, img_h.max(1));
-    let cw = (x2 - x1) as usize;
-    let ch = (y2 - y1) as usize;
-
-    if !blk.is_free_text {
-        if let Some(ref poly) = blk.bubble_polygon {
-            if poly.len() >= 3 {
-                let mut px1 = x1;
-                let mut py1 = y1;
-                let mut px2 = x2;
-                let mut py2 = y2;
-                for &[px, py] in poly {
-                    px1 = px1.min(px);
-                    py1 = py1.min(py);
-                    px2 = px2.max(px);
-                    py2 = py2.max(py);
-                }
-                let rx1 = px1.clamp(0, (img_w - 1).max(0));
-                let ry1 = py1.clamp(0, (img_h - 1).max(0));
-                let rx2 = px2.clamp(rx1 + 1, img_w.max(1));
-                let ry2 = py2.clamp(ry1 + 1, img_h.max(1));
-                let rw = (rx2 - rx1) as usize;
-                let rh = (ry2 - ry1) as usize;
-                let local_poly: Vec<[i32; 2]> = poly.iter().map(|&[px, py]| [px - rx1, py - ry1]).collect();
-                let raw_mask = fill_polygon(&local_poly, rw, rh);
-                let mut shrunk = erode_ellipse(&raw_mask, rw, rh, 6);
-                if !shrunk.iter().any(|&v| v > 0) {
-                    shrunk = raw_mask;
-                }
-                return ([rx1, ry1, rx2, ry2], shrunk, rw, rh);
-            }
-        }
-    }
-
-    // Фоллбэк: овал/прямоугольник внутри bbox (с отступом 5% от краёв)
+fn build_oval_fallback_mask(cw: usize, ch: usize, is_free_text: bool) -> Vec<u8> {
     let mut mask = vec![0u8; cw * ch];
     let cx = cw as f32 * 0.5;
     let cy = ch as f32 * 0.5;
@@ -120,11 +77,100 @@ fn build_cavity_mask(
         let row = y * cw;
         for x in 0..cw {
             let dx = (x as f32 + 0.5 - cx) / rx;
-            if blk.is_free_text || (dx * dx + dy * dy <= 1.0) {
+            if is_free_text || (dx * dx + dy * dy <= 1.0) {
                 mask[row + x] = 255;
             }
         }
     }
+    mask
+}
+
+/// Строит маску доступной полости СТРОГО в границах `blk.bbox` (отсекая общий полигон
+/// сдвоенного/тройного баббла, чтобы соседние блоки никогда не получали чужую площадь!).
+fn build_cavity_mask(
+    blk: &TextBlock,
+    all_blocks: &[TextBlock],
+    self_idx: usize,
+    img_w: i32,
+    img_h: i32,
+) -> ([i32; 4], Vec<u8>, usize, usize) {
+    let b = blk.bbox;
+    let x1 = b[0].clamp(0, (img_w - 1).max(0));
+    let y1 = b[1].clamp(0, (img_h - 1).max(0));
+    let x2 = b[2].clamp(x1 + 1, img_w.max(1));
+    let y2 = b[3].clamp(y1 + 1, img_h.max(1));
+    let cw = (x2 - x1) as usize;
+    let ch = (y2 - y1) as usize;
+    let oval_mask = build_oval_fallback_mask(cw, ch, blk.is_free_text);
+
+    let mut mask = if !blk.is_free_text {
+        if let Some(ref poly) = blk.bubble_polygon {
+            let clipped = clip_polygon_to_rect(poly, [x1, y1, x2, y2]);
+            if clipped.len() >= 3 {
+                let local_poly: Vec<[i32; 2]> =
+                    clipped.iter().map(|&[px, py]| [px - x1, py - y1]).collect();
+                let raw_mask = fill_polygon(&local_poly, cw, ch);
+                let erode_r = if cw.min(ch) < 90 { 3 } else { 5 };
+                let mut shrunk = erode_ellipse(&raw_mask, cw, ch, erode_r);
+                if !shrunk.iter().any(|&v| v > 0) {
+                    shrunk = raw_mask;
+                }
+                // Если полигон покрывает < 35% площади `bbox` (например, усечённый хвост `002.webp`),
+                // объединяем с внутренним овалом `bbox`, чтобы вёрстка использовала всю высоту баббла!
+                let area = shrunk.iter().filter(|&&v| v > 0).count();
+                if area * 100 < (cw * ch) * 35 {
+                    for i in 0..(cw * ch) {
+                        if oval_mask[i] > 0 {
+                            shrunk[i] = 255;
+                        }
+                    }
+                }
+                shrunk
+            } else {
+                oval_mask
+            }
+        } else {
+            oval_mask
+        }
+    } else {
+        oval_mask
+    };
+
+    // Вычитаем текстовые ядра соседних бабблов при частичном нахлёсте `bbox` (как `#2` и `#3` на `005.webp`),
+    // чтобы солвер вёрстки никогда не размещал центр текущего текста поверх чужой реплики.
+    if !blk.is_free_text {
+        let self_anchor = blk.text_bbox.unwrap_or(blk.bbox);
+        let self_cy = (self_anchor[1] + self_anchor[3]) / 2;
+        for (j, other) in all_blocks.iter().enumerate() {
+            if j == self_idx || other.is_deleted || other.is_free_text {
+                continue;
+            }
+            if other.translated_text.trim().is_empty() && other.original_text.trim().is_empty() {
+                continue;
+            }
+            let ob = other.text_bbox.unwrap_or(other.bbox);
+            let ix1 = (ob[0] - 4).max(x1);
+            let iy1 = (ob[1] - 4).max(y1);
+            let ix2 = (ob[2] + 4).min(x2);
+            let iy2 = (ob[3] + 4).min(y2);
+            if ix2 > ix1 && iy2 > iy1 {
+                let other_cy = (ob[1] + ob[3]) / 2;
+                if (other_cy - self_cy).abs() >= 16 {
+                    let mut saved_mask = mask.clone();
+                    for py in iy1..iy2 {
+                        let row = ((py - y1) as usize) * cw;
+                        for px in ix1..ix2 {
+                            saved_mask[row + (px - x1) as usize] = 0;
+                        }
+                    }
+                    if saved_mask.iter().filter(|&&v| v > 0).count() >= 64 {
+                        mask = saved_mask;
+                    }
+                }
+            }
+        }
+    }
+
     ([x1, y1, x2, y2], mask, cw, ch)
 }
 
@@ -189,7 +235,7 @@ impl RustRendererEngine {
                 continue;
             }
             let font = self.resolve_block_font(blk, opts, &formatted)?;
-            let (rect, cavity, cw, ch) = build_cavity_mask(blk, iw, ih);
+            let (rect, cavity, cw, ch) = build_cavity_mask(blk, blocks, idx, iw, ih);
             let layout = solve_bubble_layout(
                 &formatted,
                 &cavity,
@@ -234,6 +280,52 @@ impl RustRendererEngine {
                 );
             }
             blocks[item.blk_idx].rendered_font_size = Some(item.layout.font_size);
+        }
+
+        // Проход 3: защита от вертикального наложения текстовых боксов в соприкасающихся бабблах
+        for pass in 0..2 {
+            let _ = pass;
+            let len = prepared.len();
+            for i in 0..len {
+                for j in (i + 1)..len {
+                    let wi = prepared[i].layout.max_line_w * 0.5;
+                    let hi = (prepared[i].layout.lines.len() as f32
+                        * prepared[i].layout.line_height)
+                        * 0.5;
+                    let wj = prepared[j].layout.max_line_w * 0.5;
+                    let hj = (prepared[j].layout.lines.len() as f32
+                        * prepared[j].layout.line_height)
+                        * 0.5;
+
+                    let cxi = (prepared[i].rect[0] + prepared[i].layout.center_xy[0]) as f32;
+                    let cyi = (prepared[i].rect[1] + prepared[i].layout.center_xy[1]) as f32;
+                    let cxj = (prepared[j].rect[0] + prepared[j].layout.center_xy[0]) as f32;
+                    let cyj = (prepared[j].rect[1] + prepared[j].layout.center_xy[1]) as f32;
+
+                    let ov_x = (wi + wj + 4.0) - (cxi - cxj).abs();
+                    let ov_y = (hi + hj + 4.0) - (cyi - cyj).abs();
+                    if ov_x > 0.0 && ov_y > 0.0 {
+                        let push = ((ov_y * 0.5).ceil() as i32).max(2);
+                        if cyi <= cyj {
+                            let min_i = (hi.ceil() as i32 + 2).min(prepared[i].ch as i32 / 2);
+                            let max_j = (prepared[j].ch as i32 - hj.ceil() as i32 - 2)
+                                .max(prepared[j].ch as i32 / 2);
+                            prepared[i].layout.center_xy[1] =
+                                (prepared[i].layout.center_xy[1] - push).max(min_i);
+                            prepared[j].layout.center_xy[1] =
+                                (prepared[j].layout.center_xy[1] + push).min(max_j);
+                        } else {
+                            let max_i = (prepared[i].ch as i32 - hi.ceil() as i32 - 2)
+                                .max(prepared[i].ch as i32 / 2);
+                            let min_j = (hj.ceil() as i32 + 2).min(prepared[j].ch as i32 / 2);
+                            prepared[i].layout.center_xy[1] =
+                                (prepared[i].layout.center_xy[1] + push).min(max_i);
+                            prepared[j].layout.center_xy[1] =
+                                (prepared[j].layout.center_xy[1] - push).max(min_j);
+                        }
+                    }
+                }
+            }
         }
         let layout_ms = t_layout.elapsed().as_millis();
 

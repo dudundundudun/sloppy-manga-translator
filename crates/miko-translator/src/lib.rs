@@ -1,7 +1,10 @@
 pub mod client;
 pub mod prompts;
 
-pub use client::{RustTranslator, TranslateBatchRequest, TranslateBatchResult, TranslatorError};
+pub use client::{
+    strip_model_prefix, RustTranslator, TranslateBatchRequest, TranslateBatchResult,
+    TranslatorError,
+};
 pub use prompts::{
     build_translation_prompts, compute_translation_cache_key, detect_source_language,
     filter_matching_glossary, is_refusal_response, kana_to_romaji, parse_flat_json_translations,
@@ -192,20 +195,34 @@ mod tests {
         let parsed = parse_flat_json_translations(raw_llm, &keys);
         assert_eq!(parsed.get("0").map(String::as_str), Some("Таро пришёл!"));
         assert!(!parsed.contains_key("1"));
+
+        assert_eq!(
+            strip_model_prefix("unsloth::deepseek-v4-flash"),
+            (Some("unsloth"), "deepseek-v4-flash")
+        );
+        assert_eq!(
+            strip_model_prefix("ollama::shisa-v2.1-14b:Q4_K_M"),
+            (Some("ollama"), "shisa-v2.1-14b:Q4_K_M")
+        );
+        assert_eq!(strip_model_prefix("deepseek-chat"), (None, "deepseek-chat"));
     }
 
     #[tokio::test]
     async fn test_mock_openai_translate_and_sqlite_cache() {
+        use std::sync::{Arc, Mutex};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
         let addr = listener.local_addr().unwrap();
+        let captured_req = Arc::new(Mutex::new(String::new()));
+        let cap_clone = captured_req.clone();
 
         tokio::spawn(async move {
             if let Ok((mut sock, _)) = listener.accept().await {
                 let mut buf = vec![0u8; 8192];
-                let _ = sock.read(&mut buf).await;
+                let n = sock.read(&mut buf).await.unwrap_or(0);
+                *cap_clone.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
                 let body = r#"{"choices":[{"message":{"content":"{\"0\":\"Привет, мир!\",\"1\":\"Погнали!\"}"}}]}"#;
                 let resp = format!(
                     "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
@@ -234,7 +251,7 @@ mod tests {
         let req = TranslateBatchRequest {
             blocks: vec![b1, b2],
             target_lang: "ru".into(),
-            model: "mock-gpt".into(),
+            model: "unsloth::deepseek-v4-flash".into(),
             cloud_url: format!("http://{addr}/v1"),
             cloud_api_key: "sk-test".into(),
             ..Default::default()
@@ -243,6 +260,9 @@ mod tests {
         let res1 = tr.translate_blocks(req.clone(), Some(&db)).await.expect("tr1");
         assert_eq!(res1.api_calls, 1);
         assert_eq!(res1.cache_hits, 0);
+        assert_eq!(res1.active_model, "deepseek-v4-flash");
+        assert!(captured_req.lock().unwrap().contains("\"model\":\"deepseek-v4-flash\""));
+        assert!(!captured_req.lock().unwrap().contains("unsloth::"));
         assert_eq!(res1.blocks[0].translated_text, "Привет, мир!");
         assert_eq!(res1.blocks[1].translated_text, "Погнали!");
 
