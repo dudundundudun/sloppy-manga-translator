@@ -234,13 +234,25 @@ pub fn verify_closed_bubble_cavity(img: &RgbImage, bbox: [i32; 4]) -> bool {
     let in_y2 = (by2 - 3).max(in_y1 + 1);
     let mut non_ink = 0usize;
     let mut pure_white = 0usize;
+    let mut dark_px = 0usize;
     let mut total_in = 0usize;
-    for y in in_y1..in_y2 {
-        for x in in_x1..in_x2 {
+    let iw_in = (in_x2 - in_x1) as usize;
+    let ih_in = (in_y2 - in_y1) as usize;
+    let stride = iw_in + 1;
+    let mut dark_integ = vec![0u32; stride * (ih_in + 1)];
+
+    for (ry, y) in (in_y1..in_y2).enumerate() {
+        let mut row_acc = 0u32;
+        for (rx, x) in (in_x1..in_x2).enumerate() {
             total_in += 1;
             let p = img.get_pixel(x as u32, y as u32);
             let lum = luma_u8(p[0], p[1], p[2]);
             let chr = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+            if lum < 85 {
+                dark_px += 1;
+                row_acc += 1;
+            }
+            dark_integ[(ry + 1) * stride + (rx + 1)] = dark_integ[ry * stride + (rx + 1)] + row_acc;
             if lum >= 135 {
                 non_ink += 1;
                 if lum >= 234 && chr <= 22 {
@@ -249,8 +261,36 @@ pub fn verify_closed_bubble_cavity(img: &RgbImage, bbox: [i32; 4]) -> bool {
             }
         }
     }
-    if total_in == 0 || non_ink * 100 < total_in * 35 || pure_white * 100 < non_ink * 72 {
+    if total_in == 0
+        || non_ink * 100 < total_in * 35
+        || pure_white * 100 < non_ink * 72
+        || dark_px * 100 > total_in * 30
+    {
         return false;
+    }
+
+    // Отсекаем лица персонажей с крупными чёрными пятнами волос или открытым ртом (`112.webp #7 "DORU"`):
+    // в текстовых штрихах нет плотных чёрных пятен размером 15×15 (>= 82% заливки).
+    if iw_in >= 15 && ih_in >= 15 {
+        let mut dense_dark_centers = 0usize;
+        let win = 15usize;
+        for ry in 0..=(ih_in - win) {
+            let y0 = ry;
+            let y1 = ry + win;
+            for rx in 0..=(iw_in - win) {
+                let x0 = rx;
+                let x1 = rx + win;
+                let cnt = dark_integ[y1 * stride + x1] + dark_integ[y0 * stride + x0]
+                    - dark_integ[y0 * stride + x1]
+                    - dark_integ[y1 * stride + x0];
+                if cnt >= 184 {
+                    dense_dark_centers += 1;
+                }
+            }
+        }
+        if dense_dark_centers >= 220 || dense_dark_centers * 100 > total_in * 8 {
+            return false;
+        }
     }
 
     // 2. Flood-fill из центра по светлым пикселям в расширенном окне (+10px):

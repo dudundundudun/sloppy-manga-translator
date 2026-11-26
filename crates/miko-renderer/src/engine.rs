@@ -659,7 +659,9 @@ impl RustRendererEngine {
                 .as_deref()
                 .and_then(parse_hex_color)
                 .unwrap_or_else(|| {
-                    if is_dark_bg || blk.is_free_text {
+                    if blk.is_free_text {
+                        [18, 18, 22]
+                    } else if is_dark_bg {
                         [252, 252, 252]
                     } else {
                         [18, 18, 22]
@@ -672,7 +674,12 @@ impl RustRendererEngine {
                 .and_then(parse_hex_color)
                 .map(|sc| (sc, blk.stroke_width.unwrap_or(2)))
                 .or_else(|| {
-                    if blk.is_free_text || is_dark_bg {
+                    if blk.is_free_text {
+                        let halo_w = blk.stroke_width.unwrap_or_else(|| {
+                            ((item.layout.font_size as f32 * 0.22).round() as i32).clamp(3, 5)
+                        });
+                        Some(([255, 255, 255], halo_w))
+                    } else if is_dark_bg {
                         Some(([16, 16, 20], 2))
                     } else {
                         None

@@ -2,6 +2,7 @@ pub mod cache;
 pub mod cv;
 pub mod disk_cache;
 pub mod engine;
+pub mod lama;
 pub mod segmenter;
 
 pub use cache::compute_clean_state_hash;
@@ -11,7 +12,11 @@ pub use cv::{
     inpaint_laplace_sor, otsu_threshold, CcComponent, CcResult,
 };
 pub use disk_cache::CleanDiskCache;
-pub use engine::{CleanOptions, CleanPageResult, CleanTimings, CleanerError, RustCleanerEngine};
+pub use engine::{
+    CleanOptions, CleanPageResult, CleanTimings, CleanerError, RustCleanerEngine,
+    CLEAN_ALGO_VERSION,
+};
+pub use lama::AnimeLamaInpainter;
 pub use segmenter::NeuralStrokeSegmenter;
 
 #[cfg(test)]
@@ -156,7 +161,7 @@ mod tests {
         let mut b_large = base_block.clone();
         b_large.mask_dilate = Some(14);
 
-        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_dil"));
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_dil"));
         let opts = CleanOptions {
             use_neural_segmenter: false,
             use_cache: false,
@@ -249,7 +254,7 @@ mod tests {
             original_text: "ドン!".into(),
             ..Default::default()
         };
-        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_zb"));
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_zb"));
         let opts = CleanOptions {
             use_neural_segmenter: false,
             use_cache: false,
@@ -343,7 +348,7 @@ mod tests {
             ..Default::default()
         };
 
-        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_tall"));
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_tall"));
         let opts = CleanOptions {
             use_neural_segmenter: false,
             use_cache: false,
@@ -393,7 +398,7 @@ mod tests {
             ..Default::default()
         };
 
-        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_noblur"));
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_noblur"));
         let opts = CleanOptions {
             use_neural_segmenter: false,
             use_cache: false,
@@ -459,7 +464,7 @@ mod tests {
             ..Default::default()
         };
 
-        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_vnotch"));
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_vnotch"));
         let opts = CleanOptions {
             use_neural_segmenter: false,
             use_cache: false,
@@ -503,5 +508,163 @@ mod tests {
             255,
         );
         assert_eq!(mask[5 * w + 5], 255);
+    }
+
+    #[test]
+    fn test_tract_b_spiky_bubble_preserves_walls_no_white_square() {
+        // Регрессия 013.webp #14 ("Eeeek!"): без полигона YOLO26s-seg шипастый белый баббл
+        // поверх тёмного фона не должен закрашиваться белым квадратом поверх контура!
+        let mut img = image::RgbImage::from_pixel(160, 160, image::Rgb([45, 45, 50]));
+        for y in 30..130 {
+            for x in 30..130 {
+                let wall = x <= 32 || x >= 127 || y <= 32 || y >= 127;
+                img.put_pixel(
+                    x,
+                    y,
+                    if wall {
+                        image::Rgb([15, 15, 15])
+                    } else {
+                        image::Rgb([252, 252, 252])
+                    },
+                );
+            }
+        }
+        // Текст внутри шипастой полости (сплошной тёмный штрих 6×24 внутри белого баббла)
+        for y in 68..92 {
+            for x in 72..78 {
+                img.put_pixel(x, y, image::Rgb([15, 15, 15]));
+            }
+        }
+        // Грубая нейро-маска, накрывшая весь bbox (включая углы и рамку)
+        let mut neural = vec![0u8; 160 * 160];
+        for y in 26..134 {
+            for x in 26..134 {
+                neural[y * 160 + x] = 200;
+            }
+        }
+        let blk = TextBlock {
+            id: 14,
+            bbox: [24, 24, 136, 136],
+            clean_bbox: Some([24, 24, 136, 136]),
+            bubble_polygon: None,
+            is_free_text: false,
+            original_text: "ヒイイ".into(),
+            translated_text: "Eeeek!".into(),
+            ..Default::default()
+        };
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_spiky"));
+        let opts = CleanOptions {
+            use_cache: false,
+            ..Default::default()
+        };
+        let res_cv = engine.clean_image_with_neural_mask(&img, &[blk.clone()], None, &opts);
+        assert!(res_cv.cleaned.get_pixel(75, 80)[0] >= 245, "CV path must clean solid stroke");
+        assert!(res_cv.cleaned.get_pixel(31, 80)[0] < 35);
+        assert_eq!(res_cv.cleaned.get_pixel(26, 26), &image::Rgb([45, 45, 50]));
+
+        let res = engine.clean_image_with_neural_mask(&img, &[blk], Some(&neural), &opts);
+        // Внутри шипастого баббла сплошной штрих очищен до белого
+        assert!(res.cleaned.get_pixel(75, 80)[0] >= 245);
+        // Чёрная стенка баббла сохранена
+        assert!(res.cleaned.get_pixel(31, 80)[0] < 35);
+        // Тёмный фон снаружи баббла (внутри bbox!) остался побайтово нетронутым!
+        assert_eq!(res.cleaned.get_pixel(26, 26), &image::Rgb([45, 45, 50]));
+    }
+
+    #[test]
+    fn test_tract_a_neural_spillover_preserves_spiky_wall_and_panel_border() {
+        // Регрессия 006.webp #2: нейро-маска выплеснулась за полигон на стенку и соседнюю тёмную рамку панели
+        let mut img = image::RgbImage::from_pixel(160, 160, image::Rgb([245, 245, 245]));
+        // Чёрная рамка панели слева x=16..20 и стенка баббла на x=30..32
+        for y in 15..145 {
+            for x in 16..21 {
+                img.put_pixel(x, y, image::Rgb([15, 15, 15]));
+            }
+        }
+        for y in 25..135 {
+            for x in 30..130 {
+                let wall = x <= 32 || x >= 127 || y <= 27 || y >= 132;
+                img.put_pixel(
+                    x,
+                    y,
+                    if wall {
+                        image::Rgb([15, 15, 15])
+                    } else {
+                        image::Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+        // Текст внутри x=55..105
+        for y in 60..95 {
+            for x in 55..105 {
+                if (x + y) % 3 == 0 {
+                    img.put_pixel(x, y, image::Rgb([18, 18, 18]));
+                }
+            }
+        }
+        // Грубая нейро-маска, выплеснувшаяся до x=14 (на стенку и рамку панели)
+        let mut neural = vec![0u8; 160 * 160];
+        for y in 40..110 {
+            for x in 14..115 {
+                neural[y * 160 + x] = 170;
+            }
+        }
+        let blk = TextBlock {
+            id: 2,
+            bbox: [28, 25, 132, 135],
+            text_bbox: Some([18, 45, 110, 105]),
+            bubble_polygon: Some(vec![[30, 25], [130, 25], [130, 135], [30, 135]]),
+            original_text: "テスト".into(),
+            translated_text: "Test".into(),
+            ..Default::default()
+        };
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_spill"));
+        let opts = CleanOptions {
+            use_cache: false,
+            ..Default::default()
+        };
+        let res = engine.clean_image_with_neural_mask(&img, &[blk], Some(&neural), &opts);
+        // Стенка баббла на x=31 и рамка панели на x=18 остались чёрными!
+        assert!(res.cleaned.get_pixel(31, 75)[0] < 35);
+        assert!(res.cleaned.get_pixel(18, 75)[0] < 35);
+    }
+
+    #[test]
+    fn test_free_text_screentone_white_halo_masking() {
+        // Регрессия скриншота 4: тёмный текст с белой обводкой поверх тёмно-серого скринтона [85, 85, 90]
+        let mut img = image::RgbImage::from_pixel(140, 140, image::Rgb([85, 85, 90]));
+        // Белая обводка 3px вокруг чёрного вертикального штриха на x=66..74, y=45..95
+        for y in 42..98 {
+            for x in 63..77 {
+                img.put_pixel(x, y, image::Rgb([252, 252, 252]));
+            }
+        }
+        for y in 46..94 {
+            for x in 67..73 {
+                img.put_pixel(x, y, image::Rgb([15, 15, 18]));
+            }
+        }
+        let blk = TextBlock {
+            id: 5,
+            bbox: [55, 35, 85, 105],
+            clean_bbox: Some([55, 35, 85, 105]),
+            bubble_polygon: None,
+            is_free_text: true,
+            original_text: "どうせ未来に帰るんだし".into(),
+            translated_text: "Мы всё равно вернёмся…".into(),
+            ..Default::default()
+        };
+        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_halo"));
+        let opts = CleanOptions {
+            use_neural_segmenter: false,
+            use_cache: false,
+            ..Default::default()
+        };
+        let mask = engine.build_text_mask(&img, &[blk], None, &opts);
+        // Покрыт и чёрный штрих, и белая обводка рядом, а серый скринтон сбоку не задет!
+        assert_eq!(mask[70 * 140 + 70], 255, "dark stroke core must be masked");
+        assert_eq!(mask[70 * 140 + 64], 255, "white halo around stroke must be masked");
+        assert_eq!(mask[70 * 140 + 30], 0, "surrounding screentone must stay clean");
     }
 }

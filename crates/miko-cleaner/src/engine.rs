@@ -5,6 +5,7 @@ use crate::cv::{
     inpaint_laplace_sor,
 };
 use crate::disk_cache::CleanDiskCache;
+use crate::lama::AnimeLamaInpainter;
 use crate::segmenter::NeuralStrokeSegmenter;
 use image::RgbImage;
 use miko_core::{clip_polygon_to_rect, TextBlock};
@@ -14,6 +15,8 @@ use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 use thiserror::Error;
+
+pub const CLEAN_ALGO_VERSION: &str = "rust_lama_v4";
 
 #[derive(Debug, Error)]
 pub enum CleanerError {
@@ -63,6 +66,7 @@ pub struct CleanPageResult {
 
 pub struct RustCleanerEngine {
     segmenter: Option<NeuralStrokeSegmenter>,
+    lama: Option<AnimeLamaInpainter>,
     cache: CleanDiskCache,
     pub ep: String,
 }
@@ -763,21 +767,17 @@ fn build_tract_a_crop_mask(
         let tx2 = (tb[2] - x0 + 4).clamp(tx1 as i32, cw as i32) as usize;
         let ty2 = (tb[3] - y0 + 4).clamp(ty1 as i32, ch as i32) as usize;
 
-        // Внешний фон вокруг баббла (чтобы нависающие штрихи сравнивались с внешним фоном, а не внутренностью баббла)
-        let ext_bg_rgb = if neural_crop.is_none() {
-            let ext_ring = dilate_ellipse(&poly_mask, cw, ch, 12);
-            let mut ext_sel = vec![0u8; n];
-            for i in 0..n {
-                if ext_ring[i] > 0 && poly_mask[i] == 0 {
-                    ext_sel[i] = 255;
-                }
+        // Внешний фон вокруг баббла (всегда вычисляем, чтобы в нейро-режиме тоже отсекать ложные нависания)
+        let ext_ring = dilate_ellipse(&poly_mask, cw, ch, 12);
+        let mut ext_sel = vec![0u8; n];
+        for i in 0..n {
+            if ext_ring[i] > 0 && poly_mask[i] == 0 {
+                ext_sel[i] = 255;
             }
-            compute_rgb_median_and_std(crop_rgb, &ext_sel)
-                .map(|(c, _)| c)
-                .unwrap_or(bg_rgb)
-        } else {
-            bg_rgb
-        };
+        }
+        let ext_bg_rgb = compute_rgb_median_and_std(crop_rgb, &ext_sel)
+            .map(|(c, _)| c)
+            .unwrap_or(bg_rgb);
         let ext_lum = rgb_lum(ext_bg_rgb[0], ext_bg_rgb[1], ext_bg_rgb[2]);
 
         for ry in ty1..ty2 {
@@ -787,18 +787,18 @@ fn build_tract_a_crop_mask(
                 if poly_mask[i] > 0 {
                     continue;
                 }
-                let nn_over = neural_crop.is_some_and(|nm| nm[i] >= 120);
-                let cv_over = if neural_crop.is_none() && blk.text_bbox.is_some() {
-                    let r = crop_rgb[i * 3];
-                    let g = crop_rgb[i * 3 + 1];
-                    let b = crop_rgb[i * 3 + 2];
-                    let lum = rgb_lum(r, g, b);
-                    let chroma = rgb_chroma(r, g, b);
-                    let l1_ext = rgb_l1_dist(r, g, b, ext_bg_rgb);
-                    (lum as i32 - ext_lum as i32).abs() > 42 || (chroma >= 45 && l1_ext >= 60)
-                } else {
-                    false
-                };
+                let r = crop_rgb[i * 3];
+                let g = crop_rgb[i * 3 + 1];
+                let b = crop_rgb[i * 3 + 2];
+                let lum = rgb_lum(r, g, b);
+                let chroma = rgb_chroma(r, g, b);
+                let l1_ext = rgb_l1_dist(r, g, b, ext_bg_rgb);
+                let high_contrast =
+                    (lum as i32 - ext_lum as i32).abs() > 42 || (chroma >= 45 && l1_ext >= 60);
+
+                // Грубая 160×160 маска segmenter не должна слепо помечать ровный фон или рамку за стеной баббла
+                let nn_over = neural_crop.is_some_and(|nm| nm[i] >= 150) && high_contrast;
+                let cv_over = neural_crop.is_none() && blk.text_bbox.is_some() && high_contrast;
                 if nn_over || cv_over {
                     outside_raw[i] = 255;
                     has_outside = true;
@@ -806,10 +806,10 @@ fn build_tract_a_crop_mask(
             }
         }
 
-        if has_outside && neural_crop.is_none() {
-            // В чистом CV-режиме отсекаем собственную чёрную рамку баббла (включая V-седловину `011.webp`),
-            // которая лежит в пределах 1..5px от `poly_mask`: настоящий нависающий штрих текста обязан
-            // выходить за оболочку стенки (`poly_wall_shell == 0`) И соединяться с внутренними чернилами `cand_ink`!
+        if has_outside {
+            // Отсекаем собственную чёрную рамку баббла и край панели (`006.webp #2`, V-седловину `011.webp`):
+            // настоящий нависающий штрих текста обязан выходить за оболочку стенки (`poly_wall_shell == 0`)
+            // И соединяться с внутренними чернилами `cand_ink`!
             let poly_wall_shell = dilate_ellipse(&poly_mask, cw, ch, 5);
             let in_bridge_check = dilate_ellipse(&cand_ink, cw, ch, 6);
             let occ = connected_components(&outside_raw, cw, ch);
@@ -880,6 +880,158 @@ fn build_tract_a_crop_mask(
     (out_mask, poly_mask)
 }
 
+/// Восстанавливает попиксельную замкнутую светлую полость для блоков без полигона (Tract B),
+/// чтобы не закрашивать белым квадратом шипы баббла и фон вокруг (`013.webp #14`).
+fn extract_tract_b_white_cavity(
+    crop_rgb: &[u8],
+    cw: usize,
+    ch: usize,
+    bx1: usize,
+    by1: usize,
+    bx2: usize,
+    by2: usize,
+) -> Option<Vec<u8>> {
+    if cw < 12 || ch < 12 || bx2 <= bx1 + 8 || by2 <= by1 + 8 {
+        return None;
+    }
+    let n = cw * ch;
+    let bw = bx2 - bx1;
+    let bh = by2 - by1;
+    let cx = (bx1 + bx2) / 2;
+    let cy = (by1 + by2) / 2;
+    let rx = (bw * 18 / 100).max(4);
+    let ry = (bh * 18 / 100).max(4);
+
+    let mut vis = vec![0u8; n];
+    let mut q = VecDeque::new();
+    for y in cy.saturating_sub(ry)..=(cy + ry).min(ch - 1) {
+        for x in cx.saturating_sub(rx)..=(cx + rx).min(cw - 1) {
+            let i = y * cw + x;
+            let lum = rgb_lum(crop_rgb[i * 3], crop_rgb[i * 3 + 1], crop_rgb[i * 3 + 2]);
+            let chr = rgb_chroma(crop_rgb[i * 3], crop_rgb[i * 3 + 1], crop_rgb[i * 3 + 2]);
+            if lum >= 200 && chr <= 26 && vis[i] == 0 {
+                vis[i] = 255;
+                q.push_back((x, y));
+            }
+        }
+    }
+    if q.is_empty() {
+        return None;
+    }
+
+    while let Some((x, y)) = q.pop_front() {
+        let nbrs = [
+            (x.wrapping_sub(1), y, x > 0),
+            (x + 1, y, x + 1 < cw),
+            (x, y.wrapping_sub(1), y > 0),
+            (x, y + 1, y + 1 < ch),
+        ];
+        for (nx, ny, ok) in nbrs {
+            if !ok {
+                continue;
+            }
+            let ni = ny * cw + nx;
+            if vis[ni] == 0 {
+                let lum = rgb_lum(crop_rgb[ni * 3], crop_rgb[ni * 3 + 1], crop_rgb[ni * 3 + 2]);
+                if lum >= 195 {
+                    vis[ni] = 255;
+                    q.push_back((nx, ny));
+                }
+            }
+        }
+    }
+
+    let mut leaked = 0usize;
+    let perim_total = 2 * cw + 2 * ch;
+    for x in 0..cw {
+        if vis[x] > 0 {
+            leaked += 1;
+        }
+        if vis[(ch - 1) * cw + x] > 0 {
+            leaked += 1;
+        }
+    }
+    for y in 0..ch {
+        if vis[y * cw] > 0 {
+            leaked += 1;
+        }
+        if vis[y * cw + (cw - 1)] > 0 {
+            leaked += 1;
+        }
+    }
+    if perim_total > 0 && leaked * 100 > perim_total * 16 {
+        return None;
+    }
+
+    let mut inside_bbox_cnt = 0usize;
+    for y in by1..by2 {
+        let row = y * cw;
+        for x in bx1..bx2 {
+            if vis[row + x] > 0 {
+                inside_bbox_cnt += 1;
+            }
+        }
+    }
+    let bbox_area = (bw * bh).max(1);
+    if inside_bbox_cnt * 100 < bbox_area * 18 {
+        return None;
+    }
+
+    // Заполняем внутренние «дыры» (тёмные буквы внутри белой полости) внешним обходом по краям кропа,
+    // чтобы тёмные штрихи текста тоже попадали в `safe_cav`, сохраняя стенки и фон снаружи.
+    let mut ext_vis = vec![false; n];
+    let mut eq = VecDeque::new();
+    for x in 0..cw {
+        for y in [0usize, ch - 1] {
+            let i = y * cw + x;
+            if vis[i] == 0 && !ext_vis[i] {
+                ext_vis[i] = true;
+                eq.push_back((x, y));
+            }
+        }
+    }
+    for y in 0..ch {
+        for x in [0usize, cw - 1] {
+            let i = y * cw + x;
+            if vis[i] == 0 && !ext_vis[i] {
+                ext_vis[i] = true;
+                eq.push_back((x, y));
+            }
+        }
+    }
+    while let Some((x, y)) = eq.pop_front() {
+        let nbrs = [
+            (x.wrapping_sub(1), y, x > 0),
+            (x + 1, y, x + 1 < cw),
+            (x, y.wrapping_sub(1), y > 0),
+            (x, y + 1, y + 1 < ch),
+        ];
+        for (nx, ny, ok) in nbrs {
+            if !ok {
+                continue;
+            }
+            let ni = ny * cw + nx;
+            if !ext_vis[ni] && vis[ni] == 0 {
+                ext_vis[ni] = true;
+                eq.push_back((nx, ny));
+            }
+        }
+    }
+
+    let mut cav_filled = vec![0u8; n];
+    for i in 0..n {
+        if !ext_vis[i] {
+            cav_filled[i] = 255;
+        }
+    }
+
+    let safe_cav = erode_ellipse(&cav_filled, cw, ch, 2);
+    if !safe_cav.iter().any(|&v| v > 0) {
+        return None;
+    }
+    Some(safe_cav)
+}
+
 fn build_tract_b_crop_mask(
     crop_rgb: &[u8],
     cw: usize,
@@ -889,7 +1041,7 @@ fn build_tract_b_crop_mask(
     blk: &TextBlock,
     neural_crop: Option<&[u8]>,
     default_dilate: u8,
-) -> Vec<u8> {
+) -> (Vec<u8>, Option<Vec<u8>>) {
     let eb = effective_clean_bbox(blk);
     let bx1 = (eb[0] - x0).clamp(0, cw as i32) as usize;
     let by1 = (eb[1] - y0).clamp(0, ch as i32) as usize;
@@ -898,140 +1050,192 @@ fn build_tract_b_crop_mask(
     let n = cw * ch;
     let mut cand = vec![0u8; n];
     if bx1 >= bx2 || by1 >= by2 {
-        return cand;
+        return (cand, None);
     }
 
-    let mut nn_hits = 0usize;
-    if let Some(nm) = neural_crop {
-        for ry in by1..by2 {
-            let row = ry * cw;
-            for rx in bx1..bx2 {
-                let i = row + rx;
-                if nm[i] >= 90 {
-                    cand[i] = 255;
-                    nn_hits += 1;
-                }
-            }
-        }
-    }
-
-    if nn_hits < 15 {
-        // Если это закрытая светлая прямоугольная/овальная рамка без YOLO-полигона,
-        // маскируем только реальные тёмные/цветные штрихи внутри без захвата рамки;
-        // иначе (свободный текст поверх рисунка/скринтона) выделяем только узкие локальные штрихи (BlackHat/TopHat + фильтр толщины SWT),
-        // чтобы никогда не размывать весь прямоугольник глобальным порогом Отсу (`013.webp #14 "Eeeek!"`)!
-        let mut inner_sel = vec![0u8; n];
-        let pad_in = 3usize.min((bx2 - bx1) / 6).min((by2 - by1) / 6);
-        for ry in (by1 + pad_in)..(by2.saturating_sub(pad_in)) {
-            let row = ry * cw;
-            for rx in (bx1 + pad_in)..(bx2.saturating_sub(pad_in)) {
-                inner_sel[row + rx] = 255;
-            }
-        }
-        let p80_inner = selector_lum_percentile(crop_rgb, &inner_sel, 80).unwrap_or(200);
-        let (_, is_flat_box) = evaluate_flat_bubble_bg(crop_rgb, &inner_sel);
-
-        if !blk.is_free_text && is_flat_box && p80_inner >= 235 {
-            for ry in (by1 + pad_in)..(by2.saturating_sub(pad_in)) {
+    // Путь B1: закрытый светлый баббл без YOLO-полигона (`!blk.is_free_text`) —
+    // восстанавливаем реальную полость и чистим СТРОГО внутри неё (без белых квадратов!)
+    if !blk.is_free_text {
+        if let Some(safe_cav) = extract_tract_b_white_cavity(crop_rgb, cw, ch, bx1, by1, bx2, by2) {
+            for ry in by1..by2 {
                 let row = ry * cw;
-                for rx in (bx1 + pad_in)..(bx2.saturating_sub(pad_in)) {
+                for rx in bx1..bx2 {
                     let i = row + rx;
+                    if safe_cav[i] == 0 {
+                        continue;
+                    }
                     let r = crop_rgb[i * 3];
                     let g = crop_rgb[i * 3 + 1];
                     let b = crop_rgb[i * 3 + 2];
                     let lum = rgb_lum(r, g, b);
                     let chroma = rgb_chroma(r, g, b);
-                    if lum < 195 || chroma >= 45 {
+                    let nn_hit = neural_crop.is_some_and(|nm| nm[i] >= 110);
+                    if nn_hit || lum < 195 || chroma >= 45 {
                         cand[i] = 255;
                     }
                 }
             }
-        } else {
-            // Локальное окно среднего 17x17 через 2D интегральную сумму яркостей (аналог BlackHat/TopHat)
-            let iw = cw + 1;
-            let mut integ = vec![0u64; iw * (ch + 1)];
-            for y in 0..ch {
-                let mut r_acc = 0u64;
-                for x in 0..cw {
-                    let i = y * cw + x;
-                    r_acc += rgb_lum(crop_rgb[i * 3], crop_rgb[i * 3 + 1], crop_rgb[i * 3 + 2]) as u64;
-                    integ[(y + 1) * iw + (x + 1)] = integ[y * iw + (x + 1)] + r_acc;
+            let dil_r = (blk.mask_dilate.unwrap_or(default_dilate).clamp(1, 28) as usize / 2).max(1);
+            let dil = dilate_ellipse(&cand, cw, ch, dil_r);
+            let mut out = vec![0u8; n];
+            for i in 0..n {
+                if dil[i] > 0 && safe_cav[i] > 0 {
+                    out[i] = 255;
                 }
             }
-            let win_r = 8usize;
-            for ry in by1..by2 {
-                let row = ry * cw;
-                let wy0 = ry.saturating_sub(win_r);
-                let wy1 = (ry + win_r + 1).min(ch);
-                for rx in bx1..bx2 {
-                    let wx0 = rx.saturating_sub(win_r);
-                    let wx1 = (rx + win_r + 1).min(cw);
-                    let area_w = ((wx1 - wx0) * (wy1 - wy0)).max(1) as u64;
-                    let sum_w = integ[wy1 * iw + wx1] + integ[wy0 * iw + wx0]
-                        - integ[wy0 * iw + wx1]
-                        - integ[wy1 * iw + wx0];
-                    let loc_mean = (sum_w / area_w) as i32;
+            return (out, Some(safe_cav));
+        }
+    }
 
-                    let i = row + rx;
-                    let r = crop_rgb[i * 3];
-                    let g = crop_rgb[i * 3 + 1];
-                    let b = crop_rgb[i * 3 + 2];
-                    let lum = rgb_lum(r, g, b) as i32;
-                    let chroma = rgb_chroma(r, g, b);
-                    let high_contrast_stroke =
-                        (lum < 75 && loc_mean - lum >= 38) || (lum > 225 && lum - loc_mean >= 42);
-                    if high_contrast_stroke || chroma >= 48 {
+    // Путь B2 (`blk.is_free_text` или безрамочный баббл без замкнутой полости):
+    // раздельная фильтрация тёмных и светлых штрихов (чтобы белая обводка не склеивала колонки иероглифов в один сплошной блок!)
+    // + захват белой обводки (`白フチ`) на тёмных/серых скринтонах для бесшовного LaMa-инпейнтинга!
+    let iw = cw + 1;
+    let mut integ = vec![0u64; iw * (ch + 1)];
+    for y in 0..ch {
+        let mut r_acc = 0u64;
+        for x in 0..cw {
+            let i = y * cw + x;
+            r_acc += rgb_lum(crop_rgb[i * 3], crop_rgb[i * 3 + 1], crop_rgb[i * 3 + 2]) as u64;
+            integ[(y + 1) * iw + (x + 1)] = integ[y * iw + (x + 1)] + r_acc;
+        }
+    }
+
+    let mut dark_cand = vec![0u8; n];
+    let mut bright_cand = vec![0u8; n];
+    let win_r = 8usize;
+    for ry in by1..by2 {
+        let row = ry * cw;
+        let wy0 = ry.saturating_sub(win_r);
+        let wy1 = (ry + win_r + 1).min(ch);
+        for rx in bx1..bx2 {
+            let wx0 = rx.saturating_sub(win_r);
+            let wx1 = (rx + win_r + 1).min(cw);
+            let area_w = ((wx1 - wx0) * (wy1 - wy0)).max(1) as u64;
+            let sum_w = integ[wy1 * iw + wx1] + integ[wy0 * iw + wx0]
+                - integ[wy0 * iw + wx1]
+                - integ[wy1 * iw + wx0];
+            let loc_mean = (sum_w / area_w) as i32;
+
+            let i = row + rx;
+            let r = crop_rgb[i * 3];
+            let g = crop_rgb[i * 3 + 1];
+            let b = crop_rgb[i * 3 + 2];
+            let lum = rgb_lum(r, g, b) as i32;
+            let chroma = rgb_chroma(r, g, b);
+
+            let dark_stroke = lum < 105 && loc_mean - lum >= 26;
+            let bright_stroke = lum > 220 && lum - loc_mean >= 42;
+            let nn_hit = neural_crop.is_some_and(|nm| nm[i] >= 125)
+                && ((loc_mean - lum).abs() >= 24 || lum < 95 || lum > 225 || chroma >= 45);
+            if dark_stroke || (lum < 115 && nn_hit) {
+                dark_cand[i] = 255;
+            } else if bright_stroke || chroma >= 48 || (lum >= 115 && nn_hit) {
+                bright_cand[i] = 255;
+            }
+        }
+    }
+
+    let bw = (bx2 - bx1).max(1);
+    let bh = (by2 - by1).max(1);
+    let box_area = bw * bh;
+    let filter_polarity = |plane: &mut [u8], max_dt_limit: f32, max_area_pct: usize| {
+        let cc = connected_components(plane, cw, ch);
+        if cc.stats.is_empty() {
+            return;
+        }
+        let dt = distance_transform_l2(plane, cw, ch);
+        let mut max_dt = vec![0.0f32; cc.stats.len()];
+        for (i, &lbl) in cc.labels.iter().enumerate() {
+            if lbl > 0 {
+                let idx = (lbl - 1) as usize;
+                if dt[i] > max_dt[idx] {
+                    max_dt[idx] = dt[i];
+                }
+            }
+        }
+        let mut reject = vec![false; cc.stats.len() + 1];
+        for st in &cc.stats {
+            let idx = (st.label - 1) as usize;
+            let touches_edge = st.left <= bx1 + 1
+                || (st.left + st.width) + 1 >= bx2
+                || st.top <= by1 + 1
+                || (st.top + st.height) + 1 >= by2;
+            let too_tiny_dot = st.area < 6;
+            let too_thick_blob = max_dt[idx] > max_dt_limit || st.area * 100 > box_area * max_area_pct;
+            let spans_frame = touches_edge
+                && max_dt[idx] <= 3.5
+                && ((st.width <= 4 && st.height * 100 > bh * 90)
+                    || (st.height <= 4 && st.width * 100 > bw * 90));
+            if too_tiny_dot || too_thick_blob || spans_frame {
+                reject[st.label as usize] = true;
+            }
+        }
+        for (i, &lbl) in cc.labels.iter().enumerate() {
+            if lbl > 0 && reject[lbl as usize] {
+                plane[i] = 0;
+            }
+        }
+    };
+
+    filter_polarity(&mut dark_cand, 9.0, 42);
+    filter_polarity(&mut bright_cand, 9.5, 42);
+
+    let has_dark_strokes = dark_cand.iter().filter(|&&v| v > 0).count() >= 16;
+    for i in 0..n {
+        if dark_cand[i] > 0 || (!has_dark_strokes && bright_cand[i] > 0) {
+            cand[i] = 255;
+        }
+    }
+
+    // Захват белой обводки (`白フチ`) вокруг тёмного текста на серых скринтонах (`bg_lum < 220`)
+    let mut ring_sel = vec![0u8; n];
+    let rx0 = bx1.saturating_sub(10);
+    let ry0 = by1.saturating_sub(10);
+    let rx1 = (bx2 + 10).min(cw);
+    let ry1 = (by2 + 10).min(ch);
+    for ry in ry0..ry1 {
+        let row = ry * cw;
+        for rx in rx0..rx1 {
+            if rx < bx1 || rx >= bx2 || ry < by1 || ry >= by2 {
+                ring_sel[row + rx] = 255;
+            }
+        }
+    }
+    let bg_lum = compute_rgb_median_and_std(crop_rgb, &ring_sel)
+        .map(|(c, _)| rgb_lum(c[0], c[1], c[2]))
+        .unwrap_or(245);
+    if bg_lum < 220 && has_dark_strokes {
+        let halo_zone = dilate_ellipse(&dark_cand, cw, ch, 5);
+        let hx0 = bx1.saturating_sub(4);
+        let hy0 = by1.saturating_sub(4);
+        let hx1 = (bx2 + 4).min(cw);
+        let hy1 = (by2 + 4).min(ch);
+        for ry in hy0..hy1 {
+            let row = ry * cw;
+            for rx in hx0..hx1 {
+                let i = row + rx;
+                if halo_zone[i] > 0 && cand[i] == 0 {
+                    let lum = rgb_lum(crop_rgb[i * 3], crop_rgb[i * 3 + 1], crop_rgb[i * 3 + 2]);
+                    if lum >= 195 && lum >= bg_lum.saturating_add(35) {
                         cand[i] = 255;
-                    }
-                }
-            }
-
-            // Отсекаем крупные пятна тени, длинные линии кадра/ног и мелкое зерно скринтона!
-            let cc = connected_components(&cand, cw, ch);
-            if !cc.stats.is_empty() {
-                let dt = distance_transform_l2(&cand, cw, ch);
-                let mut max_dt = vec![0.0f32; cc.stats.len()];
-                for (i, &lbl) in cc.labels.iter().enumerate() {
-                    if lbl > 0 {
-                        let idx = (lbl - 1) as usize;
-                        if dt[i] > max_dt[idx] {
-                            max_dt[idx] = dt[i];
-                        }
-                    }
-                }
-                let bw = (bx2 - bx1).max(1);
-                let bh = (by2 - by1).max(1);
-                let box_area = bw * bh;
-                let mut reject = vec![false; cc.stats.len() + 1];
-                for st in &cc.stats {
-                    let idx = (st.label - 1) as usize;
-                    let too_tiny_dot = st.area < 8;
-                    let too_thick_blob = max_dt[idx] > 7.5 || st.area * 100 > box_area * 18;
-                    let spans_frame = st.width * 100 > bw * 82 || st.height * 100 > bh * 82;
-                    if too_tiny_dot || too_thick_blob || spans_frame {
-                        reject[st.label as usize] = true;
-                    }
-                }
-                for (i, &lbl) in cc.labels.iter().enumerate() {
-                    if lbl > 0 && reject[lbl as usize] {
-                        cand[i] = 0;
                     }
                 }
             }
         }
     }
 
-    let eff_r = if (blk.is_free_text || nn_hits < 15) && blk.mask_dilate.is_none() {
+    let eff_r = if (blk.is_free_text || neural_crop.is_none()) && blk.mask_dilate.is_none() {
         2usize
     } else {
         (blk.mask_dilate.unwrap_or(default_dilate).clamp(1, 28) as usize / 2).max(1)
     };
     let dil = dilate_ellipse(&cand, cw, ch, eff_r);
 
-    let cx1 = bx1.saturating_sub(4);
-    let cy1 = by1.saturating_sub(4);
-    let cx2 = (bx2 + 4).min(cw);
-    let cy2 = (by2 + 4).min(ch);
+    let cx1 = bx1.saturating_sub(5);
+    let cy1 = by1.saturating_sub(5);
+    let cx2 = (bx2 + 5).min(cw);
+    let cy2 = (by2 + 5).min(ch);
     let mut out = vec![0u8; n];
     for ry in cy1..cy2 {
         let row = ry * cw;
@@ -1042,7 +1246,7 @@ fn build_tract_b_crop_mask(
             }
         }
     }
-    out
+    (out, None)
 }
 
 fn fill_masked_with_rgb(rgb: &mut [u8], mask: &[u8], color: [u8; 3]) {
@@ -1216,40 +1420,72 @@ impl RustCleanerEngine {
     pub fn load(base_dir: &Path, prefer_gpu: bool) -> Self {
         let cache_dir = base_dir.join(".miko").join("clean_cache");
         let cache = CleanDiskCache::new(cache_dir, 48, 240);
-        let seg_path = base_dir
-            .join("models")
-            .join("onnx")
-            .join("comic_text_segmenter.onnx");
+        let onnx_dir = base_dir.join("models").join("onnx");
+        let seg_path = onnx_dir.join("comic_text_segmenter.onnx");
+        let lama_path = onnx_dir.join("anime_lama.onnx");
 
-        if seg_path.is_file() {
+        let segmenter = if seg_path.is_file() {
             match NeuralStrokeSegmenter::load(&seg_path, prefer_gpu) {
                 Ok(seg) => {
-                    let ep = seg.ep.to_string();
-                    tracing::info!("RustCleanerEngine загрузил comic_text_segmenter.onnx на {}", ep);
-                    return Self {
-                        segmenter: Some(seg),
-                        cache,
-                        ep,
-                    };
+                    tracing::info!(
+                        "RustCleanerEngine загрузил comic_text_segmenter.onnx на {}",
+                        seg.ep
+                    );
+                    Some(seg)
                 }
                 Err(err) => {
                     tracing::warn!(
                         "Не удалось загрузить comic_text_segmenter.onnx ({}); работаем в CV-режиме",
                         err
                     );
+                    None
                 }
             }
-        }
+        } else {
+            None
+        };
+
+        let lama = if lama_path.is_file() {
+            match AnimeLamaInpainter::load(&lama_path, prefer_gpu) {
+                Ok(inp) => {
+                    tracing::info!("RustCleanerEngine загрузил anime_lama.onnx на {}", inp.ep);
+                    Some(inp)
+                }
+                Err(err) => {
+                    tracing::warn!(
+                        "Не удалось загрузить anime_lama.onnx ({}); фоллбэк на Laplace SOR",
+                        err
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
+        let base_ep = segmenter
+            .as_ref()
+            .map(|s| s.ep.to_string())
+            .or_else(|| lama.as_ref().map(|l| l.ep.to_string()))
+            .unwrap_or_else(|| "CPU-CV".to_string());
+        let ep = if lama.is_some() {
+            format!("{base_ep}+LaMa")
+        } else {
+            base_ep
+        };
+
         Self {
-            segmenter: None,
+            segmenter,
+            lama,
             cache,
-            ep: "CPU-CV".to_string(),
+            ep,
         }
     }
 
     pub fn new_cv_only(cache_dir: PathBuf) -> Self {
         Self {
             segmenter: None,
+            lama: None,
             cache: CleanDiskCache::new(cache_dir, 48, 240),
             ep: "CPU-CV".to_string(),
         }
@@ -1303,7 +1539,7 @@ impl RustCleanerEngine {
                 );
                 m
             } else {
-                build_tract_b_crop_mask(
+                let (m, _) = build_tract_b_crop_mask(
                     &crop_rgb,
                     cw,
                     ch,
@@ -1312,7 +1548,8 @@ impl RustCleanerEngine {
                     blk,
                     nn_crop.as_deref(),
                     opts.dilate_size,
-                )
+                );
+                m
             };
 
             for ry in 0..ch {
@@ -1364,7 +1601,7 @@ impl RustCleanerEngine {
                     sf,
                     src_mtime,
                     opts.dilate_size,
-                    "rust_harmonic_v3",
+                    CLEAN_ALGO_VERSION,
                     &opts.pipeline_mode,
                 )
             })
@@ -1415,7 +1652,7 @@ impl RustCleanerEngine {
 
     /// Детерминированная очистка страницы с переданной (опционально синтетической в тестах) нейро-маской.
     pub fn clean_image_with_neural_mask(
-        &self,
+        &mut self,
         img: &RgbImage,
         blocks: &[TextBlock],
         neural_mask: Option<&[u8]>,
@@ -1455,6 +1692,7 @@ impl RustCleanerEngine {
             // с наложением ручных кистей `add` / `erase` текущего блока и глобального `full_mask` (для учёта ластика).
             let orig_crop_rgb = copy_crop_rgb(img, rect);
             let nn_crop = nn_slice.map(|nm| copy_crop_u8(nm, wu, rect));
+            let mut tract_b_safe_cav: Option<Vec<u8>> = None;
             let mut crop_mask = if let Some(ref poly) = cpoly {
                 let (m, _) = build_tract_a_crop_mask(
                     &orig_crop_rgb,
@@ -1469,7 +1707,7 @@ impl RustCleanerEngine {
                 );
                 m
             } else {
-                build_tract_b_crop_mask(
+                let (m, cav) = build_tract_b_crop_mask(
                     &orig_crop_rgb,
                     cw,
                     ch,
@@ -1478,7 +1716,9 @@ impl RustCleanerEngine {
                     blk,
                     nn_crop.as_deref(),
                     opts.dilate_size,
-                )
+                );
+                tract_b_safe_cav = cav;
+                m
             };
             if let Some(ref strokes) = blk.custom_mask_strokes {
                 for s in strokes {
@@ -1645,7 +1885,14 @@ impl RustCleanerEngine {
                                 work_in[i * 3 + 2] = bg_rgb[2];
                             }
                         }
-                        inpaint_laplace_sor(&mut work_in, &inside_mask, cw, ch, 180, 1.75);
+                        let used_lama = if let Some(ref mut lama) = self.lama {
+                            lama.inpaint_crop_rgb(&mut work_in, &inside_mask, cw, ch).is_ok()
+                        } else {
+                            false
+                        };
+                        if !used_lama {
+                            inpaint_laplace_sor(&mut work_in, &inside_mask, cw, ch, 180, 1.75);
+                        }
                         let min_floor = if bg_lum >= 195 {
                             bg_lum.saturating_sub(24)
                         } else {
@@ -1691,7 +1938,14 @@ impl RustCleanerEngine {
                     let mut work_out = crop_rgb.clone();
                     // Забиваем внутренность баббла внешним цветом, чтобы белый цвет не вытекал наружу!
                     fill_masked_with_rgb(&mut work_out, &shield_bubble, ext_bg);
-                    inpaint_laplace_sor(&mut work_out, &outside_mask, cw, ch, 160, 1.75);
+                    let used_lama = if let Some(ref mut lama) = self.lama {
+                        lama.inpaint_crop_rgb(&mut work_out, &outside_mask, cw, ch).is_ok()
+                    } else {
+                        false
+                    };
+                    if !used_lama {
+                        inpaint_laplace_sor(&mut work_out, &outside_mask, cw, ch, 160, 1.75);
+                    }
                     for i in 0..n {
                         if outside_mask[i] > 0 {
                             crop_rgb[i * 3] = work_out[i * 3];
@@ -1711,29 +1965,40 @@ impl RustCleanerEngine {
                     );
                 }
             } else {
-                // Tract B: если это обычный светлый закрытый баббл (`!is_free_text`) с чистым однотонным фоном вокруг букв,
-                // заливаем его резким фоновым цветом без размытия Лапласа; для текстур и free-text — Лаплас SOR!
+                // Tract B:
+                // Путь B1 (`!is_free_text` с доказанной замкнутой белой полостью `safe_cav`) -> чистая плоская заливка строго внутри полости;
+                // Путь B2 (`is_free_text` или безрамочный баббл на фоне/скринтоне) -> ТОЛЬКО нейро-инпейнтинг Anime-LaMa (или Laplace SOR), без белых квадратов!
                 let mut did_flat_fill = false;
                 if !blk.is_free_text {
-                    let ring = dilate_ellipse(&crop_mask, cw, ch, 4);
-                    let mut ring_sel = vec![0u8; n];
-                    let mut ring_cnt = 0usize;
-                    for i in 0..n {
-                        if ring[i] > 0 && crop_mask[i] == 0 {
-                            ring_sel[i] = 255;
-                            ring_cnt += 1;
+                    if let Some(ref safe_cav) = tract_b_safe_cav {
+                        let mut cav_sel = vec![0u8; n];
+                        let mut cav_cnt = 0usize;
+                        for i in 0..n {
+                            if safe_cav[i] > 0 && crop_mask[i] == 0 {
+                                cav_sel[i] = 255;
+                                cav_cnt += 1;
+                            }
                         }
-                    }
-                    if ring_cnt >= 16 {
-                        let (bg_rgb, is_flat) = evaluate_flat_bubble_bg(&crop_rgb, &ring_sel);
-                        if is_flat && rgb_lum(bg_rgb[0], bg_rgb[1], bg_rgb[2]) >= 232 {
-                            fill_masked_with_rgb(&mut crop_rgb, &crop_mask, bg_rgb);
-                            did_flat_fill = true;
+                        if cav_cnt >= 12 {
+                            let (bg_rgb, is_flat) = evaluate_flat_bubble_bg(&crop_rgb, &cav_sel);
+                            if is_flat && rgb_lum(bg_rgb[0], bg_rgb[1], bg_rgb[2]) >= 228 {
+                                fill_masked_with_rgb(&mut crop_rgb, &crop_mask, bg_rgb);
+                                did_flat_fill = true;
+                            }
                         }
                     }
                 }
                 if !did_flat_fill {
-                    inpaint_laplace_sor(&mut crop_rgb, &crop_mask, cw, ch, 160, 1.75);
+                    let lama_res = if let Some(ref mut lama) = self.lama {
+                        lama.inpaint_on_page(&cleaned, rect, &crop_mask).ok()
+                    } else {
+                        None
+                    };
+                    if let Some(inpainted) = lama_res {
+                        crop_rgb = inpainted;
+                    } else {
+                        inpaint_laplace_sor(&mut crop_rgb, &crop_mask, cw, ch, 160, 1.75);
+                    }
                 }
             }
 

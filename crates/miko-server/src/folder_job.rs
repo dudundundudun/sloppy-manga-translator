@@ -702,7 +702,7 @@ pub async fn process_chapter_folder_sync(
                 &src_str,
                 mtime,
                 9,
-                "rust_harmonic_v3",
+                miko_cleaner::CLEAN_ALGO_VERSION,
                 "balanced",
             );
             let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
@@ -1601,7 +1601,7 @@ pub async fn folder_find_replace(
                     &src_str,
                     mtime,
                     9,
-                    "rust_harmonic_v3",
+                    miko_cleaner::CLEAN_ALGO_VERSION,
                     "balanced",
                 );
                 let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);

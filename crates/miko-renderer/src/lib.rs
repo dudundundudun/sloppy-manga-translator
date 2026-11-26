@@ -749,4 +749,54 @@ mod tests {
             "shout should stand out above normal dialogue: shout={fs_shout} vs short={fs_short}"
         );
     }
+
+    #[test]
+    fn test_free_text_on_grey_screentone_renders_black_with_white_halo() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        // Тёмно-серый скринтон без баббла (скриншот 4)
+        let img = image::RgbImage::from_pixel(300, 300, image::Rgb([85, 85, 90]));
+        let mut blocks = vec![TextBlock {
+            id: 1,
+            bbox: [60, 60, 240, 240],
+            bubble_polygon: None,
+            is_free_text: true,
+            original_text: "どうせ未来に帰るんだし…".into(),
+            translated_text: "I'm going back to the future anyway…".into(),
+            ..Default::default()
+        }];
+
+        let res = engine
+            .render_page(&img, &mut blocks, &RenderOptions::default())
+            .expect("render free_text screentone");
+        assert_eq!(res.blocks_rendered, 1);
+
+        let mut dark_glyph_px = 0usize;
+        let mut white_halo_px = 0usize;
+        for y in 65..235 {
+            for x in 65..235 {
+                let p = res.rendered.get_pixel(x, y);
+                let lum = ((77 * p[0] as u32 + 150 * p[1] as u32 + 29 * p[2] as u32) >> 8) as u8;
+                if lum < 45 {
+                    dark_glyph_px += 1;
+                } else if lum > 225 {
+                    white_halo_px += 1;
+                }
+            }
+        }
+        assert!(
+            dark_glyph_px >= 40,
+            "expected black text pixels (<45 lum), got {dark_glyph_px}"
+        );
+        assert!(
+            white_halo_px >= 80,
+            "expected white halo pixels (>225 lum), got {white_halo_px}"
+        );
+    }
 }

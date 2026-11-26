@@ -11,8 +11,8 @@ pub use detectors::{
     trace_concave_scanline_polygon, BalloonPolygon, BubbleDetection,
 };
 pub use filter::{
-    classify_filter_reason, is_hallucinated_ocr_text, is_punct_only, FilterReason,
-    OcrBackendInfo,
+    classify_filter_reason, is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only,
+    is_screentone_dialogue_text, FilterReason, OcrBackendInfo,
 };
 pub use nar::{NarError, NarRecognizer, NarVocabulary};
 pub use pipeline::{OcrOptions, OcrPageResult, OcrTimings, PipelineError, RustOcrEngine};
@@ -77,6 +77,7 @@ mod tests {
                 confidence: 0.9,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [150, 20, 230, 120],
@@ -85,6 +86,7 @@ mod tests {
                 confidence: 0.9,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
         ];
         sort_detections_reading_order(&mut dets, true);
@@ -125,6 +127,7 @@ mod tests {
                 confidence: 0.92,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [974, 749, 1058, 883],
@@ -133,6 +136,7 @@ mod tests {
                 confidence: 0.89,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [950, 874, 1153, 1566],
@@ -141,6 +145,7 @@ mod tests {
                 confidence: 0.95,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
         ];
         let rt1 = vec![
@@ -151,6 +156,7 @@ mod tests {
                 confidence: 0.91,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [1000, 749, 1050, 871],
@@ -159,6 +165,7 @@ mod tests {
                 confidence: 0.88,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [950, 884, 1153, 1499],
@@ -167,6 +174,7 @@ mod tests {
                 confidence: 0.94,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
         ];
         let seg = vec![BalloonPolygon {
@@ -201,6 +209,7 @@ mod tests {
                 confidence: 0.91,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [636, 424, 842, 722], // дубль-матрёшка поверх обоих!
@@ -209,6 +218,7 @@ mod tests {
                 confidence: 0.94,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [636, 426, 747, 705],
@@ -217,6 +227,7 @@ mod tests {
                 confidence: 0.90,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
         ];
         suppress_parent_containers(&mut cands);
@@ -232,6 +243,7 @@ mod tests {
                 confidence: 0.85,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [148, 61, 408, 348],
@@ -240,6 +252,7 @@ mod tests {
                 confidence: 0.93,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
             BubbleDetection {
                 bbox: [147, 64, 214, 235],
@@ -248,6 +261,7 @@ mod tests {
                 confidence: 0.78,
                 is_free_text: false,
                 has_enclosing_frame: true,
+                confirmed_by_two_detectors: false,
             },
         ];
         suppress_parent_containers(&mut single_with_frags);
@@ -289,5 +303,64 @@ mod tests {
             verify_closed_bubble_cavity(&framed_img, [30, 30, 130, 130]),
             "closed rectangular narration box must pass cavity check"
         );
+    }
+
+    #[test]
+    fn test_face_hair_blob_rejected_by_cavity_check() {
+        // Регрессия 112.webp #7 ("DORU"): белая щека внутри толстых чёрных волос/рта не является бабблом
+        let mut face_img = RgbImage::from_pixel(140, 140, Rgb([250, 250, 250]));
+        // Густая чёрная шапка волос сверху [20..120, 20..52] (> 15×15 сплошного чёрного)
+        for y in 20..54 {
+            for x in 20..120 {
+                face_img.put_pixel(x, y, Rgb([12, 12, 14]));
+            }
+        }
+        // Тёмный открытый рот снизу [45..95, 92..120] + боковые границы волос
+        for y in 90..122 {
+            for x in 42..98 {
+                face_img.put_pixel(x, y, Rgb([14, 14, 16]));
+            }
+        }
+        for y in 20..122 {
+            for x in 20..24 {
+                face_img.put_pixel(x, y, Rgb([14, 14, 16]));
+            }
+            for x in 116..120 {
+                face_img.put_pixel(x, y, Rgb([14, 14, 16]));
+            }
+        }
+        assert!(
+            !verify_closed_bubble_cavity(&face_img, [20, 20, 120, 122]),
+            "face with thick solid black hair/mouth must NOT pass bubble cavity check"
+        );
+    }
+
+    #[test]
+    fn test_screentone_dialogue_vs_sfx_filtering() {
+        // Диалоги на сером скринтоне без баббла принимаются в dialogue_only, а звуки отсеиваются
+        assert!(is_screentone_dialogue_text("どうせ未来に帰るんだし…"));
+        assert!(is_screentone_dialogue_text("適当な事してもバレないんじゃね？"));
+        assert!(
+            classify_filter_reason("どうせ未来に帰るんだし…", true, "dialogue_only", 2, 0.72, false)
+                .is_none()
+        );
+        assert!(
+            classify_filter_reason(
+                "適当な事してもバレないんじゃね？",
+                true,
+                "dialogue_only",
+                2,
+                0.76,
+                false
+            )
+            .is_none()
+        );
+
+        for sfx in ["ドクン", "ざわっ", "ぎゅっ", "ごろん", "どきどき", "ドる"] {
+            assert!(
+                classify_filter_reason(sfx, true, "dialogue_only", 2, 0.85, false).is_some(),
+                "SFX or noise '{sfx}' must be filtered out on background"
+            );
+        }
     }
 }

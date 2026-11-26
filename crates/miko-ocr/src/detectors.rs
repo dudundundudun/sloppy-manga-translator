@@ -16,6 +16,8 @@ pub struct BubbleDetection {
     pub confidence: f32,
     pub is_free_text: bool,
     pub has_enclosing_frame: bool,
+    #[serde(default)]
+    pub confirmed_by_two_detectors: bool,
 }
 
 #[inline]
@@ -143,6 +145,7 @@ impl RtDetrDetector {
                 confidence: best_prob,
                 is_free_text: best_cls == 2,
                 has_enclosing_frame: best_cls != 2,
+                confirmed_by_two_detectors: false,
             };
             match best_cls {
                 0 => cls0.push(det),
@@ -257,6 +260,7 @@ impl YoloBubbleDetector {
                 confidence: best_score,
                 is_free_text: best_cls == 1,
                 has_enclosing_frame: best_cls != 1,
+                confirmed_by_two_detectors: false,
             });
         }
         nms_boxes(&mut cands, 0.45);
@@ -734,8 +738,9 @@ pub fn fuse_detections(
         bubbles.push(b);
     }
 
-    // 2. Добавляем unmatched text_bubble из cls1 и из YOLOv8m
-    for t in rt_cls1.into_iter().chain(yolo_dets.into_iter()) {
+    // 2. Добавляем unmatched text_bubble из RT-DETR cls1, затем сверяем с YOLOv8m
+    // и фиксируем подтверждение двумя независимыми детекторами (`confirmed_by_two_detectors`).
+    for t in rt_cls1 {
         if t.confidence < conf_thresh {
             continue;
         }
@@ -753,10 +758,50 @@ pub fn fuse_detections(
         }
     }
 
+    for y in yolo_dets {
+        if y.confidence < conf_thresh {
+            continue;
+        }
+        if y.is_free_text {
+            if !detect_free_text {
+                continue;
+            }
+            if let Some(existing) = bubbles
+                .iter_mut()
+                .find(|b| b.is_free_text && box_iou(b.bbox, y.bbox) >= 0.35)
+            {
+                existing.confirmed_by_two_detectors = true;
+                existing.confidence = existing.confidence.max(y.confidence);
+            } else if !bubbles.iter().any(|b| box_iou(b.bbox, y.bbox) >= 0.45) {
+                bubbles.push(y);
+            }
+            continue;
+        }
+        if let Some(existing) = bubbles.iter_mut().find(|b| {
+            !b.is_free_text && (box_iou(b.bbox, y.bbox) >= 0.35 || box_iomin(b.bbox, y.bbox) >= 0.55)
+        }) {
+            existing.confirmed_by_two_detectors = true;
+            existing.confidence = existing.confidence.max(y.confidence);
+        } else if !bubbles
+            .iter()
+            .any(|b| box_iou(b.bbox, y.bbox) >= 0.42 || box_iomin(b.bbox, y.bbox) >= 0.60)
+        {
+            bubbles.push(y);
+        }
+    }
+
     if detect_free_text {
         for f in rt_cls2 {
-            if f.confidence >= conf_thresh && !bubbles.iter().any(|b| box_iou(b.bbox, f.bbox) >= 0.45)
+            if f.confidence < conf_thresh {
+                continue;
+            }
+            if let Some(existing) = bubbles
+                .iter_mut()
+                .find(|b| b.is_free_text && box_iou(b.bbox, f.bbox) >= 0.35)
             {
+                existing.confirmed_by_two_detectors = true;
+                existing.confidence = existing.confidence.max(f.confidence);
+            } else if !bubbles.iter().any(|b| box_iou(b.bbox, f.bbox) >= 0.45) {
                 bubbles.push(f);
             }
         }

@@ -90,6 +90,72 @@ pub fn is_hallucinated_ocr_text(text: &str, ink_pixels: usize, is_free_text: boo
     false
 }
 
+#[inline]
+fn is_katakana_char(c: char) -> bool {
+    ('\u{30A0}'..='\u{30FF}').contains(&c)
+}
+
+#[inline]
+fn is_hiragana_char(c: char) -> bool {
+    ('\u{3040}'..='\u{309F}').contains(&c)
+}
+
+#[inline]
+fn is_kanji_char(c: char) -> bool {
+    ('\u{4E00}'..='\u{9FFF}').contains(&c) || ('\u{3400}'..='\u{4DBF}').contains(&c)
+}
+
+/// Определяет типичные звукоподражания / SFX (`ドクン`, `ざわっ`, `ぎゅっ`, `ごろん`, `どきどき`),
+/// которые не нужно переводить поверх фона как реплики диалога.
+pub fn is_likely_sfx_text(text: &str) -> bool {
+    let core = strip_punct_re().replace_all(text.trim(), "");
+    if core.is_empty() {
+        return false;
+    }
+    let body: Vec<char> = core
+        .chars()
+        .filter(|&c| !matches!(c, 'っ' | 'ッ' | 'ー' | '〜'))
+        .collect();
+    if body.is_empty() {
+        return true;
+    }
+    let len = body.len();
+    let all_kata = body.iter().all(|&c| is_katakana_char(c));
+    let all_hira = body.iter().all(|&c| is_hiragana_char(c));
+
+    if all_kata && len <= 6 {
+        return true;
+    }
+    if all_hira && len <= 4 {
+        return true;
+    }
+    if (all_kata || all_hira) && (len == 4 || len == 6 || len == 8) {
+        let half = len / 2;
+        if body[..half] == body[half..] {
+            return true;
+        }
+        if len >= 4 && body.chunks(2).all(|ch| ch == &body[..2]) {
+            return true;
+        }
+    }
+    false
+}
+
+/// Отличает связные диалоги/мысли поверх скринтона (`どうせ未来に帰るんだし…`, `適当な事してもバレないんじゃね？`)
+/// от шумовых звуков (`ドクン`, `ざわっ`) и коротких галлюцинаций OCR (`ドる`).
+pub fn is_screentone_dialogue_text(text: &str) -> bool {
+    if is_punct_only(text) || is_likely_sfx_text(text) {
+        return false;
+    }
+    let core = strip_punct_re().replace_all(text.trim(), "");
+    if core.is_empty() || digits_only_re().is_match(&core) {
+        return false;
+    }
+    let char_len = core.chars().count();
+    let has_kanji = core.chars().any(is_kanji_char);
+    (has_kanji && char_len >= 4) || char_len >= 7
+}
+
 /// Фильтр объёма текста с сохранением осмысленных числовых реплик в уверенных диалоговых бабблах (`>= 0.78`).
 pub fn classify_filter_reason(
     text: &str,
@@ -115,11 +181,33 @@ pub fn classify_filter_reason(
         min_text_length.max(1)
     };
 
-    if matches!(mode.as_str(), "dialogue_only" | "bubbles_only" | "long_only") && is_free_text {
-        return Some(FilterReason {
-            code: "free_text_disabled".to_string(),
-            label_ru: format!("Надпись вне баббла (отключено в профиле {mode})"),
-        });
+    if is_free_text {
+        match mode.as_str() {
+            "bubbles_only" | "long_only" => {
+                return Some(FilterReason {
+                    code: "free_text_disabled".to_string(),
+                    label_ru: format!("Надпись вне баббла (отключено в профиле {mode})"),
+                });
+            }
+            "dialogue_only" => {
+                if !(confidence >= 0.45 && is_screentone_dialogue_text(text)) {
+                    return Some(FilterReason {
+                        code: "free_text_disabled".to_string(),
+                        label_ru: "Звук / короткая надпись вне баббла (профиль dialogue_only)"
+                            .to_string(),
+                    });
+                }
+            }
+            "bubbles_no_sighs" => {
+                if is_likely_sfx_text(text) {
+                    return Some(FilterReason {
+                        code: "sfx_filtered".to_string(),
+                        label_ru: "Звуковой эффект / ономатопея (SFX)".to_string(),
+                    });
+                }
+            }
+            _ => {}
+        }
     }
 
     if mode != "all" && digits_only_re().is_match(&core) {

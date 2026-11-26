@@ -1,7 +1,9 @@
 use crate::detectors::{
     fuse_detections, RtDetrDetector, YoloBubbleDetector, YoloSegDetector,
 };
-use crate::filter::{classify_filter_reason, is_hallucinated_ocr_text, is_punct_only};
+use crate::filter::{
+    classify_filter_reason, is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only,
+};
 use crate::nar::{NarError, NarRecognizer};
 use crate::preprocess::crop_with_padding;
 use crate::reading_order::sort_detections_reading_order;
@@ -141,6 +143,13 @@ impl RustOcrEngine {
         };
         let seg_ms = t_seg.elapsed().as_millis();
 
+        let mode_lc = opts.text_filter_mode.trim().to_ascii_lowercase();
+        let allow_free_pass = opts.detect_free_text
+            || matches!(
+                mode_lc.as_str(),
+                "dialogue_only" | "bubbles_no_sighs" | "all"
+            );
+
         let mut fused = fuse_detections(
             rt0,
             rt1,
@@ -148,7 +157,7 @@ impl RustOcrEngine {
             yolo_dets,
             &balloons,
             opts.conf_threshold,
-            opts.detect_free_text,
+            allow_free_pass,
         );
         merge_split_column_strips(img, &balloons, &mut fused);
         sort_detections_reading_order(&mut fused, opts.rtl);
@@ -156,9 +165,13 @@ impl RustOcrEngine {
         let t_ocr = Instant::now();
         let mut blocks = Vec::new();
         for mut det in fused {
-            // Если YOLO26s-seg не нашёл полигон баббла, проверяем попиксельно наличие реальной замкнутой рамки;
-            // иначе это безрамочный SFX / свободный текст поверх рисунка (`013.webp #14 "Eeeek!"`, `017.webp #8`)!
+            // Если YOLO26s-seg не нашёл полигон баббла, отбрасываем слабые одиночные срабатывания
+            // (убирает галлюцинации по лицам `112.webp #7 "ドる"` с conf=0.41 и т.п.),
+            // иначе проверяем наличие реальной замкнутой светлой полости.
             if !det.is_free_text && det.bubble_polygon.is_none() {
+                if det.confidence < 0.56 && !det.confirmed_by_two_detectors {
+                    continue;
+                }
                 if verify_closed_bubble_cavity(img, det.bbox) {
                     det.has_enclosing_frame = true;
                 } else {
@@ -166,8 +179,13 @@ impl RustOcrEngine {
                     det.has_enclosing_frame = false;
                 }
             }
-            if det.is_free_text && !opts.detect_free_text {
-                continue;
+            if det.is_free_text {
+                if !allow_free_pass {
+                    continue;
+                }
+                if !opts.detect_free_text && det.confidence < 0.45 {
+                    continue;
+                }
             }
 
             let tight_tb = compute_tight_ink_bbox(img, det.bbox, det.text_bbox, det.is_free_text);
@@ -194,6 +212,20 @@ impl RustOcrEngine {
                 }
             }
             if is_punct_only(&recognized) {
+                continue;
+            }
+            if !det.is_free_text
+                && det.bubble_polygon.is_none()
+                && !det.confirmed_by_two_detectors
+                && det.confidence < 0.65
+                && recognized.chars().count() <= 2
+            {
+                continue;
+            }
+            if mode_lc == "dialogue_only"
+                && det.bubble_polygon.is_none()
+                && is_likely_sfx_text(&recognized)
+            {
                 continue;
             }
 
