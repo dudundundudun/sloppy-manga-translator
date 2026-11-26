@@ -5,7 +5,7 @@ use crate::filter::{classify_filter_reason, is_hallucinated_ocr_text, is_punct_o
 use crate::nar::{NarError, NarRecognizer};
 use crate::preprocess::crop_with_padding;
 use crate::reading_order::sort_detections_reading_order;
-use crate::tight_ink::{compute_tight_ink_bbox, has_meaningful_ink};
+use crate::tight_ink::{compute_tight_ink_bbox, has_meaningful_ink, verify_closed_bubble_cavity};
 use image::RgbImage;
 use miko_core::{normalize_clean_bbox, TextBlock};
 use miko_ort::{ExecutionProviderKind, OrtError};
@@ -154,7 +154,21 @@ impl RustOcrEngine {
 
         let t_ocr = Instant::now();
         let mut blocks = Vec::new();
-        for det in fused {
+        for mut det in fused {
+            // Если YOLO26s-seg не нашёл полигон баббла, проверяем попиксельно наличие реальной замкнутой рамки;
+            // иначе это безрамочный SFX / свободный текст поверх рисунка (`013.webp #14 "Eeeek!"`, `017.webp #8`)!
+            if !det.is_free_text && det.bubble_polygon.is_none() {
+                if verify_closed_bubble_cavity(img, det.bbox) {
+                    det.has_enclosing_frame = true;
+                } else {
+                    det.is_free_text = true;
+                    det.has_enclosing_frame = false;
+                }
+            }
+            if det.is_free_text && !opts.detect_free_text {
+                continue;
+            }
+
             let tight_tb = compute_tight_ink_bbox(img, det.bbox, det.text_bbox, det.is_free_text);
             let ocr_box = if !det.is_free_text { tight_tb } else { det.bbox };
             let raw_crop = crop_with_padding(img, ocr_box, 0);

@@ -4,33 +4,48 @@ use miko_cleaner::distance_transform_l2;
 #[derive(Debug, Clone)]
 pub struct BubbleLayout {
     pub font_size: i32,
+    pub scale_x: f32,
     pub lines: Vec<String>,
     pub center_xy: [i32; 2],
     pub line_height: f32,
     pub max_line_w: f32,
 }
 
-/// Вычисляет `[left_x, right_x]` доступной полости для каждой строки `y`.
+/// Вычисляет `[left_x, right_x]` самого широкого непрерывного сегмента полости для каждой строки `y`.
 pub fn compute_scanline_chords(mask: &[u8], w: usize, h: usize) -> Vec<Option<(usize, usize)>> {
     let mut out = vec![None; h];
     if w == 0 || h == 0 || mask.len() < w * h {
         return out;
     }
+    let mid_x = w as isize / 2;
     for y in 0..h {
         let row = y * w;
-        let mut left = None;
-        let mut right = 0usize;
-        for x in 0..w {
-            if mask[row + x] > 0 {
-                if left.is_none() {
-                    left = Some(x);
-                }
-                right = x;
+        let mut best_run: Option<(usize, usize)> = None;
+        let mut best_score = isize::MIN;
+        let mut x = 0usize;
+        while x < w {
+            if mask[row + x] == 0 {
+                x += 1;
+                continue;
+            }
+            let start = x;
+            while x < w && mask[row + x] > 0 {
+                x += 1;
+            }
+            let end = x;
+            let run_w = (end - start) as isize;
+            let dist_mid = if start as isize <= mid_x && mid_x <= end as isize {
+                0
+            } else {
+                (start as isize - mid_x).abs().min((end as isize - mid_x).abs())
+            };
+            let score = run_w * 4 - dist_mid;
+            if score > best_score {
+                best_score = score;
+                best_run = Some((start, end));
             }
         }
-        if let Some(l) = left {
-            out[y] = Some((l, right + 1));
-        }
+        out[y] = best_run;
     }
     out
 }
@@ -142,6 +157,30 @@ pub fn solve_bubble_layout<F: Fn(&str, f32) -> f32>(
     fixed_fs: Option<i32>,
     measure: F,
 ) -> BubbleLayout {
+    solve_bubble_layout_scaled(
+        text,
+        cavity_mask,
+        w,
+        h,
+        min_fs,
+        max_fs,
+        fixed_fs,
+        |s, fs, sx| measure(s, fs) * sx,
+    )
+}
+
+/// Расширенный решатель вёрстки с поддержкой анаморфного горизонтального микро-сжатия (`0.88..=1.0`)
+/// для узких японских вертикальных бабблов и поиском лучшего вертикального окна по реальным хордам.
+pub fn solve_bubble_layout_scaled<F: Fn(&str, f32, f32) -> f32>(
+    text: &str,
+    cavity_mask: &[u8],
+    w: usize,
+    h: usize,
+    min_fs: i32,
+    max_fs: i32,
+    fixed_fs: Option<i32>,
+    measure_scaled: F,
+) -> BubbleLayout {
     let chords = compute_scanline_chords(cavity_mask, w, h);
     let mut valid_rows: Vec<(usize, usize)> = Vec::new();
     for (y, ch_opt) in chords.iter().enumerate() {
@@ -150,67 +189,125 @@ pub fn solve_bubble_layout<F: Fn(&str, f32) -> f32>(
         }
     }
 
-    let (cav_top, cav_bot, mid_w) = if valid_rows.is_empty() {
+    let (cav_top, cav_bot, ref_w) = if valid_rows.is_empty() {
         (0usize, h.max(1), w.max(1))
     } else {
         let top = valid_rows.first().unwrap().0;
         let bot = valid_rows.last().unwrap().0 + 1;
-        let mid_idx = valid_rows.len() / 2;
-        let mw = valid_rows[mid_idx].1.max(16);
-        (top, bot, mw)
+        let mut widths: Vec<usize> = valid_rows.iter().map(|&(_, cw)| cw).collect();
+        widths.sort_unstable();
+        // Берём 70-й перцентиль хорд вместо единственной средней строки, чтобы случайная перетяжка не роняла кегль!
+        let p70_idx = ((widths.len() * 70) / 100).min(widths.len() - 1);
+        let rw = widths[p70_idx].max(16);
+        (top, bot, rw)
     };
     let cav_h = (cav_bot - cav_top).max(16);
+    let allow_condense = cav_h * 100 >= ref_w * 155 || ref_w < 130;
 
-    let try_fs = |fs: i32| -> (bool, BubbleLayout) {
+    let try_fs_with_scale = |fs: i32, scale_x: f32| -> (bool, BubbleLayout) {
         let fs_f = fs as f32;
         let line_h = (fs_f * 1.18).max(10.0);
-        let target_wrap_w = (mid_w as f32 * 0.92).max(20.0);
-        let lines = auto_diamond_wrap_lines(text, target_wrap_w, |s| measure(s, fs_f));
+        let target_wrap_w = (ref_w as f32 * 0.93).max(20.0);
+        let lines = auto_diamond_wrap_lines(text, target_wrap_w, |s| measure_scaled(s, fs_f, scale_x));
         let total_h = (lines.len() as f32 * line_h).ceil() as usize;
         let max_line_w = lines
             .iter()
-            .map(|l| measure(l, fs_f))
+            .map(|l| measure_scaled(l, fs_f, scale_x))
             .fold(0.0f32, f32::max);
 
-        let fits_h = total_h <= cav_h;
-        let mut fits_chords = fits_h && !lines.is_empty();
-        let center_y = cav_top + cav_h / 2;
-        let y_start = center_y.saturating_sub(total_h / 2);
+        let fits_h = total_h <= cav_h && !lines.is_empty();
+        let mut fits_chords = false;
+        let mut chosen_y_start = (cav_top + cav_h / 2).saturating_sub(total_h / 2);
 
-        if fits_chords {
-            for (k, line) in lines.iter().enumerate() {
-                let lw = measure(line, fs_f);
-                let ly0 = (y_start + (k as f32 * line_h).floor() as usize).clamp(0, h - 1);
-                let ly1 = (y_start + ((k + 1) as f32 * line_h).ceil() as usize).clamp(ly0 + 1, h);
-                let mut band_min_w = usize::MAX;
-                for y in ly0..ly1 {
-                    if let Some((l, r)) = chords[y] {
-                        band_min_w = band_min_w.min(r.saturating_sub(l));
-                    } else {
-                        band_min_w = 0;
+        if fits_h {
+            let ideal_start = cav_top + (cav_h - total_h) / 2;
+            let min_start = cav_top;
+            let max_start = cav_bot.saturating_sub(total_h).max(min_start);
+
+            let check_at = |y_start: usize| -> bool {
+                for (k, line) in lines.iter().enumerate() {
+                    let lw = measure_scaled(line, fs_f, scale_x);
+                    let ly0 = (y_start + (k as f32 * line_h).floor() as usize).clamp(0, h - 1);
+                    let ly1 = (y_start + ((k + 1) as f32 * line_h).ceil() as usize).clamp(ly0 + 1, h);
+                    let mut band_widths: Vec<usize> = Vec::with_capacity(ly1 - ly0);
+                    for y in ly0..ly1 {
+                        if let Some((l, r)) = chords[y] {
+                            band_widths.push(r.saturating_sub(l));
+                        } else {
+                            band_widths.push(0);
+                        }
+                    }
+                    if band_widths.is_empty() {
+                        return false;
+                    }
+                    band_widths.sort_unstable();
+                    // 20-й перцентиль полосы строки (устойчив к 1-2px ступеньке скругления на краю глифа)
+                    let p20 = band_widths[(band_widths.len() * 20) / 100];
+                    if p20 == 0 || lw > (p20 as f32 + 2.5) {
+                        return false;
                     }
                 }
-                if band_min_w == usize::MAX || lw > (band_min_w as f32 + 2.0) {
-                    fits_chords = false;
-                    break;
+                true
+            };
+
+            if check_at(ideal_start) {
+                fits_chords = true;
+                chosen_y_start = ideal_start;
+            } else {
+                let max_shift = (ideal_start - min_start).max(max_start - ideal_start);
+                let mut delta = 4usize;
+                while delta <= max_shift {
+                    if ideal_start >= min_start + delta && check_at(ideal_start - delta) {
+                        fits_chords = true;
+                        chosen_y_start = ideal_start - delta;
+                        break;
+                    }
+                    if ideal_start + delta <= max_start && check_at(ideal_start + delta) {
+                        fits_chords = true;
+                        chosen_y_start = ideal_start + delta;
+                        break;
+                    }
+                    delta += 4;
                 }
             }
         }
 
         let box_w = (max_line_w.ceil() as usize).max(4).min(w.max(1));
         let box_h = total_h.max(4).min(h.max(1));
-        let center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
+        let mut center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
+        if fits_chords {
+            let cy_chord = (chosen_y_start + total_h / 2) as i32;
+            let cy_row = (cy_chord as usize).min(h.saturating_sub(1));
+            if let Some((l, r)) = chords[cy_row] {
+                center_xy = [((l + r) / 2) as i32, cy_chord];
+            }
+        }
 
         (
             fits_chords,
             BubbleLayout {
                 font_size: fs,
+                scale_x,
                 lines,
                 center_xy,
                 line_height: line_h,
                 max_line_w,
             },
         )
+    };
+
+    let try_fs = |fs: i32| -> (bool, BubbleLayout) {
+        let (ok1, lay1) = try_fs_with_scale(fs, 1.0);
+        if ok1 || !allow_condense {
+            return (ok1, lay1);
+        }
+        for &sx in &[0.93f32, 0.88f32] {
+            let (ok_s, lay_s) = try_fs_with_scale(fs, sx);
+            if ok_s {
+                return (true, lay_s);
+            }
+        }
+        (false, lay1)
     };
 
     if let Some(fs_fix) = fixed_fs {

@@ -7,8 +7,8 @@ pub mod reading_order;
 pub mod tight_ink;
 
 pub use detectors::{
-    box_iomin, box_iou, fuse_detections, nms_boxes, trace_concave_scanline_polygon,
-    BalloonPolygon, BubbleDetection,
+    box_iomin, box_iou, fuse_detections, nms_boxes, suppress_parent_containers,
+    trace_concave_scanline_polygon, BalloonPolygon, BubbleDetection,
 };
 pub use filter::{
     classify_filter_reason, is_hallucinated_ocr_text, is_punct_only, FilterReason,
@@ -21,7 +21,7 @@ pub use preprocess::{
     LetterboxMeta, NarPreprocessOutput,
 };
 pub use reading_order::sort_detections_reading_order;
-pub use tight_ink::{compute_tight_ink_bbox, has_meaningful_ink};
+pub use tight_ink::{compute_tight_ink_bbox, has_meaningful_ink, verify_closed_bubble_cavity};
 
 #[cfg(test)]
 mod tests {
@@ -188,5 +188,74 @@ mod tests {
         assert!(max_y0 <= 795, "top bubble leaked down to {max_y0}");
         assert!(min_y1 >= 743 && max_y1 <= 882, "mid bubble y={min_y1}..{max_y1}");
         assert!(min_y2 >= 870, "bottom bubble leaked up to {min_y2}");
+    }
+
+    #[test]
+    fn test_suppress_parent_matryoshka_and_borderless_sfx_cavity_check() {
+        // 1. Регрессия 018.webp (#8, #9, #10): родительский бокс #9 накрывает оба под-баббла #8 и #10
+        let mut cands = vec![
+            BubbleDetection {
+                bbox: [745, 425, 842, 726],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.91,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [636, 424, 842, 722], // дубль-матрёшка поверх обоих!
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.94,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [636, 426, 747, 705],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.90,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+        ];
+        suppress_parent_containers(&mut cands);
+        assert_eq!(cands.len(), 2, "parent matryoshka container must be dropped");
+
+        // 2. Регрессия 013.webp #14 ("Eeeek!"): SFX на скринтоне без рамки vs реальная закрытая плашка
+        let mut art_img = RgbImage::from_pixel(160, 160, Rgb([210, 210, 210]));
+        for y in 30..130 {
+            for x in 30..130 {
+                if (x + y) % 2 == 0 {
+                    art_img.put_pixel(x, y, Rgb([145, 145, 150]));
+                } else {
+                    art_img.put_pixel(x, y, Rgb([250, 250, 250]));
+                }
+            }
+        }
+        assert!(
+            !verify_closed_bubble_cavity(&art_img, [35, 35, 125, 125]),
+            "screentone SFX must NOT pass closed cavity check"
+        );
+
+        let mut framed_img = RgbImage::from_pixel(160, 160, Rgb([180, 180, 185]));
+        for y in 30..130 {
+            for x in 30..130 {
+                let border = x <= 32 || x >= 127 || y <= 32 || y >= 127;
+                framed_img.put_pixel(
+                    x,
+                    y,
+                    if border {
+                        Rgb([15, 15, 15])
+                    } else {
+                        Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+        assert!(
+            verify_closed_bubble_cavity(&framed_img, [30, 30, 130, 130]),
+            "closed rectangular narration box must pass cavity check"
+        );
     }
 }

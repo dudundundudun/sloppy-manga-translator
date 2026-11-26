@@ -211,3 +211,120 @@ pub fn compute_tight_ink_bbox(
     }
     [ink_x1, ink_y1, ink_x2, ink_y2]
 }
+
+/// Проверяет, имеет ли кандидат без полигона `YOLO26s-seg` реальную замкнутую светлую полость и тёмную рамку
+/// (например, прямоугольная плашка нарратива), чтобы отличать её от безрамочных SFX поверх рисунка (`013.webp #14 "Eeeek!"`).
+pub fn verify_closed_bubble_cavity(img: &RgbImage, bbox: [i32; 4]) -> bool {
+    let iw = img.width() as i32;
+    let ih = img.height() as i32;
+    let bx1 = bbox[0].clamp(0, (iw - 2).max(0));
+    let by1 = bbox[1].clamp(0, (ih - 2).max(0));
+    let bx2 = bbox[2].clamp(bx1 + 2, iw.max(2));
+    let by2 = bbox[3].clamp(by1 + 2, ih.max(2));
+    let bw = bx2 - bx1;
+    let bh = by2 - by1;
+    if bw < 18 || bh < 18 {
+        return false;
+    }
+
+    // 1. Внутри bbox должна быть однородная светлая подложка (не скринтон и не штриховка одежды)
+    let in_x1 = (bx1 + 3).min(bx2 - 1);
+    let in_y1 = (by1 + 3).min(by2 - 1);
+    let in_x2 = (bx2 - 3).max(in_x1 + 1);
+    let in_y2 = (by2 - 3).max(in_y1 + 1);
+    let mut non_ink = 0usize;
+    let mut pure_white = 0usize;
+    let mut total_in = 0usize;
+    for y in in_y1..in_y2 {
+        for x in in_x1..in_x2 {
+            total_in += 1;
+            let p = img.get_pixel(x as u32, y as u32);
+            let lum = luma_u8(p[0], p[1], p[2]);
+            let chr = p[0].max(p[1]).max(p[2]) - p[0].min(p[1]).min(p[2]);
+            if lum >= 135 {
+                non_ink += 1;
+                if lum >= 234 && chr <= 22 {
+                    pure_white += 1;
+                }
+            }
+        }
+    }
+    if total_in == 0 || non_ink * 100 < total_in * 35 || pure_white * 100 < non_ink * 72 {
+        return false;
+    }
+
+    // 2. Flood-fill из центра по светлым пикселям в расширенном окне (+10px):
+    // у закрытого баббла/плашки чёрная рамка запирает заливку внутри (утечка на внешний край < 14%),
+    // а у безрамочного текста на белом фоне заливка свободно вытекает наружу!
+    let pad = 10i32;
+    let rx1 = (bx1 - pad).max(0);
+    let ry1 = (by1 - pad).max(0);
+    let rx2 = (bx2 + pad).min(iw);
+    let ry2 = (by2 + pad).min(ih);
+    let rw = (rx2 - rx1) as usize;
+    let rh = (ry2 - ry1) as usize;
+    let mut vis = vec![false; rw * rh];
+    let mut q = std::collections::VecDeque::new();
+
+    let cx = ((bx1 + bx2) / 2 - rx1).clamp(0, rw as i32 - 1) as usize;
+    let cy = ((by1 + by2) / 2 - ry1).clamp(0, rh as i32 - 1) as usize;
+    let sx0 = cx.saturating_sub(6);
+    let sx1 = (cx + 7).min(rw);
+    let sy0 = cy.saturating_sub(6);
+    let sy1 = (cy + 7).min(rh);
+    for sy in sy0..sy1 {
+        for sx in sx0..sx1 {
+            let p = img.get_pixel((rx1 + sx as i32) as u32, (ry1 + sy as i32) as u32);
+            if luma_u8(p[0], p[1], p[2]) >= 210 {
+                vis[sy * rw + sx] = true;
+                q.push_back((sx, sy));
+            }
+        }
+    }
+    if q.is_empty() {
+        return false;
+    }
+
+    while let Some((x, y)) = q.pop_front() {
+        let nbrs = [
+            (x.wrapping_sub(1), y, x > 0),
+            (x + 1, y, x + 1 < rw),
+            (x, y.wrapping_sub(1), y > 0),
+            (x, y + 1, y + 1 < rh),
+        ];
+        for (nx, ny, ok) in nbrs {
+            if !ok {
+                continue;
+            }
+            let ni = ny * rw + nx;
+            if !vis[ni] {
+                let p = img.get_pixel((rx1 + nx as i32) as u32, (ry1 + ny as i32) as u32);
+                if luma_u8(p[0], p[1], p[2]) >= 205 {
+                    vis[ni] = true;
+                    q.push_back((nx, ny));
+                }
+            }
+        }
+    }
+
+    let mut open_perim_total = 0usize;
+    let mut open_perim_leaked = 0usize;
+    if ry1 > 0 {
+        open_perim_total += rw;
+        open_perim_leaked += (0..rw).filter(|&x| vis[x]).count();
+    }
+    if ry2 < ih {
+        open_perim_total += rw;
+        open_perim_leaked += (0..rw).filter(|&x| vis[(rh - 1) * rw + x]).count();
+    }
+    if rx1 > 0 {
+        open_perim_total += rh;
+        open_perim_leaked += (0..rh).filter(|&y| vis[y * rw]).count();
+    }
+    if rx2 < iw {
+        open_perim_total += rh;
+        open_perim_leaked += (0..rh).filter(|&y| vis[y * rw + (rw - 1)]).count();
+    }
+
+    open_perim_total == 0 || open_perim_leaked * 100 <= open_perim_total * 14
+}

@@ -632,6 +632,59 @@ fn compute_neighbor_aware_clip_rect(idx: usize, bubbles: &[BubbleDetection]) -> 
     rect
 }
 
+/// Удаляет родительские контейнеры («матрёшки»), которые целиком накрывают 2+ отдельных под-баббла
+/// (регрессия `018.webp #8/#9/#10`, где общий бокс сдвоенного баббла дублировал оба дочерних баббла).
+pub fn suppress_parent_containers(bubbles: &mut Vec<BubbleDetection>) {
+    let n = bubbles.len();
+    if n < 3 {
+        return;
+    }
+    let areas: Vec<f32> = bubbles
+        .iter()
+        .map(|b| ((b.bbox[2] - b.bbox[0]).max(1) as f32) * ((b.bbox[3] - b.bbox[1]).max(1) as f32))
+        .collect();
+    let mut drop_flags = vec![false; n];
+
+    for i in 0..n {
+        if bubbles[i].is_free_text {
+            continue;
+        }
+        let area_p = areas[i];
+        let mut children: Vec<usize> = Vec::new();
+        for j in 0..n {
+            if i == j || drop_flags[j] || bubbles[j].is_free_text {
+                continue;
+            }
+            if areas[j] >= area_p * 0.86 {
+                continue;
+            }
+            if box_iomin(bubbles[i].bbox, bubbles[j].bbox) >= 0.72 {
+                if !children
+                    .iter()
+                    .any(|&ck| box_iou(bubbles[ck].bbox, bubbles[j].bbox) >= 0.35)
+                {
+                    children.push(j);
+                }
+            }
+        }
+        if children.len() >= 2 {
+            let sum_child_area: f32 = children.iter().map(|&ck| areas[ck]).sum();
+            if sum_child_area >= area_p * 0.52 {
+                drop_flags[i] = true;
+            }
+        }
+    }
+
+    if drop_flags.iter().any(|&d| d) {
+        let mut idx = 0usize;
+        bubbles.retain(|_| {
+            let keep = !drop_flags[idx];
+            idx += 1;
+            keep
+        });
+    }
+}
+
 /// Объединяет детекции RT-DETR-v2 + YOLOv8m + полигоны YOLO26s-seg.
 pub fn fuse_detections(
     rt_cls0: Vec<BubbleDetection>,
@@ -692,6 +745,9 @@ pub fn fuse_detections(
         }
     }
 
+    // 2.5. Подавляем родительские дубли-матрёшки поверх сдвоенных/тройных бабблов (`018.webp`)
+    suppress_parent_containers(&mut bubbles);
+
     // 3. Прикрепляем полигоны бабблов от YOLO26s-seg с обязательной отсечкой Сазерленда–Ходжмана
     // по индивидуальному окну каждого баббла (чтобы сдвоенные/тройные бабблы никогда не делили один общий полигон!).
     let clip_rects: Vec<[i32; 4]> = (0..bubbles.len())
@@ -729,6 +785,9 @@ pub fn fuse_detections(
         }
         if let Some(p) = best_clipped {
             b.bubble_polygon = Some(p);
+            b.has_enclosing_frame = true;
+        } else {
+            b.has_enclosing_frame = false;
         }
     }
 

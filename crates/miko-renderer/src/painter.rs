@@ -121,10 +121,11 @@ pub fn resolve_font_for_text(
     }
 
     for sys in [
-        "C:/Windows/Fonts/comicbd.ttf",
-        "C:/Windows/Fonts/comic.ttf",
+        "C:/Windows/Fonts/trebucbd.ttf",
         "C:/Windows/Fonts/seguisb.ttf",
         "C:/Windows/Fonts/segoeuib.ttf",
+        "C:/Windows/Fonts/comicbd.ttf",
+        "C:/Windows/Fonts/comic.ttf",
         "C:/Windows/Fonts/arialbd.ttf",
         "C:/Windows/Fonts/arial.ttf",
         "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf",
@@ -146,7 +147,14 @@ pub fn resolve_font_for_text(
 
 /// Точное измерение ширины строки шрифтом (advance + kerning).
 pub fn measure_text_width(font: &FontVec, px_size: f32, text: &str) -> f32 {
-    let scale = PxScale::from(px_size.max(1.0));
+    measure_text_width_scaled(font, px_size, 1.0, text)
+}
+
+/// Измерение ширины строки с учётом анаморфного горизонтального коэффициента `scale_x` (`0.88..=1.0`).
+pub fn measure_text_width_scaled(font: &FontVec, px_size: f32, scale_x: f32, text: &str) -> f32 {
+    let py = px_size.max(1.0);
+    let px = (py * scale_x.clamp(0.85, 1.05)).max(1.0);
+    let scale = PxScale { x: px, y: py };
     let scaled = font.as_scaled(scale);
     let mut total = 0.0f32;
     let mut prev_gid = None;
@@ -196,7 +204,25 @@ pub fn draw_text_line(
     fill: [u8; 3],
     stroke: Option<([u8; 3], i32)>,
 ) {
-    let scale = PxScale::from(px_size.max(1.0));
+    draw_text_line_scaled(img, font, px_size, 1.0, x_left, y_baseline, text, fill, stroke);
+}
+
+/// Рисует строку текста с векторным горизонтальным сжатием `scale_x` (`0.88..=1.0` для узких вертикальных бабблов).
+#[allow(clippy::too_many_arguments)]
+pub fn draw_text_line_scaled(
+    img: &mut RgbImage,
+    font: &FontVec,
+    px_size: f32,
+    scale_x: f32,
+    x_left: f32,
+    y_baseline: f32,
+    text: &str,
+    fill: [u8; 3],
+    stroke: Option<([u8; 3], i32)>,
+) {
+    let py = px_size.max(1.0);
+    let px = (py * scale_x.clamp(0.85, 1.05)).max(1.0);
+    let scale = PxScale { x: px, y: py };
     let scaled = font.as_scaled(scale);
     let stroke_r = stroke.map(|(_, w)| w.clamp(0, 8)).unwrap_or(0) as usize;
     let pad = stroke_r as i32 + 2;

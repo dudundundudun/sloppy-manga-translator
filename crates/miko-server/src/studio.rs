@@ -366,7 +366,7 @@ async fn run_full_rgb_pipeline(
             &sp.to_string_lossy(),
             src_mtime,
             9,
-            "rust_harmonic_v1",
+            "rust_harmonic_v3",
             "balanced",
         );
         let _ = state
@@ -670,7 +670,7 @@ pub async fn save_edited_page(
             &src_str,
             mtime,
             9,
-            "rust_harmonic_v1",
+            "rust_harmonic_v3",
             "balanced",
         );
         let _ = st_clone.db.save_page_state(&src_str, &hash, &blocks);

@@ -11,13 +11,31 @@ fn crossbar_i_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\bi\b").expect("crossbar i regex"))
 }
 
-/// Нормализует комиксную типографику: длинное тире, многоточие, пробелы, регистр и правило Crossbar-I.
+fn leading_dot_word_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| Regex::new(r"^\.([A-Za-zА-Яа-яЁё])").expect("leading dot regex"))
+}
+
+fn broken_hesitation_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"\b(But|Uh|Uhh|Um|Ah|Oh|No|Wait|Well|Hmm)\.\s+([a-zа-яё])")
+            .expect("hesitation regex")
+    })
+}
+
+/// Нормализует комиксную типографику: длинное тире, многоточие, артефакты `.?`/`.!`, пробелы и правило Crossbar-I.
 pub fn format_comic_typography(text: &str, uppercase: bool) -> String {
     let mut s = text
         .replace("\r\n", "\n")
         .replace("...", "…")
+        .replace("..", "…")
+        .replace(".?", "…?")
+        .replace(".!", "…!")
         .replace("--", "—");
     s = multi_space_re().replace_all(&s, " ").trim().to_string();
+    s = leading_dot_word_re().replace_all(&s, "…$1").to_string();
+    s = broken_hesitation_re().replace_all(&s, "$1… $2").to_string();
     if uppercase {
         s = s.to_uppercase();
     } else if s.chars().any(|c| c.is_ascii_alphabetic()) {
@@ -25,6 +43,40 @@ pub fn format_comic_typography(text: &str, uppercase: bool) -> String {
         s = crossbar_i_re().replace_all(&s, "I").to_string();
     }
     s
+}
+
+/// Для узких вертикальных бабблов крика (`tategaki`, `cav_h >= cav_w * 2`) мягко поджимает
+/// сверхдлинные серии одинаковых букв (`Whaaaaaaaaaat?!` -> `Whaaaat?!`, `Nooooooo!!!` -> `Noooo!!!`),
+/// полностью сохраняя экспрессию крика, но позволяя набрать его крупным читаемым кеглем!
+pub fn compact_scream_for_narrow_bubble(text: &str, cav_w: usize, cav_h: usize) -> String {
+    if cav_w >= 185 || cav_h < cav_w.saturating_mul(2) {
+        return text.to_string();
+    }
+    let max_repeat = if cav_w < 95 { 3usize } else { 4usize };
+    let mut out = String::with_capacity(text.len());
+    let mut prev_low: Option<char> = None;
+    let mut run_len = 0usize;
+
+    for ch in text.chars() {
+        if ch.is_alphabetic() {
+            let low = ch.to_lowercase().next().unwrap_or(ch);
+            if prev_low == Some(low) {
+                run_len += 1;
+                if run_len <= max_repeat {
+                    out.push(ch);
+                }
+            } else {
+                prev_low = Some(low);
+                run_len = 1;
+                out.push(ch);
+            }
+        } else {
+            prev_low = None;
+            run_len = 0;
+            out.push(ch);
+        }
+    }
+    out
 }
 
 #[inline]
@@ -63,17 +115,90 @@ fn is_silent_sign(ch: char) -> bool {
     matches!(ch, 'ь' | 'ъ' | 'Ь' | 'Ъ' | 'й' | 'Й')
 }
 
-/// Слоговой перенос длинных слов (>= 8 букв, минимум 3 буквы на фрагмент) для RU и EN.
+fn max_char_run(chars: &[char]) -> usize {
+    let mut best = 0usize;
+    let mut cur = 0usize;
+    let mut prev: Option<char> = None;
+    for &c in chars {
+        let low = c.to_lowercase().next().unwrap_or(c);
+        if prev == Some(low) {
+            cur += 1;
+        } else {
+            prev = Some(low);
+            cur = 1;
+        }
+        best = best.max(cur);
+    }
+    best
+}
+
+/// Слоговой и дефисный перенос длинных слов (RU и EN) с отделением краевых знаков препинания
+/// (`Whaaaaat?!`, `matter-of-factly.`, `smartphone.`) и защитой односложных слов от разрыва.
 pub fn hyphenate_word(word: &str) -> Vec<String> {
-    let chars: Vec<char> = word.chars().collect();
-    if chars.len() < 8 || !chars.iter().all(|c| c.is_alphabetic()) {
+    if word.is_empty() || word.contains('\'') || word.contains('’') {
         return vec![word.to_string()];
     }
 
+    // 1. Составные слова с собственным дефисом ("matter-of-factly", "twenty-nine") бьём строго по их дефисам!
+    if word.contains('-') && !word.starts_with('-') && !word.ends_with('-') && !word.contains("--") {
+        let hy_parts: Vec<&str> = word.split('-').filter(|p| !p.is_empty()).collect();
+        if hy_parts.len() >= 2 && hy_parts.iter().all(|p| p.chars().count() >= 2) {
+            return hy_parts
+                .iter()
+                .enumerate()
+                .map(|(i, p)| {
+                    if i + 1 < hy_parts.len() {
+                        format!("{p}-")
+                    } else {
+                        (*p).to_string()
+                    }
+                })
+                .collect();
+        }
+    }
+
+    // 2. Отделяем ведущую и хвостовую пунктуацию ("Whaaaaaat?!" -> "", "Whaaaaaat", "?!")
+    let all_chars: Vec<char> = word.chars().collect();
+    let Some(first_alpha) = all_chars.iter().position(|c| c.is_alphabetic()) else {
+        return vec![word.to_string()];
+    };
+    let Some(last_alpha_rev) = all_chars.iter().rev().position(|c| c.is_alphabetic()) else {
+        return vec![word.to_string()];
+    };
+    let last_alpha = all_chars.len() - 1 - last_alpha_rev;
+    if last_alpha < first_alpha {
+        return vec![word.to_string()];
+    }
+
+    let lead: String = all_chars[..first_alpha].iter().collect();
+    let core_chars: &[char] = &all_chars[first_alpha..=last_alpha];
+    let trail: String = all_chars[(last_alpha + 1)..].iter().collect();
+
+    if !core_chars.iter().all(|c| c.is_alphabetic()) {
+        return vec![word.to_string()];
+    }
+
+    let n = core_chars.len();
+    let is_scream_stretch = max_char_run(core_chars) >= 4;
+    let min_len = if is_scream_stretch { 7 } else { 8 };
+    if n < min_len {
+        return vec![word.to_string()];
+    }
+
+    // Запрещаем разрывать односложные слова (обе половины обязаны содержать хотя бы одну гласную)
     let mut cut_points: Vec<usize> = Vec::new();
-    let n = chars.len();
     for i in 3..=(n - 3) {
-        if is_vowel(chars[i - 1]) && !is_silent_sign(chars[i]) {
+        let left_has_vowel = core_chars[..i].iter().any(|&c| is_vowel(c));
+        let right_has_vowel = core_chars[i..].iter().any(|&c| is_vowel(c));
+        if !left_has_vowel || !right_has_vowel {
+            continue;
+        }
+        // Не отрываем немое окончание "-e" / "-ed" / "-es" без собственной слоговой гласной
+        let right_tail: String = core_chars[i..].iter().collect::<String>().to_ascii_lowercase();
+        if matches!(right_tail.as_str(), "e" | "ed" | "es" | "s") {
+            continue;
+        }
+        if is_vowel(core_chars[i - 1]) && !is_silent_sign(core_chars[i]) {
             if cut_points.last().is_none_or(|&prev| i - prev >= 3) {
                 cut_points.push(i);
             }
@@ -82,7 +207,9 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
 
     if cut_points.is_empty() {
         let mid = n / 2;
-        if mid >= 3 && n - mid >= 3 {
+        let left_v = core_chars[..mid].iter().any(|&c| is_vowel(c));
+        let right_v = core_chars[mid..].iter().any(|&c| is_vowel(c));
+        if mid >= 3 && n - mid >= 3 && left_v && right_v {
             cut_points.push(mid);
         } else {
             return vec![word.to_string()];
@@ -91,11 +218,21 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
 
     let mut parts = Vec::with_capacity(cut_points.len() + 1);
     let mut start = 0usize;
-    for cp in cut_points {
-        parts.push(chars[start..cp].iter().collect());
+    for (idx, cp) in cut_points.into_iter().enumerate() {
+        let chunk: String = core_chars[start..cp].iter().collect();
+        if idx == 0 {
+            parts.push(format!("{lead}{chunk}"));
+        } else {
+            parts.push(chunk);
+        }
         start = cp;
     }
-    parts.push(chars[start..].iter().collect());
+    let last_chunk: String = core_chars[start..].iter().collect();
+    if parts.is_empty() {
+        parts.push(format!("{lead}{last_chunk}{trail}"));
+    } else {
+        parts.push(format!("{last_chunk}{trail}"));
+    }
     parts
 }
 
@@ -126,13 +263,17 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
                 if parts.len() <= 1 {
                     tokens.push(w.to_string());
                 } else {
-                    for (idx, part) in parts.iter().enumerate() {
-                        if idx + 1 < parts.len() {
-                            tokens.push(format!("{part}-"));
-                        } else {
+                for (idx, part) in parts.iter().enumerate() {
+                    if idx + 1 < parts.len() {
+                        if part.ends_with('-') {
                             tokens.push(part.clone());
+                        } else {
+                            tokens.push(format!("{part}-"));
                         }
+                    } else {
+                        tokens.push(part.clone());
                     }
+                }
                 }
             }
         }

@@ -1,8 +1,9 @@
-use crate::layout::{harmonize_page_font_sizes, solve_bubble_layout, BubbleLayout};
+use crate::layout::{harmonize_page_font_sizes, solve_bubble_layout_scaled, BubbleLayout};
 use crate::painter::{
-    draw_text_line, measure_text_width, parse_hex_color, resolve_font_for_text, FontCache,
+    draw_text_line_scaled, measure_text_width_scaled, parse_hex_color, resolve_font_for_text,
+    FontCache,
 };
-use crate::typography::format_comic_typography;
+use crate::typography::{compact_scream_for_narrow_bubble, format_comic_typography};
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
 use image::RgbImage;
 use miko_cleaner::{compute_rgb_median_and_std, dilate_ellipse, erode_ellipse, fill_polygon};
@@ -85,9 +86,36 @@ fn build_oval_fallback_mask(cw: usize, ch: usize, is_free_text: bool) -> Vec<u8>
     mask
 }
 
-/// Строит маску доступной полости СТРОГО в границах `blk.bbox` (отсекая общий полигон
-/// сдвоенного/тройного баббла, чтобы соседние блоки никогда не получали чужую площадь!).
+/// Проверяет, пересекает ли отрезок между центрами двух бабблов тёмную стенку/рамку на `cleaned_img`.
+fn has_dark_wall_between(img: &RgbImage, a: [i32; 2], b: [i32; 2]) -> bool {
+    let iw = img.width() as i32;
+    let ih = img.height() as i32;
+    let dx = b[0] - a[0];
+    let dy = b[1] - a[1];
+    let steps = dx.abs().max(dy.abs()).max(1);
+    let mut dark_px = 0usize;
+    for s in 0..=steps {
+        let t = (s as f32) / (steps as f32);
+        let px = (a[0] as f32 + t * (dx as f32)).round() as i32;
+        let py = (a[1] as f32 + t * (dy as f32)).round() as i32;
+        if px >= 0 && px < iw && py >= 0 && py < ih {
+            let p = img.get_pixel(px as u32, py as u32);
+            if rgb_lum([p[0], p[1], p[2]]) < 120 {
+                dark_px += 1;
+                if dark_px >= 2 {
+                    return true;
+                }
+            }
+        }
+    }
+    false
+}
+
+/// Строит маску доступной полости СТРОГО в границах `blk.bbox`:
+/// доращивает обрезанные сбоку/снизу полигоны по реальной светлой полости на `cleaned_img` (фикс `014.webp #4`!)
+/// и разделяет общие полости сдвоенных бабблов строго по шву между центрами без отпиливания ширины отдельным бабблом сверху!
 fn build_cavity_mask(
+    cleaned_img: &RgbImage,
     blk: &TextBlock,
     all_blocks: &[TextBlock],
     self_idx: usize,
@@ -102,6 +130,7 @@ fn build_cavity_mask(
     let cw = (x2 - x1) as usize;
     let ch = (y2 - y1) as usize;
     let oval_mask = build_oval_fallback_mask(cw, ch, blk.is_free_text);
+    let erode_r = if cw.min(ch) < 90 { 3 } else { 5 };
 
     let mut mask = if !blk.is_free_text {
         if let Some(ref poly) = blk.bubble_polygon {
@@ -109,16 +138,74 @@ fn build_cavity_mask(
             if clipped.len() >= 3 {
                 let local_poly: Vec<[i32; 2]> =
                     clipped.iter().map(|&[px, py]| [px - x1, py - y1]).collect();
-                let raw_mask = fill_polygon(&local_poly, cw, ch);
-                let erode_r = if cw.min(ch) < 90 { 3 } else { 5 };
+                let mut raw_mask = fill_polygon(&local_poly, cw, ch);
+
+                // Попиксельное уточнение полости на `cleaned_img` (где буквы уже стёрты в белый, а стенки бабблов целы):
+                // возвращает потерянную ширину, если прото-сетка YOLO26s-seg срезала край баббла (`014.webp #4`)!
+                let anchor = blk.text_bbox.unwrap_or(blk.bbox);
+                let seed_x = (((anchor[0] + anchor[2]) / 2) - x1).clamp(0, cw as i32 - 1) as usize;
+                let seed_y = (((anchor[1] + anchor[3]) / 2) - y1).clamp(0, ch as i32 - 1) as usize;
+                let center_p = cleaned_img.get_pixel((x1 + seed_x as i32) as u32, (y1 + seed_y as i32) as u32);
+                if rgb_lum([center_p[0], center_p[1], center_p[2]]) >= 225 {
+                    let mut flood = vec![0u8; cw * ch];
+                    let mut q = std::collections::VecDeque::new();
+                    flood[seed_y * cw + seed_x] = 255;
+                    q.push_back((seed_x, seed_y));
+                    while let Some((fx, fy)) = q.pop_front() {
+                        let nbrs = [
+                            (fx.wrapping_sub(1), fy, fx > 0),
+                            (fx + 1, fy, fx + 1 < cw),
+                            (fx, fy.wrapping_sub(1), fy > 0),
+                            (fx, fy + 1, fy + 1 < ch),
+                        ];
+                        for (nx, ny, ok) in nbrs {
+                            if !ok {
+                                continue;
+                            }
+                            let ni = ny * cw + nx;
+                            if flood[ni] == 0 {
+                                let p = cleaned_img
+                                    .get_pixel((x1 + nx as i32) as u32, (y1 + ny as i32) as u32);
+                                if rgb_lum([p[0], p[1], p[2]]) >= 205 {
+                                    flood[ni] = 255;
+                                    q.push_back((nx, ny));
+                                }
+                            }
+                        }
+                    }
+                    let mut perim_touch = 0usize;
+                    for rx in 0..cw {
+                        if flood[rx] > 0 {
+                            perim_touch += 1;
+                        }
+                        if flood[(ch - 1) * cw + rx] > 0 {
+                            perim_touch += 1;
+                        }
+                    }
+                    for ry in 0..ch {
+                        if flood[ry * cw] > 0 {
+                            perim_touch += 1;
+                        }
+                        if flood[ry * cw + (cw - 1)] > 0 {
+                            perim_touch += 1;
+                        }
+                    }
+                    let perim_total = 2 * (cw + ch).max(1);
+                    if perim_touch * 100 <= perim_total * 24 {
+                        // Заменяем грубый полигон на попиксельно точную светлую полость (исключая внешние рамки!)
+                        let flood_area = flood.iter().filter(|&&v| v > 0).count();
+                        if flood_area * 100 >= (cw * ch) * 28 {
+                            raw_mask = flood;
+                        }
+                    }
+                }
+
                 let mut shrunk = erode_ellipse(&raw_mask, cw, ch, erode_r);
                 if !shrunk.iter().any(|&v| v > 0) {
                     shrunk = raw_mask;
                 }
-                // Если полигон покрывает < 35% площади `bbox` (например, усечённый хвост `002.webp`),
-                // объединяем с внутренним овалом `bbox`, чтобы вёрстка использовала всю высоту баббла!
                 let area = shrunk.iter().filter(|&&v| v > 0).count();
-                if area * 100 < (cw * ch) * 35 {
+                if area * 100 < (cw * ch) * 30 {
                     for i in 0..(cw * ch) {
                         if oval_mask[i] > 0 {
                             shrunk[i] = 255;
@@ -136,10 +223,12 @@ fn build_cavity_mask(
         oval_mask
     };
 
-    // Вычитаем текстовые ядра соседних бабблов при частичном нахлёсте `bbox` (как `#2` и `#3` на `005.webp`),
-    // чтобы солвер вёрстки никогда не размещал центр текущего текста поверх чужой реплики.
+    // Разделяем только РЕАЛЬНО общую полость сдвоенных бабблов без тёмной перегородки между центрами,
+    // и режем строго по плоскости шва (по Y при вертикальном соседстве, по X при горизонтальном),
+    // чтобы свесившийся сверху чужой баббл (`014.webp #1`) никогда не отпиливал половину ширины у нижнего (`014.webp #4`)!
     if !blk.is_free_text {
         let self_anchor = blk.text_bbox.unwrap_or(blk.bbox);
+        let self_cx = (self_anchor[0] + self_anchor[2]) / 2;
         let self_cy = (self_anchor[1] + self_anchor[3]) / 2;
         for (j, other) in all_blocks.iter().enumerate() {
             if j == self_idx || other.is_deleted || other.is_free_text {
@@ -149,24 +238,60 @@ fn build_cavity_mask(
                 continue;
             }
             let ob = other.text_bbox.unwrap_or(other.bbox);
-            let ix1 = (ob[0] - 4).max(x1);
-            let iy1 = (ob[1] - 4).max(y1);
-            let ix2 = (ob[2] + 4).min(x2);
-            let iy2 = (ob[3] + 4).min(y2);
-            if ix2 > ix1 && iy2 > iy1 {
-                let other_cy = (ob[1] + ob[3]) / 2;
-                if (other_cy - self_cy).abs() >= 16 {
-                    let mut saved_mask = mask.clone();
-                    for py in iy1..iy2 {
+            let ix1 = ob[0].max(x1);
+            let iy1 = ob[1].max(y1);
+            let ix2 = ob[2].min(x2);
+            let iy2 = ob[3].min(y2);
+            if ix2 <= ix1 || iy2 <= iy1 {
+                continue;
+            }
+            let other_cx = (ob[0] + ob[2]) / 2;
+            let other_cy = (ob[1] + ob[3]) / 2;
+            if has_dark_wall_between(cleaned_img, [self_cx, self_cy], [other_cx, other_cy]) {
+                continue;
+            }
+
+            let dx = (other_cx - self_cx).abs();
+            let dy = (other_cy - self_cy).abs();
+            if dy < 14 && dx < 14 {
+                continue;
+            }
+
+            let mut saved_mask = mask.clone();
+            if dy >= dx {
+                if other_cy > self_cy {
+                    let seam_y = ((self_anchor[3] + ob[1]) / 2).clamp(y1, y2);
+                    for py in seam_y..y2 {
                         let row = ((py - y1) as usize) * cw;
-                        for px in ix1..ix2 {
-                            saved_mask[row + (px - x1) as usize] = 0;
-                        }
+                        saved_mask[row..row + cw].fill(0);
                     }
-                    if saved_mask.iter().filter(|&&v| v > 0).count() >= 64 {
-                        mask = saved_mask;
+                } else {
+                    let seam_y = ((ob[3] + self_anchor[1]) / 2).clamp(y1, y2);
+                    for py in y1..seam_y {
+                        let row = ((py - y1) as usize) * cw;
+                        saved_mask[row..row + cw].fill(0);
                     }
                 }
+            } else if other_cx > self_cx {
+                let seam_x = ((self_anchor[2] + ob[0]) / 2).clamp(x1, x2);
+                for py in y1..y2 {
+                    let row = ((py - y1) as usize) * cw;
+                    for px in seam_x..x2 {
+                        saved_mask[row + (px - x1) as usize] = 0;
+                    }
+                }
+            } else {
+                let seam_x = ((ob[2] + self_anchor[0]) / 2).clamp(x1, x2);
+                for py in y1..y2 {
+                    let row = ((py - y1) as usize) * cw;
+                    for px in x1..seam_x {
+                        saved_mask[row + (px - x1) as usize] = 0;
+                    }
+                }
+            }
+
+            if saved_mask.iter().filter(|&&v| v > 0).count() >= 64 {
+                mask = saved_mask;
             }
         }
     }
@@ -230,13 +355,45 @@ impl RustRendererEngine {
             } else {
                 continue;
             };
-            let formatted = format_comic_typography(raw_text, opts.uppercase);
+            // Защита при перерисовке старого кэша: пропускаем явные родительские дубли-матрёшки,
+            // которые целиком накрывают 2+ других активных баббла на странице (`018.webp #9`)!
+            if !blk.is_free_text {
+                let area_self = ((blk.bbox[2] - blk.bbox[0]).max(1) as i64)
+                    * ((blk.bbox[3] - blk.bbox[1]).max(1) as i64);
+                let mut child_cnt = 0usize;
+                for (j, oth) in blocks.iter().enumerate() {
+                    if j == idx || oth.is_deleted || oth.is_free_text || oth.translated_text.trim().is_empty() {
+                        continue;
+                    }
+                    let area_o = ((oth.bbox[2] - oth.bbox[0]).max(1) as i64)
+                        * ((oth.bbox[3] - oth.bbox[1]).max(1) as i64);
+                    if area_o * 100 >= area_self * 86 {
+                        continue;
+                    }
+                    let ix1 = blk.bbox[0].max(oth.bbox[0]);
+                    let iy1 = blk.bbox[1].max(oth.bbox[1]);
+                    let ix2 = blk.bbox[2].min(oth.bbox[2]);
+                    let iy2 = blk.bbox[3].min(oth.bbox[3]);
+                    let inter = ((ix2 - ix1).max(0) as i64) * ((iy2 - iy1).max(0) as i64);
+                    if inter * 100 >= area_o * 72 {
+                        child_cnt += 1;
+                    }
+                }
+                if child_cnt >= 2 {
+                    continue;
+                }
+            }
+
+            let (rect, cavity, cw, ch) = build_cavity_mask(cleaned_img, blk, blocks, idx, iw, ih);
+            let mut formatted = format_comic_typography(raw_text, opts.uppercase);
+            if !blk.is_free_text {
+                formatted = compact_scream_for_narrow_bubble(&formatted, cw, ch);
+            }
             if formatted.is_empty() {
                 continue;
             }
             let font = self.resolve_block_font(blk, opts, &formatted)?;
-            let (rect, cavity, cw, ch) = build_cavity_mask(blk, blocks, idx, iw, ih);
-            let layout = solve_bubble_layout(
+            let layout = solve_bubble_layout_scaled(
                 &formatted,
                 &cavity,
                 cw,
@@ -244,7 +401,7 @@ impl RustRendererEngine {
                 opts.min_font_size,
                 opts.max_font_size,
                 blk.font_size,
-                |s, fs| measure_text_width(&font, fs, s),
+                |s, fs, sx| measure_text_width_scaled(&font, fs, sx, s),
             );
             let is_fixed = blk.font_size.is_some() || blk.is_free_text;
             let char_cnt = formatted.chars().count();
@@ -268,7 +425,7 @@ impl RustRendererEngine {
         for (pos, item) in prepared.iter_mut().enumerate() {
             let target_fs = harmonized[pos];
             if !item.is_fixed && target_fs != item.layout.font_size {
-                item.layout = solve_bubble_layout(
+                item.layout = solve_bubble_layout_scaled(
                     &item.formatted,
                     &item.cavity,
                     item.cw,
@@ -276,7 +433,7 @@ impl RustRendererEngine {
                     opts.min_font_size,
                     target_fs,
                     Some(target_fs),
-                    |s, fs| measure_text_width(&item.font, fs, s),
+                    |s, fs, sx| measure_text_width_scaled(&item.font, fs, sx, s),
                 );
             }
             blocks[item.blk_idx].rendered_font_size = Some(item.layout.font_size);
@@ -412,7 +569,11 @@ impl RustRendererEngine {
             }
 
             let px_size = item.layout.font_size as f32;
-            let scaled = item.font.as_scaled(PxScale::from(px_size));
+            let scale_x = item.layout.scale_x;
+            let scaled = item.font.as_scaled(PxScale {
+                x: px_size * scale_x,
+                y: px_size,
+            });
             let ascent = scaled.ascent();
             let line_h = item.layout.line_height;
             let n_lines = item.layout.lines.len();
@@ -422,17 +583,18 @@ impl RustRendererEngine {
             let top_page_y = (ry0 + item.layout.center_xy[1]) as f32 - total_h * 0.5;
 
             for (k, line) in item.layout.lines.iter().enumerate() {
-                let lw = measure_text_width(&item.font, px_size, line);
+                let lw = measure_text_width_scaled(&item.font, px_size, scale_x, line);
                 let x_left = match blk.align.as_str() {
                     "left" => center_page_x - item.layout.max_line_w * 0.5,
                     "right" => center_page_x + item.layout.max_line_w * 0.5 - lw,
                     _ => center_page_x - lw * 0.5,
                 };
                 let y_baseline = top_page_y + (k as f32) * line_h + ascent;
-                draw_text_line(
+                draw_text_line_scaled(
                     &mut rendered,
                     &item.font,
                     px_size,
+                    scale_x,
                     x_left,
                     y_baseline,
                     line,

@@ -93,7 +93,14 @@ pub fn collect_folder_images(dir: &Path) -> Vec<PathBuf> {
     let mut files: Vec<PathBuf> = rd
         .flatten()
         .map(|e| e.path())
-        .filter(|p| p.is_file() && is_supported_img(p))
+        .filter(|p| {
+            p.is_file()
+                && is_supported_img(p)
+                && !matches!(
+                    p.file_name().and_then(|s| s.to_str()),
+                    Some("mascot.png" | "mascot_fox.png" | "mascot_fox_sprites.png")
+                )
+        })
         .collect();
     files.sort_by(|a, b| {
         let na = a.file_name().and_then(|s| s.to_str()).unwrap_or("");
@@ -326,6 +333,7 @@ pub async fn process_chapter_folder_sync(
     let mut processed = 0usize;
     let mut skipped = 0usize;
     let mut stopped_early = false;
+    let mut rolling_context: Vec<String> = Vec::new();
 
     for (idx, img_path) in opts.images.iter().enumerate() {
         while state.folder_pause_flag.load(AtomicOrd::SeqCst)
@@ -473,7 +481,7 @@ pub async fn process_chapter_folder_sync(
                             cloud_url: cfg.unsloth_url.clone(),
                             cloud_api_key: cfg.unsloth_api_key.clone(),
                             glossary: merged_glossary.clone(),
-                            context_lines: Vec::new(),
+                            context_lines: rolling_context.clone(),
                             anti_censorship: cfg.anti_censorship_prompt,
                             use_cache: !opts.force_retranslate,
                         },
@@ -484,6 +492,17 @@ pub async fn process_chapter_folder_sync(
                 blocks = tr_res.blocks;
                 active_model = tr_res.active_model;
                 detected_lang = tr_res.detected_lang;
+                for b in &blocks {
+                    let o = b.original_text.trim();
+                    let t = b.translated_text.trim();
+                    if !b.is_deleted && !o.is_empty() && !t.is_empty() {
+                        rolling_context.push(format!("{o} => {t}"));
+                    }
+                }
+                if rolling_context.len() > 10 {
+                    let drain_n = rolling_context.len() - 10;
+                    rolling_context.drain(0..drain_n);
+                }
             }
         }
 
@@ -568,7 +587,7 @@ pub async fn process_chapter_folder_sync(
                 &src_str,
                 mtime,
                 9,
-                "rust_harmonic_v1",
+                "rust_harmonic_v3",
                 "balanced",
             );
             let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
@@ -1403,7 +1422,7 @@ pub async fn folder_find_replace(
                     &src_str,
                     mtime,
                     9,
-                    "rust_harmonic_v1",
+                    "rust_harmonic_v3",
                     "balanced",
                 );
                 let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);

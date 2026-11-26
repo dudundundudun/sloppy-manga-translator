@@ -347,7 +347,9 @@ pub fn build_translation_prompts(
          Rules:\n\
          1. Return ONLY a flat valid JSON object mapping each exact numeric string key to its translated string.\n\
          2. Keep translations punchy, natural, and concise so they fit cleanly in speech bubbles.\n\
-         3. Never include explanations, markdown fences, `[shape: ...]`, or extra keys.\n"
+         3. Preserve comic ellipses (`...`) faithfully — never collapse `…` into a single period before `?`/`!` or at the start of a line.\n\
+         4. Keep character pronouns and speaker tone consistent with RECENT CONTEXT.\n\
+         5. Never include explanations, markdown fences, `[shape: ...]`, or extra keys.\n"
     ));
 
     let batch_texts: Vec<String> = items.iter().map(|(_, s, _)| s.clone()).collect();

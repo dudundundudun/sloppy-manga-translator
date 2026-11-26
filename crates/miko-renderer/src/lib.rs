@@ -6,12 +6,16 @@ pub mod typography;
 pub use engine::{RenderOptions, RenderPageResult, RenderTimings, RendererError, RustRendererEngine};
 pub use layout::{
     compute_scanline_chords, find_optimal_box_center, harmonize_page_font_sizes,
-    solve_bubble_layout, BubbleLayout,
+    solve_bubble_layout, solve_bubble_layout_scaled, BubbleLayout,
 };
 pub use painter::{
-    draw_text_line, measure_text_width, parse_hex_color, resolve_font_for_text, FontCache,
+    draw_text_line, draw_text_line_scaled, measure_text_width, measure_text_width_scaled,
+    parse_hex_color, resolve_font_for_text, FontCache,
 };
-pub use typography::{auto_diamond_wrap_lines, format_comic_typography, hyphenate_word};
+pub use typography::{
+    auto_diamond_wrap_lines, compact_scream_for_narrow_bubble, format_comic_typography,
+    hyphenate_word,
+};
 
 use serde::{Deserialize, Serialize};
 use std::path::Path;
@@ -71,12 +75,21 @@ mod tests {
     #[test]
     fn test_typography_and_hyphenation() {
         assert_eq!(format_comic_typography("hey...  i know -- right", false), "hey… I know — right");
+        assert_eq!(format_comic_typography("What if we have a daughter.?", false), "What if we have a daughter…?");
+        assert_eq!(format_comic_typography(".Probably.", false), "…Probably.");
         assert_eq!(format_comic_typography("привет", true), "ПРИВЕТ");
+        assert_eq!(
+            compact_scream_for_narrow_bubble("Whaaaaaaaaaat?!", 140, 620),
+            "Whaaaat?!"
+        );
 
         let ru_parts = hyphenate_word("приключение");
         assert!(ru_parts.len() >= 2 && ru_parts.join("") == "приключение");
-        let en_parts = hyphenate_word("unbelievable");
-        assert!(en_parts.len() >= 2 && en_parts.join("") == "unbelievable");
+        let en_parts = hyphenate_word("unbelievable!");
+        assert!(en_parts.len() >= 2 && en_parts.join("") == "unbelievable!");
+        let compound = hyphenate_word("matter-of-factly.");
+        assert_eq!(compound, vec!["matter-", "of-", "factly."]);
+        assert_eq!(hyphenate_word("strength"), vec!["strength"]);
 
         let lines = auto_diamond_wrap_lines(
             "Привет друг как твои дела сегодня на улице солнце",
@@ -249,5 +262,81 @@ mod tests {
         assert!(top_ink > 30, "top bubble missing text: {top_ink}");
         assert!(mid_ink > 15, "mid bubble missing text: {mid_ink}");
         assert!(bot_ink > 30, "bottom bubble missing text: {bot_ink}");
+    }
+
+    #[test]
+    fn test_overhanging_neighbor_with_wall_does_not_crush_font_size() {
+        // Регрессия 014.webp (#1 vs #4): верхний вертикальный крик #1 с чёрной рамкой
+        // частично перекрывает правый верхний угол прямоугольника #4, но разделён с ним чёрной стенкой!
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let mut img = image::RgbImage::from_pixel(300, 420, image::Rgb([30, 30, 35]));
+        // Нижний баббл #4: [40..150, 180..400] с чисто белой полостью и чёрной рамкой
+        for y in 180..400 {
+            for x in 40..150 {
+                let wall = x <= 42 || x >= 147 || y <= 182 || y >= 397;
+                img.put_pixel(
+                    x,
+                    y,
+                    if wall {
+                        image::Rgb([10, 10, 10])
+                    } else {
+                        image::Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+        // Верхний баббл #1: [90..240, 10..260] (срезан чёрной стенкой выше #4 в левой зоне, но его bbox нависает)
+        for y in 10..176 {
+            for x in 90..240 {
+                let wall = x <= 92 || x >= 237 || y <= 12 || y >= 173;
+                img.put_pixel(
+                    x,
+                    y,
+                    if wall {
+                        image::Rgb([10, 10, 10])
+                    } else {
+                        image::Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+
+        let mut blocks = vec![
+            TextBlock {
+                id: 1,
+                bbox: [90, 10, 240, 310],
+                text_bbox: Some([90, 20, 240, 300]),
+                bubble_polygon: Some(vec![[93, 13], [236, 13], [236, 172], [93, 172]]),
+                original_text: "のぉおおおおお!!!".into(),
+                translated_text: "Nooooooo!!!".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 4,
+                bbox: [40, 180, 150, 400],
+                text_bbox: Some([44, 195, 120, 390]),
+                // Усечённый справа полигон (до x=122 вместо 147), как на 014.webp #4!
+                bubble_polygon: Some(vec![[43, 183], [122, 183], [122, 396], [43, 396]]),
+                original_text: "この世界の風景は宇宙なんですよ".into(),
+                translated_text: "This world's scenery is outer space.".into(),
+                ..Default::default()
+            },
+        ];
+
+        let _ = engine
+            .render_page(&img, &mut blocks, &RenderOptions::default())
+            .expect("render 014 regression");
+        let fs4 = blocks[1].rendered_font_size.unwrap_or(0);
+        assert!(
+            fs4 >= 17,
+            "expected healthy font size >= 17px on 014.webp #4 regression, got {fs4}px"
+        );
     }
 }

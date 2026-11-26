@@ -406,4 +406,76 @@ mod tests {
         // Чёрные волосы / рамка на y=125 побайтово целы!
         assert_eq!(res.cleaned.get_pixel(55, 125)[0], 18);
     }
+
+    #[test]
+    fn test_double_bubble_v_notch_wall_preserved_and_zero_grey_blur() {
+        // Регрессия 011.webp (#3/#4) + 005.webp (#3):
+        // Горизонтально сдвоенный баббл с чёрной верхней галочкой-седловиной (V-notch) и серым скринтоном снаружи,
+        // где грубый полигон YOLO26s-seg натянут прямой линией поверх седловины!
+        let mut img = image::RgbImage::from_pixel(160, 140, image::Rgb([195, 195, 200]));
+        for y in 20..120 {
+            for x in 20..140 {
+                // Вдавленная сверху и снизу седловина на x=72..88
+                let notch_depth = if (72..=88).contains(&x) {
+                    18 - ((x as i32 - 80).abs() * 2).min(18)
+                } else {
+                    0
+                };
+                let top_wall = 20 + notch_depth as u32;
+                let bot_wall = 120 - notch_depth as u32;
+                if y < top_wall || y > bot_wall {
+                    continue;
+                }
+                let is_wall = x <= 22 || x >= 138 || y <= top_wall + 2 || y >= bot_wall - 2;
+                img.put_pixel(
+                    x,
+                    y,
+                    if is_wall {
+                        image::Rgb([12, 12, 12])
+                    } else {
+                        image::Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+        // Текст внутри правого купола [95..125, 45..95]
+        for y in 45..95 {
+            for x in 95..125 {
+                if (x + y) % 3 == 0 {
+                    img.put_pixel(x, y, image::Rgb([15, 15, 15]));
+                }
+            }
+        }
+
+        let blk = TextBlock {
+            id: 3,
+            bbox: [78, 18, 142, 122],
+            clean_bbox: Some([78, 18, 142, 122]),
+            text_bbox: Some([80, 22, 136, 115]),
+            // Общий грубый полигон охватывает ОБА купола и натянут прямой линией поверх верхней и нижней V-седловины!
+            bubble_polygon: Some(vec![[20, 20], [140, 20], [140, 120], [20, 120]]),
+            original_text: "テスト".into(),
+            translated_text: "Test".into(),
+            ..Default::default()
+        };
+
+        let engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_vnotch"));
+        let opts = CleanOptions {
+            use_neural_segmenter: false,
+            use_cache: false,
+            ..Default::default()
+        };
+        let res = engine.clean_image_with_neural_mask(&img, &[blk], None, &opts);
+
+        // 1. Внутри купола чисто белый [255, 255, 255] без серого блюра!
+        assert_eq!(res.cleaned.get_pixel(105, 65)[0], 255);
+        // 2. Чёрная стенка в седловине (x=80, y=39) сохранена нетронутой!
+        assert!(
+            res.cleaned.get_pixel(80, 39)[0] < 30,
+            "upper V-notch outline was erased: {:?}",
+            res.cleaned.get_pixel(80, 39)
+        );
+        // 3. Внешний скринтон в седловине (x=80, y=26) не залит белым!
+        assert_eq!(res.cleaned.get_pixel(80, 26)[0], 195);
+    }
 }
