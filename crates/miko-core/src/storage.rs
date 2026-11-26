@@ -80,7 +80,7 @@ impl StudioDb {
     }
 
     pub fn get_cached_translation(&self, cache_key: &str) -> Result<Option<String>, StorageError> {
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = guard.prepare(
             "SELECT translated_text FROM translation_cache WHERE cache_key = ?1",
         )?;
@@ -100,7 +100,7 @@ impl StudioDb {
         translated_text: &str,
         model_id: &str,
     ) -> Result<(), StorageError> {
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         guard.execute(
             "INSERT INTO translation_cache (cache_key, source_text, target_lang, translated_text, model_id, updated_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)
@@ -121,7 +121,7 @@ impl StudioDb {
     }
 
     pub fn replace_glossary(&self, scope: &str, entries: &[GlossaryEntry]) -> Result<(), StorageError> {
-        let mut guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = guard.transaction()?;
         tx.execute("DELETE FROM glossary_entries WHERE scope = ?1", params![scope])?;
         {
@@ -142,7 +142,7 @@ impl StudioDb {
     }
 
     pub fn load_glossary(&self, scope: &str) -> Result<Vec<GlossaryEntry>, StorageError> {
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = guard.prepare(
             "SELECT src, dst, note FROM glossary_entries WHERE scope = ?1 ORDER BY rowid ASC",
         )?;
@@ -165,7 +165,7 @@ impl StudioDb {
         blocks: &[TextBlock],
     ) -> Result<(), StorageError> {
         let blocks_json = serde_json::to_string(blocks)?;
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         guard.execute(
             "INSERT INTO page_states (page_key, clean_state_hash, blocks_json, updated_at)
              VALUES (?1, ?2, ?3, ?4)
@@ -179,7 +179,7 @@ impl StudioDb {
     }
 
     pub fn load_page_state(&self, page_key: &str) -> Result<Option<(String, Vec<TextBlock>)>, StorageError> {
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut stmt = guard.prepare(
             "SELECT clean_state_hash, blocks_json FROM page_states WHERE page_key = ?1",
         )?;
@@ -195,7 +195,7 @@ impl StudioDb {
     }
 
     pub fn purge_refusal_cache<F: Fn(&str) -> bool>(&self, is_bad: F) -> Result<usize, StorageError> {
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut bad_keys: Vec<String> = Vec::new();
         {
             let mut stmt =
@@ -216,7 +216,7 @@ impl StudioDb {
     }
 
     pub fn metrics(&self) -> Result<StorageMetrics, StorageError> {
-        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let t_rows: i64 =
             guard.query_row("SELECT COUNT(*) FROM translation_cache", [], |r| r.get(0))?;
         let g_rows: i64 =

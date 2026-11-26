@@ -41,9 +41,7 @@ impl EndpointCircuitBreaker {
     }
 
     pub fn is_open(&self) -> bool {
-        let Ok(mut guard) = self.inner.lock() else {
-            return false;
-        };
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         if let Some(until) = guard.open_until {
             if Instant::now() < until {
                 return true;
@@ -55,9 +53,7 @@ impl EndpointCircuitBreaker {
     }
 
     pub fn record_failure(&self) -> bool {
-        let Ok(mut guard) = self.inner.lock() else {
-            return false;
-        };
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
         guard.consecutive_failures += 1;
         if guard.consecutive_failures >= self.failure_threshold {
             guard.open_until = Some(Instant::now() + self.cooldown);
@@ -67,10 +63,9 @@ impl EndpointCircuitBreaker {
     }
 
     pub fn record_success(&self) {
-        if let Ok(mut guard) = self.inner.lock() {
-            guard.consecutive_failures = 0;
-            guard.open_until = None;
-        }
+        let mut guard = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        guard.consecutive_failures = 0;
+        guard.open_until = None;
     }
 }
 

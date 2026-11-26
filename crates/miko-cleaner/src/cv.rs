@@ -326,7 +326,7 @@ pub fn fill_polygon(poly: &[[i32; 2]], width: usize, height: usize) -> Vec<u8> {
         max_y = max_y.max(y);
     }
     let y0 = min_y.clamp(0, height as i32) as usize;
-    let y1 = (max_y + 1).clamp(0, height as i32) as usize;
+    let y1 = max_y.saturating_add(1).clamp(0, height as i32) as usize;
     if y0 >= y1 {
         return mask;
     }
@@ -350,7 +350,9 @@ pub fn fill_polygon(poly: &[[i32; 2]], width: usize, height: usize) -> Vec<u8> {
         xs.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
         for pair in xs.chunks_exact(2) {
             let sx = (pair[0].ceil() as i32).clamp(0, width as i32) as usize;
-            let ex = (pair[1].floor() as i32 + 1).clamp(0, width as i32) as usize;
+            let ex = (pair[1].floor() as i32)
+                .saturating_add(1)
+                .clamp(0, width as i32) as usize;
             if sx < ex {
                 let row = y * width;
                 for x in sx..ex {
@@ -372,7 +374,8 @@ pub fn draw_circle(
     radius: i32,
     val: u8,
 ) {
-    if w == 0 || h == 0 || mask.len() < w * h {
+    let n = w.saturating_mul(h);
+    if w == 0 || h == 0 || mask.len() < n {
         return;
     }
     if radius <= 0 {
@@ -381,17 +384,27 @@ pub fn draw_circle(
         }
         return;
     }
-    let r2 = radius * radius;
-    let y0 = (cy - radius).max(0) as usize;
-    let y1 = (cy + radius + 1).min(h as i32) as usize;
-    let x0 = (cx - radius).max(0) as usize;
-    let x1 = (cx + radius + 1).min(w as i32) as usize;
+    let cx64 = cx as i64;
+    let cy64 = cy as i64;
+    let r64 = radius as i64;
+    let w64 = w as i64;
+    let h64 = h as i64;
+    if cx64 + r64 < 0 || cx64 - r64 >= w64 || cy64 + r64 < 0 || cy64 - r64 >= h64 {
+        return;
+    }
+
+    let r2 = r64 * r64;
+    let y0 = (cy64 - r64).clamp(0, h64) as usize;
+    let y1 = (cy64 + r64 + 1).clamp(0, h64) as usize;
+    let x0 = (cx64 - r64).clamp(0, w64) as usize;
+    let x1 = (cx64 + r64 + 1).clamp(0, w64) as usize;
     for y in y0..y1 {
-        let dy = y as i32 - cy;
+        let dy = y as i64 - cy64;
+        let dy2 = dy * dy;
         let row = y * w;
         for x in x0..x1 {
-            let dx = x as i32 - cx;
-            if dx * dx + dy * dy <= r2 {
+            let dx = x as i64 - cx64;
+            if dx * dx + dy2 <= r2 {
                 mask[row + x] = val;
             }
         }
@@ -414,14 +427,18 @@ pub fn draw_polyline(
         draw_circle(mask, w, h, pts[0][0], pts[0][1], radius, val);
         return;
     }
+    let max_steps = (w.max(h) as i64 * 4).max(64);
     for seg in pts.windows(2) {
         let [x0, y0] = seg[0];
         let [x1, y1] = seg[1];
-        let steps = (x1 - x0).abs().max((y1 - y0).abs()).max(1);
+        let steps = (x1 as i64 - x0 as i64)
+            .abs()
+            .max((y1 as i64 - y0 as i64).abs())
+            .clamp(1, max_steps) as usize;
         for s in 0..=steps {
             let t = (s as f32) / (steps as f32);
-            let px = (x0 as f32 + t * ((x1 - x0) as f32)).round() as i32;
-            let py = (y0 as f32 + t * ((y1 - y0) as f32)).round() as i32;
+            let px = (x0 as f32 + t * ((x1 as f32) - (x0 as f32))).round() as i32;
+            let py = (y0 as f32 + t * ((y1 as f32) - (y0 as f32))).round() as i32;
             draw_circle(mask, w, h, px, py, radius, val);
         }
     }

@@ -25,7 +25,7 @@ impl FontCache {
 
     pub fn load_font(&self, path: &Path) -> Result<Arc<FontVec>, String> {
         {
-            let guard = self.fonts.lock().map_err(|_| "font mutex poisoned")?;
+            let guard = self.fonts.lock().unwrap_or_else(|e| e.into_inner());
             if let Some(f) = guard.get(path) {
                 return Ok(f.clone());
             }
@@ -43,9 +43,8 @@ impl FontCache {
         .map_err(|e| format!("Ошибка парсинга шрифта {path:?}: {e}"))?;
 
         let arc = Arc::new(font);
-        if let Ok(mut guard) = self.fonts.lock() {
-            guard.insert(path.to_path_buf(), arc.clone());
-        }
+        let mut guard = self.fonts.lock().unwrap_or_else(|e| e.into_inner());
+        guard.insert(path.to_path_buf(), arc.clone());
         Ok(arc)
     }
 

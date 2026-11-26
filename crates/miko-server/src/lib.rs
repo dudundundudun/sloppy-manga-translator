@@ -293,8 +293,8 @@ struct HealthResponse {
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let cfg = state.config.read().expect("config rwlock").clone();
-    let job = state.folder_job.read().expect("job rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let job = state.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
     let global_glossary = state
         .db
         .load_glossary("global")
@@ -367,7 +367,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
 }
 
 async fn get_models(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let mut models = state.translator.list_ollama_models().await;
     if !cfg.selected_model.trim().is_empty()
         && cfg.selected_model != "auto"
@@ -384,7 +384,7 @@ async fn get_models(State(state): State<Arc<AppState>>) -> Json<Value> {
 }
 
 async fn get_folder_status(State(state): State<Arc<AppState>>) -> Json<FolderJobState> {
-    let job = state.folder_job.read().expect("job rwlock").clone();
+    let job = state.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
     Json(job)
 }
 
@@ -407,7 +407,7 @@ async fn stream_folder_status(
                 };
                 let _ = tokio::time::timeout(wait, rx.changed()).await;
             }
-            let snap = st.folder_job.read().expect("job rwlock").clone();
+            let snap = st.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
             let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_string());
             let ev = Event::default().event("status").data(data);
             Some((Ok(ev), (st, rx, true)))
@@ -549,7 +549,7 @@ async fn update_settings(
             return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
         }
     }
-    let mut cfg = state.config.write().expect("config rwlock");
+    let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
     if let Some(m) = payload.selected_model.or(payload.model) {
         if !m.trim().is_empty() {
             cfg.selected_model = m.trim().to_string();
@@ -674,7 +674,7 @@ struct ModelStackPayload {
 }
 
 async fn get_model_stack(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     Json(json!({
         "status": "ok",
         "active_model": cfg.selected_model,
@@ -693,7 +693,7 @@ async fn post_model_stack(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<ModelStackPayload>,
 ) -> Json<Value> {
-    let mut cfg = state.config.write().expect("config rwlock");
+    let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
     if let Some(st) = payload.stack.as_ref().and_then(|v| v.as_object()) {
         if let Some(tm) = st.get("translation_model").and_then(|v| v.as_str()) {
             if !tm.trim().is_empty() {
@@ -796,7 +796,7 @@ async fn run_ocr_rust(
     let st_clone = state.clone();
 
     let res = tokio::task::spawn_blocking(move || {
-        let mut guard = st_clone.ocr_engine.lock().expect("ocr mutex");
+        let mut guard = st_clone.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             let eng = RustOcrEngine::load(&st_clone.base_dir, true)?;
             *guard = Some(eng);
@@ -906,7 +906,7 @@ async fn run_clean_rust(
         let blocks = match supplied_blocks {
             Some(b) if !b.is_empty() => b,
             _ => {
-                let mut ocr_guard = st_clone.ocr_engine.lock().expect("ocr mutex");
+                let mut ocr_guard = st_clone.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
                 if ocr_guard.is_none() {
                     let eng = RustOcrEngine::load(&st_clone.base_dir, true)
                         .map_err(|e| e.to_string())?;
@@ -921,7 +921,7 @@ async fn run_clean_rust(
             }
         };
 
-        let mut clean_guard = st_clone.cleaner_engine.lock().expect("cleaner mutex");
+        let mut clean_guard = st_clone.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
         if clean_guard.is_none() {
             *clean_guard = Some(RustCleanerEngine::load(&st_clone.base_dir, true));
         }

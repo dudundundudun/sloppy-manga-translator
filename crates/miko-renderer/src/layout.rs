@@ -1,4 +1,6 @@
-use crate::typography::{auto_diamond_wrap_lines, hyphenate_word};
+use crate::typography::{
+    auto_diamond_wrap_lines, join_wrap_tokens, tokenize_word_for_wrap, WrapToken,
+};
 use miko_cleaner::distance_transform_l2;
 
 #[derive(Debug, Clone)]
@@ -270,7 +272,7 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
     measure_scaled: &F,
 ) -> Option<(Vec<String>, Vec<f32>, usize)> {
     let clean = text.trim();
-    if clean.is_empty() || clean.lines().count() > 1 {
+    if clean.is_empty() {
         return None;
     }
 
@@ -285,41 +287,21 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
         return None;
     }
 
-    let mut tokens: Vec<String> = Vec::new();
+    let is_narrow_col = cav_h >= ref_w.saturating_mul(2) || ref_w < 115;
+    let hy_width_ratio = if is_narrow_col { 0.68 } else { 0.80 };
+    let mut tokens: Vec<WrapToken> = Vec::new();
     for w in words {
-        let w_len = w.chars().count();
-        if w_len >= 8 || measure_scaled(w, fs_f, scale_x) > (ref_w as f32 * 0.72) {
-            let parts = hyphenate_word(w);
-            if parts.len() > 1 {
-                for (idx, part) in parts.iter().enumerate() {
-                    if idx + 1 < parts.len() && !part.ends_with('-') {
-                        tokens.push(format!("{part}-"));
-                    } else {
-                        tokens.push(part.clone());
-                    }
-                }
-                continue;
-            }
-        }
-        tokens.push(w.to_string());
+        let w_px = measure_scaled(w, fs_f, scale_x);
+        let has_compound_hyphen = w.contains('-') && !w.contains("--");
+        let allow_hy = has_compound_hyphen || w_px > (ref_w as f32 * hy_width_ratio);
+        tokens.extend(tokenize_word_for_wrap(w, allow_hy));
     }
 
     let n = tokens.len();
-    let join_span = |i: usize, j: usize| -> String {
-        let mut out = String::new();
-        for k in i..j {
-            if !out.is_empty() && !out.ends_with('-') {
-                out.push(' ');
-            }
-            out.push_str(&tokens[k]);
-        }
-        out
-    };
-
     let mut span_w = vec![vec![0.0f32; n + 1]; n];
     for i in 0..n {
         for j in (i + 1)..=n {
-            let s = join_span(i, j);
+            let s = join_wrap_tokens(&tokens, i, j);
             span_w[i][j] = measure_scaled(&s, fs_f, scale_x);
         }
     }
@@ -394,10 +376,16 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
                         let fill = (w / lim.max(1.0)).clamp(0.0, 1.0);
                         let slack_pen = (1.0 - fill).powi(2) * 45.0;
                         let shape_pen = (fill - target_fill).powi(2) * 28.0;
-                        let hy_pen = if tokens[i - 1].ends_with('-') { 8.0 } else { 0.0 };
+                        let hy_pen = if i < n && tokens[i - 1].soft_hyphen_after {
+                            42.0
+                        } else if i < n && tokens[i - 1].glue_next {
+                            6.0
+                        } else {
+                            0.0
+                        };
                         let orphan_pen = if k == k_lines
                             && (i - j) == 1
-                            && tokens[j].chars().count() <= 3
+                            && tokens[j].text.chars().count() <= 3
                             && j > 0
                         {
                             35.0
@@ -426,7 +414,7 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
                     ok_chain = false;
                     break;
                 }
-                lines.push(join_span(prev, cur));
+                lines.push(join_wrap_tokens(&tokens, prev, cur));
                 cur = prev;
             }
             if !ok_chain || cur != 0 {
@@ -520,6 +508,38 @@ pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
     allow_emergency_shrink: bool,
     measure_scaled: F,
 ) -> BubbleLayout {
+    solve_bubble_layout_anchored(
+        text,
+        cavity_mask,
+        w,
+        h,
+        min_fs,
+        max_fs,
+        fixed_fs,
+        None,
+        allow_emergency_shrink,
+        measure_scaled,
+    )
+}
+
+/// Решатель вёрстки с якорным кеглем комфорта (`comfort_anchor_fs`):
+/// - на кеглях `<= comfort_anchor_fs` использует плотный комиксный интервал (`1.12 -> 1.05`) и микро-сжатие,
+///   чтобы не ронять длинные реплики в нечитаемый мелкий шрифт;
+/// - выше `comfort_anchor_fs` требует обязательного белого «воздуха» вокруг текста (не менее ~45% площади полости
+///   и увеличенных полей от стенок), предотвращая раздувание коротких фраз на весь баббл!
+#[allow(clippy::too_many_arguments)]
+pub fn solve_bubble_layout_anchored<F: Fn(&str, f32, f32) -> f32>(
+    text: &str,
+    cavity_mask: &[u8],
+    w: usize,
+    h: usize,
+    min_fs: i32,
+    max_fs: i32,
+    fixed_fs: Option<i32>,
+    comfort_anchor_fs: Option<i32>,
+    allow_emergency_shrink: bool,
+    measure_scaled: F,
+) -> BubbleLayout {
     let chords = compute_scanline_chords(cavity_mask, w, h);
     let mut valid_rows: Vec<(usize, usize)> = Vec::new();
     for (y, ch_opt) in chords.iter().enumerate() {
@@ -527,6 +547,13 @@ pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
             valid_rows.push((y, r.saturating_sub(*l)));
         }
     }
+
+    let cavity_area = cavity_mask
+        .iter()
+        .take(w.saturating_mul(h))
+        .filter(|&&v| v > 0)
+        .count()
+        .max(1);
 
     let (cav_top, cav_bot, ref_w) = if valid_rows.is_empty() {
         (0usize, h.max(1), w.max(1))
@@ -541,162 +568,205 @@ pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
         (top, bot, rw)
     };
     let cav_h = (cav_bot - cav_top).max(16);
-    let allow_condense = cav_h * 100 >= ref_w * 155 || ref_w < 130;
-    let side_pad = 1.5f32;
+    let allow_condense = cav_h * 100 >= ref_w * 145 || ref_w < 140;
 
-    let try_fs_with_scale = |fs: i32, scale_x: f32| -> (bool, BubbleLayout) {
-        let fs_f = fs as f32;
-        let line_h = (fs_f * 1.18).max(10.0);
-        let target_wrap_w = (ref_w as f32 * 0.90).max(20.0);
-        let mut lines =
-            auto_diamond_wrap_lines(text, target_wrap_w, |s| measure_scaled(s, fs_f, scale_x));
-        let mut total_h = (lines.len() as f32 * line_h).ceil() as usize;
-
-        let mut fits_chords = false;
-        let mut chosen_y_start = (cav_top + cav_h / 2).saturating_sub(total_h / 2);
-        let mut line_centers_x: Vec<f32> = Vec::new();
-
-        if total_h <= cav_h && !lines.is_empty() {
-            let free_v = cav_h - total_h;
-            let min_margin = (free_v * 32) / 100;
-            let ideal_start = cav_top + free_v / 2;
-            let shift_cap = ((cav_h * 14) / 100).max(6);
-            let min_start = ideal_start
-                .saturating_sub(shift_cap)
-                .max(cav_top + min_margin);
-            let max_start = (ideal_start + shift_cap)
-                .min(cav_bot.saturating_sub(total_h + min_margin))
-                .max(min_start);
-
-            if let Some(cxs) = validate_lines_in_chords(
-                &lines,
-                &chords,
-                h,
-                ideal_start,
-                line_h,
-                fs_f,
-                scale_x,
-                side_pad,
-                ref_w,
-                &measure_scaled,
-            ) {
-                fits_chords = true;
-                chosen_y_start = ideal_start;
-                line_centers_x = cxs;
+    let try_fs_with_params =
+        |fs: i32, scale_x: f32, lh_mult: f32, require_breathing_room: bool| -> (bool, BubbleLayout) {
+            let fs_f = fs as f32;
+            let line_h = (fs_f * lh_mult).max(9.5);
+            let eff_side_pad = if require_breathing_room {
+                (ref_w as f32 * 0.075).clamp(3.5, 14.0)
             } else {
-                let max_shift = ideal_start
-                    .saturating_sub(min_start)
-                    .max(max_start.saturating_sub(ideal_start));
-                let mut delta = 4usize;
-                while delta <= max_shift {
-                    if ideal_start >= min_start + delta {
-                        if let Some(cxs) = validate_lines_in_chords(
-                            &lines,
-                            &chords,
-                            h,
-                            ideal_start - delta,
-                            line_h,
-                            fs_f,
-                            scale_x,
-                            side_pad,
-                            ref_w,
-                            &measure_scaled,
-                        ) {
-                            fits_chords = true;
-                            chosen_y_start = ideal_start - delta;
-                            line_centers_x = cxs;
-                            break;
-                        }
-                    }
-                    if ideal_start + delta <= max_start {
-                        if let Some(cxs) = validate_lines_in_chords(
-                            &lines,
-                            &chords,
-                            h,
-                            ideal_start + delta,
-                            line_h,
-                            fs_f,
-                            scale_x,
-                            side_pad,
-                            ref_w,
-                            &measure_scaled,
-                        ) {
-                            fits_chords = true;
-                            chosen_y_start = ideal_start + delta;
-                            line_centers_x = cxs;
-                            break;
-                        }
-                    }
-                    delta += 4;
-                }
-            }
-        }
+                1.5f32
+            };
+            let wrap_ratio = if require_breathing_room { 0.80 } else { 0.90 };
+            let target_wrap_w = (ref_w as f32 * wrap_ratio).max(20.0);
+            let mut lines = auto_diamond_wrap_lines(text, target_wrap_w, |s| {
+                measure_scaled(s, fs_f, scale_x)
+            });
+            let mut total_h = (lines.len() as f32 * line_h).ceil() as usize;
 
-        // Если ровный ромб не поместился по узким верхним/нижним хордам овала,
-        // пересчитываем перенос строк строго под геометрию каждой скан-линии вокруг центра!
-        if !fits_chords {
-            if let Some((dp_lines, dp_cxs, dp_y_start)) = wrap_lines_to_chords(
-                text,
-                &chords,
-                h,
-                cav_top,
-                cav_bot,
-                line_h,
-                fs_f,
-                scale_x,
-                side_pad,
-                ref_w,
-                &measure_scaled,
-            ) {
-                let dp_total_h = (dp_lines.len() as f32 * line_h).ceil() as usize;
-                if dp_total_h <= cav_h {
-                    lines = dp_lines;
-                    total_h = dp_total_h;
-                    chosen_y_start = dp_y_start;
-                    line_centers_x = dp_cxs;
+            let eff_cav_h_cap = if require_breathing_room {
+                ((cav_h * 78) / 100).max(12)
+            } else {
+                cav_h
+            };
+
+            let mut fits_chords = false;
+            let mut chosen_y_start = (cav_top + cav_h / 2).saturating_sub(total_h / 2);
+            let mut line_centers_x: Vec<f32> = Vec::new();
+
+            if total_h <= eff_cav_h_cap && !lines.is_empty() {
+                let free_v = cav_h - total_h;
+                let min_margin = (free_v * 28) / 100;
+                let ideal_start = cav_top + free_v / 2;
+                let shift_cap = ((cav_h * 18) / 100).max(8);
+                let min_start = ideal_start
+                    .saturating_sub(shift_cap)
+                    .max(cav_top + min_margin);
+                let max_start = (ideal_start + shift_cap)
+                    .min(cav_bot.saturating_sub(total_h + min_margin))
+                    .max(min_start);
+
+                if let Some(cxs) = validate_lines_in_chords(
+                    &lines,
+                    &chords,
+                    h,
+                    ideal_start,
+                    line_h,
+                    fs_f,
+                    scale_x,
+                    eff_side_pad,
+                    ref_w,
+                    &measure_scaled,
+                ) {
                     fits_chords = true;
+                    chosen_y_start = ideal_start;
+                    line_centers_x = cxs;
+                } else {
+                    let max_shift = ideal_start
+                        .saturating_sub(min_start)
+                        .max(max_start.saturating_sub(ideal_start));
+                    let mut delta = 4usize;
+                    while delta <= max_shift {
+                        if ideal_start >= min_start + delta {
+                            if let Some(cxs) = validate_lines_in_chords(
+                                &lines,
+                                &chords,
+                                h,
+                                ideal_start - delta,
+                                line_h,
+                                fs_f,
+                                scale_x,
+                                eff_side_pad,
+                                ref_w,
+                                &measure_scaled,
+                            ) {
+                                fits_chords = true;
+                                chosen_y_start = ideal_start - delta;
+                                line_centers_x = cxs;
+                                break;
+                            }
+                        }
+                        if ideal_start + delta <= max_start {
+                            if let Some(cxs) = validate_lines_in_chords(
+                                &lines,
+                                &chords,
+                                h,
+                                ideal_start + delta,
+                                line_h,
+                                fs_f,
+                                scale_x,
+                                eff_side_pad,
+                                ref_w,
+                                &measure_scaled,
+                            ) {
+                                fits_chords = true;
+                                chosen_y_start = ideal_start + delta;
+                                line_centers_x = cxs;
+                                break;
+                            }
+                        }
+                        delta += 4;
+                    }
                 }
             }
-        }
 
-        let max_line_w = lines
-            .iter()
-            .map(|l| measure_scaled(l, fs_f, scale_x))
-            .fold(0.0f32, f32::max);
+            // Если ровный ромб не поместился по узким верхним/нижним хордам овала,
+            // пересчитываем перенос строк строго под геометрию каждой скан-линии вокруг центра!
+            if !fits_chords {
+                if let Some((dp_lines, dp_cxs, dp_y_start)) = wrap_lines_to_chords(
+                    text,
+                    &chords,
+                    h,
+                    cav_top,
+                    cav_bot,
+                    line_h,
+                    fs_f,
+                    scale_x,
+                    eff_side_pad,
+                    ref_w,
+                    &measure_scaled,
+                ) {
+                    let dp_total_h = (dp_lines.len() as f32 * line_h).ceil() as usize;
+                    if dp_total_h <= eff_cav_h_cap {
+                        lines = dp_lines;
+                        total_h = dp_total_h;
+                        chosen_y_start = dp_y_start;
+                        line_centers_x = dp_cxs;
+                        fits_chords = true;
+                    }
+                }
+            }
 
-        let box_w = (max_line_w.ceil() as usize).max(4).min(w.max(1));
-        let box_h = total_h.max(4).min(h.max(1));
-        let mut center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
-        if fits_chords && !line_centers_x.is_empty() {
-            let cy_chord = (chosen_y_start + total_h / 2) as i32;
-            let avg_cx =
-                (line_centers_x.iter().sum::<f32>() / (line_centers_x.len() as f32)).round() as i32;
-            center_xy = [avg_cx, cy_chord];
-        } else if line_centers_x.len() != lines.len() {
-            line_centers_x = vec![center_xy[0] as f32; lines.len()];
-        }
+            let max_line_w = lines
+                .iter()
+                .map(|l| measure_scaled(l, fs_f, scale_x))
+                .fold(0.0f32, f32::max);
 
-        (
-            fits_chords,
-            BubbleLayout {
-                font_size: fs,
-                scale_x,
-                lines,
-                line_centers_x,
-                center_xy,
-                line_height: line_h,
-                max_line_w,
-            },
-        )
-    };
+            // Проверка правила «белого воздуха»: выше базового кегля текстовый прямоугольник
+            // не имеет права забивать более 54% площади внутренней полости баббла!
+            if fits_chords && require_breathing_room {
+                let ink_box_area = max_line_w * (total_h as f32);
+                if ink_box_area > (cavity_area as f32) * 0.54 {
+                    fits_chords = false;
+                }
+            }
+
+            let box_w = (max_line_w.ceil() as usize).max(4).min(w.max(1));
+            let box_h = total_h.max(4).min(h.max(1));
+            let mut center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
+            if fits_chords && !line_centers_x.is_empty() {
+                let cy_chord = (chosen_y_start + total_h / 2) as i32;
+                let avg_cx = (line_centers_x.iter().sum::<f32>() / (line_centers_x.len() as f32))
+                    .round() as i32;
+                center_xy = [avg_cx, cy_chord];
+            } else if line_centers_x.len() != lines.len() {
+                line_centers_x = vec![center_xy[0] as f32; lines.len()];
+            }
+
+            (
+                fits_chords,
+                BubbleLayout {
+                    font_size: fs,
+                    scale_x,
+                    lines,
+                    line_centers_x,
+                    center_xy,
+                    line_height: line_h,
+                    max_line_w,
+                },
+            )
+        };
 
     let try_fs = |fs: i32| -> (bool, BubbleLayout) {
-        let (ok1, lay1) = try_fs_with_scale(fs, 1.0);
-        if ok1 || !allow_condense {
-            return (ok1, lay1);
+        let need_air = comfort_anchor_fs.is_some_and(|anc| fs > anc);
+        let (ok1, lay1) = try_fs_with_params(fs, 1.0, 1.12, need_air);
+        if ok1 {
+            return (true, lay1);
         }
-        for &sx in &[0.93f32, 0.88f32] {
-            let (ok_s, lay_s) = try_fs_with_scale(fs, sx);
+        // На кеглях <= якорного сначала пробуем чуть более плотный комиксный интервал (1.06) и мягкое сжатие ширины,
+        // чтобы удержать крупный читаемый размер букв вместо резкого уменьшения шрифта!
+        if !need_air {
+            let (ok_tight, lay_tight) = try_fs_with_params(fs, 1.0, 1.06, false);
+            if ok_tight {
+                return (true, lay_tight);
+            }
+            if allow_condense {
+                for &sx in &[0.93f32, 0.88f32, 0.85f32] {
+                    let (ok_s, lay_s) = try_fs_with_params(fs, sx, 1.06, false);
+                    if ok_s {
+                        return (true, lay_s);
+                    }
+                }
+            } else {
+                let (ok_s, lay_s) = try_fs_with_params(fs, 0.94, 1.06, false);
+                if ok_s {
+                    return (true, lay_s);
+                }
+            }
+        } else if allow_condense {
+            let (ok_s, lay_s) = try_fs_with_params(fs, 0.93, 1.12, true);
             if ok_s {
                 return (true, lay_s);
             }
@@ -705,7 +775,7 @@ pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
     };
 
     if let Some(fs_fix) = fixed_fs {
-        let (_, lay) = try_fs(fs_fix.clamp(6, 220));
+        let (_, lay) = try_fs_with_params(fs_fix.clamp(6, 220), 1.0, 1.12, false);
         return lay;
     }
 
@@ -737,9 +807,8 @@ pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
         return try_fs(lo_init).1;
     }
 
-    // Если даже `min_fs` чуть шире узкого баббла (например, узкий крик `Shut uuuup!` на `002.webp`),
-    // аккуратно пробуем спуститься до 9px, чтобы слова не залезали на чёрный контур баббла!
-    let emergency_lo = lo_init.min(9).max(8);
+    // Аккуратный аварийный фоллбэк для совсем крошечных бабблов (не мельче 10px, чтобы текст оставался читаемым!)
+    let emergency_lo = lo_init.min(10).max(8);
     for fs_try in (emergency_lo..lo_init).rev() {
         let (ok, lay) = try_fs(fs_try);
         if ok {
@@ -748,6 +817,199 @@ pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
     }
 
     try_fs(emergency_lo).1
+}
+
+/// Визуальная роль баббла для гармонизации кеглей на странице.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BubbleTextRole {
+    /// Основной разговорный диалог — держится плотно около `page_base_fs` (±1..2 px).
+    Dialogue,
+    /// Эмоциональный возглас / крик (`!!`, `?!`, растянутый крик) — акцент до +25..35%.
+    Shout,
+    /// Тихая ремарка / шёпот / крошечный вздох — слегка компактнее базового.
+    Aside,
+}
+
+/// Определяет роль реплики по пунктуации, длине текста, пресету стиля и габаритам баббла.
+pub fn classify_bubble_role(
+    text: &str,
+    style_preset: &str,
+    cw: usize,
+    ch: usize,
+    is_free_text: bool,
+) -> BubbleTextRole {
+    if style_preset.eq_ignore_ascii_case("shout") {
+        return BubbleTextRole::Shout;
+    }
+    if style_preset.eq_ignore_ascii_case("whisper") {
+        return BubbleTextRole::Aside;
+    }
+    let trimmed = text.trim();
+    if (trimmed.starts_with('(') && trimmed.ends_with(')'))
+        || (trimmed.starts_with('（') && trimmed.ends_with('）'))
+    {
+        return BubbleTextRole::Aside;
+    }
+
+    let word_cnt = trimmed.split_whitespace().count();
+    let has_double_bang =
+        trimmed.contains("!!") || trimmed.contains("?!") || trimmed.contains("!?");
+    let has_single_bang = trimmed.ends_with('!')
+        || trimmed.ends_with("!”")
+        || trimmed.ends_with("!\"")
+        || trimmed.ends_with("!~");
+
+    let mut max_run = 0usize;
+    let mut cur_run = 0usize;
+    let mut prev_c: Option<char> = None;
+    for ch_c in trimmed.chars() {
+        if ch_c.is_alphabetic() {
+            let low = ch_c.to_lowercase().next().unwrap_or(ch_c);
+            if prev_c == Some(low) {
+                cur_run += 1;
+            } else {
+                prev_c = Some(low);
+                cur_run = 1;
+            }
+            max_run = max_run.max(cur_run);
+        } else {
+            prev_c = None;
+            cur_run = 0;
+        }
+    }
+    let is_stretched_scream =
+        max_run >= 3 && (has_double_bang || has_single_bang || trimmed.ends_with('?'));
+
+    if !is_free_text
+        && ((has_double_bang && word_cnt <= 10)
+            || is_stretched_scream
+            || (has_single_bang && word_cnt <= 4 && cw.max(ch) >= 165))
+    {
+        return BubbleTextRole::Shout;
+    }
+
+    if cw.max(ch) < 120 && word_cnt <= 2 && !has_double_bang && !has_single_bang {
+        return BubbleTextRole::Aside;
+    }
+
+    BubbleTextRole::Dialogue
+}
+
+/// Вычисляет целевой «комфортный крупный» базовый кегль диалога под разрешение страницы:
+/// ~20–21 px для стандартного скана высотой 1650 px, с корректной обработкой двойных разворотов, вебтунов и тестовых кропов.
+pub fn compute_page_target_base_fs(
+    img_w: u32,
+    img_h: u32,
+    min_fs: i32,
+    max_fs: i32,
+) -> i32 {
+    let max_dim = img_w.max(img_h);
+    // Для небольших тестовых кропов (< 680 px) ориентируемся на стандартную страницу ~1650 px
+    let eff_h = if max_dim < 680 {
+        1650.0f32
+    } else if (img_w as f32) > (img_h as f32) * 1.15 {
+        // Горизонтальный двойной разворот (например, 1280x904 или 2400x1700)
+        (img_h as f32).max(1220.0)
+    } else if (img_h as f32) > (img_w as f32) * 2.2 {
+        // Длинный вертикальный вебтун — масштаб чтения определяется шириной полосы
+        (img_w as f32 * 1.46).max(1450.0)
+    } else {
+        img_h as f32
+    };
+
+    let raw_target = (eff_h * 0.0124).round() as i32;
+    let lo = min_fs.clamp(8, 120);
+    let hi = max_fs.clamp(lo, 200);
+    raw_target.clamp(lo, hi)
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct PageHarmonizeInput {
+    pub raw_fs: i32,
+    pub chars: usize,
+    pub is_fixed: bool,
+    pub role: BubbleTextRole,
+    pub cavity_area: usize,
+    pub cav_h: usize,
+}
+
+/// Гармонизирует кегли на странице вокруг якорного `anchor_fs`, удерживая обычный диалог в узком коридоре (±1..2 px)
+/// и позволяя крикам (`Shout`) выразительный акцент (+25..35%, либо до `max_fs` на гигантских криках во весь кадр).
+pub fn harmonize_page_roles(
+    items: &[PageHarmonizeInput],
+    anchor_fs: i32,
+    page_area: usize,
+    page_h: usize,
+    min_fs: i32,
+    max_fs: i32,
+) -> Vec<i32> {
+    let mut out: Vec<i32> = items.iter().map(|it| it.raw_fs).collect();
+    if items.is_empty() {
+        return out;
+    }
+
+    // Оцениваем реальную вместимость содержательных диалоговых бабблов страницы (>= 10 символов)
+    let mut weighted: Vec<(i32, f32)> = items
+        .iter()
+        .filter(|it| !it.is_fixed && it.role == BubbleTextRole::Dialogue && it.chars >= 10)
+        .map(|it| (it.raw_fs, (it.chars as f32).sqrt().max(1.0)))
+        .collect();
+
+    let page_base_fs = if weighted.len() >= 2 {
+        weighted.sort_by_key(|&(fs, _)| fs);
+        let total_w: f32 = weighted.iter().map(|&(_, w)| w).sum();
+        let half = total_w * 0.5;
+        let mut acc = 0.0f32;
+        let mut med_fs = weighted[weighted.len() / 2].0;
+        for &(fs, w) in &weighted {
+            acc += w;
+            if acc >= half {
+                med_fs = fs;
+                break;
+            }
+        }
+        // Мягко привязываем базовый кегль к якорю разрешения, сдвигаясь на 1–2 px только если вся страница мелкая/крупная
+        ((anchor_fs * 2 + med_fs + 1) / 3).clamp(anchor_fs - 2, anchor_fs + 1)
+    } else {
+        anchor_fs
+    }
+    .clamp(min_fs.max(10), max_fs.max(12));
+
+    let lo_bound = min_fs.clamp(8, 120);
+    let hi_bound = max_fs.clamp(lo_bound, 200);
+
+    for (idx, it) in items.iter().enumerate() {
+        if it.is_fixed {
+            continue;
+        }
+        let cap = match it.role {
+            BubbleTextRole::Dialogue => {
+                // В огромных пустых бабблах даём +2 px, в обычных — строго page_base_fs + 1 px!
+                if it.cavity_area >= 48_000 {
+                    page_base_fs + 2
+                } else {
+                    page_base_fs + 1
+                }
+            }
+            BubbleTextRole::Shout => {
+                // Гигантский драматический крик на треть/половину страницы может расти до max_fs (30–32 px),
+                // обычные крики выделяются на +30% относительно диалога (~26–27 px при базе 20–21 px).
+                let is_mega_scream = page_h >= 680
+                    && (it.cav_h * 100 >= page_h * 32 || it.cavity_area * 14 >= page_area.max(1));
+                if is_mega_scream {
+                    hi_bound
+                } else {
+                    ((page_base_fs as f32) * 1.30).round() as i32
+                }
+            }
+            BubbleTextRole::Aside => (page_base_fs - 1).max(lo_bound),
+        }
+        .clamp(lo_bound, hi_bound);
+
+        out[idx] = it.raw_fs.min(cap);
+    }
+
+    out
 }
 
 /// Двухпроходная гармонизация кеглей на уровне страницы: гасит аномально огромные шрифты в коротких репликах.

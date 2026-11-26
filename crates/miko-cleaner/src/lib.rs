@@ -478,4 +478,30 @@ mod tests {
         // 3. Внешний скринтон в седловине (x=80, y=26) не залит белым!
         assert_eq!(res.cleaned.get_pixel(80, 26)[0], 195);
     }
+
+    #[test]
+    fn test_draw_circle_negative_and_extreme_coords_never_panic() {
+        // Точное воспроизведение паники на 048-й странице:
+        // кроп 103x233 (len = 23999), cx = -3, cy = 51, radius = 1 -> раньше x1 = (-1) as usize = usize::MAX!
+        let (w, h) = (103usize, 233usize);
+        let mut mask = vec![0u8; w * h];
+        draw_circle(&mut mask, w, h, -3, 51, 1, 255);
+        assert!(mask.iter().all(|&v| v == 0));
+
+        // Проверка частичного захода с отрицательных координат и экстремальных i32
+        draw_circle(&mut mask, w, h, -1, 10, 3, 255);
+        assert_eq!(mask[10 * w], 255);
+        draw_circle(&mut mask, w, h, 10, -1, 3, 255);
+        assert_eq!(mask[10], 255);
+        draw_circle(&mut mask, w, h, i32::MIN, i32::MAX, 50, 255);
+        draw_polyline(
+            &mut mask,
+            w,
+            h,
+            &[[-15, -20], [5, 5], [w as i32 + 30, h as i32 + 40]],
+            2,
+            255,
+        );
+        assert_eq!(mask[5 * w + 5], 255);
+    }
 }

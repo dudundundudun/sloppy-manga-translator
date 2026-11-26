@@ -132,28 +132,155 @@ fn max_char_run(chars: &[char]) -> usize {
     best
 }
 
+/// Проверяет, содержит ли английский хвост слова хотя бы одну реально произносимую слоговую гласную
+/// (исключая немое окончание `-e`, а также `-ed` и `-es` без слогообразующей основы).
+fn has_spoken_english_vowel(chars: &[char]) -> bool {
+    if chars.is_empty() {
+        return false;
+    }
+    let low: String = chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+    if matches!(low.as_str(), "e" | "ed" | "es" | "s" | "d") {
+        return false;
+    }
+    let stem = if let Some(base) = low.strip_suffix("ed") {
+        if base.ends_with('t') || base.ends_with('d') {
+            return true;
+        }
+        base
+    } else if let Some(base) = low.strip_suffix("es") {
+        if base.ends_with('s')
+            || base.ends_with('z')
+            || base.ends_with('x')
+            || base.ends_with("ch")
+            || base.ends_with("sh")
+        {
+            return true;
+        }
+        base
+    } else if let Some(base) = low.strip_suffix('e') {
+        if base.ends_with('l') && base.len() >= 2 {
+            return true;
+        }
+        base
+    } else {
+        low.as_str()
+    };
+    stem.chars().any(is_vowel)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct WrapToken {
+    pub text: String,
+    /// Следующий токен — продолжение этого же слова (без пробела между ними).
+    pub glue_next: bool,
+    /// При разрыве строки сразу после этого токена в конец строки добавляется дефис `'-'`.
+    pub soft_hyphen_after: bool,
+}
+
+/// Разбивает одно слово на токены укладки (с мягкими слоговыми переносами или жёсткими дефисами составных слов).
+pub fn tokenize_word_for_wrap(word: &str, allow_hyphenate: bool) -> Vec<WrapToken> {
+    if !allow_hyphenate {
+        return vec![WrapToken {
+            text: word.to_string(),
+            glue_next: false,
+            soft_hyphen_after: false,
+        }];
+    }
+    let parts = hyphenate_word(word);
+    if parts.len() <= 1 {
+        return vec![WrapToken {
+            text: word.to_string(),
+            glue_next: false,
+            soft_hyphen_after: false,
+        }];
+    }
+    let mut out = Vec::with_capacity(parts.len());
+    for (idx, part) in parts.into_iter().enumerate() {
+        let is_last = idx + 1 == out.capacity();
+        if is_last {
+            out.push(WrapToken {
+                text: part,
+                glue_next: false,
+                soft_hyphen_after: false,
+            });
+        } else if part.ends_with('-') {
+            // Составное слово со своим собственным дефисом ("matter-of-factly") — дефис сохраняется и внутри строки
+            out.push(WrapToken {
+                text: part,
+                glue_next: true,
+                soft_hyphen_after: false,
+            });
+        } else {
+            // Мягкий слоговой перенос: внутри одной строки склеивается чисто без '-', дефис появляется ТОЛЬКО на конце строки!
+            out.push(WrapToken {
+                text: part,
+                glue_next: true,
+                soft_hyphen_after: true,
+            });
+        }
+    }
+    out
+}
+
+/// Собирает срез токенов `tokens[i..j]` в строку: мягкий дефис ставится ТОЛЬКО если строка обрывается посреди слова!
+pub fn join_wrap_tokens(tokens: &[WrapToken], i: usize, j: usize) -> String {
+    if i >= j || i >= tokens.len() {
+        return String::new();
+    }
+    let end = j.min(tokens.len());
+    let mut out = String::new();
+    for k in i..end {
+        let tok = &tokens[k];
+        out.push_str(&tok.text);
+        let is_line_end = k + 1 == end;
+        if is_line_end {
+            if tok.soft_hyphen_after {
+                out.push('-');
+            }
+        } else if !tok.glue_next {
+            out.push(' ');
+        }
+    }
+    out
+}
+
 /// Слоговой и дефисный перенос длинных слов (RU и EN) с отделением краевых знаков препинания
-/// (`Whaaaaat?!`, `matter-of-factly.`, `smartphone.`) и защитой односложных слов от разрыва.
+/// (`Whaaaaat?!`, `matter-of-factly.`, `smartphone.`) и защитой односложных слов и дифтонгов от разрыва.
 pub fn hyphenate_word(word: &str) -> Vec<String> {
     if word.is_empty() || word.contains('\'') || word.contains('’') {
         return vec![word.to_string()];
     }
 
-    // 1. Составные слова с собственным дефисом ("matter-of-factly", "twenty-nine") бьём строго по их дефисам!
+    // 1. Составные слова с собственным дефисом ("matter-of-factly", "twenty-nine", "great-granddaughter"):
+    // бьём по их дефисам, а сверхдлинные половинки (>= 10 букв, вроде "granddaughter") дополнительно делим по слогам!
     if word.contains('-') && !word.starts_with('-') && !word.ends_with('-') && !word.contains("--") {
         let hy_parts: Vec<&str> = word.split('-').filter(|p| !p.is_empty()).collect();
         if hy_parts.len() >= 2 && hy_parts.iter().all(|p| p.chars().count() >= 2) {
-            return hy_parts
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    if i + 1 < hy_parts.len() {
-                        format!("{p}-")
-                    } else {
-                        (*p).to_string()
+            let mut out = Vec::new();
+            for (i, p) in hy_parts.iter().enumerate() {
+                let is_last = i + 1 == hy_parts.len();
+                let alpha_cnt = p.chars().filter(|c| c.is_alphabetic()).count();
+                if alpha_cnt >= 10 {
+                    let sub = hyphenate_word(p);
+                    if sub.len() >= 2 {
+                        let sub_len = sub.len();
+                        for (si, sp) in sub.into_iter().enumerate() {
+                            if si + 1 == sub_len && !is_last {
+                                out.push(format!("{sp}-"));
+                            } else {
+                                out.push(sp);
+                            }
+                        }
+                        continue;
                     }
-                })
-                .collect();
+                }
+                if !is_last {
+                    out.push(format!("{p}-"));
+                } else {
+                    out.push((*p).to_string());
+                }
+            }
+            return out;
         }
     }
 
@@ -185,61 +312,141 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
         return vec![word.to_string()];
     }
 
-    // Запрещаем разрывать односложные слова (обе половины обязаны содержать хотя бы одну гласную)
+    let is_latin = core_chars.iter().all(|c| c.is_ascii_alphabetic());
+
+    // Для растянутых криков ("Whaaaaaat?!") разрешаем безопасный разрыв посередине длинного повтора
+    if is_scream_stretch {
+        let mid = n / 2;
+        if mid >= 3 && n - mid >= 3 {
+            let first_chunk: String = core_chars[..mid].iter().collect();
+            let second_chunk: String = core_chars[mid..].iter().collect();
+            return vec![
+                format!("{lead}{first_chunk}"),
+                format!("{second_chunk}{trail}"),
+            ];
+        }
+    }
+
+    // Запрещаем разрывать односложные слова (обе половины обязаны содержать слоговую гласную)
     let mut cut_points: Vec<usize> = Vec::new();
-    for i in 3..=(n - 3) {
-        let left_has_vowel = core_chars[..i].iter().any(|&c| is_vowel(c));
-        let right_has_vowel = core_chars[i..].iter().any(|&c| is_vowel(c));
-        if !left_has_vowel || !right_has_vowel {
-            continue;
-        }
-        // Не отрываем немое окончание "-e" / "-ed" / "-es" без собственной слоговой гласной
-        let right_tail: String = core_chars[i..].iter().collect::<String>().to_ascii_lowercase();
-        if matches!(right_tail.as_str(), "e" | "ed" | "es" | "s") {
-            continue;
-        }
-        if is_vowel(core_chars[i - 1]) && !is_silent_sign(core_chars[i]) {
-            // Если после гласной идут 2+ согласные подряд (`DIS-TOR-TION`, `UN-DER-STAND`),
-            // делим слог между первой и второй согласной (кроме неделимых диграфов `th`, `sh`, `ch`, `ph`, `ck`)!
-            let cut_idx = if i + 1 <= n - 3
-                && !is_vowel(core_chars[i])
-                && !is_vowel(core_chars[i + 1])
-                && !is_silent_sign(core_chars[i + 1])
+    if is_latin {
+        let low_core: String = core_chars.iter().map(|c| c.to_ascii_lowercase()).collect();
+
+        // 1. Чистые морфологические префиксы английского языка (>= 3 букв)
+        for pref in [
+            "under", "inter", "super", "trans", "counter", "ultra", "extra", "intro", "retro",
+            "hyper", "cyber", "over", "anti", "auto", "semi", "tele", "micro", "multi", "mega",
+            "giga", "kilo", "tera", "para", "meta", "abso", "dis", "mis", "pre", "pro", "sub",
+            "out", "non",
+        ] {
+            let plen = pref.len();
+            if plen >= 3
+                && n >= plen + 4
+                && low_core.starts_with(pref)
+                && has_spoken_english_vowel(&core_chars[plen..])
             {
-                let pair = format!(
-                    "{}{}",
-                    core_chars[i].to_ascii_lowercase(),
-                    core_chars[i + 1].to_ascii_lowercase()
-                );
-                if matches!(pair.as_str(), "th" | "sh" | "ch" | "ph" | "ck" | "wh" | "gh") {
+                cut_points.push(plen);
+                break;
+            }
+        }
+
+        // 2. Слогораздел по стечениям согласных (VC-CV: `break-fast`, `impor-tant`, `cir-cum-stances`, `black-out`),
+        // без разрыва одиночной интервокальной согласной (`coo-perate`, `tho-usand`, `appe-ared`) и без разрыва дифтонгов!
+        for i in 2..=(n - 3) {
+            if !is_vowel(core_chars[i - 1]) || is_vowel(core_chars[i]) {
+                continue;
+            }
+            if i + 1 >= n || is_vowel(core_chars[i + 1]) {
+                continue;
+            }
+            let pair = format!(
+                "{}{}",
+                core_chars[i].to_ascii_lowercase(),
+                core_chars[i + 1].to_ascii_lowercase()
+            );
+            let cut_idx = if pair == "ck" {
+                i + 2
+            } else if matches!(pair.as_str(), "th" | "sh" | "ch" | "ph" | "wh" | "gh") {
+                let left_low = &low_core[..i];
+                if matches!(left_low, "any" | "some" | "every") {
                     i
                 } else {
-                    i + 1
+                    i + 2
                 }
             } else {
-                i
+                i + 1
             };
-            let rt_check: String = core_chars[cut_idx..]
-                .iter()
-                .collect::<String>()
-                .to_ascii_lowercase();
-            if !matches!(rt_check.as_str(), "e" | "ed" | "es" | "s")
-                && cut_points.last().is_none_or(|&prev| cut_idx - prev >= 3)
+
+            if cut_idx >= 3
+                && cut_idx <= n - 3
+                && core_chars[..cut_idx].iter().any(|&c| is_vowel(c))
+                && has_spoken_english_vowel(&core_chars[cut_idx..])
+                && cut_points.last().is_none_or(|&prev| cut_idx >= prev + 3)
             {
                 cut_points.push(cut_idx);
+            }
+        }
+
+        // 3. Продуктивные английские суффиксы (`unbeliev-able`, `insane-ly`, `care-lessly`, `apart-ment`)
+        for suf in [
+            "lessly", "fully", "ingly", "ation", "ition", "able", "ible", "tion", "sion", "ment",
+            "ness", "less", "ward", "ship", "ing", "ly",
+        ] {
+            let slen = suf.len();
+            if n >= slen + 4 && low_core.ends_with(suf) {
+                let c_idx = n - slen;
+                if c_idx >= 3
+                    && core_chars[..c_idx].iter().any(|&c| is_vowel(c))
+                    && has_spoken_english_vowel(&core_chars[c_idx..])
+                {
+                    if let Some(&last) = cut_points.last() {
+                        if c_idx >= last + 3 {
+                            cut_points.push(c_idx);
+                        }
+                    } else {
+                        cut_points.push(c_idx);
+                    }
+                    break;
+                }
+            }
+        }
+    } else {
+        for i in 3..=(n - 3) {
+            let left_has_vowel = core_chars[..i].iter().any(|&c| is_vowel(c));
+            let right_has_vowel = core_chars[i..].iter().any(|&c| is_vowel(c));
+            if !left_has_vowel || !right_has_vowel {
+                continue;
+            }
+            if is_vowel(core_chars[i - 1]) && !is_silent_sign(core_chars[i]) {
+                let cut_idx = if i + 1 <= n - 3
+                    && !is_vowel(core_chars[i])
+                    && !is_vowel(core_chars[i + 1])
+                    && !is_silent_sign(core_chars[i + 1])
+                {
+                    i + 1
+                } else {
+                    i
+                };
+                if core_chars[cut_idx..].iter().any(|&c| is_vowel(c))
+                    && cut_points.last().is_none_or(|&prev| cut_idx - prev >= 3)
+                {
+                    cut_points.push(cut_idx);
+                }
+            }
+        }
+
+        if cut_points.is_empty() {
+            let mid = n / 2;
+            let left_v = core_chars[..mid].iter().any(|&c| is_vowel(c));
+            let right_v = core_chars[mid..].iter().any(|&c| is_vowel(c));
+            if mid >= 3 && n - mid >= 3 && left_v && right_v && !is_silent_sign(core_chars[mid]) {
+                cut_points.push(mid);
             }
         }
     }
 
     if cut_points.is_empty() {
-        let mid = n / 2;
-        let left_v = core_chars[..mid].iter().any(|&c| is_vowel(c));
-        let right_v = core_chars[mid..].iter().any(|&c| is_vowel(c));
-        if mid >= 3 && n - mid >= 3 && left_v && right_v {
-            cut_points.push(mid);
-        } else {
-            return vec![word.to_string()];
-        }
+        return vec![word.to_string()];
     }
 
     let mut parts = Vec::with_capacity(cut_points.len() + 1);
@@ -262,7 +469,7 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
     parts
 }
 
-/// DP-разбивка текста на строки с ромбовидным профилем (края уже середины, без висячих коротких слов).
+/// DP-разбивка текста на строки с ромбовидным профилем (края уже середины, без висячих коротких слов и без дефисов внутри строки).
 pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
     text: &str,
     max_width_px: f32,
@@ -280,56 +487,25 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
         if p_trim.is_empty() {
             continue;
         }
-        let mut tokens: Vec<String> = Vec::new();
+        let mut tokens: Vec<WrapToken> = Vec::new();
         for w in p_trim.split_whitespace() {
-            if measure_width(w) <= max_w {
-                tokens.push(w.to_string());
-            } else {
-                let parts = hyphenate_word(w);
-                if parts.len() <= 1 {
-                    tokens.push(w.to_string());
-                } else {
-                for (idx, part) in parts.iter().enumerate() {
-                    if idx + 1 < parts.len() {
-                        if part.ends_with('-') {
-                            tokens.push(part.clone());
-                        } else {
-                            tokens.push(format!("{part}-"));
-                        }
-                    } else {
-                        tokens.push(part.clone());
-                    }
-                }
-                }
-            }
+            let need_split = measure_width(w) > max_w || (w.contains('-') && !w.contains("--"));
+            tokens.extend(tokenize_word_for_wrap(w, need_split));
         }
 
         if tokens.is_empty() {
             continue;
         }
         if tokens.len() == 1 {
-            raw_lines.push(tokens[0].clone());
+            raw_lines.push(tokens[0].text.clone());
             continue;
         }
 
         let n = tokens.len();
-        let join_span = |i: usize, j: usize| -> String {
-            let mut out = String::new();
-            for k in i..j {
-                if !out.is_empty() {
-                    if !out.ends_with('-') {
-                        out.push(' ');
-                    }
-                }
-                out.push_str(&tokens[k]);
-            }
-            out
-        };
-
         let mut span_w = vec![vec![0.0f32; n + 1]; n];
         for i in 0..n {
             for j in (i + 1)..=n {
-                let line = join_span(i, j);
+                let line = join_wrap_tokens(&tokens, i, j);
                 span_w[i][j] = measure_width(&line);
             }
         }
@@ -348,12 +524,18 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
                 }
                 let overflow_pen = if w > max_w { (w - max_w) * 60.0 + 4000.0 } else { 0.0 };
                 let slack = (target_w - w).abs();
-                let orphan_pen = if j == n && (j - i) == 1 && tokens[i].chars().count() <= 3 && i > 0 {
-                    65.0
+                let hy_pen = if j < n && tokens[j - 1].soft_hyphen_after {
+                    45.0
                 } else {
                     0.0
                 };
-                let cost = slack * slack * 0.015 + 18.0 + overflow_pen + orphan_pen + dp[j];
+                let orphan_pen =
+                    if j == n && (j - i) == 1 && tokens[i].text.chars().count() <= 3 && i > 0 {
+                        65.0
+                    } else {
+                        0.0
+                    };
+                let cost = slack * slack * 0.015 + 18.0 + overflow_pen + hy_pen + orphan_pen + dp[j];
                 if cost < dp[i] {
                     dp[i] = cost;
                     next_idx[i] = j;
@@ -364,7 +546,7 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
         let mut cur = 0usize;
         while cur < n {
             let nxt = next_idx[cur].max(cur + 1).min(n);
-            raw_lines.push(join_span(cur, nxt));
+            raw_lines.push(join_wrap_tokens(&tokens, cur, nxt));
             cur = nxt;
         }
     }

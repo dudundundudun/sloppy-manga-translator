@@ -176,7 +176,7 @@ pub async fn retranslate_single_block(
                 .into_response();
         }
     }
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let global_g = state.db.load_glossary("global").unwrap_or(cfg.glossary);
     let folder_g = payload
         .folder_path
@@ -256,14 +256,14 @@ async fn run_full_rgb_pipeline(
     return_image: bool,
 ) -> Result<Value, String> {
     let t_total = Instant::now();
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let (w, h) = rgb.dimensions();
 
     // 1. OCR на GPU/CPU
     let st_ocr = state.clone();
     let rgb_ocr = rgb.clone();
     let ocr_res = tokio::task::spawn_blocking(move || {
-        let mut guard = st_ocr.ocr_engine.lock().expect("ocr mutex");
+        let mut guard = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             let eng = RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
             *guard = Some(eng);
@@ -316,7 +316,7 @@ async fn run_full_rgb_pipeline(
     let src_mtime = src_file_hint.as_deref().map(file_mtime_secs).unwrap_or(0);
 
     let (rendered_img, clean_ep, blocks_out) = tokio::task::spawn_blocking(move || -> Result<(RgbImage, String, Vec<TextBlock>), String> {
-        let mut cguard = st_cr.cleaner_engine.lock().expect("cleaner mutex");
+        let mut cguard = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
         if cguard.is_none() {
             *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
         }
@@ -409,7 +409,7 @@ pub async fn translate_page(
         Ok(im) => im,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"detail": e}))).into_response(),
     };
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let t_lang = payload
         .target_lang
         .unwrap_or_else(|| "ru".to_string())
@@ -508,7 +508,7 @@ pub async fn translate_page_file(
                 .into_response()
         }
     };
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let t_lang = payload
         .target_lang
         .unwrap_or_else(|| "ru".to_string())
@@ -611,7 +611,7 @@ pub async fn save_edited_page(
         normalize_clean_bbox(b);
     }
 
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let st_clone = state.clone();
     let src_clone = src_p.clone();
     let dest_clone = dest_p.clone();
@@ -628,7 +628,7 @@ pub async fn save_edited_page(
         let src_str = src_clone.to_string_lossy().to_string();
         let mtime = file_mtime_secs(&src_clone);
 
-        let mut cguard = st_clone.cleaner_engine.lock().expect("cleaner mutex");
+        let mut cguard = st_clone.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
         if cguard.is_none() {
             *cguard = Some(RustCleanerEngine::load(&st_clone.base_dir, true));
         }

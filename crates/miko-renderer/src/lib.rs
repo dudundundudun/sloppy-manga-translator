@@ -5,9 +5,10 @@ pub mod typography;
 
 pub use engine::{RenderOptions, RenderPageResult, RenderTimings, RendererError, RustRendererEngine};
 pub use layout::{
-    compute_scanline_chords, find_optimal_box_center, harmonize_page_font_sizes,
-    solve_bubble_layout, solve_bubble_layout_scaled, solve_bubble_layout_with_options,
-    BubbleLayout,
+    classify_bubble_role, compute_page_target_base_fs, compute_scanline_chords,
+    find_optimal_box_center, harmonize_page_font_sizes, harmonize_page_roles, solve_bubble_layout,
+    solve_bubble_layout_anchored, solve_bubble_layout_scaled, solve_bubble_layout_with_options,
+    BubbleLayout, BubbleTextRole, PageHarmonizeInput,
 };
 pub use painter::{
     check_text_lines_wall_contact, draw_text_line, draw_text_line_scaled, measure_text_width,
@@ -516,6 +517,236 @@ mod tests {
         assert!(
             (130..=250).contains(&cy),
             "scream text jumped out of vertical center: cy={cy} (expected 130..=250 in h={h})"
+        );
+    }
+
+    #[test]
+    fn test_no_midline_hyphens_and_english_digraphs() {
+        // Регрессия артефактов BRE-AKFAST, TOGE-THER, THO-USAND, APPE-ARED, BLA-CKOUT, ATTA-CHED, STAN-CES
+        for w in ["breakfast", "thousand", "cooperate", "appeared", "attached?"] {
+            let parts = hyphenate_word(w);
+            let joined_hy = parts.join("-");
+            assert!(
+                !joined_hy.contains("bre-ak")
+                    && !joined_hy.contains("tho-us")
+                    && !joined_hy.contains("coo-pe")
+                    && !joined_hy.contains("appe-ar")
+                    && !joined_hy.contains("atta-ched"),
+                "bad English digraph/silent-ed split for {w}: {parts:?}"
+            );
+        }
+        assert_eq!(hyphenate_word("blackout"), vec!["black", "out"]);
+
+        let (w, h) = (190usize, 250usize);
+        let mask = vec![255u8; w * h];
+        let samples = [
+            "THOUGHT YOU'D COME HERE FOR BREAKFAST FOR ONCE, BUT YOU'RE JUST BRAGGING ABOUT BEING PREGNANT?",
+            "I DON'T EVEN REMEMBER THAT TIME WE GOT BLACKOUT DRUNK TOGETHER.",
+            "GOT IT?! UNDER NO CIRCUMSTANCES TELL ANYONE ABOUT THE FUTURE. DON'T DO ANYTHING THAT COULD CHANGE HISTORY!",
+        ];
+        for sample in samples {
+            let lay = solve_bubble_layout_with_options(
+                sample,
+                &mask,
+                w,
+                h,
+                12,
+                28,
+                None,
+                true,
+                |s, fs, sx| (s.chars().count() as f32) * fs * 0.58 * sx,
+            );
+            for line in &lay.lines {
+                // Внутри строки (кроме самого последнего символа при реальном переносе на следующую строку)
+                // НИКОГДА не должно появляться искусственных дефисов между буквами!
+                let body = line.strip_suffix('-').unwrap_or(line);
+                assert!(
+                    !body.contains('-'),
+                    "unexpected mid-line hyphen in line {line:?} (all lines: {:?})",
+                    lay.lines
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_staggered_side_by_side_conjoined_scream_bubbles_stay_centered() {
+        // Точная регрессия 015.webp (#5 [473, 424, 652, 763] и #6 [374, 495, 504, 868]):
+        // два высоких баббла крика стоят БОК О БОК с открытым белым перешейком, но смещены по Y (dy=109 > dx=99).
+        // Шов обязан быть вертикальным (seam_x), чтобы оба текста центрировались по всей высоте своих бабблов!
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let mut img = image::RgbImage::from_pixel(320, 500, image::Rgb([30, 30, 35]));
+        // Правый баббл [123..302, 24..363], левый баббл [24..154, 95..468], общий белый перешеек без чёрной стены между ними
+        for y in 24..363u32 {
+            for x in 123..302u32 {
+                let wall = x >= 299 || y <= 26 || y >= 360 || (x <= 125 && !(100..=355).contains(&y));
+                img.put_pixel(
+                    x,
+                    y,
+                    if wall {
+                        image::Rgb([12, 12, 12])
+                    } else {
+                        image::Rgb([255, 255, 255])
+                    },
+                );
+            }
+        }
+        for y in 95..468u32 {
+            for x in 24..154u32 {
+                let wall = x <= 26 || y <= 97 || y >= 465 || (x >= 151 && !(100..=355).contains(&y));
+                if img.get_pixel(x, y)[0] != 255 {
+                    img.put_pixel(
+                        x,
+                        y,
+                        if wall {
+                            image::Rgb([12, 12, 12])
+                        } else {
+                            image::Rgb([255, 255, 255])
+                        },
+                    );
+                }
+            }
+        }
+
+        let mut blocks = vec![
+            TextBlock {
+                id: 5,
+                bbox: [123, 24, 302, 363],
+                text_bbox: Some([123, 27, 272, 326]),
+                bubble_polygon: Some(vec![[125, 27], [298, 27], [298, 359], [125, 359]]),
+                original_text: "大事なことは最初に言え!!".into(),
+                translated_text: "Could you tell me important stuff like that first?!".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 6,
+                bbox: [24, 95, 154, 468],
+                text_bbox: Some([42, 134, 154, 437]),
+                bubble_polygon: Some(vec![[27, 98], [150, 98], [150, 464], [27, 464]]),
+                original_text: "あぶなかった死ぬとこだった!".into(),
+                translated_text: "That was insanely close! I almost died!".into(),
+                ..Default::default()
+            },
+        ];
+
+        let res = engine
+            .render_page(&img, &mut blocks, &RenderOptions { uppercase: true, ..Default::default() })
+            .expect("render 015 regression");
+
+        // Правый баббл (y=24..363, середина ~193) должен иметь чернила НИЖЕ бывшего ложного среза y=230!
+        let mut right_lower_ink = 0usize;
+        for y in 215..320u32 {
+            for x in 145..295u32 {
+                if res.rendered.get_pixel(x, y)[0] < 100 {
+                    right_lower_ink += 1;
+                }
+            }
+        }
+        // Левый баббл (y=95..468, середина ~281) должен иметь чернила ВЫШЕ бывшего ложного среза y=230!
+        let mut left_upper_ink = 0usize;
+        for y in 150..240u32 {
+            for x in 30..135u32 {
+                if res.rendered.get_pixel(x, y)[0] < 100 {
+                    left_upper_ink += 1;
+                }
+            }
+        }
+        assert!(
+            right_lower_ink > 30,
+            "right bubble text was pushed to top ceiling (right_lower_ink={right_lower_ink})"
+        );
+        assert!(
+            left_upper_ink > 30,
+            "left bubble text was pushed to bottom floor (left_upper_ink={left_upper_ink})"
+        );
+    }
+
+    #[test]
+    fn test_target_anchored_page_consistency_and_shout_hierarchy() {
+        // На полноценной странице манги (1168x1650) короткие и длинные диалоги должны держаться
+        // в ровном коридоре ~19..22px без раздувания "This one." до 30px, а крик "Whaaaaat?!" — быть заметно крупнее!
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let img = image::RgbImage::from_pixel(1168, 1650, image::Rgb([255, 255, 255]));
+        let mut blocks = vec![
+            TextBlock {
+                id: 1,
+                bbox: [100, 100, 260, 280],
+                bubble_polygon: Some(vec![[105, 105], [255, 105], [255, 275], [105, 275]]),
+                original_text: "これだ".into(),
+                translated_text: "This one.".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 2,
+                bbox: [300, 100, 480, 390],
+                bubble_polygon: Some(vec![[305, 105], [475, 105], [475, 385], [305, 385]]),
+                original_text: "長いセリフ".into(),
+                translated_text: "More precisely, this, the device on my wrist, and my genes.".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 3,
+                bbox: [520, 100, 670, 325],
+                bubble_polygon: Some(vec![[525, 105], [665, 105], [665, 320], [525, 320]]),
+                original_text: "ひ孫".into(),
+                translated_text: "So what does my great-granddaughter want with me?".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 4,
+                bbox: [720, 100, 960, 520],
+                bubble_polygon: Some(vec![[725, 105], [955, 105], [955, 515], [725, 515]]),
+                original_text: "なああああに?!".into(),
+                translated_text: "Whaaaaat?!".into(),
+                ..Default::default()
+            },
+        ];
+
+        let opts = RenderOptions {
+            min_font_size: 12,
+            max_font_size: 32,
+            ..Default::default()
+        };
+        let _ = engine.render_page(&img, &mut blocks, &opts).expect("render page consistency");
+
+        let fs_short = blocks[0].rendered_font_size.unwrap();
+        let fs_long = blocks[1].rendered_font_size.unwrap();
+        let fs_compound = blocks[2].rendered_font_size.unwrap();
+        let fs_shout = blocks[3].rendered_font_size.unwrap();
+
+        assert!(
+            (18..=22).contains(&fs_short),
+            "short dialogue inflated too much: fs_short={fs_short}"
+        );
+        assert!(
+            (18..=22).contains(&fs_long),
+            "long dialogue out of base band: fs_long={fs_long}"
+        );
+        assert!(
+            fs_compound >= 17,
+            "great-granddaughter compound crushed font size: fs_compound={fs_compound}"
+        );
+        assert!(
+            (fs_short - fs_long).abs() <= 3,
+            "dialogue sizes jumped too much: short={fs_short} vs long={fs_long}"
+        );
+        assert!(
+            fs_shout >= fs_short + 3,
+            "shout should stand out above normal dialogue: shout={fs_shout} vs short={fs_short}"
         );
     }
 }

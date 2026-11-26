@@ -175,7 +175,8 @@ pub fn save_manifest(output_dir: &Path, manifest: &Value) -> std::io::Result<()>
 }
 
 pub fn push_folder_state(state: &AppState, mutator: impl FnOnce(&mut FolderJobState)) {
-    if let Ok(mut job) = state.folder_job.write() {
+    {
+        let mut job = state.folder_job.write().unwrap_or_else(|e| e.into_inner());
         mutator(&mut job);
         job.current = job.done;
         if job.source_dir.is_empty() && !job.folder_path.is_empty() {
@@ -281,7 +282,7 @@ pub async fn process_chapter_folder_sync(
     state.folder_pause_flag.store(false, AtomicOrd::SeqCst);
 
     let total = opts.images.len();
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let run_id = format!("rs_{}", unix_ts_now() % 100_000);
     let mut manifest = load_manifest(&opts.output_dir);
     manifest["source_dir"] = json!(opts.source_dir.to_string_lossy());
@@ -404,17 +405,43 @@ pub async fn process_chapter_folder_sync(
             );
         });
 
-        let rgb = image::open(img_path)
-            .map_err(|e| format!("Ошибка чтения {fname}: {e}"))?
-            .to_rgb8();
+        let rgb = match image::open(img_path) {
+            Ok(im) => im.to_rgb8(),
+            Err(e) => {
+                failed_pages += 1;
+                let err_msg = format!("[ОШИБКА ЧТЕНИЯ] {fname}: {e} — страница пропущена");
+                tracing::error!("{}", err_msg);
+                let el_err = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.elapsed_sec = el_err;
+                    j.current_file = fname.clone();
+                    j.phase = "page_error".to_string();
+                    j.message = err_msg.clone();
+                    j.logs.push(err_msg.clone());
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "ocr",
+                        &err_msg,
+                        &j.active_model.clone(),
+                        0,
+                        0,
+                        0,
+                        cloud_only,
+                        Some(&err_msg),
+                    );
+                });
+                continue;
+            }
+        };
 
         // 1. OCR
         let st_ocr = state.clone();
         let rgb_ocr = rgb.clone();
         let det_free = opts.detect_free_text;
         let tf_mode = opts.text_filter_mode.clone();
-        let ocr_res = tokio::task::spawn_blocking(move || {
-            let mut g = st_ocr.ocr_engine.lock().expect("ocr mutex");
+        let ocr_task_res = tokio::task::spawn_blocking(move || {
+            let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
             if g.is_none() {
                 let eng = RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
                 *g = Some(eng);
@@ -431,8 +458,63 @@ pub async fn process_chapter_folder_sync(
                 )
                 .map_err(|e| e.to_string())
         })
-        .await
-        .map_err(|e| e.to_string())??;
+        .await;
+
+        let ocr_res = match ocr_task_res {
+            Ok(Ok(r)) => r,
+            Ok(Err(err)) => {
+                failed_pages += 1;
+                let err_msg = format!("[ОШИБКА OCR] {fname}: {err} — страница пропущена");
+                tracing::error!("{}", err_msg);
+                let el_err = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.elapsed_sec = el_err;
+                    j.current_file = fname.clone();
+                    j.phase = "page_error".to_string();
+                    j.message = err_msg.clone();
+                    j.logs.push(err_msg.clone());
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "ocr",
+                        &err_msg,
+                        &j.active_model.clone(),
+                        0,
+                        0,
+                        0,
+                        cloud_only,
+                        Some(&err_msg),
+                    );
+                });
+                continue;
+            }
+            Err(join_err) => {
+                failed_pages += 1;
+                let err_msg = format!("[ПАНИКА OCR] {fname}: {join_err} — страница пропущена");
+                tracing::error!("{}", err_msg);
+                let el_err = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.elapsed_sec = el_err;
+                    j.current_file = fname.clone();
+                    j.phase = "page_error".to_string();
+                    j.message = err_msg.clone();
+                    j.logs.push(err_msg.clone());
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "ocr",
+                        &err_msg,
+                        &j.active_model.clone(),
+                        0,
+                        0,
+                        0,
+                        cloud_only,
+                        Some(&err_msg),
+                    );
+                });
+                continue;
+            }
+        };
 
         let mut blocks = ocr_res.blocks;
         let mut active_model = opts
@@ -571,14 +653,14 @@ pub async fn process_chapter_folder_sync(
         let overflow_mode = cfg.overflow_mode.clone();
         let mtime = file_mtime_secs(img_path);
 
-        let (blocks_after, page_ms) = tokio::task::spawn_blocking(move || -> Result<(Vec<TextBlock>, u128), String> {
+        let clean_render_task = tokio::task::spawn_blocking(move || -> Result<(Vec<TextBlock>, u128), String> {
             let t_p = Instant::now();
             if blocks.is_empty() {
                 std::fs::copy(&src_p_clone, &dest_p_clone)
                     .map_err(|e| format!("Ошибка копирования пустой страницы: {e}"))?;
                 return Ok((blocks, t_p.elapsed().as_millis()));
             }
-            let mut cguard = st_cr.cleaner_engine.lock().expect("cleaner mutex");
+            let mut cguard = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
             if cguard.is_none() {
                 *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
             }
@@ -626,8 +708,63 @@ pub async fn process_chapter_folder_sync(
             let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
             Ok((blocks, t_p.elapsed().as_millis()))
         })
-        .await
-        .map_err(|e| e.to_string())??;
+        .await;
+
+        let (blocks_after, page_ms) = match clean_render_task {
+            Ok(Ok(pair)) => pair,
+            Ok(Err(err)) => {
+                failed_pages += 1;
+                let err_msg = format!("[ОШИБКА РЕНДЕРА] {fname}: {err} — страница пропущена");
+                tracing::error!("{}", err_msg);
+                let el_err = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.elapsed_sec = el_err;
+                    j.current_file = fname.clone();
+                    j.phase = "page_error".to_string();
+                    j.message = err_msg.clone();
+                    j.logs.push(err_msg.clone());
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "clean",
+                        &err_msg,
+                        &active_model,
+                        0,
+                        tr_cnt,
+                        0,
+                        cloud_only,
+                        Some(&err_msg),
+                    );
+                });
+                continue;
+            }
+            Err(join_err) => {
+                failed_pages += 1;
+                let err_msg = format!("[ПАНИКА КЛИНЕРА/РЕНДЕРА] {fname}: {join_err} — страница пропущена");
+                tracing::error!("{}", err_msg);
+                let el_err = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.elapsed_sec = el_err;
+                    j.current_file = fname.clone();
+                    j.phase = "page_error".to_string();
+                    j.message = err_msg.clone();
+                    j.logs.push(err_msg.clone());
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "clean",
+                        &err_msg,
+                        &active_model,
+                        0,
+                        tr_cnt,
+                        0,
+                        cloud_only,
+                        Some(&err_msg),
+                    );
+                });
+                continue;
+            }
+        };
 
         // Обновляем phrase_cache + pages в manifest
         if let Some(pc) = manifest.get_mut("phrase_cache").and_then(|v| v.as_object_mut()) {
@@ -695,7 +832,7 @@ pub async fn process_chapter_folder_sync(
         j.phase = if stopped_early { "stopped" } else { "done" }.to_string();
         j.message = if failed_pages > 0 {
             format!(
-                "{}: готово {processed}, ошибок LLM {failed_pages}, пропущено {skipped} за {total_ms} ms",
+                "{}: готово {processed}, ошибок страниц {failed_pages}, пропущено {skipped} за {total_ms} ms",
                 if stopped_early { "Остановлено" } else { "Глава завершена с пропусками" }
             )
         } else {
@@ -824,7 +961,7 @@ pub async fn translate_folder(
         0
     };
 
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let total_images = images.len();
     let batch_opts = BatchFolderOptions {
         source_dir: source_dir.clone(),
@@ -922,7 +1059,7 @@ pub async fn folder_control(
         }
         "toggle_cloud_only" => {
             let new_val = {
-                let mut cfg = state.config.write().expect("config rwlock");
+                let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
                 let v = payload
                     .cloud_only
                     .unwrap_or(!cfg.cloud_only_no_local_fallback);
@@ -1066,7 +1203,7 @@ pub async fn page_blocks(
     // OCR скан исходника
     let st_ocr = state.clone();
     let src_clone = src_p.clone();
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let det_free = payload.detect_free_text.unwrap_or(cfg.detect_free_text);
     let tf_mode = payload.text_filter_mode.unwrap_or(cfg.text_filter_mode);
 
@@ -1074,7 +1211,7 @@ pub async fn page_blocks(
         let rgb = image::open(&src_clone)
             .map_err(|e| format!("Ошибка чтения изображения: {e}"))?
             .to_rgb8();
-        let mut g = st_ocr.ocr_engine.lock().expect("ocr mutex");
+        let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
         if g.is_none() {
             let eng = RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
             *g = Some(eng);
@@ -1205,7 +1342,7 @@ pub async fn translate_manual_region(
             let x2 = bb[2].clamp(x1 as i32 + 1, iw) as u32;
             let y2 = bb[3].clamp(y1 as i32 + 1, ih) as u32;
             let crop = crop_imm(&rgb, x1, y1, x2 - x1, y2 - y1).to_image();
-            let mut g = st_ocr.ocr_engine.lock().expect("ocr mutex");
+            let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
             if g.is_none() {
                 let eng = RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
                 *g = Some(eng);
@@ -1244,7 +1381,7 @@ pub async fn translate_manual_region(
         }
     };
 
-    let cfg = state.config.read().expect("config rwlock").clone();
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
     let model = payload.model.unwrap_or(cfg.selected_model);
     let glossary = state.db.load_glossary("global").unwrap_or(cfg.glossary);
@@ -1408,7 +1545,7 @@ pub async fn folder_find_replace(
             )
                 .into_response();
         }
-        let cfg = state.config.read().expect("config rwlock").clone();
+        let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
         for rel_key in &affected_pages {
             let src_p = source_dir.join(rel_key);
             if !src_p.is_file() {
@@ -1432,7 +1569,7 @@ pub async fn folder_find_replace(
                 let rgb = image::open(&src_c).map_err(|e| e.to_string())?.to_rgb8();
                 let src_str = src_c.to_string_lossy().to_string();
                 let mtime = file_mtime_secs(&src_c);
-                let mut cg = st_cr.cleaner_engine.lock().expect("cleaner mutex");
+                let mut cg = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
                 if cg.is_none() {
                     *cg = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
                 }
@@ -2006,7 +2143,7 @@ pub async fn pick_web_save_folder(State(state): State<Arc<AppState>>) -> Respons
             let _ = state.allowed_roots.register_root(&dir_p);
             let dir_str = dir_p.to_string_lossy().to_string();
             let auto_save = {
-                let mut cfg = state.config.write().expect("config rwlock");
+                let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
                 cfg.web_save_dir = dir_str.clone();
                 cfg.auto_save_web_pages
             };

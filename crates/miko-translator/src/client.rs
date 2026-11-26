@@ -106,6 +106,9 @@ impl RustTranslator {
 
         let http_cloud = reqwest::Client::builder()
             .timeout(Duration::from_secs(45))
+            .connect_timeout(Duration::from_secs(12))
+            .pool_idle_timeout(Duration::from_secs(20))
+            .tcp_keepalive(Duration::from_secs(15))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -172,26 +175,51 @@ impl RustTranslator {
             ]
         });
 
-        let mut req = self.http_cloud.post(endpoint).json(&body);
-        if !api_key.trim().is_empty() {
-            req = req.bearer_auth(api_key.trim());
+        let mut last_err: Option<TranslatorError> = None;
+        for attempt in 0..2usize {
+            if attempt > 0 {
+                tokio::time::sleep(Duration::from_millis(500)).await;
+            }
+            let mut req = self.http_cloud.post(&endpoint).json(&body);
+            if !api_key.trim().is_empty() {
+                req = req.bearer_auth(api_key.trim());
+            }
+            let resp = match req.send().await {
+                Ok(r) => r,
+                Err(e) => {
+                    last_err = Some(TranslatorError::Http(e));
+                    continue;
+                }
+            };
+            let status = resp.status().as_u16();
+            if !resp.status().is_success() {
+                let txt = resp.text().await.unwrap_or_default();
+                let is_transient = matches!(status, 408 | 429 | 500 | 502 | 503 | 504);
+                let err = TranslatorError::ApiStatus { status, body: txt };
+                if is_transient && attempt == 0 {
+                    last_err = Some(err);
+                    continue;
+                }
+                return Err(err);
+            }
+            let val: Value = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    last_err = Some(TranslatorError::Http(e));
+                    continue;
+                }
+            };
+            let content = val["choices"][0]["message"]["content"]
+                .as_str()
+                .unwrap_or("")
+                .to_string();
+            // Если ответ вообще не похож на JSON-объект и содержит цензурный отказ — сигнализируем Refused без размыкания circuit breaker!
+            if (!content.contains('{') || !content.contains('}')) && is_refusal_response(&content) {
+                return Err(TranslatorError::Refused);
+            }
+            return Ok(content);
         }
-        let resp = req.send().await?;
-        let status = resp.status().as_u16();
-        if !resp.status().is_success() {
-            let txt = resp.text().await.unwrap_or_default();
-            return Err(TranslatorError::ApiStatus { status, body: txt });
-        }
-        let val: Value = resp.json().await?;
-        let content = val["choices"][0]["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string();
-        // Если ответ вообще не похож на JSON-объект и содержит цензурный отказ — сигнализируем Refused без размыкания circuit breaker!
-        if (!content.contains('{') || !content.contains('}')) && is_refusal_response(&content) {
-            return Err(TranslatorError::Refused);
-        }
-        Ok(content)
+        Err(last_err.unwrap_or(TranslatorError::UnavailableOrRefused))
     }
 
     async fn call_ollama_chat(

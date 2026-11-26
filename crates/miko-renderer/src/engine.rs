@@ -1,5 +1,6 @@
 use crate::layout::{
-    harmonize_page_font_sizes, solve_bubble_layout_with_options, BubbleLayout,
+    classify_bubble_role, compute_page_target_base_fs, harmonize_page_roles,
+    solve_bubble_layout_anchored, BubbleLayout, BubbleTextRole, PageHarmonizeInput,
 };
 use crate::painter::{
     check_text_lines_wall_contact, draw_text_line_scaled, measure_text_width_scaled,
@@ -270,8 +271,20 @@ fn build_cavity_mask(
                 continue;
             }
 
+            // Выбираем ось шва по нормированному смещению относительно средних габаритов двух блоков,
+            // чтобы высокие соседние колонки со сдвигом по высоте (`015.webp #5/#6`: dx=99, dy=109, но w~130, h~300)
+            // разрезались ВЕРТИКАЛЬНЫМ швом `seam_x`, а не рубились пополам по горизонтали!
+            let self_w = (self_anchor[2] - self_anchor[0]).max(16) as f32;
+            let self_h = (self_anchor[3] - self_anchor[1]).max(16) as f32;
+            let other_w = (ob[2] - ob[0]).max(16) as f32;
+            let other_h = (ob[3] - ob[1]).max(16) as f32;
+            let avg_w = (self_w + other_w) * 0.5;
+            let avg_h = (self_h + other_h) * 0.5;
+            let norm_dx = (dx as f32) / avg_w;
+            let norm_dy = (dy as f32) / avg_h;
+
             let mut saved_mask = mask.clone();
-            if dy >= dx {
+            if norm_dy >= norm_dx {
                 if other_cy > self_cy {
                     let seam_y = ((self_anchor[3] + ob[1]) / 2).clamp(y1, y2);
                     for py in seam_y..y2 {
@@ -356,8 +369,15 @@ impl RustRendererEngine {
         }
 
         let t_layout = Instant::now();
+        let anchor_fs = compute_page_target_base_fs(
+            cleaned_img.width(),
+            cleaned_img.height(),
+            opts.min_font_size,
+            opts.max_font_size,
+        );
+        let page_area = (iw.max(1) as usize) * (ih.max(1) as usize);
         let mut prepared: Vec<PreparedBlock> = Vec::new();
-        let mut raw_sizes: Vec<(usize, i32, usize, bool)> = Vec::new();
+        let mut harm_inputs: Vec<PageHarmonizeInput> = Vec::new();
 
         for (idx, blk) in blocks.iter().enumerate() {
             if blk.is_deleted {
@@ -449,25 +469,48 @@ impl RustRendererEngine {
             if formatted.is_empty() {
                 continue;
             }
+            let role = classify_bubble_role(&formatted, &blk.style_preset, cw, ch, blk.is_free_text);
             let font = self.resolve_block_font(blk, opts, &formatted)?;
             formatted = sanitize_text_for_font(&font, &formatted);
             let allow_emergency =
                 blk.overflow_mode.as_deref().unwrap_or(&opts.overflow_mode) != "overflow";
-            let layout = solve_bubble_layout_with_options(
+
+            let cavity_area = cavity.iter().filter(|&&v| v > 0).count();
+            // В Проходе 1 сразу ограничиваем верхний поиск разумным потолком роли, а воздух требуем выше anchor_fs
+            let pass1_max_fs = match role {
+                BubbleTextRole::Dialogue => (anchor_fs + 3).min(opts.max_font_size),
+                BubbleTextRole::Shout => opts.max_font_size,
+                BubbleTextRole::Aside => anchor_fs.min(opts.max_font_size),
+            }
+            .max(opts.min_font_size);
+
+            let comfort_ref = match role {
+                BubbleTextRole::Shout => Some(anchor_fs + 2),
+                _ => Some(anchor_fs),
+            };
+
+            let layout = solve_bubble_layout_anchored(
                 &formatted,
                 &cavity,
                 cw,
                 ch,
                 opts.min_font_size,
-                opts.max_font_size,
+                pass1_max_fs,
                 blk.font_size,
+                comfort_ref,
                 allow_emergency,
                 |s, fs, sx| measure_text_width_scaled(&font, fs, sx, s),
             );
-            let is_fixed = blk.font_size.is_some() || blk.is_free_text;
+            let is_fixed = blk.font_size.is_some();
             let char_cnt = formatted.chars().count();
-            let pos = prepared.len();
-            raw_sizes.push((pos, layout.font_size, char_cnt, is_fixed));
+            harm_inputs.push(PageHarmonizeInput {
+                raw_fs: layout.font_size,
+                chars: char_cnt,
+                is_fixed,
+                role,
+                cavity_area,
+                cav_h: ch,
+            });
             prepared.push(PreparedBlock {
                 blk_idx: idx,
                 rect,
@@ -481,22 +524,36 @@ impl RustRendererEngine {
             });
         }
 
-        // Проход 2: гармонизация кеглей на уровне страницы
-        let harmonized = harmonize_page_font_sizes(&raw_sizes);
+        // Проход 2: гармонизация кеглей вокруг базового размера страницы с учётом роли (диалог vs крик vs шёпот)
+        let harmonized = harmonize_page_roles(
+            &harm_inputs,
+            anchor_fs,
+            page_area,
+            ih.max(1) as usize,
+            opts.min_font_size,
+            opts.max_font_size,
+        );
         for (pos, item) in prepared.iter_mut().enumerate() {
             let target_fs = harmonized[pos];
-            if !item.is_fixed && target_fs != item.layout.font_size {
+            if !item.is_fixed && target_fs < item.layout.font_size {
                 let blk_ref = &blocks[item.blk_idx];
                 let allow_emergency =
                     blk_ref.overflow_mode.as_deref().unwrap_or(&opts.overflow_mode) != "overflow";
-                item.layout = solve_bubble_layout_with_options(
+                let comfort_ref = match harm_inputs[pos].role {
+                    BubbleTextRole::Shout => Some(anchor_fs + 2),
+                    _ => Some(anchor_fs),
+                };
+                // Пересчитываем вёрстку с верхним пределом `target_fs` (а НЕ `fixed_fs`), чтобы сохранялись
+                // оптимальное сжатие и центровка по хордам без принудительного выхода за стенки!
+                item.layout = solve_bubble_layout_anchored(
                     &item.formatted,
                     &item.cavity,
                     item.cw,
                     item.ch,
                     opts.min_font_size,
                     target_fs,
-                    Some(target_fs),
+                    None,
+                    comfort_ref,
                     allow_emergency,
                     |s, fs, sx| measure_text_width_scaled(&item.font, fs, sx, s),
                 );
@@ -539,9 +596,12 @@ impl RustRendererEngine {
                     let cxj = (prepared[j].rect[0] + prepared[j].layout.center_xy[0]) as f32;
                     let cyj = (prepared[j].rect[1] + prepared[j].layout.center_xy[1]) as f32;
 
-                    let ov_x = (wi + wj + 4.0) - (cxi - cxj).abs();
+                    let abs_dx = (cxi - cxj).abs();
+                    let ov_x = (wi + wj) - abs_dx;
                     let ov_y = (hi + hj + 4.0) - (cyi - cyj).abs();
-                    if ov_x > 0.0 && ov_y > 0.0 {
+                    // Раздвигаем по вертикали только реально накладывающиеся друг над другом текстовые блоки,
+                    // не трогая стоящие рядом бок о бок колонки при касании краёв!
+                    if ov_x > 6.0 && abs_dx < (wi + wj) * 0.72 && ov_y > 0.0 {
                         let push = ((ov_y * 0.5).ceil() as i32).max(2);
                         let (yi_top, yi_bot) =
                             cavity_y_bounds(&prepared[i].cavity, prepared[i].cw, prepared[i].ch);
