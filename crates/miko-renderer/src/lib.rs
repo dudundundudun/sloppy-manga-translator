@@ -6,11 +6,13 @@ pub mod typography;
 pub use engine::{RenderOptions, RenderPageResult, RenderTimings, RendererError, RustRendererEngine};
 pub use layout::{
     compute_scanline_chords, find_optimal_box_center, harmonize_page_font_sizes,
-    solve_bubble_layout, solve_bubble_layout_scaled, BubbleLayout,
+    solve_bubble_layout, solve_bubble_layout_scaled, solve_bubble_layout_with_options,
+    BubbleLayout,
 };
 pub use painter::{
-    draw_text_line, draw_text_line_scaled, measure_text_width, measure_text_width_scaled,
-    parse_hex_color, resolve_font_for_text, FontCache,
+    check_text_lines_wall_contact, draw_text_line, draw_text_line_scaled, measure_text_width,
+    measure_text_width_scaled, parse_hex_color, resolve_font_for_text, sanitize_text_for_font,
+    FontCache,
 };
 pub use typography::{
     auto_diamond_wrap_lines, compact_scream_for_narrow_bubble, format_comic_typography,
@@ -22,6 +24,7 @@ use std::path::Path;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FontInfo {
+    pub id: String,
     pub name: String,
     pub filename: String,
     pub path: String,
@@ -57,6 +60,7 @@ pub fn list_available_fonts(fonts_dir: &Path) -> Vec<FontInfo> {
             .unwrap_or(&filename)
             .to_string();
         out.push(FontInfo {
+            id: filename.clone(),
             name,
             filename,
             path: p.to_string_lossy().to_string(),
@@ -338,5 +342,148 @@ mod tests {
             fs4 >= 17,
             "expected healthy font size >= 17px on 014.webp #4 regression, got {fs4}px"
         );
+    }
+
+    #[test]
+    fn test_asymmetric_conjoined_oval_no_wall_overflow() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let mut img = image::RgbImage::from_pixel(320, 280, image::Rgb([245, 245, 245]));
+        // Сдвоенный асимметричный баббл: левый овал [20..150, 50..255], правый овал [135..300, 15..220]
+        // с открытым белым перешейком посередине и чёрной стенкой [10,10,10] по периметру.
+        let mut wall_pixels: Vec<(u32, u32)> = Vec::new();
+        for y in 0..280u32 {
+            for x in 0..320u32 {
+                let d1 = ((x as f32 - 85.0) / 62.0).powi(2) + ((y as f32 - 152.0) / 100.0).powi(2);
+                let d2 = ((x as f32 - 218.0) / 78.0).powi(2) + ((y as f32 - 118.0) / 98.0).powi(2);
+                let in_union = d1 <= 1.0 || d2 <= 1.0;
+                if in_union {
+                    let is_inner = d1 <= 0.90 || d2 <= 0.90;
+                    if is_inner {
+                        img.put_pixel(x, y, image::Rgb([255, 255, 255]));
+                    } else {
+                        img.put_pixel(x, y, image::Rgb([10, 10, 10]));
+                        wall_pixels.push((x, y));
+                    }
+                }
+            }
+        }
+
+        let mut blocks = vec![
+            TextBlock {
+                id: 1,
+                bbox: [20, 50, 155, 255],
+                text_bbox: Some([42, 80, 132, 225]),
+                bubble_polygon: Some(vec![[20, 50], [155, 50], [155, 255], [20, 255]]),
+                original_text: "未来から来たのか知らないが".into(),
+                translated_text: "I don't know if you're from the future, but.".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 2,
+                bbox: [140, 15, 300, 220],
+                text_bbox: Some([160, 45, 280, 185]),
+                bubble_polygon: Some(vec![[140, 15], [300, 15], [300, 220], [140, 220]]),
+                original_text: "目の前に現れたんだ".into(),
+                translated_text: "Well, you did appear right in front of me.".into(),
+                ..Default::default()
+            },
+        ];
+
+        let res = engine
+            .render_page(&img, &mut blocks, &RenderOptions::default())
+            .expect("render asymmetric ovals");
+        assert_eq!(res.blocks_rendered, 2);
+
+        // Проверяем, что левая чёрная стенка и верхняя дуга не перетёрты текстом и не получили посторонней обводки
+        let mut damaged = 0usize;
+        for &(wx, wy) in &wall_pixels {
+            let p = res.rendered.get_pixel(wx, wy);
+            if p[0] > 40 || p[1] > 40 || p[2] > 40 {
+                damaged += 1;
+            }
+        }
+        assert_eq!(
+            damaged, 0,
+            "expected zero wall pixels damaged by text/halo in asymmetric oval, got {damaged}"
+        );
+    }
+
+    #[test]
+    fn test_adaptive_white_halo_when_text_touches_wall() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let mut img = image::RgbImage::from_pixel(140, 140, image::Rgb([15, 15, 15]));
+        // Узкий белый баббл [20..120, 25..115] с чёрной стенкой вокруг
+        for y in 28..112u32 {
+            for x in 24..116u32 {
+                img.put_pixel(x, y, image::Rgb([255, 255, 255]));
+            }
+        }
+
+        // Принудительно ставим слишком крупный кегль 28px, чтобы текст точно задел чёрную стенку по краям!
+        let mut blocks = vec![TextBlock {
+            id: 1,
+            bbox: [20, 25, 120, 115],
+            bubble_polygon: Some(vec![[24, 28], [116, 28], [116, 112], [24, 112]]),
+            font_size: Some(28),
+            original_text: "テスト".into(),
+            translated_text: "UNBELIEVABLE!".into(),
+            ..Default::default()
+        }];
+
+        let res = engine
+            .render_page(&img, &mut blocks, &RenderOptions::default())
+            .expect("render forced overflow with halo");
+
+        // На чёрной рамке слева/справа от баббла (x < 24 или x >= 116) должны появиться белые пиксели защитного ореола!
+        let mut halo_on_wall = 0usize;
+        for y in 25..115u32 {
+            for x in 0..24u32 {
+                if res.rendered.get_pixel(x, y)[0] > 180 {
+                    halo_on_wall += 1;
+                }
+            }
+            for x in 116..140u32 {
+                if res.rendered.get_pixel(x, y)[0] > 180 {
+                    halo_on_wall += 1;
+                }
+            }
+        }
+        assert!(
+            halo_on_wall >= 15,
+            "expected adaptive white halo on dark wall when text overflows, got {halo_on_wall} px"
+        );
+    }
+
+    #[test]
+    fn test_cc_wild_words_em_dash_fallback() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let font_path = fonts_dir.join("cc-wild-words-roman.ttf");
+        if !font_path.is_file() {
+            return;
+        }
+        let cache = FontCache::new();
+        let font = cache.load_font(&font_path).expect("load cc-wild-words");
+        let sanitized = sanitize_text_for_font(&font, "Wait—what… ’tis “fine”");
+        assert!(!sanitized.contains('—'), "em-dash should fallback: {sanitized}");
+        assert!(sanitized.contains("--"), "expected '--' fallback: {sanitized}");
     }
 }

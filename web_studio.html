@@ -3296,7 +3296,7 @@
       outline: 2px solid var(--sakura);
       outline-offset: 2px;
     }
-    @media (prefers-reduced-motion: reduce) {
+      @media (prefers-reduced-motion: reduce) {
       *,
       *::before,
       *::after {
@@ -3305,6 +3305,211 @@
         transition-duration: 0.01ms !important;
         scroll-behavior: auto !important;
       }
+    }
+
+    /* ==================== PIXEL-ART KITSUNE SHIMEJI MASCOT ==================== */
+    .topbar-fox-btn {
+      background: rgba(251, 191, 36, 0.10);
+      color: #fde68a;
+      border: 1px solid rgba(251, 191, 36, 0.30);
+      border-radius: 999px;
+      padding: 4px 10px;
+      font-size: 11.5px;
+      font-weight: 700;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      transition: background 0.16s ease, border-color 0.16s ease, color 0.16s ease;
+    }
+    .topbar-fox-btn:hover {
+      background: rgba(251, 191, 36, 0.20);
+      border-color: rgba(251, 191, 36, 0.65);
+      color: #fffbeb;
+    }
+    .topbar-fox-btn.inactive {
+      background: rgba(255, 255, 255, 0.04);
+      color: var(--text-muted);
+      border-color: var(--border-subtle);
+    }
+
+    .mascot-avatar-wrap img.pixel-art-img {
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+    }
+
+    .pixel-mascot-layer {
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      z-index: 44;
+      overflow: hidden;
+    }
+    .pixel-mascot-layer.hidden {
+      display: none !important;
+    }
+
+    .pixel-mascot-actor {
+      position: absolute;
+      left: 0;
+      top: 0;
+      width: 96px;
+      height: 96px;
+      pointer-events: none;
+      will-change: transform;
+      user-select: none;
+      -webkit-user-drag: none;
+      transition: opacity 0.18s ease;
+    }
+    .pixel-mascot-actor.work-pass-through {
+      opacity: 0.34;
+    }
+    .pixel-mascot-actor.work-pass-through .pixel-mascot-hitbox {
+      pointer-events: none !important;
+    }
+
+    .pixel-mascot-hitbox {
+      position: absolute;
+      left: 8px;
+      top: 10px;
+      right: 8px;
+      bottom: 4px;
+      pointer-events: auto;
+      cursor: grab;
+      touch-action: none;
+    }
+    .pixel-mascot-actor.dragging .pixel-mascot-hitbox {
+      cursor: grabbing;
+    }
+
+    .pixel-mascot-canvas {
+      width: 100%;
+      height: 100%;
+      display: block;
+      image-rendering: pixelated;
+      image-rendering: crisp-edges;
+      pointer-events: none;
+      filter: drop-shadow(0 4px 8px rgba(8, 5, 18, 0.45));
+      transform-origin: 50% 92%;
+      transition: transform 0.14s cubic-bezier(0.16, 1, 0.3, 1);
+    }
+
+    .pixel-mascot-speech {
+      position: absolute;
+      left: 50%;
+      bottom: calc(100% - 6px);
+      transform: translate3d(-50%, 6px, 0);
+      width: max-content;
+      max-width: 248px;
+      padding: 6px 10px;
+      border-radius: 10px;
+      background: rgba(23, 19, 38, 0.96);
+      border: 1px solid rgba(251, 191, 36, 0.44);
+      box-shadow: 0 10px 24px rgba(6, 4, 14, 0.62);
+      color: var(--text-primary);
+      font-size: 11.5px;
+      line-height: 1.35;
+      text-align: center;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.18s cubic-bezier(0.16, 1, 0.3, 1), transform 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+      z-index: 2;
+    }
+    .pixel-mascot-speech.visible {
+      opacity: 1;
+      transform: translate3d(-50%, 0, 0);
+    }
+    .pixel-mascot-speech.flip-below {
+      bottom: auto;
+      top: calc(100% + 2px);
+    }
+    .pixel-mascot-speech.align-left {
+      left: 8px;
+      transform: translate3d(0, 6px, 0);
+    }
+    .pixel-mascot-speech.align-left.visible {
+      transform: translate3d(0, 0, 0);
+    }
+    .pixel-mascot-speech.align-right {
+      left: auto;
+      right: 8px;
+      transform: translate3d(0, 6px, 0);
+    }
+    .pixel-mascot-speech.align-right.visible {
+      transform: translate3d(0, 0, 0);
+    }
+
+    .pixel-mascot-fx {
+      position: absolute;
+      inset: -16px;
+      pointer-events: none;
+      overflow: visible;
+    }
+    .kitsune-px-particle {
+      position: absolute;
+      font-size: 12px;
+      font-weight: 800;
+      line-height: 1;
+      pointer-events: none;
+      animation: kitsuneFloatUp 0.95s cubic-bezier(0.16, 1, 0.3, 1) forwards;
+    }
+    @keyframes kitsuneFloatUp {
+      0% { opacity: 1; transform: translate3d(0, 0, 0) scale(0.8); }
+      100% { opacity: 0; transform: translate3d(var(--kx, 0px), -28px, 0) scale(1.15); }
+    }
+
+    .kitsune-context-menu {
+      position: fixed;
+      min-width: 214px;
+      padding: 6px;
+      border-radius: 12px;
+      background: rgba(23, 19, 38, 0.97);
+      border: 1px solid rgba(251, 191, 36, 0.42);
+      box-shadow: 0 14px 32px rgba(5, 3, 12, 0.72);
+      z-index: 58;
+      display: none;
+      flex-direction: column;
+      gap: 2px;
+      backdrop-filter: blur(14px);
+    }
+    .kitsune-context-menu.open {
+      display: flex;
+    }
+    .kitsune-menu-header {
+      font-size: 11px;
+      font-weight: 700;
+      color: #fde68a;
+      padding: 4px 8px 5px 8px;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+      margin-bottom: 2px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .kitsune-menu-btn {
+      background: transparent;
+      color: var(--text-primary);
+      border: 1px solid transparent;
+      border-radius: 8px;
+      padding: 6px 9px;
+      font-size: 12px;
+      font-weight: 600;
+      text-align: left;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      transition: background 0.12s ease, border-color 0.12s ease;
+    }
+    .kitsune-menu-btn:hover {
+      background: rgba(251, 191, 36, 0.15);
+      border-color: rgba(251, 191, 36, 0.35);
+      color: #fffbeb;
+    }
+    .kitsune-menu-sep {
+      height: 1px;
+      background: rgba(255, 255, 255, 0.08);
+      margin: 3px 4px;
     }
   </style>
 </head>
@@ -3321,6 +3526,10 @@
         <span>Miko-chan Manga Studio</span>
         <span style="font-size:11px; color:var(--mint); font-weight:700;">v6.1.0 UX</span>
       </div>
+      <button type="button" class="topbar-fox-btn" id="btn-topbar-fox" onclick="onTopbarFoxClick(event)" oncontextmenu="onTopbarFoxContext(event)" title="Пиксельная лисичка-помощница Сэнко-Мико! ЛКМ — позвать / показать, ПКМ — меню действий и угощений">
+        <span>🦊</span>
+        <span id="topbar-fox-lbl">Лисичка</span>
+      </button>
     </div>
 
     <div class="lang-bar">
@@ -3371,7 +3580,7 @@
     <div class="bento-left" id="bento-left" role="complementary" aria-label="Список страниц и управление">
       <div class="bento-card mascot-card compact-mascot" id="mascot-card" style="display:none;">
         <div class="mascot-avatar-wrap">
-          <img src="/mascot.png" alt="Miko-chan" onerror="this.style.display='none'" />
+          <img src="/mascot_fox.png" class="pixel-art-img" alt="Miko-chan" onerror="this.classList.remove('pixel-art-img'); this.onerror=function(){this.style.display='none';}; this.src='/mascot.png';" />
         </div>
         <div class="mascot-dialog">
           <div class="mascot-name">
@@ -3499,6 +3708,32 @@
       </div>
     </div>
     <div id="miko-mini-toast" class="miko-mini-toast"></div>
+
+    <!-- Interactive Pixel-Art Kitsune Mascot Overlay (Shimeji) -->
+    <div id="pixel-mascot-layer" class="pixel-mascot-layer" aria-hidden="true">
+      <div id="pixel-mascot-actor" class="pixel-mascot-actor">
+        <div id="pixel-mascot-speech" class="pixel-mascot-speech"></div>
+        <div id="pixel-mascot-fx" class="pixel-mascot-fx"></div>
+        <canvas id="pixel-mascot-canvas" class="pixel-mascot-canvas" width="96" height="96"></canvas>
+        <div id="pixel-mascot-hitbox" class="pixel-mascot-hitbox" title="Лисичка Сэнко-Мико · Клик по ушкам — погладить, клик по хвостику — мофу-мофу, перетаскивание — перенести, ПКМ — меню!"></div>
+      </div>
+    </div>
+
+    <div id="kitsune-context-menu" class="kitsune-context-menu" role="menu">
+      <div class="kitsune-menu-header">
+        <span>🦊 Лисичка Сэнко-Мико</span>
+        <span id="kitsune-mood-badge" style="color:var(--mint); font-size:10px;">Рядом~</span>
+      </div>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('eat')">🍖 Угостить абурааге (тофу)</button>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('read')">📖 Почитать мангу в очках</button>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('cook')">🍲 Приготовить вкусняшку</button>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('sweep')">🧹 Прибраться метёлочкой</button>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('mofu')">✨ Попушить хвостик (Мофу!)</button>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('sleep')">💤 Уложить спать на хвосте</button>
+      <div class="kitsune-menu-sep"></div>
+      <button type="button" class="kitsune-menu-btn" id="kitsune-menu-mode-btn" onclick="triggerKitsuneMenuAction('toggle_mode')">🐾 Режим: Гуляет и лазит</button>
+      <button type="button" class="kitsune-menu-btn" onclick="triggerKitsuneMenuAction('hide')" style="color:#fda4af;">🙈 Спрятать лисичку</button>
+    </div>
 
     <!-- Draggable Splitter for Left Sidebar -->
     <div class="panel-splitter v-splitter" id="left-sidebar-splitter" role="separator" aria-orientation="vertical" tabindex="0" title="Потяните, чтобы изменить ширину левой панели"></div>
@@ -3663,7 +3898,8 @@
         </div>
 
         <div class="scanlation-font-hint-banner" id="drawer-font-hint-banner">
-          <span>💡 <b>Сканлейт-шрифты:</b> по умолчанию используется системный комиксный шрифт <b>Comic Sans MS Bold</b>. Для профессиональной сканлейт-верстки рекомендуем положить в папку <code>fonts/</code>: <b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>, <b>Chinacat</b>.</span>
+          <span>💡 <b>Сканлейт-шрифты:</b> по умолчанию используется системный комиксный шрифт <b>Comic Sans MS Bold</b>. Для профессиональной сканлейт-верстки рекомендуем скачать кириллический набор или положить свои шрифты в <code>fonts/</code>.</span>
+          <button type="button" class="romaji-copy-btn" onclick="installRecommendedFonts()" title="Автоматически скачать открытые манга-шрифты (RU/EN) в fonts/">⬇️ Скачать шрифты</button>
           <button type="button" class="romaji-copy-btn" onclick="this.parentElement.style.display='none'" title="Скрыть подсказку">✕</button>
         </div>
         <div class="blocks-scroll-area" id="blocks-container">
@@ -4220,7 +4456,23 @@
               <div class="section-box" data-search-tab="tab-font" data-search-keywords="шрифт размер заглавные кегль переполнение баббл верстка">
                 <div class="section-title">🔤 Шрифт, кегль и переполнение бабблов</div>
                 <div class="scanlation-font-hint-banner" id="settings-font-hint-banner" style="margin:0; display:flex;">
-                  <span>💡 Положите <code>.ttf</code> сканлейт-шрифты (<b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>) в папку <code>fonts/</code>; иначе используется системный Comic Sans MS Bold.</span>
+                  <span>💡 Положите <code>.ttf</code> сканлейт-шрифты (<b>CC Wild Words</b>, <b>Anime Ace v05</b>, <b>Manga Temple</b>) в папку <code>fonts/</code> или скачайте готовый набор ниже.</span>
+                </div>
+                <div id="font-manager-box" style="display:flex; flex-direction:column; gap:8px; padding:10px 12px; border-radius:10px; border:1px solid var(--border-subtle, rgba(255,255,255,0.1)); background:rgba(255,255,255,0.03);">
+                  <div id="font-manager-status" style="font-size:12px; color:var(--text-secondary);">Шрифты: проверяю папку fonts/...</div>
+                  <div style="display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+                    <button type="button" class="pill-btn" id="btn-install-fonts" onclick="installRecommendedFonts()" title="Скачать открытые комиксные шрифты с кириллицей и латиницей в папку fonts/">
+                      ⬇️ Скачать набор манга-шрифтов (RU/EN)
+                    </button>
+                    <button type="button" class="pill-btn" id="btn-upload-fonts" onclick="document.getElementById('inp-upload-font').click()" title="Загрузить свои файлы шрифтов (.ttf / .otf) в папку fonts/">
+                      📁 Добавить свой .ttf / .otf
+                    </button>
+                    <input type="file" id="inp-upload-font" accept=".ttf,.otf" multiple style="display:none" onchange="uploadCustomFonts(this.files); this.value='';" />
+                  </div>
+                  <label style="display:flex; align-items:center; gap:6px; font-size:12px; color:var(--text-secondary); cursor:pointer;">
+                    <input id="chk-install-fonts-win" type="checkbox" />
+                    <span>Установить также в Windows (для текущего пользователя, без прав администратора)</span>
+                  </label>
                 </div>
                 <div class="form-grid">
                   <div class="field-box">
@@ -4428,6 +4680,32 @@
                   </div>
                   <input id="chk-ui-enable-mask-tools" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
                 </label>
+
+                <label class="toggle-row">
+                  <div class="toggle-row-text">
+                    <span class="toggle-row-title">🦊 Пиксельная лисичка-маскот в окне студии (Shimeji)</span>
+                    <span class="toggle-row-sub">Гуляет по панелям, лазит по стенкам, читает мангу в очках, готовит и реагирует на клик по хвостику (ПКМ по ней — меню)</span>
+                  </div>
+                  <input id="chk-ui-pixel-mascot" type="checkbox" checked onchange="onUiSettingCheckboxChange()" />
+                </label>
+
+                <div class="toggle-row" id="row-ui-pixel-mascot-opts" style="cursor:default; flex-wrap:wrap; gap:10px;">
+                  <div class="toggle-row-text" style="min-width:200px; flex:1;">
+                    <span class="toggle-row-title">🐾 Характер и размер пиксельной лисички</span>
+                    <span class="toggle-row-sub">Перетаскивайте её мышкой на любую панель; во время кисти (B) или рамок она пропускает клики сквозь себя</span>
+                  </div>
+                  <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+                    <select id="sel-ui-pixel-mascot-mode" class="lang-select" style="background:var(--bg-bento-inner); border:1px solid var(--border-subtle); border-radius:8px; padding:5px 8px;" onchange="onPixelMascotOptionChange()">
+                      <option value="roam">🐾 Гуляет и лазит везде</option>
+                      <option value="calm">🛋 Спокойно сидит в уголке</option>
+                    </select>
+                    <select id="sel-ui-pixel-mascot-scale" class="lang-select" style="background:var(--bg-bento-inner); border:1px solid var(--border-subtle); border-radius:8px; padding:5px 8px;" onchange="onPixelMascotOptionChange()">
+                      <option value="72">Мини (72px)</option>
+                      <option value="96" selected>Стандарт (96px)</option>
+                      <option value="120">Крупная (120px)</option>
+                    </select>
+                  </div>
+                </div>
 
                 <label class="toggle-row">
                   <div class="toggle-row-text">
@@ -4749,6 +5027,9 @@
       auto_save_delay_ms: 2500,       // 2.5 seconds idle delay
       show_mascot: false,             // Hidden by default so page list gets maximum height
       compact_mascot: true,           // Compact Miko-chan card when shown
+      show_pixel_mascot: true,        // Roaming pixel-art Kitsune Shimeji companion
+      pixel_mascot_mode: "roam",      // 'roam' | 'calm'
+      pixel_mascot_scale: 96,         // 72 | 96 | 120 px
       enable_mask_tools: true,        // Reworked 60 FPS live mask brush & dilate tools (ON by default)
       settings_modal_wide: false,     // Expanded settings modal mode
       right_panel_width: 460,
@@ -4916,6 +5197,25 @@
       const chkMascot = document.getElementById("chk-ui-compact-mascot");
       if (chkMascot) chkMascot.checked = Boolean(uiSettings.show_mascot);
 
+      const pxMascotOn = uiSettings.show_pixel_mascot !== false;
+      const chkPxMascot = document.getElementById("chk-ui-pixel-mascot");
+      if (chkPxMascot) chkPxMascot.checked = pxMascotOn;
+      const selPxMode = document.getElementById("sel-ui-pixel-mascot-mode");
+      if (selPxMode) selPxMode.value = uiSettings.pixel_mascot_mode === "calm" ? "calm" : "roam";
+      const selPxScale = document.getElementById("sel-ui-pixel-mascot-scale");
+      if (selPxScale) selPxScale.value = String([72, 96, 120].includes(Number(uiSettings.pixel_mascot_scale)) ? Number(uiSettings.pixel_mascot_scale) : 96);
+      const rowPxOpts = document.getElementById("row-ui-pixel-mascot-opts");
+      if (rowPxOpts) rowPxOpts.style.opacity = pxMascotOn ? "1" : "0.55";
+      const topFoxBtn = document.getElementById("btn-topbar-fox");
+      if (topFoxBtn) {
+        topFoxBtn.classList.toggle("inactive", !pxMascotOn);
+        const foxLbl = document.getElementById("topbar-fox-lbl");
+        if (foxLbl) foxLbl.textContent = pxMascotOn ? "Лисичка" : "Позвать";
+      }
+      if (typeof syncKitsuneMascotFromSettings === "function") {
+        syncKitsuneMascotFromSettings();
+      }
+
       const maskToolsOn = Boolean(uiSettings.enable_mask_tools);
       const chkMaskTools = document.getElementById("chk-ui-enable-mask-tools");
       if (chkMaskTools) chkMaskTools.checked = maskToolsOn;
@@ -4987,6 +5287,8 @@
       const chkAutoSaveBox = document.getElementById("chk-ui-auto-save-box");
       if (chkAutoSaveBox) uiSettings.auto_save_after_idle = chkAutoSaveBox.checked;
       uiSettings.show_mascot = document.getElementById("chk-ui-compact-mascot").checked;
+      const chkPxMascot = document.getElementById("chk-ui-pixel-mascot");
+      if (chkPxMascot) uiSettings.show_pixel_mascot = chkPxMascot.checked;
       const chkMask = document.getElementById("chk-ui-enable-mask-tools");
       if (chkMask) uiSettings.enable_mask_tools = chkMask.checked;
       if (!uiSettings.inline_bubble_popup) {
@@ -5097,7 +5399,11 @@
     function sayMiko(text) {
       const el = document.getElementById("miko-speech");
       if (el) el.textContent = text;
-      if (!uiSettings.show_mascot && text) {
+      const pxMascotVisible = uiSettings.show_pixel_mascot !== false && typeof window.notifyKitsuneSayMiko === "function";
+      if (pxMascotVisible && text) {
+        window.notifyKitsuneSayMiko(text);
+      }
+      if (!uiSettings.show_mascot && !pxMascotVisible && text) {
         const msg = String(text).trim();
         if (
           msg &&
@@ -7249,16 +7555,8 @@
           });
           onRecommendedPullSelectChange();
         }
-        if (Array.isArray(data.available_fonts)) {
-          availableFonts = data.available_fonts;
-          populateFontFamilySelect(document.getElementById("popup-font-family"), null);
-        }
-        if (data.font_status && typeof data.font_status === "object") {
-          const hasCustom = Boolean(data.font_status.has_custom_fonts);
-          const drBanner = document.getElementById("drawer-font-hint-banner");
-          const stBanner = document.getElementById("settings-font-hint-banner");
-          if (drBanner) drBanner.style.display = hasCustom ? "none" : "flex";
-          if (stBanner) stBanner.style.display = hasCustom ? "none" : "flex";
+        if (Array.isArray(data.available_fonts) || data.font_status) {
+          refreshFontSelectors(data.available_fonts || availableFonts, data.font_status || null);
         }
         let models = data.models || [];
         if (force) {
@@ -9132,6 +9430,125 @@
       selEl.innerHTML = optsHtml;
     }
 
+    function refreshFontSelectors(fonts, fontStatus) {
+      if (Array.isArray(fonts)) {
+        availableFonts = fonts;
+      }
+      const popFont = document.getElementById("popup-font-family");
+      if (popFont) {
+        populateFontFamilySelect(popFont, popFont.value || null);
+      }
+      document.querySelectorAll('select[id^="edit-font-family-"]').forEach(sel => {
+        populateFontFamilySelect(sel, sel.value || null);
+      });
+
+      const list = Array.isArray(availableFonts) ? availableFonts : [];
+      const hasCustom = fontStatus && typeof fontStatus === "object"
+        ? Boolean(fontStatus.has_custom_fonts)
+        : list.length > 0;
+      const hasCyr = fontStatus && typeof fontStatus === "object" && "has_cyrillic_font" in fontStatus
+        ? Boolean(fontStatus.has_cyrillic_font)
+        : false;
+      const showHint = !hasCustom || (fontStatus && "has_cyrillic_font" in fontStatus && !hasCyr);
+
+      const drBanner = document.getElementById("drawer-font-hint-banner");
+      const stBanner = document.getElementById("settings-font-hint-banner");
+      if (drBanner) drBanner.style.display = showHint ? "flex" : "none";
+      if (stBanner) stBanner.style.display = showHint ? "flex" : "none";
+
+      const statusEl = document.getElementById("font-manager-status");
+      if (statusEl) {
+        if (list.length === 0) {
+          statusEl.textContent = "Папка fonts/ пуста — используется системный шрифт Windows.";
+        } else {
+          const names = list.slice(0, 6).map(f => f.filename || f.name || f.id).join(", ");
+          const extra = list.length > 6 ? ` и ещё ${list.length - 6}` : "";
+          const cyrNote = ("has_cyrillic_font" in (fontStatus || {}))
+            ? (hasCyr ? " · Кириллица: ✅" : " · Кириллица: ⚠️ нет (нажмите скачать)")
+            : "";
+          statusEl.textContent = `Установлено шрифтов в fonts/: ${list.length} (${names}${extra})${cyrNote}`;
+        }
+      }
+    }
+
+    async function installRecommendedFonts() {
+      const btn = document.getElementById("btn-install-fonts");
+      const winChk = document.getElementById("chk-install-fonts-win");
+      const installWin = Boolean(winChk && winChk.checked);
+      if (btn) {
+        btn.disabled = true;
+        btn.textContent = "⏳ Скачиваю шрифты...";
+      }
+      try {
+        const res = await fetch("/fonts/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ install_windows_user: installWin })
+        });
+        const data = await res.json();
+        refreshFontSelectors(data.available_fonts, data.font_status);
+        const inst = Array.isArray(data.installed) ? data.installed.length : 0;
+        const skip = Array.isArray(data.skipped) ? data.skipped.length : 0;
+        const fail = Array.isArray(data.failed) ? data.failed.length : 0;
+        if (fail > 0 && inst === 0 && skip === 0) {
+          sayMiko(`Не удалось скачать шрифты: ${data.failed.join("; ")}`);
+        } else {
+          const winMsg = Array.isArray(data.windows_installed) && data.windows_installed.length
+            ? `, в Windows: ${data.windows_installed.length}`
+            : "";
+          sayMiko(`Шрифты готовы! Скачано: ${inst}, уже было: ${skip}${winMsg}.`);
+        }
+      } catch (e) {
+        sayMiko(`Ошибка загрузки шрифтов: ${e}`);
+      } finally {
+        if (btn) {
+          btn.disabled = false;
+          btn.textContent = "⬇️ Скачать набор манга-шрифтов (RU/EN)";
+        }
+      }
+    }
+
+    async function uploadCustomFonts(fileList) {
+      if (!fileList || !fileList.length) return;
+      const winChk = document.getElementById("chk-install-fonts-win");
+      const installWin = Boolean(winChk && winChk.checked);
+      let okCount = 0;
+      const errs = [];
+      for (const file of Array.from(fileList)) {
+        try {
+          const b64 = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(String(reader.result || ""));
+            reader.onerror = () => reject(reader.error || new Error("FileReader error"));
+            reader.readAsDataURL(file);
+          });
+          const res = await fetch("/fonts/upload", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              filename: file.name,
+              data_base64: b64,
+              install_windows_user: installWin
+            })
+          });
+          const data = await res.json();
+          if (!res.ok || data.status !== "ok") {
+            errs.push(`${file.name}: ${data.detail || res.status}`);
+          } else {
+            okCount += 1;
+            refreshFontSelectors(data.available_fonts, data.font_status);
+          }
+        } catch (err) {
+          errs.push(`${file.name}: ${err}`);
+        }
+      }
+      if (errs.length > 0) {
+        sayMiko(`Загружено шрифтов: ${okCount}. Ошибки: ${errs.join("; ")}`);
+      } else if (okCount > 0) {
+        sayMiko(`Добавлено шрифтов в fonts/: ${okCount}!`);
+      }
+    }
+
     const BG_STYLE_LABELS = {
       none: "Выкл",
       bubble: "🥚 Овал",
@@ -10193,6 +10610,9 @@
       updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
+      if (typeof window.triggerKitsuneAppEvent === "function") {
+        window.triggerKitsuneAppEvent("sweep", `Вжух-вжух! Вымела лишний шум (${removedCnt} шт.) со странички~ 🧹✨`);
+      }
       renderBboxPinsOnStage();
       sayMiko(`🧹 В 1 клик удалено ${removedCnt} лишних рамок (фон, вздохи, SFX и пустые)! Осталось диалогов: ${currentBlocks.length} (Ctrl+Z — вернуть)~ ✨`);
       await saveEditedPageTranslation({ isAuto: true });
@@ -10308,6 +10728,9 @@
       updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
+      if (typeof window.triggerKitsuneAppEvent === "function") {
+        window.triggerKitsuneAppEvent("sweep", `Вжух-вжух! Вымела лишний шум (${removedCnt} шт.) со странички~ 🧹✨`);
+      }
       renderBboxPinsOnStage();
       sayMiko(`С картинки полностью удалено пустых рамок: ${removedCnt} шт.! 🧹✨`);
       await saveEditedPageTranslation();
@@ -10338,6 +10761,9 @@
       updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
+      if (typeof window.triggerKitsuneAppEvent === "function") {
+        window.triggerKitsuneAppEvent("sweep", `Вжух-вжух! Вымела лишний шум (${removedCnt} шт.) со странички~ 🧹✨`);
+      }
       renderBboxPinsOnStage();
       sayMiko(`Полностью удалено ${removedCnt} рамок вне бабблов! Восстанавливаю чистый рисунок... 🎨`);
       await saveEditedPageTranslation();
@@ -10362,6 +10788,9 @@
       updateMergeButtonsUi();
       updateDrawerBadgeCount();
       renderBlocksEditor();
+      if (typeof window.triggerKitsuneAppEvent === "function") {
+        window.triggerKitsuneAppEvent("sweep", `Вжух-вжух! Вымела лишний шум (${removedCnt} шт.) со странички~ 🧹✨`);
+      }
       renderBboxPinsOnStage();
       sayMiko("Все рамки и переводы на этой странице полностью удалены — возвращаю чистый оригинал! 🖼✨");
       await saveEditedPageTranslation();
@@ -12886,6 +13315,9 @@
       const subBtn = document.getElementById("btn-contextual-page");
       subBtn.disabled = true;
       sayMiko(`Перевожу страницу «${selectedPage.rel_path}»... Секундочку~ ✍️✨`);
+      if (typeof window.triggerKitsuneAppEvent === "function") {
+        window.triggerKitsuneAppEvent("cook", "Колдую над страничкой, сейчас всё переведём~ 🍲✨", 6000);
+      }
 
       const payload = {
         file_path: selectedPage.source_path,
@@ -12930,6 +13362,9 @@
         renderBlocksEditor();
 
         sayMiko(`Готово за ${data.processing_time_sec}с! Найдено блоков: ${data.blocks_count}. Кликни по любому кружку #N на картинке или открой «✏️ Редактор», чтобы подправить текст~ ✨`);
+        if (typeof window.triggerKitsuneAppEvent === "function") {
+          window.triggerKitsuneAppEvent("celebrate", `Готово за ${data.processing_time_sec}с! Красота получилась~ 🦊🌸`);
+        }
         if (currentFolder) inspectCurrentFolder({ preserveCurrentSelection: true });
       } finally {
         subBtn.disabled = false;
@@ -13347,6 +13782,9 @@
           lastFolderPollCurrent = cur;
         }
         sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
+        if (typeof window.syncKitsuneJobStage === "function") {
+          window.syncKitsuneJobStage(st);
+        }
       } else {
         if (pollTimer) {
           clearInterval(pollTimer);
@@ -13360,6 +13798,9 @@
         isJobRunning = false;
         lastFolderPollCurrent = -1;
         updatePrimaryFolderButtonState();
+        if (wasRunning && typeof window.syncKitsuneJobStage === "function") {
+          window.syncKitsuneJobStage(st);
+        }
         if (wasRunning && currentFolder) {
           await inspectCurrentFolder({ preserveCurrentSelection: true });
         }
@@ -14168,6 +14609,830 @@
       sayMiko("Статистика кликов UX-телеметрии сброшена! Теперь записываем твои действия с чистого листа~ 🧹✨");
     }
 
+    // ==================== PIXEL-ART KITSUNE SHIMEJI ENGINE ====================
+    const KITSUNE_SPRITES_URI = "data:image/png;base64,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";
+
+    const KITSUNE_ANIMS = {
+      idle:   { row: 0,  frames: 4, ms: 280 },
+      walk:   { row: 1,  frames: 4, ms: 150 },
+      sit:    { row: 2,  frames: 4, ms: 330 },
+      climb:  { row: 3,  frames: 4, ms: 160 },
+      dangle: { row: 4,  frames: 4, ms: 135 },
+      read:   { row: 5,  frames: 4, ms: 320 },
+      cook:   { row: 6,  frames: 4, ms: 210 },
+      sweep:  { row: 7,  frames: 4, ms: 185 },
+      sleep:  { row: 8,  frames: 4, ms: 480 },
+      happy:  { row: 9,  frames: 4, ms: 165 },
+      mofu:   { row: 10, frames: 4, ms: 155 },
+      eat:    { row: 11, frames: 4, ms: 205 }
+    };
+
+    const KITSUNE_IDLE_QUOTES = {
+      sit: [
+        "Сижу на краешке и приглядываю за бабблами~ 🦊",
+        "Если устали глазки — моргни пару раз и потянись! 🌸",
+        "Какая же у меня сегодня пушистая шёрстка на хвостике~ ✨"
+      ],
+      read: [
+        "Хм-хм, сверяю контекст реплик по своей книжечке! 📖",
+        "В очках ни одна опечатка от меня не скроется~ 🤓✨",
+        "Какой интересный сюжет в этой главе! 📖🌸"
+      ],
+      cook: [
+        "Готовлю тёплый ужин, чтобы работа спорилась~ 🍲💛",
+        "Помешиваю бульончик... Не забывай делать перерывы! 🥢",
+        "Аромат на всю студию! Сейчас всё переведём~ ✨"
+      ],
+      sweep: [
+        "Вжух-вжух! Навожу уют и чистоту в окошке~ 🧹🌸",
+        "Ни пылинки, ни лишнего шума в бабблах не останется! ✨"
+      ],
+      eat: [
+        "Ам-ам! Хрустящий жареный тофу абурааге — вкуснятина~ 🍖💛",
+        "Спасибо за угощение! Теперь сил хватит на сто глав~ 🦊✨"
+      ],
+      sleep: [
+        "Мрр... чуточку вздремну на своём пушистом хвостике... 💤",
+        "Сплю в пол-ушка... Позови, когда начнём перевод~ 💤"
+      ]
+    };
+
+    const kitsunePet = {
+      img: null,
+      ready: false,
+      x: Math.max(120, window.innerWidth - 110),
+      y: Math.max(180, window.innerHeight - 4),
+      vx: 0,
+      vy: 0,
+      dir: -1,            // +1 moving/facing right (tail left), -1 facing left (mirrored, tail right)
+      anim: "sit",
+      frame: 0,
+      frameTimer: 0,
+      state: "sit",       // 'idle' | 'walk' | 'sit' | 'climb' | 'fall' | 'dangle' | 'action' | 'sleep' | 'job'
+      stateTimer: 5.5,
+      size: 96,
+      ledgeId: "floor",
+      ledgePrevRect: null,
+      climbTargetY: 160,
+      dragging: false,
+      dragMoved: false,
+      dragStartX: 0,
+      dragStartY: 0,
+      dragOffsetX: 0,
+      dragOffsetY: 0,
+      lastDrawKey: "",
+      rafId: null,
+      lastTs: 0,
+      speechTimer: null,
+      lastUserInputTs: performance.now(),
+      rubCount: 0,
+      lastRubDir: 0,
+      lastRubX: 0,
+      lastRubTs: 0,
+      lastJobStage: "",
+      wasJobRunning: false,
+      squishTimer: 0,
+      reducedMotion: window.matchMedia ? window.matchMedia("(prefers-reduced-motion: reduce)").matches : false
+    };
+
+    function markUserActivityForKitsune() {
+      kitsunePet.lastUserInputTs = performance.now();
+    }
+    window.addEventListener("pointerdown", (ev) => {
+      markUserActivityForKitsune();
+      const menu = document.getElementById("kitsune-context-menu");
+      if (menu && menu.classList.contains("open") && !menu.contains(ev.target)) {
+        menu.classList.remove("open");
+      }
+    }, { passive: true });
+    window.addEventListener("keydown", markUserActivityForKitsune, { passive: true });
+
+    if (window.matchMedia) {
+      const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
+      const onMq = (e) => { kitsunePet.reducedMotion = Boolean(e.matches); };
+      if (mq.addEventListener) mq.addEventListener("change", onMq);
+    }
+
+    function isUserBusyOnCanvas() {
+      return Boolean(
+        (typeof isMaskBrushMode !== "undefined" && isMaskBrushMode) ||
+        (typeof isDrawRegionMode !== "undefined" && isDrawRegionMode) ||
+        (typeof isFrameEraserMode !== "undefined" && isFrameEraserMode) ||
+        (typeof bboxDragState !== "undefined" && bboxDragState)
+      );
+    }
+
+    function getStudioLedges() {
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const pad = 30;
+      const ledges = [
+        { id: "floor", y: vh - 2, x1: pad, x2: Math.max(pad + 40, vw - pad), rect: null }
+      ];
+      const dr = document.getElementById("text-drawer");
+      if (dr && dr.classList.contains("open")) {
+        const r = dr.getBoundingClientRect();
+        if (r.width >= 140 && r.top > 76 && r.top < vh - 40) {
+          if (uiSettings.editor_dock_mode === "floating" || uiSettings.editor_dock_mode === "bottom") {
+            ledges.push({
+              id: uiSettings.editor_dock_mode === "floating" ? "float_editor" : "bottom_editor",
+              y: Math.round(r.top + 3),
+              x1: Math.max(pad, Math.round(r.left + 26)),
+              x2: Math.min(vw - pad, Math.round(r.right - 26)),
+              rect: { left: r.left, top: r.top, width: r.width }
+            });
+          }
+        }
+      }
+      const vcard = document.getElementById("viewer-card");
+      if (vcard) {
+        const vbar = vcard.querySelector(".viewer-toolbar");
+        if (vbar) {
+          const vr = vbar.getBoundingClientRect();
+          if (vr.width >= 180 && vr.bottom > 64 && vr.bottom < vh - 120) {
+            ledges.push({
+              id: "viewer_bar",
+              y: Math.round(vr.bottom + 1),
+              x1: Math.max(pad, Math.round(vr.left + 36)),
+              x2: Math.min(vw - pad, Math.round(vr.right - 36)),
+              rect: { left: vr.left, top: vr.bottom, width: vr.width }
+            });
+          }
+        }
+      }
+      return ledges;
+    }
+
+    function getClimbWalls() {
+      const vw = window.innerWidth;
+      const walls = [
+        { id: "left_edge", x: 28 },
+        { id: "right_edge", x: vw - 28 }
+      ];
+      const leftCol = document.getElementById("bento-left");
+      if (leftCol && !leftCol.classList.contains("collapsed")) {
+        const lr = leftCol.getBoundingClientRect();
+        if (lr.right > 160 && lr.right < vw - 160) {
+          walls.push({ id: "left_panel", x: Math.round(lr.right + 4) });
+        }
+      }
+      const dr = document.getElementById("text-drawer");
+      if (dr && dr.classList.contains("open") && uiSettings.editor_dock_mode === "right") {
+        const rr = dr.getBoundingClientRect();
+        if (rr.left > 160 && rr.left < vw - 140) {
+          walls.push({ id: "right_editor", x: Math.round(rr.left - 4) });
+        }
+      }
+      return walls;
+    }
+
+    function spawnKitsuneParticles(symbols, colors, count = 3) {
+      if (kitsunePet.reducedMotion) return;
+      const fx = document.getElementById("pixel-mascot-fx");
+      if (!fx) return;
+      for (let i = 0; i < count; i++) {
+        const sp = document.createElement("span");
+        sp.className = "kitsune-px-particle";
+        sp.textContent = symbols[i % symbols.length];
+        sp.style.color = colors[i % colors.length];
+        sp.style.left = (28 + Math.round(Math.random() * (kitsunePet.size - 36))) + "px";
+        sp.style.top = (8 + Math.round(Math.random() * 26)) + "px";
+        sp.style.setProperty("--kx", Math.round((Math.random() - 0.5) * 28) + "px");
+        sp.style.animationDelay = (i * 95) + "ms";
+        fx.appendChild(sp);
+        setTimeout(() => sp.remove(), 1100 + i * 100);
+      }
+    }
+
+    function showKitsuneSpeech(text, durationMs = 3800) {
+      const el = document.getElementById("pixel-mascot-speech");
+      if (!el || !text || uiSettings.show_pixel_mascot === false) return;
+      const clean = String(text).trim();
+      if (!clean) return;
+      el.textContent = clean.length > 135 ? clean.slice(0, 133) + "…" : clean;
+      el.classList.toggle("flip-below", kitsunePet.y < 145);
+      el.classList.toggle("align-left", kitsunePet.x < 145);
+      el.classList.toggle("align-right", kitsunePet.x > window.innerWidth - 145);
+      el.classList.add("visible");
+      if (kitsunePet.speechTimer) clearTimeout(kitsunePet.speechTimer);
+      kitsunePet.speechTimer = setTimeout(() => {
+        el.classList.remove("visible");
+      }, durationMs);
+    }
+
+    window.notifyKitsuneSayMiko = function(text) {
+      const msg = String(text || "").trim();
+      if (!msg) return;
+      if (
+        msg.startsWith("Перевожу [") ||
+        msg.startsWith("Выбери папку") ||
+        msg.startsWith("Открыта папка") ||
+        msg.startsWith("В папке «")
+      ) {
+        return;
+      }
+      showKitsuneSpeech(msg, 3600);
+    };
+
+    function setKitsuneAction(animName, durationSec, speechText = "", moodLabel = "") {
+      kitsunePet.state = animName === "sleep" ? "sleep" : "action";
+      kitsunePet.anim = KITSUNE_ANIMS[animName] ? animName : "idle";
+      kitsunePet.frame = 0;
+      kitsunePet.frameTimer = 0;
+      kitsunePet.vx = 0;
+      kitsunePet.vy = 0;
+      kitsunePet.stateTimer = durationSec;
+      if (speechText) showKitsuneSpeech(speechText, Math.min(5200, Math.max(3000, durationSec * 900)));
+      const badge = document.getElementById("kitsune-mood-badge");
+      if (badge && moodLabel) badge.textContent = moodLabel;
+    }
+
+    window.triggerKitsuneAppEvent = function(kind, customMsg = "", durationMs = 4200) {
+      if (uiSettings.show_pixel_mascot === false || kitsunePet.dragging) return;
+      const dur = Math.max(2.5, durationMs / 1000);
+      if (kind === "celebrate") {
+        setKitsuneAction("happy", 4.2, customMsg || "Ура-а! Перевод готов, горжусь тобой~ 🦊🌸", "Радуется!");
+        spawnKitsuneParticles(["♥", "✦", "🌸"], ["#f472b6", "#fde047", "#fda4af"], 5);
+      } else if (kind === "sweep") {
+        setKitsuneAction("sweep", 3.6, customMsg || "Вжух-вжух! Выметаем лишний шум~ 🧹✨", "Прибирается");
+        spawnKitsuneParticles(["✦", "✧"], ["#fde68a", "#e2e8f0"], 3);
+      } else if (kind === "cook") {
+        setKitsuneAction("cook", dur, customMsg || "Колдую над переводом~ 🍲✨", "Трудится");
+      } else if (kind === "read") {
+        setKitsuneAction("read", dur, customMsg || "Внимательно читаю реплики в очках~ 📖", "Читает");
+      }
+    };
+
+    window.syncKitsuneJobStage = function(st) {
+      if (uiSettings.show_pixel_mascot === false || kitsunePet.dragging || !st) return;
+      const status = st.status || "idle";
+      const running = status === "running" || status === "stopping";
+      const stage = String((st.live && st.live.stage) || "");
+      if (running) {
+        kitsunePet.wasJobRunning = true;
+        if (stage !== kitsunePet.lastJobStage || kitsunePet.state !== "job") {
+          kitsunePet.lastJobStage = stage;
+          kitsunePet.state = "job";
+          kitsunePet.vx = 0;
+          kitsunePet.vy = 0;
+          if (stage === "ocr" || stage === "pass0" || stage === "proofread") {
+            kitsunePet.anim = "read";
+            const b = document.getElementById("kitsune-mood-badge");
+            if (b) b.textContent = stage === "proofread" ? "Вычитывает 📖" : "Читает мангу 📖";
+          } else {
+            kitsunePet.anim = "cook";
+            const b = document.getElementById("kitsune-mood-badge");
+            if (b) b.textContent = "Переводит 🍲";
+          }
+        }
+      } else if (kitsunePet.wasJobRunning) {
+        kitsunePet.wasJobRunning = false;
+        kitsunePet.lastJobStage = "";
+        if (status === "completed") {
+          window.triggerKitsuneAppEvent("celebrate", "Ура-а! Вся папка переведена! Самое время отдохнуть и попить чайку~ 🦊🍵✨");
+        } else {
+          setKitsuneAction("sit", 4.0, status === "stopped" ? "Перевод на паузе, весь прогресс бережно сохранён~ 🐾" : "", "Рядом~");
+        }
+      }
+    };
+
+    function chooseNextKitsuneAutonomousState() {
+      const idleUserSec = (performance.now() - kitsunePet.lastUserInputTs) / 1000;
+      const badge = document.getElementById("kitsune-mood-badge");
+      const calmOnly = uiSettings.pixel_mascot_mode === "calm" || kitsunePet.reducedMotion;
+
+      if (idleUserSec > 65 && Math.random() < 0.55) {
+        setKitsuneAction("sleep", 12 + Math.random() * 10, "", "Дремлет 💤");
+        if (Math.random() < 0.45) {
+          const q = KITSUNE_IDLE_QUOTES.sleep;
+          showKitsuneSpeech(q[Math.floor(Math.random() * q.length)], 3600);
+        }
+        return;
+      }
+
+      const roll = Math.random();
+      if (!calmOnly && roll < 0.44) {
+        // Walk along current ledge!
+        const ledges = getStudioLedges();
+        const curLedge = ledges.find(l => l.id === kitsunePet.ledgeId) || ledges[0];
+        kitsunePet.ledgeId = curLedge.id;
+        kitsunePet.y = curLedge.y;
+        const distLeft = kitsunePet.x - curLedge.x1;
+        const distRight = curLedge.x2 - kitsunePet.x;
+        if (distLeft < 55) kitsunePet.dir = 1;
+        else if (distRight < 55) kitsunePet.dir = -1;
+        else kitsunePet.dir = Math.random() < 0.5 ? 1 : -1;
+
+        kitsunePet.state = "walk";
+        kitsunePet.anim = "walk";
+        kitsunePet.vx = kitsunePet.dir * (42 + Math.random() * 16);
+        kitsunePet.stateTimer = 2.6 + Math.random() * 4.2;
+        if (badge) badge.textContent = "Гуляет 🐾";
+        return;
+      }
+
+      if (roll < 0.62) {
+        kitsunePet.state = "sit";
+        kitsunePet.anim = "sit";
+        kitsunePet.vx = 0;
+        kitsunePet.stateTimer = 5.0 + Math.random() * 5.5;
+        if (badge) badge.textContent = "Отдыхает~";
+        if (Math.random() < 0.24) {
+          const q = KITSUNE_IDLE_QUOTES.sit;
+          showKitsuneSpeech(q[Math.floor(Math.random() * q.length)], 3800);
+        }
+      } else if (roll < 0.74) {
+        const q = KITSUNE_IDLE_QUOTES.read;
+        setKitsuneAction("read", 5.2 + Math.random() * 3.0, Math.random() < 0.45 ? q[Math.floor(Math.random() * q.length)] : "", "Читает 📖");
+      } else if (roll < 0.84) {
+        const q = KITSUNE_IDLE_QUOTES.cook;
+        setKitsuneAction("cook", 4.8 + Math.random() * 2.5, Math.random() < 0.42 ? q[Math.floor(Math.random() * q.length)] : "", "Готовит 🍲");
+      } else if (roll < 0.92) {
+        const q = KITSUNE_IDLE_QUOTES.sweep;
+        setKitsuneAction("sweep", 3.8 + Math.random() * 2.0, Math.random() < 0.38 ? q[Math.floor(Math.random() * q.length)] : "", "Уют 🧹");
+      } else if (roll < 0.96) {
+        const q = KITSUNE_IDLE_QUOTES.eat;
+        setKitsuneAction("eat", 4.0, Math.random() < 0.55 ? q[Math.floor(Math.random() * q.length)] : "", "Кушает тофу 🍖");
+      } else {
+        kitsunePet.state = "idle";
+        kitsunePet.anim = "idle";
+        kitsunePet.vx = 0;
+        kitsunePet.stateTimer = 3.5 + Math.random() * 3.0;
+        if (badge) badge.textContent = "Рядом~";
+      }
+    }
+
+    function drawKitsuneCanvas() {
+      if (!kitsunePet.ready || !kitsunePet.img) return;
+      const canvas = document.getElementById("pixel-mascot-canvas");
+      if (!canvas) return;
+      const animMeta = KITSUNE_ANIMS[kitsunePet.anim] || KITSUNE_ANIMS.idle;
+      const col = kitsunePet.frame % animMeta.frames;
+      const row = animMeta.row;
+      // Native sprite faces forward with tail on LEFT (moves right naturally when unflipped; flip when dir < 0)
+      const flip = kitsunePet.dir < 0 && kitsunePet.anim !== "climb" && kitsunePet.anim !== "sleep";
+      const key = `${row}:${col}:${flip ? 1 : 0}:${kitsunePet.size}`;
+      if (kitsunePet.lastDrawKey === key) return;
+      kitsunePet.lastDrawKey = key;
+
+      if (canvas.width !== kitsunePet.size || canvas.height !== kitsunePet.size) {
+        canvas.width = kitsunePet.size;
+        canvas.height = kitsunePet.size;
+      }
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.imageSmoothingEnabled = false;
+      ctx.save();
+      if (flip) {
+        ctx.translate(canvas.width, 0);
+        ctx.scale(-1, 1);
+      }
+      ctx.drawImage(kitsunePet.img, col * 48, row * 48, 48, 48, 0, 0, canvas.width, canvas.height);
+      ctx.restore();
+    }
+
+    function stepKitsuneMascot(ts) {
+      if (uiSettings.show_pixel_mascot === false || document.hidden) {
+        kitsunePet.rafId = null;
+        return;
+      }
+      const dt = kitsunePet.lastTs ? Math.min(0.06, (ts - kitsunePet.lastTs) / 1000) : 0.016;
+      kitsunePet.lastTs = ts;
+
+      const actor = document.getElementById("pixel-mascot-actor");
+      const canvas = document.getElementById("pixel-mascot-canvas");
+      if (!actor || !canvas) {
+        kitsunePet.rafId = null;
+        return;
+      }
+
+      actor.classList.toggle("work-pass-through", isUserBusyOnCanvas() && !kitsunePet.dragging);
+
+      const vw = window.innerWidth;
+      const vh = window.innerHeight;
+      const ledges = getStudioLedges();
+
+      // Follow moving ledge (e.g. when user drags the floating editor window while Senko sits on its roof!)
+      if (!kitsunePet.dragging && kitsunePet.state !== "fall" && kitsunePet.state !== "climb") {
+        const activeLedge = ledges.find(l => l.id === kitsunePet.ledgeId);
+        if (activeLedge) {
+          if (activeLedge.rect && kitsunePet.ledgePrevRect) {
+            const dx = activeLedge.rect.left - kitsunePet.ledgePrevRect.left;
+            const dy = activeLedge.rect.top - kitsunePet.ledgePrevRect.top;
+            if (Math.abs(dx) > 0.1 || Math.abs(dy) > 0.1) {
+              kitsunePet.x += dx;
+              kitsunePet.y += dy;
+            }
+          }
+          kitsunePet.y = activeLedge.y;
+          kitsunePet.x = Math.max(activeLedge.x1, Math.min(activeLedge.x2, kitsunePet.x));
+          kitsunePet.ledgePrevRect = activeLedge.rect ? { ...activeLedge.rect } : null;
+        } else {
+          // Ledge closed/disappeared -> fall gently to floor!
+          kitsunePet.ledgeId = "floor";
+          kitsunePet.ledgePrevRect = null;
+          if (!kitsunePet.reducedMotion) {
+            kitsunePet.state = "fall";
+            kitsunePet.anim = "dangle";
+            kitsunePet.vy = 20;
+          } else {
+            kitsunePet.y = vh - 2;
+          }
+        }
+      }
+
+      // Physics & State Machine
+      if (kitsunePet.dragging) {
+        kitsunePet.anim = "dangle";
+      } else if (kitsunePet.state === "fall") {
+        const prevY = kitsunePet.y;
+        kitsunePet.vy = Math.min(310, kitsunePet.vy + 880 * dt);
+        kitsunePet.y += kitsunePet.vy * dt;
+        kitsunePet.x = Math.max(28, Math.min(vw - 28, kitsunePet.x + kitsunePet.vx * dt));
+        kitsunePet.vx *= (1 - 2.5 * dt);
+
+        // Land on the highest ledge crossed during this step
+        let landed = null;
+        for (const l of ledges) {
+          if (kitsunePet.x >= l.x1 - 12 && kitsunePet.x <= l.x2 + 12) {
+            if (prevY <= l.y + 8 && kitsunePet.y >= l.y) {
+              if (!landed || l.y < landed.y) landed = l;
+            }
+          }
+        }
+        if (!landed && kitsunePet.y >= vh - 2) {
+          landed = ledges[0];
+        }
+        if (landed) {
+          kitsunePet.y = landed.y;
+          kitsunePet.x = Math.max(landed.x1, Math.min(landed.x2, kitsunePet.x));
+          kitsunePet.vy = 0;
+          kitsunePet.vx = 0;
+          kitsunePet.ledgeId = landed.id;
+          kitsunePet.ledgePrevRect = landed.rect ? { ...landed.rect } : null;
+          kitsunePet.squishTimer = 0.16;
+          kitsunePet.state = "sit";
+          kitsunePet.anim = "sit";
+          kitsunePet.stateTimer = 4.2 + Math.random() * 3.0;
+        }
+      } else if (kitsunePet.state === "climb") {
+        kitsunePet.y -= 48 * dt;
+        kitsunePet.stateTimer -= dt;
+        // Check if we reached target height or intersected a nice upper ledge!
+        let hopLedge = null;
+        for (const l of ledges) {
+          if (l.id !== "floor" && Math.abs(kitsunePet.y - l.y) <= 8) {
+            if (kitsunePet.x >= l.x1 - 36 && kitsunePet.x <= l.x2 + 36) {
+              hopLedge = l;
+              break;
+            }
+          }
+        }
+        if (hopLedge) {
+          kitsunePet.ledgeId = hopLedge.id;
+          kitsunePet.y = hopLedge.y;
+          kitsunePet.x = Math.max(hopLedge.x1, Math.min(hopLedge.x2, kitsunePet.x));
+          kitsunePet.ledgePrevRect = hopLedge.rect ? { ...hopLedge.rect } : null;
+          kitsunePet.state = "sit";
+          kitsunePet.anim = "sit";
+          kitsunePet.stateTimer = 6.0 + Math.random() * 4.0;
+          showKitsuneSpeech("Оп-ля! Забралась повыше, отсюда всю страницу отлично видно~ 🦊✨", 3500);
+        } else if (kitsunePet.y <= kitsunePet.climbTargetY || kitsunePet.stateTimer <= 0) {
+          kitsunePet.state = "fall";
+          kitsunePet.anim = "dangle";
+          kitsunePet.vy = -45;
+          kitsunePet.vx = (kitsunePet.x > vw * 0.5 ? -1 : 1) * 42;
+        }
+      } else if (kitsunePet.state === "walk") {
+        const curLedge = ledges.find(l => l.id === kitsunePet.ledgeId) || ledges[0];
+        const prevX = kitsunePet.x;
+        kitsunePet.x += kitsunePet.vx * dt;
+        kitsunePet.stateTimer -= dt;
+
+        // Check if crossing a climbable vertical border in roam mode
+        let startedClimb = false;
+        if (uiSettings.pixel_mascot_mode === "roam" && !kitsunePet.reducedMotion && curLedge.id === "floor") {
+          for (const w of getClimbWalls()) {
+            const crossed = (prevX <= w.x && kitsunePet.x >= w.x) || (prevX >= w.x && kitsunePet.x <= w.x) || Math.abs(kitsunePet.x - w.x) < 4;
+            if (crossed && Math.random() < 0.34) {
+              kitsunePet.x = w.x;
+              kitsunePet.vx = 0;
+              kitsunePet.state = "climb";
+              kitsunePet.anim = "climb";
+              kitsunePet.climbTargetY = Math.max(115, Math.round(vh * (0.25 + Math.random() * 0.35)));
+              kitsunePet.stateTimer = 4.8;
+              const badge = document.getElementById("kitsune-mood-badge");
+              if (badge) badge.textContent = "Лазит по окну 🐾";
+              startedClimb = true;
+              break;
+            }
+          }
+        }
+
+        if (!startedClimb) {
+          if (kitsunePet.x <= curLedge.x1) {
+            kitsunePet.x = curLedge.x1;
+            kitsunePet.dir = 1;
+            kitsunePet.vx = Math.abs(kitsunePet.vx);
+          } else if (kitsunePet.x >= curLedge.x2) {
+            kitsunePet.x = curLedge.x2;
+            kitsunePet.dir = -1;
+            kitsunePet.vx = -Math.abs(kitsunePet.vx);
+          }
+          if (kitsunePet.stateTimer <= 0) {
+            chooseNextKitsuneAutonomousState();
+          }
+        }
+      } else if (kitsunePet.state !== "job") {
+        kitsunePet.stateTimer -= dt;
+        if (kitsunePet.stateTimer <= 0) {
+          chooseNextKitsuneAutonomousState();
+        }
+      }
+
+      // Advance sprite frame timer
+      const animMeta = KITSUNE_ANIMS[kitsunePet.anim] || KITSUNE_ANIMS.idle;
+      const frameStepMs = kitsunePet.reducedMotion ? Math.max(420, animMeta.ms * 1.8) : animMeta.ms;
+      kitsunePet.frameTimer += dt * 1000;
+      if (kitsunePet.frameTimer >= frameStepMs) {
+        kitsunePet.frameTimer %= frameStepMs;
+        kitsunePet.frame = (kitsunePet.frame + 1) % animMeta.frames;
+      }
+
+      if (kitsunePet.squishTimer > 0) {
+        kitsunePet.squishTimer = Math.max(0, kitsunePet.squishTimer - dt);
+        canvas.style.transform = "scale(1.08, 0.90)";
+      } else if (canvas.style.transform) {
+        canvas.style.transform = "";
+      }
+
+      drawKitsuneCanvas();
+
+      const tx = Math.round(kitsunePet.x - kitsunePet.size * 0.5);
+      const ty = Math.round(kitsunePet.y - kitsunePet.size * (44 / 48));
+      actor.style.transform = `translate3d(${tx}px, ${ty}px, 0)`;
+
+      kitsunePet.rafId = requestAnimationFrame(stepKitsuneMascot);
+    }
+
+    function ensureKitsuneLoopRunning() {
+      if (uiSettings.show_pixel_mascot === false || document.hidden) return;
+      if (!kitsunePet.rafId) {
+        kitsunePet.lastTs = 0;
+        kitsunePet.rafId = requestAnimationFrame(stepKitsuneMascot);
+      }
+    }
+
+    document.addEventListener("visibilitychange", () => {
+      if (document.hidden) {
+        if (kitsunePet.rafId) {
+          cancelAnimationFrame(kitsunePet.rafId);
+          kitsunePet.rafId = null;
+        }
+      } else {
+        ensureKitsuneLoopRunning();
+      }
+    });
+
+    window.addEventListener("resize", () => {
+      kitsunePet.x = Math.max(30, Math.min(window.innerWidth - 30, kitsunePet.x));
+      kitsunePet.y = Math.max(90, Math.min(window.innerHeight - 2, kitsunePet.y));
+    });
+
+    function syncKitsuneMascotFromSettings() {
+      const layer = document.getElementById("pixel-mascot-layer");
+      const actor = document.getElementById("pixel-mascot-actor");
+      const visible = uiSettings.show_pixel_mascot !== false;
+      const newSize = [72, 96, 120].includes(Number(uiSettings.pixel_mascot_scale)) ? Number(uiSettings.pixel_mascot_scale) : 96;
+      kitsunePet.size = newSize;
+      if (actor) {
+        actor.style.width = newSize + "px";
+        actor.style.height = newSize + "px";
+      }
+      const modeMenuBtn = document.getElementById("kitsune-menu-mode-btn");
+      if (modeMenuBtn) {
+        modeMenuBtn.textContent = uiSettings.pixel_mascot_mode === "calm"
+          ? "🛋 Режим: Спокойно (переключить на прогулки)"
+          : "🐾 Режим: Гуляет и лазит (посадить спокойно)";
+      }
+      if (layer) {
+        layer.classList.toggle("hidden", !visible);
+      }
+      if (visible) {
+        ensureKitsuneLoopRunning();
+      } else if (kitsunePet.rafId) {
+        cancelAnimationFrame(kitsunePet.rafId);
+        kitsunePet.rafId = null;
+      }
+    }
+
+    function onPixelMascotOptionChange() {
+      const selMode = document.getElementById("sel-ui-pixel-mascot-mode");
+      const selScale = document.getElementById("sel-ui-pixel-mascot-scale");
+      if (selMode) uiSettings.pixel_mascot_mode = selMode.value === "calm" ? "calm" : "roam";
+      if (selScale) uiSettings.pixel_mascot_scale = Number(selScale.value) || 96;
+      saveLocalUiSettings();
+      applyUiSettingsToDom();
+      if (uiSettings.pixel_mascot_mode === "calm" && kitsunePet.state === "walk") {
+        setKitsuneAction("sit", 6.0, "Хорошо, посижу тихонько здесь в уголке и присмотрю за переводом~ 🛋🦊", "В уголке~");
+      }
+    }
+
+    function openKitsuneContextMenu(clientX, clientY) {
+      const menu = document.getElementById("kitsune-context-menu");
+      if (!menu) return;
+      syncKitsuneMascotFromSettings();
+      menu.classList.add("open");
+      const mw = 224;
+      const mh = 290;
+      const left = Math.max(10, Math.min(window.innerWidth - mw - 10, clientX));
+      const top = Math.max(10, Math.min(window.innerHeight - mh - 10, clientY - mh + 20));
+      menu.style.left = left + "px";
+      menu.style.top = top + "px";
+    }
+
+    function triggerKitsuneMenuAction(act) {
+      const menu = document.getElementById("kitsune-context-menu");
+      if (menu) menu.classList.remove("open");
+      if (act === "hide") {
+        uiSettings.show_pixel_mascot = false;
+        saveLocalUiSettings();
+        applyUiSettingsToDom();
+        return;
+      }
+      if (uiSettings.show_pixel_mascot === false) {
+        uiSettings.show_pixel_mascot = true;
+        saveLocalUiSettings();
+        applyUiSettingsToDom();
+      }
+      if (act === "toggle_mode") {
+        uiSettings.pixel_mascot_mode = uiSettings.pixel_mascot_mode === "calm" ? "roam" : "calm";
+        saveLocalUiSettings();
+        applyUiSettingsToDom();
+        showKitsuneSpeech(
+          uiSettings.pixel_mascot_mode === "calm"
+            ? "Устраиваюсь поуютнее на одном месте~ 🛋🦊"
+            : "Ура, пойду разомну лапки и полажу по окошку! 🐾✨",
+          3600
+        );
+        return;
+      }
+      if (act === "eat") {
+        setKitsuneAction("eat", 4.8, "Ам-ам! Свежий жареный тофу абурааге?! Ты так меня балуешь~ 🍖🦊💛", "В восторге!");
+        spawnKitsuneParticles(["♥", "✦"], ["#fbbf24", "#f472b6"], 4);
+      } else if (act === "read") {
+        setKitsuneAction("read", 5.5, "Надеваю очки... Посмотрим, как тут уложены строчки в бабблах! 📖🤓", "Читает 📖");
+      } else if (act === "cook") {
+        setKitsuneAction("cook", 5.2, "Сварю для тебя тёплый супчик мисо, чтобы работалось в радость~ 🍲💛", "Готовит 🍲");
+        spawnKitsuneParticles(["♥", "✦"], ["#fda4af", "#fde68a"], 3);
+      } else if (act === "sweep") {
+        setKitsuneAction("sweep", 4.4, "Вжух-вжух метёлочкой! Наведём идеальный порядок в студии~ 🧹🌸", "Прибирается");
+      } else if (act === "mofu") {
+        setKitsuneAction("mofu", 3.8, "Фуа-а?! Опять за пушистый хвостик?! Н-ну ладно, только аккуратно~ 🦊💗", "Смущена!");
+        spawnKitsuneParticles(["♥", "!", "✦"], ["#fb7185", "#fde047"], 4);
+      } else if (act === "sleep") {
+        setKitsuneAction("sleep", 22.0, "Укутываюсь в свой пушистый хвостик... Если что — кликни по ушкам~ 💤", "Спит 💤");
+      }
+    }
+
+    function onTopbarFoxClick(ev) {
+      if (uiSettings.show_pixel_mascot === false) {
+        uiSettings.show_pixel_mascot = true;
+        saveLocalUiSettings();
+        applyUiSettingsToDom();
+        setKitsuneAction("happy", 3.6, "Я тут как тут! Помогу перевести любую главу~ 🦊🌸", "Рядом~");
+        spawnKitsuneParticles(["♥", "🌸", "✦"], ["#f472b6", "#fde047"], 4);
+      } else {
+        openKitsuneContextMenu(ev.clientX, ev.clientY + 120);
+      }
+    }
+
+    function onTopbarFoxContext(ev) {
+      ev.preventDefault();
+      openKitsuneContextMenu(ev.clientX, ev.clientY + 120);
+    }
+
+    function initKitsuneMascot() {
+      const img = new Image();
+      img.onload = () => {
+        kitsunePet.img = img;
+        kitsunePet.ready = true;
+        kitsunePet.lastDrawKey = "";
+        drawKitsuneCanvas();
+        ensureKitsuneLoopRunning();
+      };
+      img.src = KITSUNE_SPRITES_URI;
+
+      const hitbox = document.getElementById("pixel-mascot-hitbox");
+      const actor = document.getElementById("pixel-mascot-actor");
+      if (!hitbox || !actor) return;
+
+      hitbox.addEventListener("contextmenu", (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        openKitsuneContextMenu(ev.clientX, ev.clientY);
+      });
+
+      hitbox.addEventListener("pointerdown", (ev) => {
+        if (ev.button !== 0) return;
+        ev.stopPropagation();
+        const menu = document.getElementById("kitsune-context-menu");
+        if (menu) menu.classList.remove("open");
+
+        kitsunePet.dragging = true;
+        kitsunePet.dragMoved = false;
+        kitsunePet.dragStartX = ev.clientX;
+        kitsunePet.dragStartY = ev.clientY;
+        kitsunePet.dragOffsetX = kitsunePet.x - ev.clientX;
+        kitsunePet.dragOffsetY = kitsunePet.y - ev.clientY;
+        actor.classList.add("dragging");
+        try { hitbox.setPointerCapture(ev.pointerId); } catch (e) {}
+      });
+
+      hitbox.addEventListener("pointermove", (ev) => {
+        if (kitsunePet.dragging) {
+          const dist = Math.hypot(ev.clientX - kitsunePet.dragStartX, ev.clientY - kitsunePet.dragStartY);
+          if (dist > 5) {
+            if (!kitsunePet.dragMoved) {
+              kitsunePet.dragMoved = true;
+              showKitsuneSpeech("Уня-я?! Куда мы летим? Держи меня крепче~ 🐾", 2800);
+            }
+            kitsunePet.x = Math.max(26, Math.min(window.innerWidth - 26, ev.clientX + kitsunePet.dragOffsetX));
+            kitsunePet.y = Math.max(68, Math.min(window.innerHeight - 2, ev.clientY + kitsunePet.dragOffsetY));
+            kitsunePet.state = "dangle";
+            kitsunePet.anim = "dangle";
+          }
+          return;
+        }
+
+        // Gentle headpat rub detector (moving mouse back & forth across her ears!)
+        const now = performance.now();
+        const dx = ev.clientX - kitsunePet.lastRubX;
+        if (Math.abs(dx) >= 6) {
+          const dir = dx > 0 ? 1 : -1;
+          if (now - kitsunePet.lastRubTs < 450 && dir !== kitsunePet.lastRubDir) {
+            kitsunePet.rubCount += 1;
+            if (kitsunePet.rubCount >= 4 && kitsunePet.anim !== "happy") {
+              kitsunePet.rubCount = 0;
+              setKitsuneAction("happy", 3.4, "Мрр~ Как же приятно, когда гладят по ушкам! 🦊💛", "Мурчит~");
+              spawnKitsuneParticles(["♥", "🌸"], ["#f472b6", "#fbbf24"], 3);
+            }
+          } else if (now - kitsunePet.lastRubTs >= 450) {
+            kitsunePet.rubCount = 1;
+          }
+          kitsunePet.lastRubDir = dir;
+          kitsunePet.lastRubX = ev.clientX;
+          kitsunePet.lastRubTs = now;
+        }
+      });
+
+      const finishPointer = (ev) => {
+        if (!kitsunePet.dragging) return;
+        kitsunePet.dragging = false;
+        actor.classList.remove("dragging");
+        try { hitbox.releasePointerCapture(ev.pointerId); } catch (e) {}
+
+        if (kitsunePet.dragMoved) {
+          kitsunePet.state = "fall";
+          kitsunePet.anim = "dangle";
+          kitsunePet.vy = 20;
+          kitsunePet.vx = 0;
+          return;
+        }
+
+        // Single click: check whether user clicked the giant fluffy tail vs head/ears!
+        const rect = actor.getBoundingClientRect();
+        let sx = ((ev.clientX - rect.left) / Math.max(1, rect.width)) * 48;
+        const sy = ((ev.clientY - rect.top) / Math.max(1, rect.height)) * 48;
+        const flipped = kitsunePet.dir < 0 && kitsunePet.anim !== "climb" && kitsunePet.anim !== "sleep";
+        if (flipped) sx = 48 - sx;
+
+        if (sx <= 17 && sy >= 19 && kitsunePet.anim !== "sleep") {
+          // Tail click -> Iconic Senko Mofu-Mofu blush reaction!
+          const mofuLines = [
+            "Фуа-а?! Х-хвостик так внезапно не пушат!.. Ну ладно, только чуть-чуть~ 🦊💗",
+            "М-мофу-мофу?! У меня же сейчас вся шёрстка распушится от смущения! ✨",
+            "Ох, вечно тебе хочется пожмякать мой хвостик! Ладно уж, отдыхай душой~ 🦊💛"
+          ];
+          setKitsuneAction("mofu", 3.6, mofuLines[Math.floor(Math.random() * mofuLines.length)], "Мофу-мофу!");
+          spawnKitsuneParticles(["!", "♥", "✦"], ["#fb7185", "#fde047", "#f472b6"], 4);
+        } else {
+          // Headpat / wake up!
+          const patLines = [
+            "Уму-уму~ Спасибо за ласку! Я всегда рядом, чтобы помочь с главой~ 🌸",
+            "Хи-хи, щекотно ушкам! Давай сделаем самый красивый перевод манги~ 🦊✨",
+            "Не переутомляйся! Если захочешь угостить меня тофу — кликни правой кнопкой~ 🍖💛"
+          ];
+          setKitsuneAction("happy", 3.4, patLines[Math.floor(Math.random() * patLines.length)], "Счастлива ♥");
+          spawnKitsuneParticles(["♥", "🌸", "✦"], ["#f472b6", "#fde047", "#fda4af"], 4);
+        }
+      };
+
+      hitbox.addEventListener("pointerup", finishPointer);
+      hitbox.addEventListener("pointercancel", finishPointer);
+    }
+
+    initKitsuneMascot();
     loadLocalUiSettings();
     setTargetLang(targetLang);
     loadHealth(false);

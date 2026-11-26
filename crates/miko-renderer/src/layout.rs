@@ -1,4 +1,4 @@
-use crate::typography::auto_diamond_wrap_lines;
+use crate::typography::{auto_diamond_wrap_lines, hyphenate_word};
 use miko_cleaner::distance_transform_l2;
 
 #[derive(Debug, Clone)]
@@ -6,6 +6,7 @@ pub struct BubbleLayout {
     pub font_size: i32,
     pub scale_x: f32,
     pub lines: Vec<String>,
+    pub line_centers_x: Vec<f32>,
     pub center_xy: [i32; 2],
     pub line_height: f32,
     pub max_line_w: f32,
@@ -146,6 +147,287 @@ pub fn find_optimal_box_center(
     centroid
 }
 
+/// Вычисляет строгое пересечение горизонтальных хорд на диапазоне скан-линий `[y0, y1)`.
+fn band_strict_interval(
+    chords: &[Option<(usize, usize)>],
+    y0: usize,
+    y1: usize,
+) -> Option<(usize, usize)> {
+    if y0 >= y1 || y1 > chords.len() {
+        return None;
+    }
+    let mut xl = 0usize;
+    let mut xr = usize::MAX;
+    for ch_opt in &chords[y0..y1] {
+        let (l, r) = (*ch_opt)?;
+        xl = xl.max(l);
+        xr = xr.min(r);
+        if xl >= xr {
+            return None;
+        }
+    }
+    if xr == usize::MAX {
+        None
+    } else {
+        Some((xl, xr))
+    }
+}
+
+fn line_ink_band_y(
+    y_start: usize,
+    k: usize,
+    line_h: f32,
+    fs_f: f32,
+    h: usize,
+) -> (usize, usize) {
+    let top_trim = (fs_f * 0.08).max(0.0);
+    let bot_trim = (fs_f * 0.08).max(0.0);
+    let y0_raw = y_start as f32 + (k as f32) * line_h + top_trim;
+    let y1_raw = y_start as f32 + ((k + 1) as f32) * line_h - bot_trim;
+    let ly0 = (y0_raw.floor().max(0.0) as usize).min(h.saturating_sub(1));
+    let ly1 = (y1_raw.ceil().max(0.0) as usize).clamp(ly0 + 1, h);
+    (ly0, ly1)
+}
+
+/// Проверяет, что каждая строка с учётом реального интервала `[xl, xr]` и вертикальных границ
+/// помещается внутрь полости баббла, и возвращает сбалансированные центры `X` по строкам.
+#[allow(clippy::too_many_arguments)]
+fn validate_lines_in_chords<F: Fn(&str, f32, f32) -> f32>(
+    lines: &[String],
+    chords: &[Option<(usize, usize)>],
+    h: usize,
+    y_start: usize,
+    line_h: f32,
+    fs_f: f32,
+    scale_x: f32,
+    side_pad: f32,
+    ref_w: usize,
+    measure_scaled: &F,
+) -> Option<Vec<f32>> {
+    if lines.is_empty() || h == 0 {
+        return None;
+    }
+    let total_h = (lines.len() as f32 * line_h).ceil() as usize;
+    let win_y0 = y_start.min(h.saturating_sub(1));
+    let win_y1 = (y_start + total_h).clamp(win_y0 + 1, h);
+    let mut band_centers: Vec<f32> = Vec::with_capacity(win_y1 - win_y0);
+    for ch_opt in &chords[win_y0..win_y1] {
+        if let Some((l, r)) = *ch_opt {
+            band_centers.push((l + r) as f32 * 0.5);
+        }
+    }
+    let global_cx = if band_centers.is_empty() {
+        return None;
+    } else {
+        band_centers.sort_by(|a, b| a.total_cmp(b));
+        band_centers[band_centers.len() / 2]
+    };
+
+    let max_step = (ref_w as f32 * 0.35).max(26.0);
+    let mut line_cxs: Vec<f32> = Vec::with_capacity(lines.len());
+    for (k, line) in lines.iter().enumerate() {
+        let lw = measure_scaled(line, fs_f, scale_x);
+        let (ly0, ly1) = line_ink_band_y(y_start, k, line_h, fs_f, h);
+        let (xl, xr) = band_strict_interval(chords, ly0, ly1)?;
+        let avail = xr.saturating_sub(xl) as f32;
+        if lw + 2.0 * side_pad > avail {
+            return None;
+        }
+        let min_cx = xl as f32 + lw * 0.5 + side_pad;
+        let max_cx = xr as f32 - lw * 0.5 - side_pad;
+        let cx_k = if min_cx <= max_cx {
+            global_cx.clamp(min_cx, max_cx)
+        } else {
+            (xl + xr) as f32 * 0.5
+        };
+        if let Some(&prev_cx) = line_cxs.last() {
+            if (cx_k - prev_cx).abs() > max_step {
+                return None;
+            }
+        }
+        line_cxs.push(cx_k);
+    }
+    Some(line_cxs)
+}
+
+/// Chord-aware 2D-DP разбиение текста под сужающиеся верхние/нижние хорды овала.
+#[allow(clippy::too_many_arguments)]
+fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
+    text: &str,
+    chords: &[Option<(usize, usize)>],
+    h: usize,
+    y_start: usize,
+    line_h: f32,
+    fs_f: f32,
+    scale_x: f32,
+    side_pad: f32,
+    ref_w: usize,
+    cav_bot: usize,
+    measure_scaled: &F,
+) -> Option<(Vec<String>, Vec<f32>)> {
+    let clean = text.trim();
+    if clean.is_empty() || clean.lines().count() > 1 {
+        return None;
+    }
+
+    let words: Vec<&str> = clean.split_whitespace().collect();
+    if words.is_empty() {
+        return None;
+    }
+
+    let max_possible_k = ((cav_bot.saturating_sub(y_start)) as f32 / line_h).floor() as usize;
+    if max_possible_k == 0 {
+        return None;
+    }
+
+    let mut tokens: Vec<String> = Vec::new();
+    for w in words {
+        let w_len = w.chars().count();
+        if w_len >= 8 || measure_scaled(w, fs_f, scale_x) > (ref_w as f32 * 0.72) {
+            let parts = hyphenate_word(w);
+            if parts.len() > 1 {
+                for (idx, part) in parts.iter().enumerate() {
+                    if idx + 1 < parts.len() && !part.ends_with('-') {
+                        tokens.push(format!("{part}-"));
+                    } else {
+                        tokens.push(part.clone());
+                    }
+                }
+                continue;
+            }
+        }
+        tokens.push(w.to_string());
+    }
+
+    let n = tokens.len();
+    let join_span = |i: usize, j: usize| -> String {
+        let mut out = String::new();
+        for k in i..j {
+            if !out.is_empty() && !out.ends_with('-') {
+                out.push(' ');
+            }
+            out.push_str(&tokens[k]);
+        }
+        out
+    };
+
+    let mut span_w = vec![vec![0.0f32; n + 1]; n];
+    for i in 0..n {
+        for j in (i + 1)..=n {
+            let s = join_span(i, j);
+            span_w[i][j] = measure_scaled(&s, fs_f, scale_x);
+        }
+    }
+
+    let k_max = max_possible_k.min(n);
+    let mut best_cost = f32::INFINITY;
+    let mut best_res: Option<(Vec<String>, Vec<f32>)> = None;
+
+    for k_lines in 1..=k_max {
+        let mut limits = Vec::with_capacity(k_lines);
+        let mut valid_k = true;
+        for k in 0..k_lines {
+            let (ly0, ly1) = line_ink_band_y(y_start, k, line_h, fs_f, h);
+            let Some((xl, xr)) = band_strict_interval(chords, ly0, ly1) else {
+                valid_k = false;
+                break;
+            };
+            let avail = xr.saturating_sub(xl) as f32 - 2.0 * side_pad;
+            if avail <= fs_f * 0.7 {
+                valid_k = false;
+                break;
+            }
+            limits.push(avail);
+        }
+        if !valid_k {
+            continue;
+        }
+
+        let inf = 1.0e12f32;
+        let mut dp = vec![vec![inf; k_lines + 1]; n + 1];
+        let mut parent = vec![vec![usize::MAX; k_lines + 1]; n + 1];
+        dp[0][0] = 0.0;
+
+        for k in 1..=k_lines {
+            let lim = limits[k - 1];
+            let rel_pos = ((k as f32 - 0.5) / (k_lines as f32) - 0.5).abs() * 2.0;
+            let target_fill = 0.88 - 0.14 * rel_pos.powf(1.4);
+
+            for i in 1..=n {
+                for j in (0..i).rev() {
+                    let w = span_w[j][i];
+                    if w > lim {
+                        if i > j + 1 {
+                            break;
+                        }
+                        continue;
+                    }
+                    if dp[j][k - 1] >= inf * 0.5 {
+                        continue;
+                    }
+                    let fill = (w / lim.max(1.0)).clamp(0.0, 1.0);
+                    let slack_pen = (1.0 - fill).powi(2) * 45.0;
+                    let shape_pen = (fill - target_fill).powi(2) * 28.0;
+                    let hy_pen = if tokens[i - 1].ends_with('-') { 8.0 } else { 0.0 };
+                    let orphan_pen =
+                        if k == k_lines && (i - j) == 1 && tokens[j].chars().count() <= 3 && j > 0 {
+                            35.0
+                        } else {
+                            0.0
+                        };
+                    let cost = dp[j][k - 1] + slack_pen + shape_pen + hy_pen + orphan_pen;
+                    if cost < dp[i][k] {
+                        dp[i][k] = cost;
+                        parent[i][k] = j;
+                    }
+                }
+            }
+        }
+
+        if dp[n][k_lines] >= inf * 0.5 {
+            continue;
+        }
+
+        let mut lines = Vec::with_capacity(k_lines);
+        let mut cur = n;
+        let mut ok_chain = true;
+        for k in (1..=k_lines).rev() {
+            let prev = parent[cur][k];
+            if prev >= cur || prev == usize::MAX {
+                ok_chain = false;
+                break;
+            }
+            lines.push(join_span(prev, cur));
+            cur = prev;
+        }
+        if !ok_chain || cur != 0 {
+            continue;
+        }
+        lines.reverse();
+
+        if let Some(cxs) = validate_lines_in_chords(
+            &lines,
+            chords,
+            h,
+            y_start,
+            line_h,
+            fs_f,
+            scale_x,
+            side_pad,
+            ref_w,
+            measure_scaled,
+        ) {
+            let total_cost = dp[n][k_lines] + (k_lines as f32) * 14.0;
+            if total_cost < best_cost {
+                best_cost = total_cost;
+                best_res = Some((lines, cxs));
+            }
+        }
+    }
+
+    best_res
+}
+
 /// Подбирает максимальный кегль в `[min_fs..=max_fs]` и оптимальную геометрию переноса по хордам полости баббла.
 pub fn solve_bubble_layout<F: Fn(&str, f32) -> f32>(
     text: &str,
@@ -181,6 +463,32 @@ pub fn solve_bubble_layout_scaled<F: Fn(&str, f32, f32) -> f32>(
     fixed_fs: Option<i32>,
     measure_scaled: F,
 ) -> BubbleLayout {
+    solve_bubble_layout_with_options(
+        text,
+        cavity_mask,
+        w,
+        h,
+        min_fs,
+        max_fs,
+        fixed_fs,
+        true,
+        measure_scaled,
+    )
+}
+
+/// Полная версия решателя вёрстки с управлением режимом переполнения (`allow_emergency_shrink`).
+#[allow(clippy::too_many_arguments)]
+pub fn solve_bubble_layout_with_options<F: Fn(&str, f32, f32) -> f32>(
+    text: &str,
+    cavity_mask: &[u8],
+    w: usize,
+    h: usize,
+    min_fs: i32,
+    max_fs: i32,
+    fixed_fs: Option<i32>,
+    allow_emergency_shrink: bool,
+    measure_scaled: F,
+) -> BubbleLayout {
     let chords = compute_scanline_chords(cavity_mask, w, h);
     let mut valid_rows: Vec<(usize, usize)> = Vec::new();
     for (y, ch_opt) in chords.iter().enumerate() {
@@ -203,84 +511,137 @@ pub fn solve_bubble_layout_scaled<F: Fn(&str, f32, f32) -> f32>(
     };
     let cav_h = (cav_bot - cav_top).max(16);
     let allow_condense = cav_h * 100 >= ref_w * 155 || ref_w < 130;
+    let side_pad = 1.5f32;
 
     let try_fs_with_scale = |fs: i32, scale_x: f32| -> (bool, BubbleLayout) {
         let fs_f = fs as f32;
         let line_h = (fs_f * 1.18).max(10.0);
-        let target_wrap_w = (ref_w as f32 * 0.93).max(20.0);
-        let lines = auto_diamond_wrap_lines(text, target_wrap_w, |s| measure_scaled(s, fs_f, scale_x));
-        let total_h = (lines.len() as f32 * line_h).ceil() as usize;
-        let max_line_w = lines
-            .iter()
-            .map(|l| measure_scaled(l, fs_f, scale_x))
-            .fold(0.0f32, f32::max);
+        let target_wrap_w = (ref_w as f32 * 0.90).max(20.0);
+        let mut lines =
+            auto_diamond_wrap_lines(text, target_wrap_w, |s| measure_scaled(s, fs_f, scale_x));
+        let mut total_h = (lines.len() as f32 * line_h).ceil() as usize;
 
-        let fits_h = total_h <= cav_h && !lines.is_empty();
         let mut fits_chords = false;
         let mut chosen_y_start = (cav_top + cav_h / 2).saturating_sub(total_h / 2);
+        let mut line_centers_x: Vec<f32> = Vec::new();
 
-        if fits_h {
+        if total_h <= cav_h && !lines.is_empty() {
             let ideal_start = cav_top + (cav_h - total_h) / 2;
             let min_start = cav_top;
             let max_start = cav_bot.saturating_sub(total_h).max(min_start);
 
-            let check_at = |y_start: usize| -> bool {
-                for (k, line) in lines.iter().enumerate() {
-                    let lw = measure_scaled(line, fs_f, scale_x);
-                    let ly0 = (y_start + (k as f32 * line_h).floor() as usize).clamp(0, h - 1);
-                    let ly1 = (y_start + ((k + 1) as f32 * line_h).ceil() as usize).clamp(ly0 + 1, h);
-                    let mut band_widths: Vec<usize> = Vec::with_capacity(ly1 - ly0);
-                    for y in ly0..ly1 {
-                        if let Some((l, r)) = chords[y] {
-                            band_widths.push(r.saturating_sub(l));
-                        } else {
-                            band_widths.push(0);
-                        }
-                    }
-                    if band_widths.is_empty() {
-                        return false;
-                    }
-                    band_widths.sort_unstable();
-                    // 20-й перцентиль полосы строки (устойчив к 1-2px ступеньке скругления на краю глифа)
-                    let p20 = band_widths[(band_widths.len() * 20) / 100];
-                    if p20 == 0 || lw > (p20 as f32 + 2.5) {
-                        return false;
-                    }
-                }
-                true
-            };
-
-            if check_at(ideal_start) {
+            if let Some(cxs) = validate_lines_in_chords(
+                &lines,
+                &chords,
+                h,
+                ideal_start,
+                line_h,
+                fs_f,
+                scale_x,
+                side_pad,
+                ref_w,
+                &measure_scaled,
+            ) {
                 fits_chords = true;
                 chosen_y_start = ideal_start;
+                line_centers_x = cxs;
             } else {
                 let max_shift = (ideal_start - min_start).max(max_start - ideal_start);
                 let mut delta = 4usize;
                 while delta <= max_shift {
-                    if ideal_start >= min_start + delta && check_at(ideal_start - delta) {
-                        fits_chords = true;
-                        chosen_y_start = ideal_start - delta;
-                        break;
+                    if ideal_start >= min_start + delta {
+                        if let Some(cxs) = validate_lines_in_chords(
+                            &lines,
+                            &chords,
+                            h,
+                            ideal_start - delta,
+                            line_h,
+                            fs_f,
+                            scale_x,
+                            side_pad,
+                            ref_w,
+                            &measure_scaled,
+                        ) {
+                            fits_chords = true;
+                            chosen_y_start = ideal_start - delta;
+                            line_centers_x = cxs;
+                            break;
+                        }
                     }
-                    if ideal_start + delta <= max_start && check_at(ideal_start + delta) {
-                        fits_chords = true;
-                        chosen_y_start = ideal_start + delta;
-                        break;
+                    if ideal_start + delta <= max_start {
+                        if let Some(cxs) = validate_lines_in_chords(
+                            &lines,
+                            &chords,
+                            h,
+                            ideal_start + delta,
+                            line_h,
+                            fs_f,
+                            scale_x,
+                            side_pad,
+                            ref_w,
+                            &measure_scaled,
+                        ) {
+                            fits_chords = true;
+                            chosen_y_start = ideal_start + delta;
+                            line_centers_x = cxs;
+                            break;
+                        }
                     }
                     delta += 4;
                 }
             }
         }
 
+        // Если ровный ромб не поместился по узким верхним/нижним хордам овала,
+        // пересчитываем перенос строк строго под геометрию каждой скан-линии!
+        if !fits_chords {
+            let base_y = chosen_y_start.clamp(cav_top, cav_bot.saturating_sub(1));
+            let y_offsets = [0isize, -4, 4, -8, 8];
+            for &dy in &y_offsets {
+                let try_y = (base_y as isize + dy)
+                    .clamp(cav_top as isize, cav_bot.saturating_sub(1) as isize)
+                    as usize;
+                if let Some((dp_lines, dp_cxs)) = wrap_lines_to_chords(
+                    text,
+                    &chords,
+                    h,
+                    try_y,
+                    line_h,
+                    fs_f,
+                    scale_x,
+                    side_pad,
+                    ref_w,
+                    cav_bot,
+                    &measure_scaled,
+                ) {
+                    let dp_total_h = (dp_lines.len() as f32 * line_h).ceil() as usize;
+                    if dp_total_h <= cav_h {
+                        lines = dp_lines;
+                        total_h = dp_total_h;
+                        chosen_y_start = try_y;
+                        line_centers_x = dp_cxs;
+                        fits_chords = true;
+                        break;
+                    }
+                }
+            }
+        }
+
+        let max_line_w = lines
+            .iter()
+            .map(|l| measure_scaled(l, fs_f, scale_x))
+            .fold(0.0f32, f32::max);
+
         let box_w = (max_line_w.ceil() as usize).max(4).min(w.max(1));
         let box_h = total_h.max(4).min(h.max(1));
         let mut center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
-        if fits_chords {
+        if fits_chords && !line_centers_x.is_empty() {
             let cy_chord = (chosen_y_start + total_h / 2) as i32;
-            let cy_row = (cy_chord as usize).min(h.saturating_sub(1));
-            if let Some((l, r)) = chords[cy_row] {
-                center_xy = [((l + r) / 2) as i32, cy_chord];
-            }
+            let avg_cx =
+                (line_centers_x.iter().sum::<f32>() / (line_centers_x.len() as f32)).round() as i32;
+            center_xy = [avg_cx, cy_chord];
+        } else if line_centers_x.len() != lines.len() {
+            line_centers_x = vec![center_xy[0] as f32; lines.len()];
         }
 
         (
@@ -289,6 +650,7 @@ pub fn solve_bubble_layout_scaled<F: Fn(&str, f32, f32) -> f32>(
                 font_size: fs,
                 scale_x,
                 lines,
+                line_centers_x,
                 center_xy,
                 line_height: line_h,
                 max_line_w,
@@ -337,6 +699,10 @@ pub fn solve_bubble_layout_scaled<F: Fn(&str, f32, f32) -> f32>(
 
     if let Some(lay) = best_layout {
         return lay;
+    }
+
+    if !allow_emergency_shrink {
+        return try_fs(lo_init).1;
     }
 
     // Если даже `min_fs` чуть шире узкого баббла (например, узкий крик `Shut uuuup!` на `002.webp`),

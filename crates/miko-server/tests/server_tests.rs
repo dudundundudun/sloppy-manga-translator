@@ -536,3 +536,154 @@ async fn test_health_glossary_and_security_middleware() {
     let _ = std::fs::remove_dir_all(&ch_dir);
     let _ = std::fs::remove_dir_all(&ch_out);
 }
+
+#[tokio::test]
+async fn test_fonts_catalog_security_and_upload_validation() {
+    use base64::Engine;
+
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_fonts_srv_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    std::fs::create_dir_all(tmp_base.join("fonts")).unwrap();
+
+    let state = AppState::init_in_memory(tmp_base.clone()).expect("init_in_memory");
+    let app = build_router(state);
+
+    // 1. GET /fonts/catalog returns recommended catalog
+    let cat_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/fonts/catalog")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cat_res.status(), StatusCode::OK);
+    let cat_val: Value =
+        serde_json::from_slice(&to_bytes(cat_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    assert_eq!(cat_val["status"], "ok");
+    assert!(cat_val["catalog"].as_array().unwrap().len() >= 4);
+
+    // 2. Evil origin blocked on /fonts/install and /fonts/upload
+    let evil_install = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fonts/install")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evil_install.status(), StatusCode::FORBIDDEN);
+
+    let evil_upload = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fonts/upload")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "filename": "x.ttf", "data_base64": "AAAA" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evil_upload.status(), StatusCode::FORBIDDEN);
+
+    // 3. Path traversal and invalid TTF bytes are rejected with 400
+    let bad_path = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fonts/upload")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "filename": "../evil.ttf", "data_base64": "AAAA" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_path.status(), StatusCode::BAD_REQUEST);
+
+    let bad_bytes = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/fonts/upload")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "filename": "not_a_font.ttf",
+                        "data_base64": base64::engine::general_purpose::STANDARD.encode(vec![0u8; 2048])
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_bytes.status(), StatusCode::BAD_REQUEST);
+
+    // 4. Valid TTF bytes (copy of cc-wild-words-roman.ttf) succeed and update available_fonts
+    let real_ttf_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("fonts")
+        .join("cc-wild-words-roman.ttf");
+    if real_ttf_path.is_file() {
+        let ttf_bytes = std::fs::read(&real_ttf_path).unwrap();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&ttf_bytes);
+        let ok_upload = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/fonts/upload")
+                    .header("host", "127.0.0.1:8000")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        json!({
+                            "filename": "custom-test.ttf",
+                            "data_base64": b64
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ok_upload.status(), StatusCode::OK);
+        let up_val: Value =
+            serde_json::from_slice(&to_bytes(ok_upload.into_body(), 1024 * 1024).await.unwrap())
+                .unwrap();
+        assert_eq!(up_val["status"], "ok");
+        assert_eq!(up_val["font"]["filename"], "custom-test.ttf");
+        assert_eq!(up_val["font_status"]["has_custom_fonts"], true);
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+}

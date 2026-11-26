@@ -1,7 +1,9 @@
-use crate::layout::{harmonize_page_font_sizes, solve_bubble_layout_scaled, BubbleLayout};
+use crate::layout::{
+    harmonize_page_font_sizes, solve_bubble_layout_with_options, BubbleLayout,
+};
 use crate::painter::{
-    draw_text_line_scaled, measure_text_width_scaled, parse_hex_color, resolve_font_for_text,
-    FontCache,
+    check_text_lines_wall_contact, draw_text_line_scaled, measure_text_width_scaled,
+    parse_hex_color, resolve_font_for_text, sanitize_text_for_font, FontCache,
 };
 use crate::typography::{compact_scream_for_narrow_bubble, format_comic_typography};
 use ab_glyph::{Font, FontVec, PxScale, ScaleFont};
@@ -130,7 +132,7 @@ fn build_cavity_mask(
     let cw = (x2 - x1) as usize;
     let ch = (y2 - y1) as usize;
     let oval_mask = build_oval_fallback_mask(cw, ch, blk.is_free_text);
-    let erode_r = if cw.min(ch) < 90 { 3 } else { 5 };
+    let erode_r = if cw.min(ch) < 85 { 4 } else { 6 };
 
     let mut mask = if !blk.is_free_text {
         if let Some(ref poly) = blk.bubble_polygon {
@@ -139,6 +141,7 @@ fn build_cavity_mask(
                 let local_poly: Vec<[i32; 2]> =
                     clipped.iter().map(|&[px, py]| [px - x1, py - y1]).collect();
                 let mut raw_mask = fill_polygon(&local_poly, cw, ch);
+                let mut flood_succeeded = false;
 
                 // Попиксельное уточнение полости на `cleaned_img` (где буквы уже стёрты в белый, а стенки бабблов целы):
                 // возвращает потерянную ширину, если прото-сетка YOLO26s-seg срезала край баббла (`014.webp #4`)!
@@ -196,6 +199,7 @@ fn build_cavity_mask(
                         let flood_area = flood.iter().filter(|&&v| v > 0).count();
                         if flood_area * 100 >= (cw * ch) * 28 {
                             raw_mask = flood;
+                            flood_succeeded = true;
                         }
                     }
                 }
@@ -205,7 +209,7 @@ fn build_cavity_mask(
                     shrunk = raw_mask;
                 }
                 let area = shrunk.iter().filter(|&&v| v > 0).count();
-                if area * 100 < (cw * ch) * 30 {
+                if (!flood_succeeded && area * 100 < (cw * ch) * 30) || area < 64 {
                     for i in 0..(cw * ch) {
                         if oval_mask[i] > 0 {
                             shrunk[i] = 255;
@@ -393,7 +397,10 @@ impl RustRendererEngine {
                 continue;
             }
             let font = self.resolve_block_font(blk, opts, &formatted)?;
-            let layout = solve_bubble_layout_scaled(
+            formatted = sanitize_text_for_font(&font, &formatted);
+            let allow_emergency =
+                blk.overflow_mode.as_deref().unwrap_or(&opts.overflow_mode) != "overflow";
+            let layout = solve_bubble_layout_with_options(
                 &formatted,
                 &cavity,
                 cw,
@@ -401,6 +408,7 @@ impl RustRendererEngine {
                 opts.min_font_size,
                 opts.max_font_size,
                 blk.font_size,
+                allow_emergency,
                 |s, fs, sx| measure_text_width_scaled(&font, fs, sx, s),
             );
             let is_fixed = blk.font_size.is_some() || blk.is_free_text;
@@ -425,7 +433,10 @@ impl RustRendererEngine {
         for (pos, item) in prepared.iter_mut().enumerate() {
             let target_fs = harmonized[pos];
             if !item.is_fixed && target_fs != item.layout.font_size {
-                item.layout = solve_bubble_layout_scaled(
+                let blk_ref = &blocks[item.blk_idx];
+                let allow_emergency =
+                    blk_ref.overflow_mode.as_deref().unwrap_or(&opts.overflow_mode) != "overflow";
+                item.layout = solve_bubble_layout_with_options(
                     &item.formatted,
                     &item.cavity,
                     item.cw,
@@ -433,6 +444,7 @@ impl RustRendererEngine {
                     opts.min_font_size,
                     target_fs,
                     Some(target_fs),
+                    allow_emergency,
                     |s, fs, sx| measure_text_width_scaled(&item.font, fs, sx, s),
                 );
             }
@@ -440,8 +452,23 @@ impl RustRendererEngine {
         }
 
         // Проход 3: защита от вертикального наложения текстовых боксов в соприкасающихся бабблах
-        for pass in 0..2 {
-            let _ = pass;
+        let cavity_y_bounds = |cavity: &[u8], cw: usize, ch: usize| -> (i32, i32) {
+            let mut y_min = ch as i32;
+            let mut y_max = 0i32;
+            for y in 0..ch {
+                let row = y * cw;
+                if cavity[row..row + cw].iter().any(|&v| v > 0) {
+                    y_min = y_min.min(y as i32);
+                    y_max = y_max.max((y + 1) as i32);
+                }
+            }
+            if y_min >= y_max {
+                (0, ch as i32)
+            } else {
+                (y_min, y_max)
+            }
+        };
+        for _pass in 0..2 {
             let len = prepared.len();
             for i in 0..len {
                 for j in (i + 1)..len {
@@ -463,18 +490,22 @@ impl RustRendererEngine {
                     let ov_y = (hi + hj + 4.0) - (cyi - cyj).abs();
                     if ov_x > 0.0 && ov_y > 0.0 {
                         let push = ((ov_y * 0.5).ceil() as i32).max(2);
+                        let (yi_top, yi_bot) =
+                            cavity_y_bounds(&prepared[i].cavity, prepared[i].cw, prepared[i].ch);
+                        let (yj_top, yj_bot) =
+                            cavity_y_bounds(&prepared[j].cavity, prepared[j].cw, prepared[j].ch);
+                        let yi_mid = (yi_top + yi_bot) / 2;
+                        let yj_mid = (yj_top + yj_bot) / 2;
                         if cyi <= cyj {
-                            let min_i = (hi.ceil() as i32 + 2).min(prepared[i].ch as i32 / 2);
-                            let max_j = (prepared[j].ch as i32 - hj.ceil() as i32 - 2)
-                                .max(prepared[j].ch as i32 / 2);
+                            let min_i = (yi_top + hi.ceil() as i32 + 2).min(yi_mid);
+                            let max_j = (yj_bot - hj.ceil() as i32 - 2).max(yj_mid);
                             prepared[i].layout.center_xy[1] =
                                 (prepared[i].layout.center_xy[1] - push).max(min_i);
                             prepared[j].layout.center_xy[1] =
                                 (prepared[j].layout.center_xy[1] + push).min(max_j);
                         } else {
-                            let max_i = (prepared[i].ch as i32 - hi.ceil() as i32 - 2)
-                                .max(prepared[i].ch as i32 / 2);
-                            let min_j = (hj.ceil() as i32 + 2).min(prepared[j].ch as i32 / 2);
+                            let max_i = (yi_bot - hi.ceil() as i32 - 2).max(yi_mid);
+                            let min_j = (yj_top + hj.ceil() as i32 + 2).min(yj_mid);
                             prepared[i].layout.center_xy[1] =
                                 (prepared[i].layout.center_xy[1] + push).min(max_i);
                             prepared[j].layout.center_xy[1] =
@@ -522,7 +553,7 @@ impl RustRendererEngine {
                     }
                 });
 
-            let stroke_opt = blk
+            let mut stroke_opt = blk
                 .stroke_color
                 .as_deref()
                 .and_then(parse_hex_color)
@@ -582,14 +613,56 @@ impl RustRendererEngine {
             let center_page_x = (rx0 + item.layout.center_xy[0]) as f32;
             let top_page_y = (ry0 + item.layout.center_xy[1]) as f32 - total_h * 0.5;
 
+            let mut line_draws: Vec<(f32, f32, &str)> = Vec::with_capacity(n_lines);
             for (k, line) in item.layout.lines.iter().enumerate() {
                 let lw = measure_text_width_scaled(&item.font, px_size, scale_x, line);
+                let line_cx = rx0 as f32
+                    + item
+                        .layout
+                        .line_centers_x
+                        .get(k)
+                        .copied()
+                        .unwrap_or(item.layout.center_xy[0] as f32);
                 let x_left = match blk.align.as_str() {
                     "left" => center_page_x - item.layout.max_line_w * 0.5,
                     "right" => center_page_x + item.layout.max_line_w * 0.5 - lw,
-                    _ => center_page_x - lw * 0.5,
+                    _ => line_cx - lw * 0.5,
                 };
                 let y_baseline = top_page_y + (k as f32) * line_h + ascent;
+                line_draws.push((x_left, y_baseline, line.as_str()));
+            }
+
+            // Адаптивная защитная обводка: включается автоматически, если хотя бы одна буква
+            // касается тёмной стенки баббла, лайнарта или выходит за чистую белую полость.
+            if stroke_opt.is_none() && blk.bg_style != "box" && blk.bg_style != "pill" {
+                let is_dark_text = rgb_lum(fill_rgb) < 128;
+                if check_text_lines_wall_contact(
+                    cleaned_img,
+                    &item.cavity,
+                    item.rect,
+                    item.cw,
+                    item.ch,
+                    &item.font,
+                    px_size,
+                    scale_x,
+                    &line_draws,
+                    is_dark_text,
+                ) {
+                    let halo_rgb = if is_dark_text {
+                        if rgb_lum(bg_rgb) >= 220 {
+                            bg_rgb
+                        } else {
+                            [255, 255, 255]
+                        }
+                    } else {
+                        [16, 16, 20]
+                    };
+                    let halo_w = ((px_size * 0.18).round() as i32).clamp(3, 6);
+                    stroke_opt = Some((halo_rgb, halo_w));
+                }
+            }
+
+            for (x_left, y_baseline, line) in line_draws {
                 draw_text_line_scaled(
                     &mut rendered,
                     &item.font,

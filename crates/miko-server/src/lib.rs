@@ -1,4 +1,5 @@
 pub mod folder_job;
+pub mod fonts;
 pub mod studio;
 
 use axum::body::Body;
@@ -42,7 +43,7 @@ pub struct AppState {
     pub folder_job: RwLock<FolderJobState>,
     pub folder_tx: watch::Sender<u64>,
     pub allowed_roots: AllowedRoots,
-    pub available_fonts: Vec<FontInfo>,
+    pub available_fonts: RwLock<Vec<FontInfo>>,
     pub ort_inventory: OrtInventory,
     pub ocr_engine: Mutex<Option<RustOcrEngine>>,
     pub cleaner_engine: Mutex<Option<RustCleanerEngine>>,
@@ -85,7 +86,7 @@ impl AppState {
             folder_job: RwLock::new(FolderJobState::default()),
             folder_tx,
             allowed_roots,
-            available_fonts: fonts,
+            available_fonts: RwLock::new(fonts),
             ort_inventory,
             ocr_engine: Mutex::new(None),
             cleaner_engine: Mutex::new(None),
@@ -121,7 +122,7 @@ impl AppState {
             folder_job: RwLock::new(FolderJobState::default()),
             folder_tx,
             allowed_roots,
-            available_fonts: fonts,
+            available_fonts: RwLock::new(fonts),
             ort_inventory,
             ocr_engine: Mutex::new(None),
             cleaner_engine: Mutex::new(None),
@@ -132,6 +133,21 @@ impl AppState {
             picker_busy: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Notify::new(),
         }))
+    }
+
+    pub fn get_available_fonts(&self) -> Vec<FontInfo> {
+        self.available_fonts
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn refresh_fonts(&self) -> Vec<FontInfo> {
+        let fresh = list_available_fonts(&self.base_dir.join("fonts"));
+        if let Ok(mut g) = self.available_fonts.write() {
+            *g = fresh.clone();
+        }
+        fresh
     }
 }
 
@@ -178,6 +194,22 @@ async fn serve_ui(State(state): State<Arc<AppState>>) -> Response {
 async fn serve_mascot(State(state): State<Arc<AppState>>) -> Response {
     let mascot_path = state.base_dir.join("mascot.png");
     match tokio::fs::read(&mascot_path).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn serve_mascot_fox(State(state): State<Arc<AppState>>) -> Response {
+    let p = state.base_dir.join("mascot_fox.png");
+    match tokio::fs::read(&p).await {
+        Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
+        Err(_) => StatusCode::NOT_FOUND.into_response(),
+    }
+}
+
+async fn serve_mascot_fox_sprites(State(state): State<Arc<AppState>>) -> Response {
+    let p = state.base_dir.join("mascot_fox_sprites.png");
+    match tokio::fs::read(&p).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
         Err(_) => StatusCode::NOT_FOUND.into_response(),
     }
@@ -244,6 +276,7 @@ struct HealthResponse {
     inpaint_backend: &'static str,
     font: Option<String>,
     available_fonts: Vec<FontInfo>,
+    font_status: Value,
     folder_job: FolderJobState,
 }
 
@@ -254,7 +287,9 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         .db
         .load_glossary("global")
         .unwrap_or_else(|_| cfg.glossary.clone());
-    let first_font = state.available_fonts.first().map(|f| f.path.clone());
+    let fonts = state.refresh_fonts();
+    let font_status = fonts::build_font_status(&state.base_dir.join("fonts"), &fonts);
+    let first_font = fonts.first().map(|f| f.path.clone());
     let glossary_count = global_glossary.len();
 
     Json(HealthResponse {
@@ -313,7 +348,8 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         ocr_engine_updated: true,
         inpaint_backend: "Rust Harmonic + Neural Seg (Phase 3)",
         font: first_font,
-        available_fonts: state.available_fonts.clone(),
+        available_fonts: fonts,
+        font_status,
         folder_job: job,
     })
 }
@@ -565,7 +601,7 @@ async fn get_diagnostics(State(state): State<Arc<AppState>>) -> Json<Value> {
         "version": APP_VERSION_RS,
         "startup_ms": state.startup_ms,
         "uptime_ms": state.started_at.elapsed().as_millis(),
-        "fonts_count": state.available_fonts.len(),
+        "fonts_count": state.get_available_fonts().len(),
         "onnx_ready_count": state.ort_inventory.models.len(),
         "onnx_models": state.ort_inventory.models,
         "cuda_ep_compiled": state.ort_inventory.cuda_ep_compiled,
@@ -802,6 +838,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/", get(serve_ui))
         .route("/ui", get(serve_ui))
         .route("/mascot.png", get(serve_mascot))
+        .route("/mascot_fox.png", get(serve_mascot_fox))
+        .route("/mascot_fox_sprites.png", get(serve_mascot_fox_sprites))
         .route("/health", get(health_check))
         .route("/models", get(get_models))
         .route("/folder_status", get(get_folder_status))
@@ -831,6 +869,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/folder_find_replace", post(folder_job::folder_find_replace))
         .route("/folder_report", get(folder_job::folder_report))
         .route("/chapter_book", get(folder_job::chapter_book))
+        .route("/fonts/catalog", get(fonts::get_fonts_catalog))
+        .route("/fonts/install", post(fonts::install_fonts))
+        .route("/fonts/upload", post(fonts::upload_font))
         .route("/diagnostics", get(get_diagnostics))
         .route("/shutdown", post(shutdown_server))
         .layer(middleware::from_fn(local_security_middleware))

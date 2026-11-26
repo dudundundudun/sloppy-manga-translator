@@ -49,3 +49,9 @@ Desktop.ini
 *.db-wal
 *.db-shm
 miko_studio.db
+
+# 6. Пользовательские и автозагружаемые шрифты
+fonts/*.ttf
+fonts/*.otf
+fonts/*.ttc
+fonts/*.part

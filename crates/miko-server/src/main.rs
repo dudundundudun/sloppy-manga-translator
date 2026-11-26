@@ -108,7 +108,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             miko_server::APP_VERSION_RS,
             state.startup_ms,
             ui_exists,
-            state.available_fonts.len(),
+            state.get_available_fonts().len(),
             state.ort_inventory.models.len(),
             metrics.glossary_rows
         );
@@ -398,6 +398,30 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         addr,
         state.startup_ms
     );
+
+    let bg_state = state.clone();
+    tokio::spawn(async move {
+        let fonts_dir = bg_state.base_dir.join("fonts");
+        if !miko_server::fonts::has_cyrillic_custom_font(&fonts_dir) {
+            let base_ids: Vec<String> = miko_server::fonts::BASE_CYRILLIC_IDS
+                .iter()
+                .map(|s| (*s).to_string())
+                .collect();
+            let rep = miko_server::fonts::download_and_install_fonts(
+                &fonts_dir,
+                Some(&base_ids),
+                false,
+            )
+            .await;
+            bg_state.refresh_fonts();
+            tracing::info!(
+                "Автозагрузка базовых манга-шрифтов: installed={:?}, skipped={:?}, failed={:?}",
+                rep.installed,
+                rep.skipped,
+                rep.failed
+            );
+        }
+    });
 
     axum::serve(listener, app)
         .with_graceful_shutdown(async move {

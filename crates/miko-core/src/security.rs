@@ -54,6 +54,7 @@ pub const PRIVILEGED_ENDPOINTS: &[&str] = &[
     "/ux_telemetry/clear",
     "/ocr_rust",
     "/clean_rust",
+    "/fonts",
 ];
 
 #[derive(Debug, Error, PartialEq, Eq)]
