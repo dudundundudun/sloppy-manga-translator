@@ -20,7 +20,7 @@ use miko_ocr::{OcrOptions, RustOcrEngine};
 use miko_ort::{scan_onnx_inventory, OrtInventory};
 use miko_renderer::{list_available_fonts, FontInfo, RustRendererEngine};
 use miko_translator::{
-    export_glossary_to_sakura_text, export_glossary_to_tsv, merge_glossaries,
+    export_glossary_to_sakura_text, export_glossary_to_tsv, is_refusal_response, merge_glossaries,
     normalize_glossary_entries, RustTranslator,
 };
 use serde::{Deserialize, Serialize};
@@ -36,6 +36,7 @@ pub const APP_VERSION_RS: &str = "7.0.0-rust-alpha";
 
 pub struct AppState {
     pub base_dir: PathBuf,
+    pub persist_config: bool,
     pub started_at: Instant,
     pub startup_ms: u128,
     pub db: StudioDb,
@@ -60,6 +61,7 @@ impl AppState {
         let t0 = Instant::now();
         let db_path = base_dir.join(".miko").join("miko_studio.db");
         let db = StudioDb::open(&db_path)?;
+        let _ = db.purge_refusal_cache(is_refusal_response);
         let cfg = AppConfig::load_defaults_from_config_json(&base_dir);
         if !cfg.glossary.is_empty() && db.load_glossary("global")?.is_empty() {
             let _ = db.replace_glossary("global", &cfg.glossary);
@@ -79,6 +81,7 @@ impl AppState {
 
         Ok(Arc::new(Self {
             base_dir,
+            persist_config: true,
             started_at: t0,
             startup_ms,
             db,
@@ -115,6 +118,7 @@ impl AppState {
         let translator = Arc::new(RustTranslator::new(None));
         Ok(Arc::new(Self {
             base_dir,
+            persist_config: false,
             started_at: t0,
             startup_ms,
             db,
@@ -133,6 +137,14 @@ impl AppState {
             picker_busy: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Notify::new(),
         }))
+    }
+
+    pub fn persist_config_if_enabled(&self, cfg: &AppConfig) {
+        if self.persist_config {
+            if let Err(err) = cfg.save_to_config_json(&self.base_dir) {
+                tracing::warn!("Не удалось сохранить config.json: {}", err);
+            }
+        }
     }
 
     pub fn get_available_fonts(&self) -> Vec<FontInfo> {
@@ -464,6 +476,7 @@ async fn save_glossary(
         }
         if let Ok(mut cfg) = state.config.write() {
             cfg.glossary = norm;
+            state.persist_config_if_enabled(&cfg);
         }
     }
     if let (Some(ref fg), Some(ref fp)) = (&payload.folder_glossary, &payload.folder_path) {
@@ -500,8 +513,17 @@ struct SettingsPayload {
     selected_model: Option<String>,
     unsloth_url: Option<String>,
     unsloth_api_key: Option<String>,
+    clear_api_key: Option<bool>,
     pipeline_mode: Option<String>,
     translation_profile: Option<String>,
+    use_image_context: Option<bool>,
+    local_fallback_model_multilang: Option<String>,
+    anti_censorship_prompt: Option<bool>,
+    anti_censorship_custom_prompt: Option<String>,
+    preflight_nsfw_split: Option<bool>,
+    cloud_only_no_local_fallback: Option<bool>,
+    cloud_fallback_model: Option<String>,
+    ultra_proofread_mode: Option<String>,
     text_filter_mode: Option<String>,
     skip_sighs: Option<bool>,
     skip_sfx: Option<bool>,
@@ -513,7 +535,9 @@ struct SettingsPayload {
     overflow_mode: Option<String>,
     batch_pages: Option<u32>,
     auto_save_web_pages: Option<bool>,
+    auto_export_chapter_book: Option<bool>,
     web_save_dir: Option<String>,
+    ui_settings: Option<Value>,
 }
 
 async fn update_settings(
@@ -534,7 +558,9 @@ async fn update_settings(
     if let Some(u) = payload.unsloth_url {
         cfg.unsloth_url = u.trim().to_string();
     }
-    if let Some(k) = payload.unsloth_api_key {
+    if payload.clear_api_key == Some(true) {
+        cfg.unsloth_api_key.clear();
+    } else if let Some(k) = payload.unsloth_api_key {
         let trimmed = k.trim();
         if !trimmed.is_empty() {
             cfg.unsloth_api_key = trimmed.to_string();
@@ -545,6 +571,32 @@ async fn update_settings(
     }
     if let Some(tp) = payload.translation_profile {
         cfg.translation_profile = tp;
+    }
+    if let Some(v) = payload.use_image_context {
+        cfg.use_image_context = v;
+    }
+    if let Some(fb) = payload.local_fallback_model_multilang {
+        if !fb.trim().is_empty() {
+            cfg.local_fallback_model_multilang = fb.trim().to_string();
+        }
+    }
+    if let Some(v) = payload.anti_censorship_prompt {
+        cfg.anti_censorship_prompt = v;
+    }
+    if let Some(v) = payload.anti_censorship_custom_prompt {
+        cfg.anti_censorship_custom_prompt = v;
+    }
+    if let Some(v) = payload.preflight_nsfw_split {
+        cfg.preflight_nsfw_split = v;
+    }
+    if let Some(v) = payload.cloud_only_no_local_fallback {
+        cfg.cloud_only_no_local_fallback = v;
+    }
+    if let Some(v) = payload.cloud_fallback_model {
+        cfg.cloud_fallback_model = v;
+    }
+    if let Some(v) = payload.ultra_proofread_mode {
+        cfg.ultra_proofread_mode = v;
     }
     if let Some(tfm) = payload.text_filter_mode {
         cfg.text_filter_mode = tfm;
@@ -579,18 +631,105 @@ async fn update_settings(
     if let Some(v) = payload.auto_save_web_pages {
         cfg.auto_save_web_pages = v;
     }
+    if let Some(v) = payload.auto_export_chapter_book {
+        cfg.auto_export_chapter_book = v;
+    }
     if let Some(v) = payload.web_save_dir {
-        if !v.trim().is_empty() {
-            cfg.web_save_dir = v.trim().to_string();
+        let trimmed = v.trim();
+        if !trimmed.is_empty() {
+            cfg.web_save_dir = trimmed.to_string();
+            let p = PathBuf::from(trimmed);
+            if p.exists() {
+                let _ = state.allowed_roots.register_root(&p);
+            }
         }
     }
+    if let Some(ui) = payload.ui_settings {
+        if ui.is_object() {
+            cfg.ui_settings = ui;
+        }
+    }
+
+    state.persist_config_if_enabled(&cfg);
+
     Json(json!({
         "status": "ok",
         "selected_model": cfg.selected_model,
+        "local_fallback_model_multilang": cfg.local_fallback_model_multilang,
         "pipeline_mode": cfg.pipeline_mode,
+        "translation_profile": cfg.translation_profile,
+        "uppercase": cfg.uppercase,
+        "anti_censorship_prompt": cfg.anti_censorship_prompt,
+        "has_unsloth_key": !cfg.unsloth_api_key.trim().is_empty(),
         "masked_api_key": mask_api_key(Some(&cfg.unsloth_api_key)),
     }))
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct ModelStackPayload {
+    action: Option<String>,
+    preset_id: Option<String>,
+    stack: Option<Value>,
+}
+
+async fn get_model_stack(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let cfg = state.config.read().expect("config rwlock").clone();
+    Json(json!({
+        "status": "ok",
+        "active_model": cfg.selected_model,
+        "default_model_stack": {
+            "translation_model": cfg.selected_model,
+            "fallback_model": cfg.local_fallback_model_multilang,
+            "pipeline_mode": cfg.pipeline_mode,
+            "translation_profile": cfg.translation_profile,
+        },
+        "built_in_presets": [],
+        "saved_model_stacks": [],
+    }))
+}
+
+async fn post_model_stack(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ModelStackPayload>,
+) -> Json<Value> {
+    let mut cfg = state.config.write().expect("config rwlock");
+    if let Some(st) = payload.stack.as_ref().and_then(|v| v.as_object()) {
+        if let Some(tm) = st.get("translation_model").and_then(|v| v.as_str()) {
+            if !tm.trim().is_empty() {
+                cfg.selected_model = tm.trim().to_string();
+            }
+        }
+        if let Some(fb) = st.get("fallback_model").and_then(|v| v.as_str()) {
+            if !fb.trim().is_empty() {
+                cfg.local_fallback_model_multilang = fb.trim().to_string();
+            }
+        }
+        if let Some(pm) = st.get("pipeline_mode").and_then(|v| v.as_str()) {
+            cfg.pipeline_mode = pm.trim().to_string();
+        }
+        if let Some(tp) = st.get("translation_profile").and_then(|v| v.as_str()) {
+            cfg.translation_profile = tp.trim().to_string();
+        }
+    } else if let Some(pid) = payload.preset_id.as_deref() {
+        if pid.contains("flash") || pid == "cloud_fast" {
+            cfg.selected_model = "unsloth::deepseek-v4-flash".to_string();
+        }
+    }
+    let _ = payload.action;
+    state.persist_config_if_enabled(&cfg);
+    let applied = json!({
+        "translation_model": cfg.selected_model,
+        "fallback_model": cfg.local_fallback_model_multilang,
+        "pipeline_mode": cfg.pipeline_mode,
+        "translation_profile": cfg.translation_profile,
+    });
+    Json(json!({
+        "status": "ok",
+        "active_model": cfg.selected_model,
+        "applied_stack": applied,
+        "default_model_stack": applied,
+    }))
 }
 
 async fn get_diagnostics(State(state): State<Arc<AppState>>) -> Json<Value> {
@@ -846,6 +985,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/folder_stream", get(stream_folder_status))
         .route("/glossary", get(get_glossary).post(save_glossary))
         .route("/settings", post(update_settings))
+        .route("/model_stack", get(get_model_stack).post(post_model_stack))
         .route("/ocr_rust", post(run_ocr_rust))
         .route("/clean_rust", post(run_clean_rust))
         .route("/local_image", get(studio::local_image))

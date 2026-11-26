@@ -16,6 +16,8 @@ pub enum TranslatorError {
     Http(#[from] reqwest::Error),
     #[error("LLM-сервер вернул статус {status}: {body}")]
     ApiStatus { status: u16, body: String },
+    #[error("Цензурный отказ облачной модели")]
+    Refused,
     #[error("Не удалось получить переводы (сервер недоступен или вернул отказ)")]
     UnavailableOrRefused,
 }
@@ -38,6 +40,8 @@ pub struct TranslateBatchRequest {
     pub blocks: Vec<TextBlock>,
     pub target_lang: String,
     pub model: String,
+    pub fallback_model: String,
+    pub cloud_only_no_local_fallback: bool,
     pub cloud_url: String,
     pub cloud_api_key: String,
     pub glossary: Vec<GlossaryEntry>,
@@ -51,12 +55,14 @@ impl Default for TranslateBatchRequest {
         Self {
             blocks: Vec::new(),
             target_lang: "ru".to_string(),
-            model: "auto".to_string(),
+            model: "unsloth::deepseek-v4-flash".to_string(),
+            fallback_model: "auto".to_string(),
+            cloud_only_no_local_fallback: false,
             cloud_url: String::new(),
             cloud_api_key: String::new(),
             glossary: Vec::new(),
             context_lines: Vec::new(),
-            anti_censorship: false,
+            anti_censorship: true,
             use_cache: true,
         }
     }
@@ -181,8 +187,9 @@ impl RustTranslator {
             .as_str()
             .unwrap_or("")
             .to_string();
-        if is_refusal_response(&content) {
-            return Err(TranslatorError::UnavailableOrRefused);
+        // Если ответ вообще не похож на JSON-объект и содержит цензурный отказ — сигнализируем Refused без размыкания circuit breaker!
+        if (!content.contains('{') || !content.contains('}')) && is_refusal_response(&content) {
+            return Err(TranslatorError::Refused);
         }
         Ok(content)
     }
@@ -197,8 +204,12 @@ impl RustTranslator {
         let body = json!({
             "model": model,
             "stream": false,
+            "think": false,
             "format": "json",
-            "options": {"temperature": 0.25},
+            "options": {
+                "temperature": 0.25,
+                "num_ctx": 8192
+            },
             "messages": [
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt}
@@ -217,22 +228,101 @@ impl RustTranslator {
             .to_string())
     }
 
+    /// Проверяет локальную Ollama и при необходимости автоматически поднимает `ollama serve` в фоне.
+    pub async fn ensure_ollama_models(&self) -> Vec<String> {
+        let initial = self.list_ollama_models().await;
+        if !initial.is_empty() {
+            return initial;
+        }
+        // Если порт 11434 вообще не отвечает, пробуем тихо запустить фоновый демон `ollama serve`
+        let url = format!("{}/api/tags", self.ollama_base_url);
+        let reachable = self
+            .http_local
+            .get(&url)
+            .timeout(Duration::from_millis(800))
+            .send()
+            .await
+            .is_ok();
+        if reachable {
+            return initial;
+        }
+
+        let mut cmd = std::process::Command::new("ollama");
+        cmd.arg("serve")
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+            cmd.creation_flags(CREATE_NO_WINDOW);
+        }
+        if cmd.spawn().is_ok() {
+            for _ in 0..10 {
+                tokio::time::sleep(Duration::from_millis(450)).await;
+                let tags = self.list_ollama_models().await;
+                if !tags.is_empty() {
+                    return tags;
+                }
+            }
+        }
+        self.list_ollama_models().await
+    }
+
     fn resolve_cloud_model(requested: &str) -> &str {
         let (prefix, bare) = strip_model_prefix(requested);
         if matches!(prefix, Some("ollama")) || bare.is_empty() || bare.eq_ignore_ascii_case("auto") {
-            "deepseek-chat"
+            "deepseek-v4-flash"
         } else {
             bare
         }
     }
 
-    fn pick_best_ollama_tag(tags: &[String]) -> Option<String> {
-        for pref in ["sugoi", "shisa", "qwen", "aya", "gemma"] {
-            if let Some(hit) = tags.iter().find(|t| t.to_ascii_lowercase().contains(pref)) {
+    fn pick_best_ollama_tag(tags: &[String], preferred_fallback: &str) -> Option<String> {
+        let (_, pref_bare) = strip_model_prefix(preferred_fallback);
+        if !pref_bare.is_empty() && !pref_bare.eq_ignore_ascii_case("auto") {
+            if let Some(exact) = tags.iter().find(|t| t.eq_ignore_ascii_case(pref_bare)) {
+                return Some(exact.clone());
+            }
+            let short_pref = pref_bare.split('/').next_back().unwrap_or(pref_bare);
+            if !short_pref.is_empty() {
+                if let Some(hit) = tags
+                    .iter()
+                    .find(|t| t.to_ascii_lowercase().contains(&short_pref.to_ascii_lowercase()))
+                {
+                    return Some(hit.clone());
+                }
+            }
+        }
+        for pref in [
+            "abliterated",
+            "uncensored",
+            "heretic",
+            "shisa",
+            "gemma4",
+            "translategemma",
+            "gemma3",
+            "qwen3.5",
+            "qwen3.6",
+            "qwen3",
+            "sugoi",
+            "aya",
+        ] {
+            if let Some(hit) = tags.iter().find(|t| {
+                let low = t.to_ascii_lowercase();
+                low.contains(pref) && !low.contains("-vl") && !low.contains("glm-ocr")
+            }) {
                 return Some(hit.clone());
             }
         }
-        tags.first().cloned()
+        tags.iter()
+            .find(|t| {
+                let low = t.to_ascii_lowercase();
+                !low.contains("-vl") && !low.contains("glm-ocr")
+            })
+            .or_else(|| tags.first())
+            .cloned()
     }
 
     fn is_pure_kana_ascii(text: &str) -> bool {
@@ -338,7 +428,7 @@ impl RustTranslator {
                     req.anti_censorship,
                 );
 
-                let mut parsed_map: HashMap<String, String> = HashMap::new();
+                let mut parsed_map: HashMap<String, (String, String)> = HashMap::new();
                 if has_cloud && !self.cloud_breaker.is_open() {
                     api_calls += 1;
                     match self
@@ -356,10 +446,23 @@ impl RustTranslator {
                             if !m.is_empty() {
                                 self.cloud_breaker.record_success();
                                 active_model = cloud_model.clone();
-                                parsed_map = m;
-                            } else {
+                                for (k, v) in m {
+                                    parsed_map.insert(k, (v, cloud_model.clone()));
+                                }
+                            } else if !is_refusal_response(&raw) {
                                 self.cloud_breaker.record_failure();
+                            } else {
+                                tracing::info!(
+                                    "Облако ({}) зацензурило батч — мгновенное переключение на локальную модель",
+                                    cloud_model
+                                );
                             }
+                        }
+                        Err(TranslatorError::Refused) => {
+                            tracing::info!(
+                                "Облако ({}) вернуло отказ цензуры — переключаемся на локальную модель",
+                                cloud_model
+                            );
                         }
                         Err(err) => {
                             tracing::warn!("Облачный переводчик не ответил: {}", err);
@@ -368,29 +471,59 @@ impl RustTranslator {
                     }
                 }
 
-                if parsed_map.is_empty() && !self.ollama_breaker.is_open() {
+                // Если все или часть реплик не переведены (например, облако зацензурило отдельные 18+ фразы в батче),
+                // мгновенно допереводим недостающие ключи через локальную модель!
+                let allow_local = is_explicit_ollama || !req.cloud_only_no_local_fallback;
+                if parsed_map.len() < expected_keys.len()
+                    && allow_local
+                    && !self.ollama_breaker.is_open()
+                {
                     let ollama_model_opt = if is_explicit_ollama && !req_bare.is_empty() {
+                        let _ = self.ensure_ollama_models().await;
                         Some(req_bare.to_string())
                     } else {
-                        let tags = self.list_ollama_models().await;
-                        Self::pick_best_ollama_tag(&tags)
+                        let tags = self.ensure_ollama_models().await;
+                        Self::pick_best_ollama_tag(&tags, &req.fallback_model)
                     };
+
                     if let Some(ollama_model) = ollama_model_opt {
-                        api_calls += 1;
-                        match self.call_ollama_chat(&ollama_model, &sys_p, &user_p).await {
-                            Ok(raw) => {
-                                let m = parse_flat_json_translations(&raw, &expected_keys);
-                                if !m.is_empty() {
-                                    self.ollama_breaker.record_success();
-                                    active_model = ollama_model;
-                                    parsed_map = m;
-                                } else {
+                        let mut fb_items = Vec::new();
+                        let mut fb_keys = Vec::new();
+                        for (k, src, budget) in &items {
+                            if !parsed_map.contains_key(k) {
+                                fb_keys.push(k.clone());
+                                fb_items.push((k.clone(), src.clone(), *budget));
+                            }
+                        }
+                        if !fb_items.is_empty() {
+                            let (fb_sys, fb_user) = build_translation_prompts(
+                                &t_lang,
+                                &fb_items,
+                                &req.glossary,
+                                &req.context_lines,
+                                true,
+                            );
+                            api_calls += 1;
+                            match self
+                                .call_ollama_chat(&ollama_model, &fb_sys, &fb_user)
+                                .await
+                            {
+                                Ok(raw) => {
+                                    let m = parse_flat_json_translations(&raw, &fb_keys);
+                                    if !m.is_empty() {
+                                        self.ollama_breaker.record_success();
+                                        active_model = ollama_model.clone();
+                                        for (k, v) in m {
+                                            parsed_map.insert(k, (v, ollama_model.clone()));
+                                        }
+                                    } else {
+                                        self.ollama_breaker.record_failure();
+                                    }
+                                }
+                                Err(err) => {
+                                    tracing::warn!("Ollama ({}) не ответила: {}", ollama_model, err);
                                     self.ollama_breaker.record_failure();
                                 }
-                            }
-                            Err(err) => {
-                                tracing::warn!("Ollama не ответила: {}", err);
-                                self.ollama_breaker.record_failure();
                             }
                         }
                     }
@@ -398,28 +531,44 @@ impl RustTranslator {
 
                 for (pos, &b_idx) in chunk.iter().enumerate() {
                     let k = pos.to_string();
-                    if let Some(tr) = parsed_map.get(&k) {
+                    if let Some((tr, used_model)) = parsed_map.get(&k) {
                         blocks[b_idx].translated_text = tr.clone();
                         if let Some(store) = db {
-                            let ckey = compute_translation_cache_key(
-                                blocks[b_idx].original_text.trim(),
-                                &t_lang,
-                                &active_model,
-                                &req.glossary,
-                            );
-                            let _ = store.put_cached_translation(
-                                &ckey,
-                                blocks[b_idx].original_text.trim(),
-                                &t_lang,
-                                tr,
-                                &active_model,
-                            );
+                            // Кэшируем и под запрошенной моделью (если сработал фоллбэк на цензуру, чтобы повторно не биться в облако), и под самой моделью
+                            for cache_m in [&active_model, used_model, &cloud_model] {
+                                if cache_m.trim().is_empty() {
+                                    continue;
+                                }
+                                let ckey = compute_translation_cache_key(
+                                    blocks[b_idx].original_text.trim(),
+                                    &t_lang,
+                                    cache_m,
+                                    &req.glossary,
+                                );
+                                let _ = store.put_cached_translation(
+                                    &ckey,
+                                    blocks[b_idx].original_text.trim(),
+                                    &t_lang,
+                                    tr,
+                                    used_model,
+                                );
+                            }
                         }
                     } else if t_lang == "romaji" {
                         blocks[b_idx].translated_text =
                             kana_to_romaji(blocks[b_idx].original_text.trim());
                     }
                 }
+            }
+
+            // Защита от пустых белых страниц со статусом «Готово»:
+            // если ни один из запрошенных блоков на странице так и не получил перевод, возвращаем явную ошибку!
+            let translated_now = missing_indices
+                .iter()
+                .filter(|&&i| !blocks[i].translated_text.trim().is_empty())
+                .count();
+            if translated_now == 0 && t_lang != "romaji" {
+                return Err(TranslatorError::UnavailableOrRefused);
             }
         }
 
@@ -462,6 +611,7 @@ impl RustTranslator {
                     context_lines: Vec::new(),
                     anti_censorship,
                     use_cache: true,
+                    ..Default::default()
                 },
                 db,
             )

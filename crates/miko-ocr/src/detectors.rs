@@ -632,11 +632,12 @@ fn compute_neighbor_aware_clip_rect(idx: usize, bubbles: &[BubbleDetection]) -> 
     rect
 }
 
-/// Удаляет родительские контейнеры («матрёшки»), которые целиком накрывают 2+ отдельных под-баббла
-/// (регрессия `018.webp #8/#9/#10`, где общий бокс сдвоенного баббла дублировал оба дочерних баббла).
+/// Разрешает вложенные контейнеры («матрёшки»):
+/// 1) Если родитель целиком накрывает 2+ полноценных под-баббла с суммарной площадью >= 68% (`018.webp #8/#9/#10`) — удаляет лишнего родителя.
+/// 2) Если внутри одного широкого баббла детектор дополнительно выделил узкие осколки отдельных японских колонок с суммарной площадью < 62% (`021.webp #5/#7` внутри `#6`) — удаляет осколки и сохраняет целый баббл!
 pub fn suppress_parent_containers(bubbles: &mut Vec<BubbleDetection>) {
     let n = bubbles.len();
-    if n < 3 {
+    if n < 2 {
         return;
     }
     let areas: Vec<f32> = bubbles
@@ -646,7 +647,7 @@ pub fn suppress_parent_containers(bubbles: &mut Vec<BubbleDetection>) {
     let mut drop_flags = vec![false; n];
 
     for i in 0..n {
-        if bubbles[i].is_free_text {
+        if drop_flags[i] || bubbles[i].is_free_text {
             continue;
         }
         let area_p = areas[i];
@@ -669,8 +670,24 @@ pub fn suppress_parent_containers(bubbles: &mut Vec<BubbleDetection>) {
         }
         if children.len() >= 2 {
             let sum_child_area: f32 = children.iter().map(|&ck| areas[ck]).sum();
-            if sum_child_area >= area_p * 0.52 {
+            if sum_child_area >= area_p * 0.68 {
                 drop_flags[i] = true;
+            } else if sum_child_area < area_p * 0.62 {
+                for &ck in &children {
+                    if areas[ck] < area_p * 0.58 && box_iomin(bubbles[i].bbox, bubbles[ck].bbox) >= 0.80 {
+                        drop_flags[ck] = true;
+                    }
+                }
+            }
+        } else if children.len() == 1 {
+            let ck = children[0];
+            let cw = bubbles[ck].bbox[2] - bubbles[ck].bbox[0];
+            let pw = bubbles[i].bbox[2] - bubbles[i].bbox[0];
+            if areas[ck] < area_p * 0.52
+                && cw < (pw * 60 / 100)
+                && box_iomin(bubbles[i].bbox, bubbles[ck].bbox) >= 0.85
+            {
+                drop_flags[ck] = true;
             }
         }
     }

@@ -194,6 +194,27 @@ impl StudioDb {
         }
     }
 
+    pub fn purge_refusal_cache<F: Fn(&str) -> bool>(&self, is_bad: F) -> Result<usize, StorageError> {
+        let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
+        let mut bad_keys: Vec<String> = Vec::new();
+        {
+            let mut stmt =
+                guard.prepare("SELECT cache_key, translated_text FROM translation_cache")?;
+            let mut rows = stmt.query([])?;
+            while let Some(row) = rows.next()? {
+                let k: String = row.get(0)?;
+                let txt: String = row.get(1)?;
+                if txt.trim().is_empty() || is_bad(&txt) {
+                    bad_keys.push(k);
+                }
+            }
+        }
+        for k in &bad_keys {
+            guard.execute("DELETE FROM translation_cache WHERE cache_key = ?1", params![k])?;
+        }
+        Ok(bad_keys.len())
+    }
+
     pub fn metrics(&self) -> Result<StorageMetrics, StorageError> {
         let guard = self.conn.lock().map_err(|_| StorageError::LockPoisoned)?;
         let t_rows: i64 =

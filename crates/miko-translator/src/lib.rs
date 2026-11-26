@@ -190,11 +190,12 @@ mod tests {
         let k2 = compute_translation_cache_key("太郎が来た", "ru", "m1", &[g[0].clone()]);
         assert_eq!(k1, k2);
 
-        let raw_llm = "<think>reasoning</think>\n```json\n{\"0\": \"Таро пришёл! [shape: oval]\", \"1\": \"I cannot translate this\"}\n```";
-        let keys = vec!["0".to_string(), "1".to_string()];
+        let raw_llm = "<think>reasoning</think>\n```json\n{\"0\": \"Таро пришёл! [shape: oval]\", \"1\": \"I cannot translate this\", \"2\": \"I can’t translate sexualized content involving a minor.\"}\n```";
+        let keys = vec!["0".to_string(), "1".to_string(), "2".to_string()];
         let parsed = parse_flat_json_translations(raw_llm, &keys);
         assert_eq!(parsed.get("0").map(String::as_str), Some("Таро пришёл!"));
         assert!(!parsed.contains_key("1"));
+        assert!(!parsed.contains_key("2"), "curly apostrophe refusal must be stripped");
 
         assert_eq!(
             strip_model_prefix("unsloth::deepseek-v4-flash"),
@@ -271,6 +272,83 @@ mod tests {
         assert_eq!(res2.api_calls, 0);
         assert_eq!(res2.cache_hits, 2);
         assert_eq!(res2.blocks[0].translated_text, "Привет, мир!");
+    }
+
+    #[tokio::test]
+    async fn test_cloud_partial_censorship_falls_back_to_local_ollama_only_for_censored_keys() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // 1. Mock Cloud: переводит "0", но цензурит "1" с кривым апострофом ’
+        let cloud_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind cloud");
+        let cloud_addr = cloud_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = cloud_listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let body = "{\"choices\":[{\"message\":{\"content\":\"{\\\"0\\\":\\\"So cute.\\\",\\\"1\\\":\\\"I can\\u2019t translate sexualized content involving a minor.\\\"}\"}}]}";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        // 2. Mock Local Ollama: отдаёт список моделей (/api/tags) и допереводит зацензуренный ключ (/api/chat)
+        let ollama_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ollama");
+        let ollama_addr = ollama_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                if let Ok((mut sock, _)) = ollama_listener.accept().await {
+                    let mut buf = vec![0u8; 8192];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req_str = String::from_utf8_lossy(&buf[..n]);
+                    let body = if req_str.starts_with("GET /api/tags") {
+                        r#"{"models":[{"name":"huihui_ai/qwen3.5-abliterated:9b"}]}"#
+                    } else {
+                        r#"{"message":{"content":"{\"1\":\"I was stripped naked.\"}"}}"#
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                }
+            }
+        });
+
+        let db = miko_core::StudioDb::open_in_memory().expect("db");
+        let tr = RustTranslator::new(Some(format!("http://{ollama_addr}")));
+        let req = TranslateBatchRequest {
+            blocks: vec![
+                miko_core::TextBlock {
+                    id: 1,
+                    bbox: [10, 10, 150, 120],
+                    original_text: "可愛いなぁ".into(),
+                    ..Default::default()
+                },
+                miko_core::TextBlock {
+                    id: 2,
+                    bbox: [10, 140, 150, 260],
+                    original_text: "私は裸にされていました".into(),
+                    ..Default::default()
+                },
+            ],
+            target_lang: "en".into(),
+            model: "unsloth::deepseek-v4-flash".into(),
+            fallback_model: "ollama::huihui_ai/qwen3.5-abliterated:9b".into(),
+            cloud_url: format!("http://{cloud_addr}/v1"),
+            cloud_api_key: "sk-test".into(),
+            ..Default::default()
+        };
+
+        let res = tr.translate_blocks(req, Some(&db)).await.expect("fallback ok");
+        assert_eq!(res.blocks[0].translated_text, "So cute.");
+        assert_eq!(res.blocks[1].translated_text, "I was stripped naked.");
+        assert!(!res.blocks[1].translated_text.contains("translate"));
     }
 }
 

@@ -293,6 +293,8 @@ async fn run_full_rgb_pipeline(
                 blocks: ocr_res.blocks,
                 target_lang: target_lang.clone(),
                 model: model_override.unwrap_or(cfg.selected_model),
+                fallback_model: cfg.local_fallback_model_multilang,
+                cloud_only_no_local_fallback: cfg.cloud_only_no_local_fallback,
                 cloud_url: cfg.unsloth_url,
                 cloud_api_key: cfg.unsloth_api_key,
                 glossary,

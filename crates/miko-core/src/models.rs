@@ -330,6 +330,7 @@ pub struct AppConfig {
     pub use_image_context: bool,
     pub local_fallback_model_multilang: String,
     pub anti_censorship_prompt: bool,
+    pub anti_censorship_custom_prompt: String,
     pub preflight_nsfw_split: bool,
     pub cloud_only_no_local_fallback: bool,
     pub cloud_fallback_model: String,
@@ -341,7 +342,7 @@ pub struct AppConfig {
 impl AppConfig {
     pub fn default_with_base(base_dir: &Path) -> Self {
         Self {
-            selected_model: "auto".to_string(),
+            selected_model: "unsloth::deepseek-v4-flash".to_string(),
             unsloth_url: String::new(),
             unsloth_api_key: String::new(),
             auto_save_web_pages: true,
@@ -361,7 +362,8 @@ impl AppConfig {
             pipeline_mode: "balanced".to_string(),
             use_image_context: false,
             local_fallback_model_multilang: "auto".to_string(),
-            anti_censorship_prompt: false,
+            anti_censorship_prompt: true,
+            anti_censorship_custom_prompt: String::new(),
             preflight_nsfw_split: true,
             cloud_only_no_local_fallback: false,
             cloud_fallback_model: "auto".to_string(),
@@ -369,6 +371,94 @@ impl AppConfig {
             ui_settings: serde_json::json!({}),
             glossary: Vec::new(),
         }
+    }
+
+    /// Сохраняет актуальные настройки в `config.json` атомарно (с сохранением пользовательских стеков и прочих полей).
+    pub fn save_to_config_json(&self, base_dir: &Path) -> std::io::Result<()> {
+        let cfg_path = base_dir.join("config.json");
+        let mut root = std::fs::read_to_string(&cfg_path)
+            .ok()
+            .and_then(|raw| serde_json::from_str::<serde_json::Value>(&raw).ok())
+            .filter(|v| v.is_object())
+            .unwrap_or_else(|| serde_json::json!({}));
+
+        if let Some(obj) = root.as_object_mut() {
+            obj.insert("selected_model".into(), serde_json::json!(self.selected_model));
+            obj.insert("unsloth_url".into(), serde_json::json!(self.unsloth_url));
+            obj.insert("unsloth_api_key".into(), serde_json::json!(self.unsloth_api_key));
+            obj.insert("auto_save_web_pages".into(), serde_json::json!(self.auto_save_web_pages));
+            obj.insert("auto_export_chapter_book".into(), serde_json::json!(self.auto_export_chapter_book));
+            obj.insert("web_save_dir".into(), serde_json::json!(self.web_save_dir));
+            obj.insert("text_filter_mode".into(), serde_json::json!(self.text_filter_mode));
+            obj.insert("skip_sighs".into(), serde_json::json!(self.skip_sighs));
+            obj.insert("skip_sfx".into(), serde_json::json!(self.skip_sfx));
+            obj.insert("detect_free_text".into(), serde_json::json!(self.detect_free_text));
+            obj.insert("min_text_length".into(), serde_json::json!(self.min_text_length));
+            obj.insert("min_font_size".into(), serde_json::json!(self.min_font_size));
+            obj.insert("max_font_size".into(), serde_json::json!(self.max_font_size));
+            obj.insert("uppercase".into(), serde_json::json!(self.uppercase));
+            obj.insert("overflow_mode".into(), serde_json::json!(self.overflow_mode));
+            obj.insert("batch_pages".into(), serde_json::json!(self.batch_pages));
+            obj.insert("translation_profile".into(), serde_json::json!(self.translation_profile));
+            obj.insert("pipeline_mode".into(), serde_json::json!(self.pipeline_mode));
+            obj.insert("use_image_context".into(), serde_json::json!(self.use_image_context));
+            obj.insert(
+                "local_fallback_model_multilang".into(),
+                serde_json::json!(self.local_fallback_model_multilang),
+            );
+            obj.insert(
+                "anti_censorship_prompt".into(),
+                serde_json::json!(self.anti_censorship_prompt),
+            );
+            if !self.anti_censorship_custom_prompt.trim().is_empty() {
+                obj.insert(
+                    "anti_censorship_custom_prompt".into(),
+                    serde_json::json!(self.anti_censorship_custom_prompt),
+                );
+            }
+            obj.insert("preflight_nsfw_split".into(), serde_json::json!(self.preflight_nsfw_split));
+            obj.insert(
+                "cloud_only_no_local_fallback".into(),
+                serde_json::json!(self.cloud_only_no_local_fallback),
+            );
+            obj.insert("cloud_fallback_model".into(), serde_json::json!(self.cloud_fallback_model));
+            obj.insert("ultra_proofread_mode".into(), serde_json::json!(self.ultra_proofread_mode));
+            if self.ui_settings.is_object() {
+                obj.insert("ui_settings".into(), self.ui_settings.clone());
+            }
+            if let Ok(g_val) = serde_json::to_value(&self.glossary) {
+                obj.insert("glossary".into(), g_val);
+            }
+            let stack_entry = obj
+                .entry("default_model_stack".to_string())
+                .or_insert_with(|| serde_json::json!({}));
+            if let Some(st_obj) = stack_entry.as_object_mut() {
+                st_obj.insert("translation_model".into(), serde_json::json!(self.selected_model));
+                if !self.local_fallback_model_multilang.trim().is_empty()
+                    && self.local_fallback_model_multilang != "auto"
+                {
+                    st_obj.insert(
+                        "fallback_model".into(),
+                        serde_json::json!(self.local_fallback_model_multilang),
+                    );
+                }
+                st_obj.insert("pipeline_mode".into(), serde_json::json!(self.pipeline_mode));
+                st_obj.insert(
+                    "translation_profile".into(),
+                    serde_json::json!(self.translation_profile),
+                );
+            }
+        }
+
+        let body = serde_json::to_vec_pretty(&root)
+            .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+        let tmp_path = base_dir.join("config.tmp.json");
+        std::fs::write(&tmp_path, body)?;
+        if cfg_path.exists() {
+            let _ = std::fs::remove_file(&cfg_path);
+        }
+        std::fs::rename(&tmp_path, &cfg_path)?;
+        Ok(())
     }
 
     /// Читает безопасные дефолты из config.json без раскрытия секретных ключей наружу.
@@ -457,6 +547,23 @@ impl AppConfig {
         }
         if let Some(v) = pick_bool("anti_censorship_prompt") {
             cfg.anti_censorship_prompt = v;
+        }
+        if let Some(v) = pick_str("anti_censorship_custom_prompt") {
+            cfg.anti_censorship_custom_prompt = v;
+        }
+        if (cfg.local_fallback_model_multilang.trim().is_empty()
+            || cfg.local_fallback_model_multilang == "auto")
+            && obj.get("default_model_stack").is_some()
+        {
+            if let Some(fb) = obj
+                .get("default_model_stack")
+                .and_then(|s| s.get("fallback_model"))
+                .and_then(|v| v.as_str())
+            {
+                if !fb.trim().is_empty() {
+                    cfg.local_fallback_model_multilang = fb.trim().to_string();
+                }
+            }
         }
         if let Some(v) = pick_bool("preflight_nsfw_split") {
             cfg.preflight_nsfw_split = v;

@@ -486,4 +486,36 @@ mod tests {
         assert!(!sanitized.contains('—'), "em-dash should fallback: {sanitized}");
         assert!(sanitized.contains("--"), "expected '--' fallback: {sanitized}");
     }
+
+    #[test]
+    fn test_tall_flared_scream_bubble_stays_vertically_centered() {
+        // Регрессия 012.webp #1 ("BIG BANG!") и 013.webp #1 ("WAAAH!!"):
+        // высокий крик слегка шире у самого потолка (115px) и чуть уже посередине (105px) —
+        // текст НЕ должен улетать под потолок, оставляя 80% баббла снизу пустыми!
+        let (w, h) = (136usize, 380usize);
+        let mut mask = vec![0u8; w * h];
+        for y in 12..368 {
+            let half = if y < 65 { 56usize } else { 51usize };
+            let cx = w / 2;
+            for x in (cx - half)..(cx + half) {
+                mask[y * w + x] = 255;
+            }
+        }
+        let lay = solve_bubble_layout_with_options(
+            "WAAAH!!",
+            &mask,
+            w,
+            h,
+            12,
+            32,
+            None,
+            true,
+            |s, fs, sx| (s.chars().count() as f32) * fs * 0.62 * sx,
+        );
+        let cy = lay.center_xy[1];
+        assert!(
+            (130..=250).contains(&cy),
+            "scream text jumped out of vertical center: cy={cy} (expected 130..=250 in h={h})"
+        );
+    }
 }

@@ -687,3 +687,67 @@ async fn test_fonts_catalog_security_and_upload_validation() {
 
     let _ = std::fs::remove_dir_all(&tmp_base);
 }
+
+#[tokio::test]
+async fn test_settings_persistence_across_restarts_and_deepseek_flash_default() {
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_cfg_persist_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    std::fs::create_dir_all(tmp_base.join("fonts")).unwrap();
+
+    // 1. Fresh AppState::init defaults to unsloth::deepseek-v4-flash
+    let st1 = AppState::init(tmp_base.clone()).expect("init st1");
+    {
+        let cfg1 = st1.config.read().unwrap();
+        assert_eq!(cfg1.selected_model, "unsloth::deepseek-v4-flash");
+        assert!(cfg1.anti_censorship_prompt);
+    }
+    let app1 = build_router(st1);
+
+    // 2. POST /settings writes changes to disk config.json
+    let res = app1
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/settings")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "selected_model": "unsloth::deepseek-v4-flash",
+                        "local_fallback_model_multilang": "ollama::huihui_ai/qwen3.5-abliterated:9b",
+                        "uppercase": true,
+                        "min_font_size": 14,
+                        "max_font_size": 34,
+                        "anti_censorship_prompt": true
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(res.status(), StatusCode::OK);
+    assert!(tmp_base.join("config.json").is_file(), "config.json must be written on POST /settings");
+
+    // 3. Simulated app restart reloads saved settings instead of resetting to defaults
+    let st2 = AppState::init(tmp_base.clone()).expect("init st2");
+    {
+        let cfg2 = st2.config.read().unwrap();
+        assert!(cfg2.uppercase);
+        assert_eq!(cfg2.min_font_size, 14);
+        assert_eq!(cfg2.max_font_size, 34);
+        assert_eq!(
+            cfg2.local_fallback_model_multilang,
+            "ollama::huihui_ai/qwen3.5-abliterated:9b"
+        );
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+}

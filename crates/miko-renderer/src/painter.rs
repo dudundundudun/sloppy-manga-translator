@@ -163,53 +163,73 @@ pub fn resolve_font_for_text(
     candidates.into_iter().next()
 }
 
-/// Заменяет типографские символы без глифа в выбранном шрифте (`—`, `…`, `’`, `“`) на поддерживаемые аналоги.
+/// Заменяет типографские символы без глифа в выбранном шрифте (`—`, `…`, `’`, `“`, `~`, `〜`) на поддерживаемые аналоги
+/// и гарантирует отсутствие пустых прямоугольников `.notdef` (`□`).
 pub fn sanitize_text_for_font(font: &FontVec, text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    for ch in text.chars() {
-        if ch.is_whitespace() || font.glyph_id(ch).0 != 0 {
+    for (idx, &ch) in chars.iter().enumerate() {
+        if ch.is_whitespace() {
+            out.push(ch);
+            continue;
+        }
+        // Волнистая тильда `〜`/`～` часто отсутствует или рисуется квадратом — сначала пробуем ASCII `~`
+        if matches!(ch, '〜' | '～' | '∼') {
+            if font.glyph_id('~').0 != 0 {
+                out.push('~');
+            } else {
+                let next_punct = chars
+                    .get(idx + 1)
+                    .is_some_and(|c| matches!(c, '?' | '!' | '.' | '…'));
+                if !next_punct && font.glyph_id('!').0 != 0 {
+                    out.push('!');
+                }
+            }
+            continue;
+        }
+        if font.glyph_id(ch).0 != 0 {
             out.push(ch);
             continue;
         }
         match ch {
+            '~' => {
+                let next_punct = chars
+                    .get(idx + 1)
+                    .is_some_and(|c| matches!(c, '?' | '!' | '.' | '…'));
+                if !next_punct && font.glyph_id('!').0 != 0 {
+                    out.push('!');
+                }
+            }
             '—' => {
                 if font.glyph_id('-').0 != 0 {
                     out.push_str("--");
                 } else if font.glyph_id('–').0 != 0 {
                     out.push('–');
-                } else {
-                    out.push(ch);
                 }
             }
-            '–' => {
+            '–' | '−' => {
                 if font.glyph_id('-').0 != 0 {
                     out.push('-');
-                } else {
-                    out.push(ch);
                 }
             }
             '…' => {
                 if font.glyph_id('.').0 != 0 {
                     out.push_str("...");
-                } else {
-                    out.push(ch);
                 }
             }
-            '’' | '‘' => {
+            '’' | '‘' | 'ʼ' | '´' => {
                 if font.glyph_id('\'').0 != 0 {
                     out.push('\'');
-                } else {
-                    out.push(ch);
                 }
             }
             '“' | '”' | '«' | '»' => {
                 if font.glyph_id('"').0 != 0 {
                     out.push('"');
-                } else {
-                    out.push(ch);
                 }
             }
-            _ => out.push(ch),
+            _ => {
+                // Пропускаем неподдерживаемые декоративные спецсимволы (♪, ♡ и т.п.), чтобы не рисовать квадрат `.notdef` (□)
+            }
         }
     }
     out

@@ -150,6 +150,7 @@ impl RustOcrEngine {
             opts.conf_threshold,
             opts.detect_free_text,
         );
+        merge_split_column_strips(img, &balloons, &mut fused);
         sort_detections_reading_order(&mut fused, opts.rtl);
 
         let t_ocr = Instant::now();
@@ -237,5 +238,123 @@ impl RustOcrEngine {
                 ep: self.nar.ep,
             },
         })
+    }
+}
+
+/// Склеивает ошибочно разрезанный на узкую одноколоночную полоску (`<= 78px`) единый баббл (`021.webp #3 + #4`),
+/// если между полоской и соседней половиной нет тёмной перегородки и их вертикальные границы совпадают.
+fn merge_split_column_strips(
+    img: &RgbImage,
+    seg_balloons: &[crate::detectors::BalloonPolygon],
+    dets: &mut Vec<crate::detectors::BubbleDetection>,
+) {
+    let (iw, ih) = (img.width() as i32, img.height() as i32);
+    let lum_at = |x: i32, y: i32| -> u8 {
+        let px = img.get_pixel(x.clamp(0, iw - 1) as u32, y.clamp(0, ih - 1) as u32);
+        (((77u32 * px[0] as u32) + (150u32 * px[1] as u32) + (29u32 * px[2] as u32)) >> 8) as u8
+    };
+    let is_open_vertical_seam = |seam_x: i32, y_top: i32, y_bot: i32| -> bool {
+        let span = (y_bot - y_top).max(1);
+        let y0 = y_top + (span * 20) / 100;
+        let y1 = y_bot - (span * 20) / 100;
+        if y1 <= y0 + 8 {
+            return false;
+        }
+        // Проверяем полосу шириной ±3px вокруг шва между колонками:
+        // если там настоящая чёрная стенка баббла, почти на каждом Y найдётся тёмный пиксель стенки;
+        // если это просто белый зазор между японскими столбиками одного баббла — >80% строк чисто белые!
+        let mut clear_rows = 0usize;
+        let mut total_rows = 0usize;
+        let mut y = y0;
+        while y <= y1 {
+            total_rows += 1;
+            let row_min = (-2..=2)
+                .map(|dx| lum_at(seam_x + dx, y))
+                .min()
+                .unwrap_or(0);
+            if row_min >= 220 {
+                clear_rows += 1;
+            }
+            y += 2;
+        }
+        total_rows > 0 && clear_rows * 100 >= total_rows * 78
+    };
+
+    let mut merged_any = true;
+    while merged_any && dets.len() >= 2 {
+        merged_any = false;
+        'outer: for i in 0..dets.len() {
+            if dets[i].is_free_text {
+                continue;
+            }
+            let bi = dets[i].bbox;
+            let wi = bi[2] - bi[0];
+            let hi = bi[3] - bi[1];
+            for j in (i + 1)..dets.len() {
+                if dets[j].is_free_text {
+                    continue;
+                }
+                let bj = dets[j].bbox;
+                let wj = bj[2] - bj[0];
+                let hj = bj[3] - bj[1];
+                let min_w = wi.min(wj);
+                let narrow_h = if wi <= wj { hi } else { hj };
+                if min_w > 78 || narrow_h < min_w * 2 {
+                    continue;
+                }
+                let gap_x = (bi[0] - bj[2]).max(bj[0] - bi[2]);
+                if gap_x > 6 || (bi[1] - bj[1]).abs() > 22 || (bi[3] - bj[3]).abs() > 22 {
+                    continue;
+                }
+                let seam_x = if bi[0] < bj[0] {
+                    (bi[2] + bj[0]) / 2
+                } else {
+                    (bj[2] + bi[0]) / 2
+                };
+                let y_top = bi[1].max(bj[1]);
+                let y_bot = bi[3].min(bj[3]);
+                if !is_open_vertical_seam(seam_x, y_top, y_bot) {
+                    continue;
+                }
+
+                let union_box = [
+                    bi[0].min(bj[0]),
+                    bi[1].min(bj[1]),
+                    bi[2].max(bj[2]),
+                    bi[3].max(bj[3]),
+                ];
+                let union_tb = match (dets[i].text_bbox, dets[j].text_bbox) {
+                    (Some(ta), Some(tb)) => Some([
+                        ta[0].min(tb[0]),
+                        ta[1].min(tb[1]),
+                        ta[2].max(tb[2]),
+                        ta[3].max(tb[3]),
+                    ]),
+                    _ => None,
+                };
+                dets[i].bbox = union_box;
+                dets[i].text_bbox = union_tb;
+                dets[i].confidence = dets[i].confidence.max(dets[j].confidence);
+                // Переподбираем полигон под объединённый bbox
+                let clip_r = [
+                    union_box[0] - 4,
+                    union_box[1] - 4,
+                    union_box[2] + 4,
+                    union_box[3] + 4,
+                ];
+                for seg in seg_balloons {
+                    if crate::detectors::box_iomin(seg.bbox, union_box) >= 0.55 {
+                        let clipped = miko_core::clip_polygon_to_rect(&seg.polygon, clip_r);
+                        if clipped.len() >= 3 {
+                            dets[i].bubble_polygon = Some(clipped);
+                            break;
+                        }
+                    }
+                }
+                dets.remove(j);
+                merged_any = true;
+                break 'outer;
+            }
+        }
     }
 }

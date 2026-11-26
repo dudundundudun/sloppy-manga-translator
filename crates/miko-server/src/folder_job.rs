@@ -332,6 +332,7 @@ pub async fn process_chapter_folder_sync(
 
     let mut processed = 0usize;
     let mut skipped = 0usize;
+    let mut failed_pages = 0usize;
     let mut stopped_early = false;
     let mut rolling_context: Vec<String> = Vec::new();
 
@@ -471,13 +472,15 @@ pub async fn process_chapter_folder_sync(
                 }
                 active_model = "mock-rust".to_string();
             } else {
-                let tr_res = state
+                let tr_res = match state
                     .translator
                     .translate_blocks(
                         TranslateBatchRequest {
                             blocks,
                             target_lang: opts.target_lang.clone(),
                             model: active_model.clone(),
+                            fallback_model: cfg.local_fallback_model_multilang.clone(),
+                            cloud_only_no_local_fallback: cfg.cloud_only_no_local_fallback,
                             cloud_url: cfg.unsloth_url.clone(),
                             cloud_api_key: cfg.unsloth_api_key.clone(),
                             glossary: merged_glossary.clone(),
@@ -488,7 +491,37 @@ pub async fn process_chapter_folder_sync(
                         Some(&state.db),
                     )
                     .await
-                    .map_err(|e| e.to_string())?;
+                {
+                    Ok(res) => res,
+                    Err(err) => {
+                        failed_pages += 1;
+                        let warn_msg = format!(
+                            "[ОШИБКА LLM] {fname}: не удалось перевести бабблы ({err}) — страница НЕ помечена готовой"
+                        );
+                        tracing::warn!("{}", warn_msg);
+                        let el_err = t_batch.elapsed().as_secs();
+                        push_folder_state(&state, |j| {
+                            j.elapsed_sec = el_err;
+                            j.current_file = fname.clone();
+                            j.phase = "llm_error".to_string();
+                            j.message = warn_msg.clone();
+                            j.logs.push(warn_msg.clone());
+                            push_live_event_obj(
+                                &mut j.live,
+                                &run_id,
+                                "llm",
+                                &warn_msg,
+                                &active_model,
+                                0,
+                                b_cnt,
+                                0,
+                                cloud_only,
+                                Some(&warn_msg),
+                            );
+                        });
+                        continue;
+                    }
+                };
                 blocks = tr_res.blocks;
                 active_model = tr_res.active_model;
                 detected_lang = tr_res.detected_lang;
@@ -660,10 +693,17 @@ pub async fn process_chapter_folder_sync(
         j.status = final_status.clone();
         j.elapsed_sec = total_el;
         j.phase = if stopped_early { "stopped" } else { "done" }.to_string();
-        j.message = format!(
-            "{}: обработано {processed}, пропущено {skipped} за {total_ms} ms",
-            if stopped_early { "Остановлено" } else { "Глава завершена" }
-        );
+        j.message = if failed_pages > 0 {
+            format!(
+                "{}: готово {processed}, ошибок LLM {failed_pages}, пропущено {skipped} за {total_ms} ms",
+                if stopped_early { "Остановлено" } else { "Глава завершена с пропусками" }
+            )
+        } else {
+            format!(
+                "{}: обработано {processed}, пропущено {skipped} за {total_ms} ms",
+                if stopped_early { "Остановлено" } else { "Глава завершена" }
+            )
+        };
         let msg_clone = j.message.clone();
         j.logs.push(msg_clone.clone());
         let stg = if stopped_early { "stopped" } else { "done" };
@@ -887,6 +927,7 @@ pub async fn folder_control(
                     .cloud_only
                     .unwrap_or(!cfg.cloud_only_no_local_fallback);
                 cfg.cloud_only_no_local_fallback = v;
+                state.persist_config_if_enabled(&cfg);
                 v
             };
             push_folder_state(&state, |j| {
@@ -907,6 +948,7 @@ pub async fn folder_control(
             };
             if let Ok(mut cfg) = state.config.write() {
                 cfg.selected_model = m.to_string();
+                state.persist_config_if_enabled(&cfg);
             }
             push_folder_state(&state, |j| {
                 j.active_model = m.to_string();
@@ -1623,7 +1665,22 @@ pub fn inspect_folder_pages_json(state: &AppState, raw_dir: &Path, target_lang: 
             }
         }
 
-        let is_translated = dest_exists || has_saved_blocks;
+        let has_valid_translations = if has_saved_blocks {
+            let raw_total = meta_opt
+                .and_then(|m| m.get("blocks"))
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+            raw_total == 0
+                || enriched_blocks
+                    .iter()
+                    .any(|b| !b.is_deleted && !b.translated_text.trim().is_empty())
+        } else {
+            false
+        };
+
+        let is_translated = (dest_exists && (!has_saved_blocks || has_valid_translations))
+            || (has_saved_blocks && has_valid_translations);
         if is_translated {
             translated_count += 1;
         }

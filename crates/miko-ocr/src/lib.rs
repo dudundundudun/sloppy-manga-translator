@@ -222,6 +222,38 @@ mod tests {
         suppress_parent_containers(&mut cands);
         assert_eq!(cands.len(), 2, "parent matryoshka container must be dropped");
 
+        // 1b. Регрессия 021.webp (#5, #6, #7): широкий единый баббл #6 и два боковых осколка колонок (#5 и #7, сумма < 55%) ->
+        // сохраняем именно целый баббл #6, а боковые осколки подавляем!
+        let mut single_with_frags = vec![
+            BubbleDetection {
+                bbox: [311, 62, 408, 328],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.85,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [148, 61, 408, 348],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.93,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+            BubbleDetection {
+                bbox: [147, 64, 214, 235],
+                text_bbox: None,
+                bubble_polygon: None,
+                confidence: 0.78,
+                is_free_text: false,
+                has_enclosing_frame: true,
+            },
+        ];
+        suppress_parent_containers(&mut single_with_frags);
+        assert_eq!(single_with_frags.len(), 1, "sub-column fragments inside a single bubble must be dropped");
+        assert_eq!(single_with_frags[0].bbox, [148, 61, 408, 348]);
+
         // 2. Регрессия 013.webp #14 ("Eeeek!"): SFX на скринтоне без рамки vs реальная закрытая плашка
         let mut art_img = RgbImage::from_pixel(160, 160, Rgb([210, 210, 210]));
         for y in 30..130 {

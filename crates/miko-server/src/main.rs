@@ -289,9 +289,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             blocks,
                             target_lang: target_lang.clone(),
                             model: cfg.selected_model.clone(),
+                            fallback_model: cfg.local_fallback_model_multilang.clone(),
+                            cloud_only_no_local_fallback: cfg.cloud_only_no_local_fallback,
                             cloud_url: cfg.unsloth_url.clone(),
                             cloud_api_key: cfg.unsloth_api_key.clone(),
                             glossary: state.db.load_glossary("global").unwrap_or_default(),
+                            anti_censorship: cfg.anti_censorship_prompt,
                             ..Default::default()
                         },
                         Some(&state.db),

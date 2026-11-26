@@ -199,8 +199,34 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
             continue;
         }
         if is_vowel(core_chars[i - 1]) && !is_silent_sign(core_chars[i]) {
-            if cut_points.last().is_none_or(|&prev| i - prev >= 3) {
-                cut_points.push(i);
+            // Если после гласной идут 2+ согласные подряд (`DIS-TOR-TION`, `UN-DER-STAND`),
+            // делим слог между первой и второй согласной (кроме неделимых диграфов `th`, `sh`, `ch`, `ph`, `ck`)!
+            let cut_idx = if i + 1 <= n - 3
+                && !is_vowel(core_chars[i])
+                && !is_vowel(core_chars[i + 1])
+                && !is_silent_sign(core_chars[i + 1])
+            {
+                let pair = format!(
+                    "{}{}",
+                    core_chars[i].to_ascii_lowercase(),
+                    core_chars[i + 1].to_ascii_lowercase()
+                );
+                if matches!(pair.as_str(), "th" | "sh" | "ch" | "ph" | "ck" | "wh" | "gh") {
+                    i
+                } else {
+                    i + 1
+                }
+            } else {
+                i
+            };
+            let rt_check: String = core_chars[cut_idx..]
+                .iter()
+                .collect::<String>()
+                .to_ascii_lowercase();
+            if !matches!(rt_check.as_str(), "e" | "ed" | "es" | "s")
+                && cut_points.last().is_none_or(|&prev| cut_idx - prev >= 3)
+            {
+                cut_points.push(cut_idx);
             }
         }
     }

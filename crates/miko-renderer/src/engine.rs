@@ -132,7 +132,16 @@ fn build_cavity_mask(
     let cw = (x2 - x1) as usize;
     let ch = (y2 - y1) as usize;
     let oval_mask = build_oval_fallback_mask(cw, ch, blk.is_free_text);
-    let erode_r = if cw.min(ch) < 85 { 4 } else { 6 };
+    let min_dim = cw.min(ch);
+    let erode_r = if min_dim < 75 {
+        2
+    } else if min_dim < 115 {
+        3
+    } else if min_dim < 155 {
+        4
+    } else {
+        5
+    };
 
     let mut mask = if !blk.is_free_text {
         if let Some(ref poly) = blk.bubble_polygon {
@@ -359,32 +368,76 @@ impl RustRendererEngine {
             } else {
                 continue;
             };
-            // Защита при перерисовке старого кэша: пропускаем явные родительские дубли-матрёшки,
-            // которые целиком накрывают 2+ других активных баббла на странице (`018.webp #9`)!
+            // Защита при перерисовке кэша: различаем две противоположные ситуации!
+            // 1) Родительская обёртка-матрёшка поверх 2+ полноценных бабблов (сумма площадей детей >= 68% от родителя, `018.webp #9`) -> пропускаем родителя!
+            // 2) Осколочные узкие столбики внутри ОДНОГО широкого баббла (сумма площадей детей < 68% от родителя, `021.webp #5/#7` внутри `#6`) -> пропускаем осколки, рендерим полный баббл `#6`!
             if !blk.is_free_text {
                 let area_self = ((blk.bbox[2] - blk.bbox[0]).max(1) as i64)
                     * ((blk.bbox[3] - blk.bbox[1]).max(1) as i64);
                 let mut child_cnt = 0usize;
+                let mut child_area_sum = 0i64;
+                let mut enclosing_parent_idx: Option<usize> = None;
+
                 for (j, oth) in blocks.iter().enumerate() {
-                    if j == idx || oth.is_deleted || oth.is_free_text || oth.translated_text.trim().is_empty() {
+                    if j == idx
+                        || oth.is_deleted
+                        || oth.is_free_text
+                        || oth.translated_text.trim().is_empty()
+                    {
                         continue;
                     }
                     let area_o = ((oth.bbox[2] - oth.bbox[0]).max(1) as i64)
                         * ((oth.bbox[3] - oth.bbox[1]).max(1) as i64);
-                    if area_o * 100 >= area_self * 86 {
-                        continue;
-                    }
                     let ix1 = blk.bbox[0].max(oth.bbox[0]);
                     let iy1 = blk.bbox[1].max(oth.bbox[1]);
                     let ix2 = blk.bbox[2].min(oth.bbox[2]);
                     let iy2 = blk.bbox[3].min(oth.bbox[3]);
                     let inter = ((ix2 - ix1).max(0) as i64) * ((iy2 - iy1).max(0) as i64);
-                    if inter * 100 >= area_o * 72 {
+
+                    if area_o * 100 < area_self * 86 && inter * 100 >= area_o * 72 {
                         child_cnt += 1;
+                        child_area_sum += area_o;
+                    }
+                    if area_self * 100 < area_o * 60 && inter * 100 >= area_self * 78 {
+                        enclosing_parent_idx = Some(j);
                     }
                 }
-                if child_cnt >= 2 {
+                if child_cnt >= 2 && child_area_sum * 100 >= area_self * 68 {
                     continue;
+                }
+                if let Some(p_idx) = enclosing_parent_idx {
+                    let p_box = blocks[p_idx].bbox;
+                    let area_p = ((p_box[2] - p_box[0]).max(1) as i64)
+                        * ((p_box[3] - p_box[1]).max(1) as i64);
+                    let mut p_child_sum = 0i64;
+                    let mut p_child_cnt = 0usize;
+                    for (k, cand) in blocks.iter().enumerate() {
+                        if k == p_idx
+                            || cand.is_deleted
+                            || cand.is_free_text
+                            || cand.translated_text.trim().is_empty()
+                        {
+                            continue;
+                        }
+                        let area_c = ((cand.bbox[2] - cand.bbox[0]).max(1) as i64)
+                            * ((cand.bbox[3] - cand.bbox[1]).max(1) as i64);
+                        if area_c * 100 >= area_p * 86 {
+                            continue;
+                        }
+                        let ix1 = p_box[0].max(cand.bbox[0]);
+                        let iy1 = p_box[1].max(cand.bbox[1]);
+                        let ix2 = p_box[2].min(cand.bbox[2]);
+                        let iy2 = p_box[3].min(cand.bbox[3]);
+                        let inter_c = ((ix2 - ix1).max(0) as i64) * ((iy2 - iy1).max(0) as i64);
+                        if inter_c * 100 >= area_c * 72 {
+                            p_child_cnt += 1;
+                            p_child_sum += area_c;
+                        }
+                    }
+                    // Если родитель не подавлен (его дети покрывают < 68% площади или ребёнок вообще один) — подавляем узкий осколок!
+                    if p_child_cnt < 2 || p_child_sum * 100 < area_p * 68 {
+                        continue;
+                    }
                 }
             }
 

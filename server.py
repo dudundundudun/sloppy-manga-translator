@@ -1432,7 +1432,7 @@ def collect_images_in_folder(folder: Path) -> list[Path]:
         for p in folder.rglob("*")
         if p.is_file()
         and p.suffix.lower() in SUPPORTED_IMAGE_EXTS
-        and p.name != "mascot.png"
+        and p.name not in ("mascot.png", "mascot_fox.png", "mascot_fox_sprites.png")
         and not p.parent.name.endswith(OUTPUT_FOLDER_SUFFIXES)
         and not any(part.startswith(".") for part in p.relative_to(folder).parts[:-1])
     ]
@@ -4852,6 +4852,22 @@ async def get_mascot_image():
     if mascot_path.exists():
         return FileResponse(str(mascot_path), media_type="image/png")
     raise HTTPException(status_code=404, detail="mascot.png not found")
+
+
+@app.get("/mascot_fox.png")
+async def get_mascot_fox_image():
+    fox_path = BASE_DIR / "mascot_fox.png"
+    if fox_path.exists():
+        return FileResponse(str(fox_path), media_type="image/png")
+    raise HTTPException(status_code=404, detail="mascot_fox.png not found")
+
+
+@app.get("/mascot_fox_sprites.png")
+async def get_mascot_fox_sprites():
+    sprites_path = BASE_DIR / "mascot_fox_sprites.png"
+    if sprites_path.exists():
+        return FileResponse(str(sprites_path), media_type="image/png")
+    raise HTTPException(status_code=404, detail="mascot_fox_sprites.png not found")
 
 
 @app.get("/health")

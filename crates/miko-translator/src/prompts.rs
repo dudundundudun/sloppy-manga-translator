@@ -290,32 +290,72 @@ pub fn kana_to_romaji(input: &str) -> String {
     out
 }
 
-/// Проверяет, содержит ли текст цензурный отказ LLM вместо перевода.
+/// Проверяет, содержит ли текст цензурный отказ LLM вместо перевода (с нормализацией кривых апострофов `’`/`‘`).
 pub fn is_refusal_response(text: &str) -> bool {
-    let low = text.trim().to_ascii_lowercase();
-    if low.is_empty() {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
         return false;
+    }
+    let mut norm = String::with_capacity(trimmed.len());
+    let mut prev_space = false;
+    for ch in trimmed.chars() {
+        let mapped = match ch {
+            '’' | '‘' | 'ʼ' | '`' | '´' => '\'',
+            '“' | '”' | '«' | '»' => '"',
+            c if c.is_whitespace() => ' ',
+            c => c.to_ascii_lowercase(),
+        };
+        if mapped == ' ' {
+            if !prev_space {
+                norm.push(' ');
+                prev_space = true;
+            }
+        } else {
+            for lc in mapped.to_lowercase() {
+                norm.push(lc);
+            }
+            prev_space = false;
+        }
     }
     const REFUSAL_PATTERNS: &[&str] = &[
         "i cannot translate",
         "i can't translate",
+        "cannot translate sexual",
+        "can't translate sexual",
         "i am unable to translate",
         "i'm unable to translate",
+        "unable to translate",
+        "involving a minor",
+        "sexualized content",
+        "child sexual",
         "i'm sorry, i can't",
+        "i'm sorry, but i can't",
+        "i am sorry, i cannot",
+        "sorry, i cannot",
+        "sorry, i can't",
+        "apologize, but i cannot",
+        "apologize, but i can't",
         "i cannot fulfill",
         "i can't fulfill",
         "cannot assist with",
+        "can't assist with",
+        "cannot comply with",
         "violates safety",
         "content policy",
+        "safety guidelines",
+        "usage policies",
         "as an ai",
         "explicit sexual",
         "nsfw content",
         "я не могу перевести",
+        "не могу перевести этот",
+        "не могу перевести данн",
         "к сожалению, я не могу",
+        "извините, но я не могу",
         "как искусственный интеллект",
         "нарушает правила",
     ];
-    REFUSAL_PATTERNS.iter().any(|pat| low.contains(pat))
+    REFUSAL_PATTERNS.iter().any(|pat| norm.contains(pat))
 }
 
 /// Формирует system + user промпты с плоским JSON-контрактом, matched-глоссарием и опцией антицензуры.
