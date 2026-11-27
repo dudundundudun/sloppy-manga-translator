@@ -898,6 +898,24 @@
       background: linear-gradient(135deg, #f43f5e, #e11d48);
     }
 
+    .page-badge-active {
+      font-size: 10.5px;
+      font-weight: 700;
+      padding: 2px 7px;
+      border-radius: 999px;
+      background: rgba(56, 189, 248, 0.18);
+      color: #7dd3fc;
+      border: 1px solid rgba(56, 189, 248, 0.45);
+      white-space: nowrap;
+      flex-shrink: 0;
+      animation: lmPulse 1.2s ease-in-out infinite;
+    }
+
+    .page-row.translating-now {
+      border-color: rgba(56, 189, 248, 0.55) !important;
+      background: rgba(56, 189, 248, 0.1) !important;
+    }
+
     .cta-sub-row {
       display: none;
       grid-template-columns: 1fr 1fr;
@@ -3667,8 +3685,8 @@
                 <button type="button" class="lm-btn" id="lm-btn-cloud-only" onclick="sendFolderControl('toggle_cloud_only')" title="Запретить/разрешить откат в локальную Ollama при сбое облака">☁️ Только облако</button>
               </div>
             </div>
-            <details class="lm-events-wrap" id="lm-events-wrap">
-              <summary id="lm-last-event-summary">Лента событий (0)</summary>
+            <details class="lm-events-wrap" id="lm-events-wrap" open>
+              <summary id="lm-last-event-summary">Лента операций (0)</summary>
               <div class="lm-events-list" id="lm-events-list"></div>
             </details>
           </div>
@@ -7643,7 +7661,11 @@
           }, 1500);
         }
       } catch (e) {
-        sayMiko("Ой, нет связи с локальным сервером! Убедись, что сервер запущен~");
+        if (window.location.protocol === "file:") {
+          sayMiko("⚠️ Вы открыли web_studio.html напрямую как файл! Закройте эту вкладку и запустите start_rust_studio.bat (или MikoStudio.exe) — студия сама откроется на http://127.0.0.1:8000 🌸");
+        } else {
+          sayMiko("Ой, нет связи с локальным сервером! Убедись, что окно сервера (start_rust_studio.bat / MikoStudio.exe) запущено~");
+        }
       }
     }
 
@@ -8299,12 +8321,18 @@
       filtered.forEach(p => {
         const item = document.createElement("div");
         const isSel = selectedPage && selectedPage.rel_path === p.rel_path;
-        item.className = "page-row" + (isSel ? " selected" : "");
+        const isNow = Boolean(isJobRunning && activeJobRelPath && activeJobRelPath === p.rel_path && !p.is_translated);
+        item.className = "page-row" + (isSel ? " selected" : "") + (isNow ? " translating-now" : "");
         item.dataset.relPath = p.rel_path;
         item.title = p.rel_path;
-        const badge = p.is_translated
-          ? `<span class="page-badge-done">✓ Готово</span>`
-          : `<span class="page-badge-wait">⏳ Ждет</span>`;
+        let badge = "";
+        if (isNow) {
+          badge = `<span class="page-badge-active">${escapeHtml(activeJobStageBadge || "⚡ В работе")}</span>`;
+        } else if (p.is_translated) {
+          badge = `<span class="page-badge-done">✓ Готово</span>`;
+        } else {
+          badge = `<span class="page-badge-wait">⏳ Ждет</span>`;
+        }
         item.innerHTML = `<span style="overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">#${Number(p.index) || 0} &nbsp;${escapeHtml(p.rel_path)}</span>${badge}`;
         item.onclick = () => selectPage(p);
         listEl.appendChild(item);
@@ -13471,9 +13499,36 @@
         headers: {"Content-Type": "application/json"},
         body: JSON.stringify(payload)
       });
-      if (!res.ok) return;
+      if (!res.ok) {
+        let errTxt = `HTTP ${res.status}`;
+        try {
+          const errJson = await res.json();
+          if (errJson?.detail) errTxt = errJson.detail;
+        } catch (_) {}
+        sayMiko(`⚠️ Не удалось запустить перевод папки: ${errTxt}`);
+        return;
+      }
 
       isJobRunning = true;
+      lmUserHidden = false;
+      lmDetailsExpanded = true;
+      jobStartedClientTs = Date.now();
+      const totalEst = Array.isArray(folderPages) ? folderPages.length : 0;
+      renderLiveMonitor({
+        status: "running",
+        total: totalEst,
+        current: 0,
+        elapsed_sec: 0,
+        current_file: "Подготовка конвейера...",
+        live: {
+          run_id: "starting",
+          stage: "ocr",
+          stage_label: `🚀 Запуск перевода (${totalEst} стр.)...`,
+          model: payload.ollama_model || activeModelLabel || "auto",
+          step_elapsed_sec: 0,
+          events: [{ time_str: new Date().toTimeString().slice(0, 8), text: `Старт перевода папки (${totalEst} стр.)` }]
+        }
+      });
       const mainBtn = document.getElementById("btn-primary-folder");
       mainBtn.classList.add("stopping");
       mainBtn.textContent = "⏸ Пауза (остановить и сохранить прогресс)";
@@ -13484,8 +13539,11 @@
     let isFolderPollInspecting = false;
     let folderEventSource = null;
     let lmUserHidden = false;
-    let lmDetailsExpanded = false;
+    let lmDetailsExpanded = true;
     let lmAutoExpandedForStall = false;
+    let jobStartedClientTs = 0;
+    let activeJobRelPath = "";
+    let activeJobStageBadge = "";
     const LM_STAGE_ORDER = ["ocr", "pass0", "llm", "micro_retry", "proofread", "render"];
     const LM_STAGE_SHORT_NAMES = {
       ocr: "OCR",
@@ -13493,6 +13551,7 @@
       llm: "ИИ",
       micro_retry: "Доперевод",
       proofread: "Вычитка",
+      clean: "Вёрстка",
       render: "Вёрстка"
     };
 
@@ -13556,7 +13615,7 @@
       if (!card || !st) return;
       const live = st.live || {};
       const status = st.status || "idle";
-      const isActive = status === "running" || status === "stopping";
+      const isActive = status === "starting" || status === "running" || status === "stopping";
       if (isActive) {
         lmUserHidden = false;
       }
@@ -13709,7 +13768,7 @@
       const listEl = document.getElementById("lm-events-list");
       if (sumEl) {
         const lastEv = evList.length ? evList[evList.length - 1] : null;
-        sumEl.textContent = lastEv ? `События (${evList.length}): ${lastEv.time_str} ${lastEv.text}` : "Лента событий (0)";
+        sumEl.textContent = lastEv ? `Лог операций (${evList.length}): ${lastEv.time_str} ${lastEv.text}` : "Лог операций (0)";
       }
       if (listEl) {
         listEl.innerHTML = "";
@@ -13725,6 +13784,54 @@
           row.appendChild(tsSpan);
           row.appendChild(msgSpan);
           listEl.appendChild(row);
+        }
+      }
+    }
+
+    function syncActivePageRowInList(st, isActive) {
+      const prevRel = activeJobRelPath;
+      if (!isActive || !st || !st.current_file) {
+        activeJobRelPath = "";
+        activeJobStageBadge = "";
+      } else {
+        activeJobRelPath = String(st.current_file);
+        const live = st.live || {};
+        const stg = String(live.stage || st.phase || "ocr");
+        const stepSec = Math.max(0, Math.round(Number(live.step_elapsed_sec || 0)));
+        const secSuffix = stepSec > 0 ? ` · ${formatLiveDuration(stepSec)}` : "";
+        if (stg === "ocr") activeJobStageBadge = `🔍 OCR${secSuffix}`;
+        else if (stg === "llm" || stg === "micro_retry" || stg === "proofread") activeJobStageBadge = `🤖 ИИ${secSuffix}`;
+        else if (stg === "render" || stg === "clean") activeJobStageBadge = `🎨 Вёрстка${secSuffix}`;
+        else if (st.phase === "paused") activeJobStageBadge = "⏸ Пауза";
+        else activeJobStageBadge = `⚡ В работе${secSuffix}`;
+      }
+
+      const listEl = document.getElementById("pages-list");
+      if (!listEl) return;
+      listEl.querySelectorAll(".page-row").forEach(row => {
+        const rp = row.dataset.relPath || "";
+        const pageObj = folderPages.find(x => x.rel_path === rp);
+        const isDone = Boolean(pageObj && pageObj.is_translated);
+        const isNow = Boolean(activeJobRelPath && rp === activeJobRelPath && !isDone);
+        row.classList.toggle("translating-now", isNow);
+        const badgeEl = row.querySelector(".page-badge-active, .page-badge-wait, .page-badge-done");
+        if (!badgeEl) return;
+        if (isNow) {
+          badgeEl.className = "page-badge-active";
+          badgeEl.textContent = activeJobStageBadge;
+        } else if (isDone) {
+          badgeEl.className = "page-badge-done";
+          badgeEl.textContent = "✓ Готово";
+        } else {
+          badgeEl.className = "page-badge-wait";
+          badgeEl.textContent = "⏳ Ждет";
+        }
+      });
+
+      if (activeJobRelPath && activeJobRelPath !== prevRel) {
+        const activeRow = Array.from(listEl.querySelectorAll(".page-row")).find(r => r.dataset.relPath === activeJobRelPath);
+        if (activeRow && typeof activeRow.scrollIntoView === "function") {
+          activeRow.scrollIntoView({ block: "nearest", behavior: "smooth" });
         }
       }
     }
@@ -13760,16 +13867,27 @@
 
     async function handleFolderStatusSnapshot(st) {
       if (!st) return;
+      const status = st.status || "idle";
+      const isActive = status === "starting" || status === "running" || status === "stopping";
+      // Защита от гонки первых миллисекунд старта: не закрываем поток, если клик старта был <2.5с назад, а сервер ещё не прислал новый run_id
+      if (!isActive && isJobRunning && jobStartedClientTs > 0 && (Date.now() - jobStartedClientTs) < 2500 && status === "idle") {
+        return;
+      }
+
       const total = st.total || 0;
-      const cur = st.current || 0;
+      const cur = st.current ?? st.done ?? 0;
       const pct = total > 0 ? Math.round((cur / total) * 100) : 0;
 
-      document.getElementById("progress-fill").style.width = pct + "%";
-      document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
+      if (total > 0) {
+        document.getElementById("progress-fill").style.width = pct + "%";
+        document.getElementById("folder-count-lbl").textContent = `${cur} / ${total} готово`;
+      }
       renderLiveMonitor(st);
+      syncActivePageRowInList(st, isActive);
 
-      if (st.status === "running" || st.status === "stopping") {
+      if (isActive) {
         isJobRunning = true;
+        jobStartedClientTs = 0;
         const mainBtn = document.getElementById("btn-primary-folder");
         if (mainBtn && !mainBtn.classList.contains("stopping")) {
           mainBtn.classList.add("stopping");
@@ -13781,6 +13899,7 @@
             isFolderPollInspecting = true;
             try {
               await inspectCurrentFolder({ preserveCurrentSelection: true });
+              syncActivePageRowInList(st, true);
             } finally {
               isFolderPollInspecting = false;
             }
@@ -13788,7 +13907,9 @@
         } else if (lastFolderPollCurrent < 0) {
           lastFolderPollCurrent = cur;
         }
-        sayMiko(`Перевожу [${cur}/${total}]: ${st.current_file} (${st.elapsed_sec}с)... ✍️`);
+        const stepEl = Number(st.live?.step_elapsed_sec || 0);
+        const stepHint = stepEl > 0 ? `, шаг ${stepEl}с` : "";
+        sayMiko(`${st.message || `Перевожу [${cur}/${total}]: ${st.current_file}`} (${st.elapsed_sec || 0}с${stepHint}) ✍️`);
         if (typeof window.syncKitsuneJobStage === "function") {
           window.syncKitsuneJobStage(st);
         }
@@ -13803,12 +13924,23 @@
         }
         const wasRunning = isJobRunning;
         isJobRunning = false;
+        jobStartedClientTs = 0;
         lastFolderPollCurrent = -1;
+        syncActivePageRowInList(null, false);
         updatePrimaryFolderButtonState();
         if (wasRunning && typeof window.syncKitsuneJobStage === "function") {
           window.syncKitsuneJobStage(st);
         }
-        if (wasRunning && currentFolder) {
+        if (wasRunning) {
+          if (status === "completed") {
+            sayMiko(`🎉 Глава полностью переведена (${cur}/${total} стр. за ${formatLiveDuration(st.elapsed_sec)})! Все страницы обновлены ✨`);
+          } else if (status === "stopped") {
+            sayMiko(`⏸ Перевод остановлен на ${cur}/${total} стр. Весь прогресс сохранён!`);
+          } else if (status === "error") {
+            sayMiko(`⚠️ Ошибка перевода: ${st.message || "проверьте лог операций"}`);
+          }
+        }
+        if ((wasRunning || status === "completed" || status === "stopped") && currentFolder) {
           await inspectCurrentFolder({ preserveCurrentSelection: true });
         }
       }
@@ -13825,8 +13957,10 @@
       }
       lastFolderPollCurrent = -1;
 
+      // Всегда держим резервный опрос раз в 2 сек параллельно с SSE (на случай буферизации SSE антивирусом/VPN)
+      startFolderPolling(2000);
+
       if (typeof EventSource === "undefined") {
-        startFolderPolling();
         return;
       }
       let sseFailures = 0;
@@ -13849,13 +13983,12 @@
               folderEventSource = null;
             }
             if (isJobRunning && !pollTimer) {
-              startFolderPolling();
+              startFolderPolling(1200);
             }
           }
         };
       } catch (esErr) {
         console.warn("SSE недоступен, откат на polling:", esErr);
-        startFolderPolling();
       }
     }
 
@@ -13864,13 +13997,15 @@
         const res = await fetch("/folder_status");
         if (!res.ok) return;
         const st = await res.json();
-        if (st && (st.status === "running" || st.status === "stopping")) {
+        if (!st) return;
+        if (st.status === "starting" || st.status === "running" || st.status === "stopping") {
           if (st.source_dir && !currentFolder) {
             currentFolder = st.source_dir;
             if (st.target_lang) targetLang = st.target_lang;
             await inspectCurrentFolder({ preserveCurrentSelection: true });
           }
           isJobRunning = true;
+          lmUserHidden = false;
           const mainBtn = document.getElementById("btn-primary-folder");
           if (mainBtn) {
             mainBtn.classList.add("stopping");
@@ -13878,15 +14013,16 @@
           }
           renderLiveMonitor(st);
           connectFolderLiveStream();
+        } else if ((st.status === "completed" || st.status === "stopped" || st.status === "error") && st.live?.run_id) {
+          renderLiveMonitor(st);
         }
       } catch (err) {
         console.warn("Ошибка восстановления активного перевода:", err);
       }
     }
 
-    function startFolderPolling() {
+    function startFolderPolling(intervalMs = 1200) {
       if (pollTimer) clearInterval(pollTimer);
-      lastFolderPollCurrent = -1;
       pollTimer = setInterval(async () => {
         try {
           const res = await fetch("/folder_status");
@@ -13896,7 +14032,7 @@
         } catch (err) {
           console.warn("Ошибка опроса статуса папки:", err);
         }
-      }, 1200);
+      }, intervalMs);
     }
 
     async function pickWebSaveDirInStudio() {
@@ -14733,8 +14869,16 @@
       const vw = window.innerWidth;
       const vh = window.innerHeight;
       const pad = 30;
+      let floorX1 = pad;
+      const leftCol = document.getElementById("bento-left");
+      if (leftCol && !leftCol.classList.contains("collapsed")) {
+        const lr = leftCol.getBoundingClientRect();
+        if (lr.right > 100 && lr.right < vw - 160) {
+          floorX1 = Math.round(lr.right + 42);
+        }
+      }
       const ledges = [
-        { id: "floor", y: vh - 2, x1: pad, x2: Math.max(pad + 40, vw - pad), rect: null }
+        { id: "floor", y: vh - 2, x1: floorX1, x2: Math.max(floorX1 + 40, vw - pad), rect: null }
       ];
       const dr = document.getElementById("text-drawer");
       if (dr && dr.classList.contains("open")) {

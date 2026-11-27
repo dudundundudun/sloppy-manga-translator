@@ -15,11 +15,19 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::cmp::Ordering;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering as AtomicOrd;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrd};
 use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
 
 const MAX_JOB_LOGS: usize = 80;
+
+struct TickerStopGuard(Arc<AtomicBool>);
+
+impl Drop for TickerStopGuard {
+    fn drop(&mut self) {
+        self.0.store(false, AtomicOrd::SeqCst);
+    }
+}
 
 #[inline]
 fn is_supported_img(p: &Path) -> bool {
@@ -175,9 +183,14 @@ pub fn save_manifest(output_dir: &Path, manifest: &Value) -> std::io::Result<()>
 }
 
 pub fn push_folder_state(state: &AppState, mutator: impl FnOnce(&mut FolderJobState)) {
+    let mut new_log_entries: Vec<String> = Vec::new();
     {
         let mut job = state.folder_job.write().unwrap_or_else(|e| e.into_inner());
+        let prev_len = job.logs.len();
         mutator(&mut job);
+        if job.logs.len() > prev_len {
+            new_log_entries.extend(job.logs[prev_len..].iter().cloned());
+        }
         job.current = job.done;
         if job.source_dir.is_empty() && !job.folder_path.is_empty() {
             job.source_dir = job.folder_path.clone();
@@ -186,6 +199,9 @@ pub fn push_folder_state(state: &AppState, mutator: impl FnOnce(&mut FolderJobSt
             let drain_n = job.logs.len() - MAX_JOB_LOGS;
             job.logs.drain(0..drain_n);
         }
+    }
+    for entry in new_log_entries {
+        state.append_file_log(&entry);
     }
     let next_seq = state.folder_tx.borrow().wrapping_add(1);
     let _ = state.folder_tx.send(next_seq);
@@ -280,10 +296,35 @@ pub async fn process_chapter_folder_sync(
 
     state.folder_stop_flag.store(false, AtomicOrd::SeqCst);
     state.folder_pause_flag.store(false, AtomicOrd::SeqCst);
+    state.folder_pause_after_page.store(false, AtomicOrd::SeqCst);
+    state.translator.reset_censorship_bypass();
+    if let Ok(mut dyn_m) = state.folder_dynamic_model.write() {
+        *dyn_m = opts
+            .model_override
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty() && !s.eq_ignore_ascii_case("auto"))
+            .map(str::to_string);
+    }
 
     let total = opts.images.len();
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let run_id = format!("rs_{}", unix_ts_now() % 100_000);
+    let existing_run_id = state
+        .folder_job
+        .read()
+        .ok()
+        .and_then(|j| {
+            if matches!(j.status.as_str(), "starting" | "running") {
+                j.live
+                    .get("run_id")
+                    .and_then(|v| v.as_str())
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+            } else {
+                None
+            }
+        });
+    let run_id = existing_run_id.unwrap_or_else(|| format!("rs_{}", unix_ts_now() % 100_000));
     let mut manifest = load_manifest(&opts.output_dir);
     manifest["source_dir"] = json!(opts.source_dir.to_string_lossy());
     manifest["target_lang"] = json!(opts.target_lang);
@@ -291,8 +332,9 @@ pub async fn process_chapter_folder_sync(
     let init_model = opts
         .model_override
         .clone()
+        .filter(|s| !s.trim().is_empty() && !s.eq_ignore_ascii_case("auto"))
         .unwrap_or_else(|| cfg.selected_model.clone());
-    let cloud_only = cfg.cloud_only_no_local_fallback;
+    let init_cloud_only = cfg.cloud_only_no_local_fallback;
 
     push_folder_state(&state, |j| {
         j.status = "running".to_string();
@@ -307,8 +349,9 @@ pub async fn process_chapter_folder_sync(
         j.output_dir = opts.output_dir.to_string_lossy().to_string();
         j.target_lang = opts.target_lang.clone();
         j.message = format!("Запуск перевода главы ({total} стр.)");
-        j.logs.push(format!("Старт главы: {total} изображений"));
-        j.live = json!({});
+        if j.logs.is_empty() {
+            j.logs.push(format!("Старт главы: {total} изображений"));
+        }
         push_live_event_obj(
             &mut j.live,
             &run_id,
@@ -318,10 +361,47 @@ pub async fn process_chapter_folder_sync(
             0,
             0,
             0,
-            cloud_only,
+            init_cloud_only,
             Some(&format!("Старт Rust-конвейера ({total} стр.)")),
         );
     });
+
+    // Живой 1-секундный пульс времени, чтобы во время ожидания ИИ (15–35с) таймер в интерфейсе тикал каждую секунду
+    let step_started_ms = Arc::new(AtomicU64::new(0));
+    let ticker_alive = Arc::new(AtomicBool::new(true));
+    let _ticker_guard = TickerStopGuard(ticker_alive.clone());
+    {
+        let st_tick = state.clone();
+        let step_ms_tick = step_started_ms.clone();
+        let alive_tick = ticker_alive.clone();
+        tokio::spawn(async move {
+            let mut iv = tokio::time::interval(std::time::Duration::from_secs(1));
+            iv.tick().await;
+            while alive_tick.load(AtomicOrd::SeqCst) {
+                iv.tick().await;
+                if !alive_tick.load(AtomicOrd::SeqCst) {
+                    break;
+                }
+                let is_run = st_tick
+                    .folder_job
+                    .read()
+                    .is_ok_and(|j| matches!(j.status.as_str(), "starting" | "running" | "stopping"));
+                if !is_run {
+                    continue;
+                }
+                let total_ms_now = t_batch.elapsed().as_millis() as u64;
+                let step_start = step_ms_tick.load(AtomicOrd::SeqCst);
+                let step_sec = total_ms_now.saturating_sub(step_start) / 1000;
+                let total_sec = total_ms_now / 1000;
+                push_folder_state(&st_tick, |j| {
+                    j.elapsed_sec = total_sec;
+                    if let Some(obj) = j.live.as_object_mut() {
+                        obj.insert("step_elapsed_sec".to_string(), json!(step_sec));
+                    }
+                });
+            }
+        });
+    }
 
     let scope = format!(
         "folder:{}",
@@ -359,6 +439,9 @@ pub async fn process_chapter_folder_sync(
             .to_string();
         let dest_path = opts.output_dir.join(&fname);
 
+        let cur_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let cloud_only = cur_cfg.cloud_only_no_local_fallback;
+
         if opts.skip_existing && !opts.force_retranslate && dest_path.is_file() {
             skipped += 1;
             let el = t_batch.elapsed().as_secs();
@@ -381,21 +464,26 @@ pub async fn process_chapter_folder_sync(
                     None,
                 );
             });
+            if state.folder_pause_after_page.load(AtomicOrd::SeqCst) {
+                stopped_early = true;
+                break;
+            }
             continue;
         }
 
         let t_step = Instant::now();
+        step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
         let el_ocr = t_batch.elapsed().as_secs();
         push_folder_state(&state, |j| {
             j.elapsed_sec = el_ocr;
             j.current_file = fname.clone();
             j.phase = "ocr".to_string();
-            j.message = format!("OCR: {fname} ({}/{total})", idx + 1);
+            j.message = format!("🔍 OCR ({}/{total}): {fname}", idx + 1);
             push_live_event_obj(
                 &mut j.live,
                 &run_id,
                 "ocr",
-                &format!("OCR {}/{total}: {fname}", idx + 1),
+                &format!("🔍 OCR стр. {}/{total}: {fname}", idx + 1),
                 &j.active_model.clone(),
                 0,
                 0,
@@ -517,28 +605,33 @@ pub async fn process_chapter_folder_sync(
         };
 
         let mut blocks = ocr_res.blocks;
-        let mut active_model = opts
-            .model_override
-            .clone()
-            .unwrap_or_else(|| cfg.selected_model.clone());
+        let mut active_model = state
+            .folder_dynamic_model
+            .read()
+            .ok()
+            .and_then(|g| g.clone())
+            .unwrap_or_else(|| cur_cfg.selected_model.clone());
         let mut detected_lang = "ja".to_string();
+        let mut llm_ms: u128 = 0;
+        let mut nsfw_local_used = false;
 
         // 2. Перевод батча (или --mock-text для оффлайн E2E бенчмарка)
         if !blocks.is_empty() {
             let b_cnt = blocks.len();
+            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
             let el_tr = t_batch.elapsed().as_secs();
-            let st_tr = t_step.elapsed().as_secs();
             push_folder_state(&state, |j| {
                 j.elapsed_sec = el_tr;
                 j.phase = "llm".to_string();
-                j.message = format!("Перевод ({b_cnt} бл.): {fname}");
+                j.active_model = active_model.clone();
+                j.message = format!("🤖 ИИ перевод ({b_cnt} фраз, стр. {}/{total}): {fname}", idx + 1);
                 push_live_event_obj(
                     &mut j.live,
                     &run_id,
                     "llm",
-                    &format!("Перевод ({b_cnt} фраз): {fname}"),
+                    &format!("🤖 ИИ ({b_cnt} фраз, стр. {}/{total}): {fname}", idx + 1),
                     &active_model,
-                    st_tr,
+                    0,
                     b_cnt,
                     0,
                     cloud_only,
@@ -554,28 +647,30 @@ pub async fn process_chapter_folder_sync(
                 }
                 active_model = "mock-rust".to_string();
             } else {
-                let tr_res = match state
-                    .translator
-                    .translate_blocks(
-                        TranslateBatchRequest {
-                            blocks,
-                            target_lang: opts.target_lang.clone(),
-                            model: active_model.clone(),
-                            fallback_model: cfg.local_fallback_model_multilang.clone(),
-                            cloud_only_no_local_fallback: cfg.cloud_only_no_local_fallback,
-                            cloud_url: cfg.unsloth_url.clone(),
-                            cloud_api_key: cfg.unsloth_api_key.clone(),
-                            glossary: merged_glossary.clone(),
-                            context_lines: rolling_context.clone(),
-                            anti_censorship: cfg.anti_censorship_prompt,
-                            use_cache: !opts.force_retranslate,
-                        },
-                        Some(&state.db),
-                    )
-                    .await
-                {
-                    Ok(res) => res,
-                    Err(err) => {
+                let abort_fut = state.folder_abort_step.notified();
+                let tr_fut = state.translator.translate_blocks(
+                    TranslateBatchRequest {
+                        blocks: blocks.clone(),
+                        target_lang: opts.target_lang.clone(),
+                        model: active_model.clone(),
+                        fallback_model: cur_cfg.local_fallback_model_multilang.clone(),
+                        cloud_only_no_local_fallback: cloud_only,
+                        cloud_url: cur_cfg.unsloth_url.clone(),
+                        cloud_api_key: cur_cfg.unsloth_api_key.clone(),
+                        glossary: merged_glossary.clone(),
+                        context_lines: rolling_context.clone(),
+                        anti_censorship: cur_cfg.anti_censorship_prompt,
+                        use_cache: !opts.force_retranslate,
+                    },
+                    Some(&state.db),
+                );
+                let tr_outcome = tokio::select! {
+                    res = tr_fut => Some(res),
+                    _ = abort_fut => None,
+                };
+                let tr_res = match tr_outcome {
+                    Some(Ok(res)) => res,
+                    Some(Err(err)) => {
                         failed_pages += 1;
                         let warn_msg = format!(
                             "[ОШИБКА LLM] {fname}: не удалось перевести бабблы ({err}) — страница НЕ помечена готовой"
@@ -603,7 +698,36 @@ pub async fn process_chapter_folder_sync(
                         });
                         continue;
                     }
+                    None => {
+                        failed_pages += 1;
+                        let warn_msg = format!(
+                            "[ПРЕРВАНО] {fname}: запрос ИИ прерван пользователем — переход к следующей странице"
+                        );
+                        let el_err = t_batch.elapsed().as_secs();
+                        push_folder_state(&state, |j| {
+                            j.elapsed_sec = el_err;
+                            j.current_file = fname.clone();
+                            j.phase = "llm_aborted".to_string();
+                            j.message = warn_msg.clone();
+                            j.logs.push(warn_msg.clone());
+                            push_live_event_obj(
+                                &mut j.live,
+                                &run_id,
+                                "llm",
+                                &warn_msg,
+                                &active_model,
+                                0,
+                                b_cnt,
+                                0,
+                                cloud_only,
+                                Some(&warn_msg),
+                            );
+                        });
+                        continue;
+                    }
                 };
+                llm_ms = tr_res.elapsed_ms;
+                nsfw_local_used = tr_res.censored_fallback;
                 blocks = tr_res.blocks;
                 active_model = tr_res.active_model;
                 detected_lang = tr_res.detected_lang;
@@ -622,26 +746,36 @@ pub async fn process_chapter_folder_sync(
         }
 
         // 3. Очистка + Рендер + Запись на диск
+        step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
         let el_cl = t_batch.elapsed().as_secs();
-        let st_cl = t_step.elapsed().as_secs();
         let tr_cnt = blocks.len();
         push_folder_state(&state, |j| {
             j.elapsed_sec = el_cl;
-            j.phase = "clean".to_string();
+            j.phase = "render".to_string();
             j.active_model = active_model.clone();
-            j.message = format!("Очистка и вёрстка: {fname}");
+            j.message = format!("🎨 Очистка и вёрстка ({}/{total}): {fname}", idx + 1);
+            let nsfw_note = if nsfw_local_used {
+                Some(format!("🔞 Стр. {}: перехват цензуры → {}", idx + 1, active_model))
+            } else {
+                None
+            };
             push_live_event_obj(
                 &mut j.live,
                 &run_id,
-                "clean",
-                &format!("Очистка+Рендер: {fname}"),
+                "render",
+                &format!("🎨 Очистка и вёрстка стр. {}/{total}: {fname}", idx + 1),
                 &active_model,
-                st_cl,
+                0,
                 tr_cnt,
                 tr_cnt,
                 cloud_only,
-                None,
+                nsfw_note.as_deref(),
             );
+            if nsfw_local_used {
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("nsfw_mode".to_string(), json!(true));
+                }
+            }
         });
 
         let st_cr = state.clone();
@@ -650,7 +784,7 @@ pub async fn process_chapter_folder_sync(
         let up = opts.uppercase;
         let min_fs = opts.min_font_size;
         let max_fs = opts.max_font_size;
-        let overflow_mode = cfg.overflow_mode.clone();
+        let overflow_mode = cur_cfg.overflow_mode.clone();
         let mtime = file_mtime_secs(img_path);
 
         let clean_render_task = tokio::task::spawn_blocking(move || -> Result<(Vec<TextBlock>, u128), String> {
@@ -796,23 +930,38 @@ pub async fn process_chapter_folder_sync(
         save_manifest(&opts.output_dir, &manifest).map_err(|e| e.to_string())?;
 
         processed += 1;
+        step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
         let el_done = t_batch.elapsed().as_secs();
-        let ev_msg = format!(
-            "[OK] {fname}: {} блоков, рендер+клин={page_ms} ms",
-            blocks_after.len()
-        );
+        let total_step_s = t_step.elapsed().as_secs_f32();
+        let ev_msg = if llm_ms > 0 {
+            format!(
+                "[OK] #{}/{total} {fname}: {} бл. · ИИ {:.1}с · вёрстка {page_ms}мс (всего {:.1}с)",
+                idx + 1,
+                blocks_after.len(),
+                llm_ms as f32 / 1000.0,
+                total_step_s
+            )
+        } else {
+            format!(
+                "[OK] #{}/{total} {fname}: {} бл. · вёрстка {page_ms}мс (всего {:.1}с)",
+                idx + 1,
+                blocks_after.len(),
+                total_step_s
+            )
+        };
+        let pause_after = state.folder_pause_after_page.load(AtomicOrd::SeqCst);
         push_folder_state(&state, |j| {
             j.done = idx + 1;
             j.elapsed_sec = el_done;
             j.current_file = fname.clone();
             j.phase = "render".to_string();
-            j.message = format!("Готово {}/{total}: {fname} ({page_ms} ms)", idx + 1);
+            j.message = format!("✅ Готово {}/{total}: {fname}", idx + 1);
             j.logs.push(ev_msg.clone());
             push_live_event_obj(
                 &mut j.live,
                 &run_id,
                 "render",
-                &format!("Готово {}/{total}: {fname}", idx + 1),
+                &format!("✅ Готово {}/{total}: {fname}", idx + 1),
                 &active_model,
                 0,
                 blocks_after.len(),
@@ -820,12 +969,24 @@ pub async fn process_chapter_folder_sync(
                 cloud_only,
                 Some(&ev_msg),
             );
+            if pause_after {
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("pause_after_batch".to_string(), json!(true));
+                }
+            }
         });
+        if pause_after {
+            stopped_early = true;
+            break;
+        }
     }
+
+    ticker_alive.store(false, AtomicOrd::SeqCst);
 
     let final_status = if stopped_early { "stopped" } else { "completed" }.to_string();
     let total_ms = t_batch.elapsed().as_millis();
     let total_el = t_batch.elapsed().as_secs();
+    let mut final_logs_snapshot: Vec<String> = Vec::new();
     push_folder_state(&state, |j| {
         j.status = final_status.clone();
         j.elapsed_sec = total_el;
@@ -843,6 +1004,7 @@ pub async fn process_chapter_folder_sync(
         };
         let msg_clone = j.message.clone();
         j.logs.push(msg_clone.clone());
+        final_logs_snapshot = j.logs.clone();
         let stg = if stopped_early { "stopped" } else { "done" };
         push_live_event_obj(
             &mut j.live,
@@ -853,10 +1015,35 @@ pub async fn process_chapter_folder_sync(
             0,
             0,
             0,
-            cloud_only,
+            init_cloud_only,
             Some(&msg_clone),
         );
     });
+
+    let report_body = format!(
+        "Miko-chan Manga Studio (Rust) — TRANSLATION REPORT\nSource: {}\nOutput: {}\nTarget Lang: {}\nStatus: {}\nTotal: {} | Processed: {} | Skipped: {} | Failed: {} | Elapsed: {} ms\n\n--- LOGS ---\n{}\n",
+        opts.source_dir.display(),
+        opts.output_dir.display(),
+        opts.target_lang,
+        final_status,
+        total,
+        processed,
+        skipped,
+        failed_pages,
+        total_ms,
+        final_logs_snapshot.join("\n")
+    );
+    let _ = std::fs::write(opts.output_dir.join("TRANSLATION_REPORT.txt"), &report_body);
+    state.append_file_log(&format!(
+        "CHAPTER SUMMARY | status={} | src={} | processed={}/{} | skipped={} | failed={} | {} ms",
+        final_status,
+        opts.source_dir.display(),
+        processed,
+        total,
+        skipped,
+        failed_pages,
+        total_ms
+    ));
 
     Ok(BatchFolderReport {
         status: final_status,
@@ -963,12 +1150,52 @@ pub async fn translate_folder(
 
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let total_images = images.len();
+    let req_model = payload.ollama_model.or(payload.model);
+    let init_model = req_model
+        .clone()
+        .filter(|s| !s.trim().is_empty() && !s.eq_ignore_ascii_case("auto"))
+        .unwrap_or_else(|| cfg.selected_model.clone());
+    let init_run_id = format!("rs_{}", unix_ts_now() % 100_000);
+    let init_cloud_only = cfg.cloud_only_no_local_fallback;
+
+    // КРИТИЧНО: выставляем статус `running` СИНХРОННО ДО возврата HTTP 200,
+    // чтобы мгновенное подключение браузера к `/folder_stream` и `/folder_status` не увидела старый `idle`/`completed`!
+    push_folder_state(&state, |j| {
+        j.status = "running".to_string();
+        j.total = total_images;
+        j.done = 0;
+        j.elapsed_sec = 0;
+        j.current_file.clear();
+        j.phase = "ocr".to_string();
+        j.active_model = init_model.clone();
+        j.folder_path = source_dir.to_string_lossy().to_string();
+        j.source_dir = source_dir.to_string_lossy().to_string();
+        j.output_dir = output_dir.to_string_lossy().to_string();
+        j.target_lang = t_lang.clone();
+        j.message = format!("🚀 Запуск перевода главы ({total_images} стр.)");
+        j.logs.clear();
+        j.logs.push(format!("Старт главы: {total_images} изображений"));
+        j.live = json!({});
+        push_live_event_obj(
+            &mut j.live,
+            &init_run_id,
+            "ocr",
+            &format!("🚀 Запуск перевода главы ({total_images} стр.)"),
+            &init_model,
+            0,
+            0,
+            0,
+            init_cloud_only,
+            Some(&format!("Старт главы: {total_images} стр.")),
+        );
+    });
+
     let batch_opts = BatchFolderOptions {
         source_dir: source_dir.clone(),
         output_dir: output_dir.clone(),
         images,
         target_lang: t_lang.clone(),
-        model_override: payload.ollama_model.or(payload.model),
+        model_override: req_model,
         detect_free_text: payload.detect_free_text.unwrap_or(cfg.detect_free_text),
         text_filter_mode: payload.text_filter_mode.unwrap_or(cfg.text_filter_mode),
         skip_existing,
@@ -1055,8 +1282,51 @@ pub async fn folder_control(
                 j.phase = "running".to_string();
                 j.message = "Возобновление пакетного перевода".to_string();
             });
-            Json(json!({"status": "ok", "action": act})).into_response()
+            Json(json!({"status": "ok", "action": act, "message": "Перевод возобновлён"})).into_response()
         }
+        "pause_after_batch" => {
+            let prev = state.folder_pause_after_page.load(AtomicOrd::SeqCst);
+            let next = !prev;
+            state.folder_pause_after_page.store(next, AtomicOrd::SeqCst);
+            push_folder_state(&state, |j| {
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("pause_after_batch".to_string(), json!(next));
+                }
+                j.logs.push(format!(
+                    "Пауза после текущей страницы -> {}",
+                    if next { "ВКЛ" } else { "ВЫКЛ" }
+                ));
+            });
+            Json(json!({
+                "status": "ok",
+                "action": act,
+                "pause_after_batch": next,
+                "message": if next {
+                    "Остановлю перевод сразу после завершения текущей страницы"
+                } else {
+                    "Отложенная пауза отменена"
+                }
+            }))
+            .into_response()
+        }
+        "abort_request" => {
+            state.folder_abort_step.notify_waiters();
+            push_folder_state(&state, |j| {
+                j.logs.push("⏭ Прерывание текущего запроса ИИ...".to_string());
+            });
+            Json(json!({
+                "status": "ok",
+                "action": act,
+                "message": "Текущий запрос ИИ прерван"
+            }))
+            .into_response()
+        }
+        "skip_stage" => Json(json!({
+            "status": "ok",
+            "action": act,
+            "message": "В Rust-режиме промежуточные этапы уже оптимизированы"
+        }))
+        .into_response(),
         "toggle_cloud_only" => {
             let new_val = {
                 let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
@@ -1068,12 +1338,25 @@ pub async fn folder_control(
                 v
             };
             push_folder_state(&state, |j| {
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("cloud_only".to_string(), json!(new_val));
+                }
                 j.logs.push(format!(
                     "Только облако -> {}",
                     if new_val { "ВКЛ" } else { "ВЫКЛ" }
                 ));
             });
-            Json(json!({"status": "ok", "action": act, "cloud_only": new_val})).into_response()
+            Json(json!({
+                "status": "ok",
+                "action": act,
+                "cloud_only": new_val,
+                "message": if new_val {
+                    "Режим «Только облако» включён (без локальной Ollama)"
+                } else {
+                    "Локальный резерв ИИ снова разрешён"
+                }
+            }))
+            .into_response()
         }
         "switch_model" => {
             let Some(m) = payload.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
@@ -1087,11 +1370,24 @@ pub async fn folder_control(
                 cfg.selected_model = m.to_string();
                 state.persist_config_if_enabled(&cfg);
             }
+            if let Ok(mut dyn_m) = state.folder_dynamic_model.write() {
+                *dyn_m = Some(m.to_string());
+            }
+            state.translator.reset_censorship_bypass();
             push_folder_state(&state, |j| {
                 j.active_model = m.to_string();
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("model".to_string(), json!(m));
+                }
                 j.logs.push(format!("Смена модели -> {m}"));
             });
-            Json(json!({"status": "ok", "action": act, "active_model": m})).into_response()
+            Json(json!({
+                "status": "ok",
+                "action": act,
+                "active_model": m,
+                "message": format!("Модель на лету переключена на {m}")
+            }))
+            .into_response()
         }
         _ => (
             StatusCode::BAD_REQUEST,
@@ -1926,15 +2222,25 @@ fn pick_folder_blocking() -> NativePickOutcome {
     let script = r#"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class MikoWin32 {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+"@
 $owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'Miko-chan Studio: Выбор папки'
 $owner.TopMost = $true
-$owner.Opacity = 0
-$owner.ShowInTaskbar = $false
+$owner.ShowInTaskbar = $true
 $owner.StartPosition = 'CenterScreen'
-$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Size = New-Object System.Drawing.Size(320, 40)
+$owner.Opacity = 0.01
 $owner.Show()
+[void][MikoWin32]::SetForegroundWindow($owner.Handle)
+$owner.Activate()
 $dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-$dlg.Description = 'Select manga folder'
+$dlg.Description = 'Выберите папку с главой манги'
 $dlg.UseDescriptionForTitle = $true
 $dlg.ShowNewFolderButton = $true
 $res = $dlg.ShowDialog($owner)
@@ -1949,15 +2255,25 @@ fn pick_file_blocking() -> NativePickOutcome {
     let script = r#"
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 Add-Type -AssemblyName System.Windows.Forms
+Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class MikoWin32File {
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+}
+"@
 $owner = New-Object System.Windows.Forms.Form
+$owner.Text = 'Miko-chan Studio: Выбор страницы'
 $owner.TopMost = $true
-$owner.Opacity = 0
-$owner.ShowInTaskbar = $false
+$owner.ShowInTaskbar = $true
 $owner.StartPosition = 'CenterScreen'
-$owner.Size = New-Object System.Drawing.Size(1, 1)
+$owner.Size = New-Object System.Drawing.Size(320, 40)
+$owner.Opacity = 0.01
 $owner.Show()
+[void][MikoWin32File]::SetForegroundWindow($owner.Handle)
+$owner.Activate()
 $dlg = New-Object System.Windows.Forms.OpenFileDialog
-$dlg.Title = 'Select manga image'
+$dlg.Title = 'Выберите страницу манги'
 $dlg.Filter = 'Images|*.png;*.jpg;*.jpeg;*.webp;*.bmp|All Files|*.*'
 $res = $dlg.ShowDialog($owner)
 $owner.Close()

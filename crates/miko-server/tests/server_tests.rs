@@ -845,3 +845,104 @@ async fn test_embedded_ui_and_setup_status_on_clean_portable_dir() {
 
     let _ = std::fs::remove_dir_all(&tmp_base);
 }
+
+#[tokio::test]
+async fn test_live_monitor_sync_start_and_controls() {
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_livemon_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    let ch_dir = tmp_base.join("ch_live");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    let img = image::RgbImage::from_pixel(32, 32, image::Rgb([255, 255, 255]));
+    img.save(ch_dir.join("001.png")).unwrap();
+
+    let state = AppState::init_in_memory(tmp_base.clone()).expect("init_in_memory");
+    let _ = state.allowed_roots.register_root(&ch_dir);
+    let app = build_router(state.clone());
+
+    // 1. /models returns structured {id, name, installed} objects for web_studio.html
+    let mod_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/models")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(mod_res.status(), StatusCode::OK);
+    let mod_val: Value =
+        serde_json::from_slice(&to_bytes(mod_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    let models_arr = mod_val["models"].as_array().expect("models array");
+    assert!(!models_arr.is_empty());
+    assert!(models_arr[0].get("id").and_then(|v| v.as_str()).is_some());
+    assert!(models_arr[0].get("name").and_then(|v| v.as_str()).is_some());
+    assert_eq!(models_arr[0]["installed"], true);
+
+    // 2. Live Monitor controls (pause_after_batch, abort_request, skip_stage, switch_model) return 200 OK
+    for action_body in [
+        serde_json::json!({"action": "pause_after_batch"}),
+        serde_json::json!({"action": "abort_request"}),
+        serde_json::json!({"action": "skip_stage"}),
+        serde_json::json!({"action": "switch_model", "model": "unsloth::deepseek-v4-flash"}),
+    ] {
+        let ctrl_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/folder_control")
+                    .header("host", "127.0.0.1:8000")
+                    .header("content-type", "application/json")
+                    .body(Body::from(action_body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(ctrl_res.status(), StatusCode::OK);
+    }
+
+    // 3. Immediately upon POST /translate_folder, state.folder_job.status is ALREADY non-idle (no SSE race!)
+    let tr_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/translate_folder")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "en",
+                        "skip_existing": false
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(tr_res.status(), StatusCode::OK);
+    let snap = state.folder_job.read().unwrap().clone();
+    assert_ne!(
+        snap.status, "idle",
+        "folder_job must never still be idle when /translate_folder returns HTTP 200"
+    );
+    assert!(
+        snap.live.get("run_id").and_then(|v| v.as_str()).is_some(),
+        "live.run_id must be synchronously populated before HTTP 200"
+    );
+
+    let _ = state.folder_stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    let _ = std::fs::remove_dir_all(tmp_base.join("ch_live_EN"));
+}

@@ -1,4 +1,5 @@
 pub mod bootstrap;
+pub mod compat;
 pub mod folder_job;
 pub mod fonts;
 pub mod studio;
@@ -62,6 +63,9 @@ pub struct AppState {
     pub renderer: Arc<RustRendererEngine>,
     pub folder_stop_flag: Arc<AtomicBool>,
     pub folder_pause_flag: Arc<AtomicBool>,
+    pub folder_pause_after_page: Arc<AtomicBool>,
+    pub folder_abort_step: Arc<Notify>,
+    pub folder_dynamic_model: RwLock<Option<String>>,
     pub picker_busy: Arc<AtomicBool>,
     pub shutdown_notify: Notify,
 }
@@ -110,6 +114,9 @@ impl AppState {
             renderer,
             folder_stop_flag: Arc::new(AtomicBool::new(false)),
             folder_pause_flag: Arc::new(AtomicBool::new(false)),
+            folder_pause_after_page: Arc::new(AtomicBool::new(false)),
+            folder_abort_step: Arc::new(Notify::new()),
+            folder_dynamic_model: RwLock::new(None),
             picker_busy: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Notify::new(),
         }))
@@ -150,6 +157,9 @@ impl AppState {
             renderer,
             folder_stop_flag: Arc::new(AtomicBool::new(false)),
             folder_pause_flag: Arc::new(AtomicBool::new(false)),
+            folder_pause_after_page: Arc::new(AtomicBool::new(false)),
+            folder_abort_step: Arc::new(Notify::new()),
+            folder_dynamic_model: RwLock::new(None),
             picker_busy: Arc::new(AtomicBool::new(false)),
             shutdown_notify: Notify::new(),
         }))
@@ -191,6 +201,12 @@ impl AppState {
             *g = fresh.clone();
         }
         fresh
+    }
+
+    pub fn append_file_log(&self, line: &str) {
+        if self.persist_config {
+            compat::append_log_to_disk(&self.base_dir, line);
+        }
     }
 }
 
@@ -328,6 +344,74 @@ struct HealthResponse {
     folder_job: FolderJobState,
 }
 
+fn build_ui_model_entries(cfg: &AppConfig, ollama_tags: &[String]) -> Vec<Value> {
+    let mut entries: Vec<Value> = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+
+    let mut push_entry = |id: String, name: String| {
+        if seen.insert(id.clone()) {
+            entries.push(json!({
+                "id": id,
+                "name": name,
+                "installed": true,
+            }));
+        }
+    };
+
+    if !cfg.unsloth_url.trim().is_empty() {
+        push_entry(
+            "unsloth::deepseek-v4-flash".to_string(),
+            "☁️ [Cloud API] DeepSeek V4 Flash".to_string(),
+        );
+        push_entry(
+            "unsloth::deepseek-v4-pro".to_string(),
+            "☁️ [Cloud API] DeepSeek V4 Pro".to_string(),
+        );
+    }
+
+    if !cfg.selected_model.trim().is_empty() && cfg.selected_model != "auto" {
+        let sel = cfg.selected_model.trim().to_string();
+        let label = if let Some(rest) = sel.strip_prefix("unsloth::") {
+            format!("☁️ [Cloud API] {rest}")
+        } else if let Some(rest) = sel.strip_prefix("ollama::") {
+            format!("🦙 [Ollama] {rest}")
+        } else {
+            sel.clone()
+        };
+        push_entry(sel, label);
+    }
+
+    if !cfg.local_fallback_model_multilang.trim().is_empty()
+        && cfg.local_fallback_model_multilang != "auto"
+    {
+        let fb = cfg.local_fallback_model_multilang.trim();
+        let full_id = if fb.contains("::") {
+            fb.to_string()
+        } else {
+            format!("ollama::{fb}")
+        };
+        let short = full_id.strip_prefix("ollama::").unwrap_or(&full_id);
+        push_entry(full_id.clone(), format!("🦙 [Ollama 18+] {short}"));
+    }
+
+    for tag in ollama_tags {
+        let trimmed = tag.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let full_id = if trimmed.starts_with("ollama::") {
+            trimmed.to_string()
+        } else {
+            format!("ollama::{trimmed}")
+        };
+        let short = full_id.strip_prefix("ollama::").unwrap_or(&full_id);
+        let label = format!("🦙 [Ollama] {short}");
+        push_entry(full_id, label);
+    }
+
+    entries
+}
+
 async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let job = state.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
@@ -335,8 +419,8 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         .db
         .load_glossary("global")
         .unwrap_or_else(|_| cfg.glossary.clone());
-    let fonts = state.refresh_fonts();
-    let inv = state.refresh_ort_inventory();
+    let fonts = state.get_available_fonts();
+    let inv = state.get_ort_inventory();
     let sys_gpu = bootstrap::detect_system_gpu();
     let dev_badge = if inv.cuda_ep_compiled && sys_gpu.has_nvidia {
         "CUDA GPU".to_string()
@@ -348,6 +432,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
     let font_status = fonts::build_font_status(&state.base_dir.join("fonts"), &fonts);
     let first_font = fonts.first().map(|f| f.path.clone());
     let glossary_count = global_glossary.len();
+    let ui_models = build_ui_model_entries(&cfg, &[]);
 
     Json(HealthResponse {
         status: "ready",
@@ -366,7 +451,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         ollama_model: cfg.selected_model.clone(),
         active_model: cfg.selected_model.clone(),
         selected_model: cfg.selected_model,
-        models: Vec::new(),
+        models: ui_models,
         recommended_models: Vec::new(),
         cloud_presets: Vec::new(),
         unsloth_url: cfg.unsloth_url,
@@ -415,13 +500,8 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
 
 async fn get_models(State(state): State<Arc<AppState>>) -> Json<Value> {
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let mut models = state.translator.list_ollama_models().await;
-    if !cfg.selected_model.trim().is_empty()
-        && cfg.selected_model != "auto"
-        && !models.iter().any(|m| m == &cfg.selected_model)
-    {
-        models.insert(0, cfg.selected_model.clone());
-    }
+    let ollama_tags = state.translator.list_ollama_models().await;
+    let models = build_ui_model_entries(&cfg, &ollama_tags);
     Json(json!({
         "status": "ok",
         "runtime": "rust",
@@ -446,7 +526,7 @@ async fn stream_folder_status(
                 let is_active = st
                     .folder_job
                     .read()
-                    .is_ok_and(|j| matches!(j.status.as_str(), "running" | "stopping"));
+                    .is_ok_and(|j| matches!(j.status.as_str(), "starting" | "running" | "stopping"));
                 let wait = if is_active {
                     Duration::from_secs(1)
                 } else {
@@ -1066,7 +1146,22 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/setup/install_ollama", post(bootstrap::post_install_ollama))
         .route("/pull_model", post(bootstrap::post_pull_model))
         .route("/pull_status", get(bootstrap::get_pull_status))
+        .route("/model_storage", get(compat::get_model_storage))
+        .route("/delete_model", post(compat::post_delete_model))
+        .route("/ux_telemetry/record", post(compat::ux_telemetry_record))
+        .route("/ux_telemetry/report", get(compat::ux_telemetry_report))
+        .route("/ux_telemetry/open_report", post(compat::ux_telemetry_open_report))
+        .route("/ux_telemetry/clear", post(compat::ux_telemetry_clear))
         .route("/diagnostics", get(get_diagnostics))
+        .route("/diagnostics/report", get(compat::get_diagnostics_report))
+        .route("/diagnostics/download_log", get(compat::download_diagnostics_log))
+        .route("/diagnostics/open_logs", post(compat::open_diagnostics_logs))
+        .route("/diagnostics/clear", post(compat::clear_diagnostics_logs))
+        .route("/open_folder_report", post(compat::open_folder_report))
+        .route("/folder_clean_noise", post(compat::folder_clean_noise))
+        .route("/shorten_block_text", post(compat::shorten_block_text))
+        .route("/chapter_book/import", post(compat::chapter_book_import))
+        .route("/chapter_book/proofread", post(compat::chapter_book_proofread))
         .route("/shutdown", post(shutdown_server))
         .layer(middleware::from_fn(local_security_middleware))
         .with_state(state)

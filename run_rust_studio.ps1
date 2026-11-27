@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$HostAddr = "127.0.0.1",
     [int]$Port = 8000,
     [switch]$Rebuild,
@@ -40,7 +40,19 @@ if ($SelfCheck) {
     exit $LASTEXITCODE
 }
 
+$env:NO_PROXY = "127.0.0.1,localhost"
+$env:no_proxy = "127.0.0.1,localhost"
+
 $TargetUrl = "http://$HostAddr`:$Port"
+try {
+    $existing = Invoke-RestMethod -Uri "$TargetUrl/health" -TimeoutSec 1 -ErrorAction Stop
+    if ($existing.status -eq "ready") {
+        Write-Host "Miko-chan Manga Studio (Rust) уже запущена на $TargetUrl — открываем браузер!" -ForegroundColor Green
+        if ($OpenBrowser) { Start-Process $TargetUrl }
+        exit 0
+    }
+} catch {}
+
 Write-Host "Starting Miko-chan Manga Studio (Rust) at $TargetUrl" -ForegroundColor Green
 
 # Ensure local Ollama daemon is running in the background for instant 18+ censorship fallback
@@ -56,7 +68,5 @@ if ($ollamaCmd) {
 if ($env:MIKO_CUDA_DLL_DIR) {
     Write-Host "CUDA DLL dir: $env:MIKO_CUDA_DLL_DIR" -ForegroundColor DarkGray
 }
-if ($OpenBrowser) {
-    Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoProfile -Command `"Start-Sleep -Seconds 2; Start-Process '$TargetUrl'`""
-}
-& $ExePath --base-dir $Root --host $HostAddr --port $Port --no-browser
+$BrowserArg = if ($OpenBrowser) { "--open-browser" } else { "--no-browser" }
+& $ExePath --base-dir $Root --host $HostAddr --port $Port $BrowserArg

@@ -5,6 +5,8 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    std::env::set_var("NO_PROXY", "127.0.0.1,localhost,::1");
+    std::env::set_var("no_proxy", "127.0.0.1,localhost,::1");
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
@@ -436,9 +438,24 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     }
 
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
-    let app = build_router(state.clone());
-    let listener = tokio::net::TcpListener::bind(addr).await?;
     let url = format!("http://{addr}");
+    let app = build_router(state.clone());
+    let listener = match tokio::net::TcpListener::bind(addr).await {
+        Ok(l) => l,
+        Err(bind_err) => {
+            eprintln!("Порт {addr} уже занят ({bind_err}) — открываем уже запущенную студию {url}...");
+            if open_browser.unwrap_or(true) {
+                #[cfg(windows)]
+                {
+                    let _ = std::process::Command::new("cmd")
+                        .args(["/C", "start", "", &url])
+                        .spawn();
+                }
+            }
+            return Ok(());
+        }
+    };
+    state.append_file_log(&format!("SERVER START | listening on {url}"));
     println!("==================================================================");
     println!("  Miko-chan Manga Studio (Rust Portable)");
     println!("  Студия открыта по адресу: {url}");

@@ -76,6 +76,7 @@ pub struct TranslateBatchResult {
     pub cache_hits: usize,
     pub api_calls: usize,
     pub elapsed_ms: u128,
+    pub censored_fallback: bool,
 }
 
 /// Нативный async HTTP-переводчик манги (OpenAI-compatible Cloud + Local Ollama + SQLite WAL).
@@ -85,6 +86,8 @@ pub struct RustTranslator {
     ollama_base_url: String,
     cloud_breaker: EndpointCircuitBreaker,
     ollama_breaker: EndpointCircuitBreaker,
+    /// Если облако цензурит 2 батча подряд в 18+ сцене — на 3 минуты сразу идём в локальную модель без потери 15с на запрос.
+    censorship_breaker: EndpointCircuitBreaker,
 }
 
 #[derive(Deserialize)]
@@ -114,7 +117,7 @@ impl RustTranslator {
 
         let http_local = reqwest::Client::builder()
             .no_proxy()
-            .timeout(Duration::from_secs(60))
+            .timeout(Duration::from_secs(180))
             .build()
             .unwrap_or_else(|_| reqwest::Client::new());
 
@@ -124,7 +127,13 @@ impl RustTranslator {
             ollama_base_url: base,
             cloud_breaker: EndpointCircuitBreaker::new(3, Duration::from_secs(45)),
             ollama_breaker: EndpointCircuitBreaker::new(3, Duration::from_secs(30)),
+            censorship_breaker: EndpointCircuitBreaker::new(2, Duration::from_secs(180)),
         }
+    }
+
+    /// Сбрасывает счётчик 18+ цензуры в начале новой главы.
+    pub fn reset_censorship_bypass(&self) {
+        self.censorship_breaker.record_success();
     }
 
     pub fn ollama_base_url(&self) -> &str {
@@ -236,7 +245,7 @@ impl RustTranslator {
             "format": "json",
             "options": {
                 "temperature": 0.25,
-                "num_ctx": 8192
+                "num_ctx": 4096
             },
             "messages": [
                 {"role": "system", "content": sys_prompt},
@@ -393,6 +402,7 @@ impl RustTranslator {
 
         let mut cache_hits = 0usize;
         let mut api_calls = 0usize;
+        let mut censored_fallback = false;
         let mut missing_indices: Vec<usize> = Vec::new();
 
         for (idx, blk) in blocks.iter_mut().enumerate() {
@@ -456,8 +466,14 @@ impl RustTranslator {
                     req.anti_censorship,
                 );
 
+                let allow_local = is_explicit_ollama || !req.cloud_only_no_local_fallback;
+                let bypass_censored_cloud = allow_local && self.censorship_breaker.is_open();
+                if bypass_censored_cloud {
+                    censored_fallback = true;
+                }
+
                 let mut parsed_map: HashMap<String, (String, String)> = HashMap::new();
-                if has_cloud && !self.cloud_breaker.is_open() {
+                if has_cloud && !self.cloud_breaker.is_open() && !bypass_censored_cloud {
                     api_calls += 1;
                     match self
                         .call_cloud_openai(
@@ -473,6 +489,13 @@ impl RustTranslator {
                             let m = parse_flat_json_translations(&raw, &expected_keys);
                             if !m.is_empty() {
                                 self.cloud_breaker.record_success();
+                                if m.len() == expected_keys.len() {
+                                    self.censorship_breaker.record_success();
+                                } else if allow_local {
+                                    // Облако вырезало часть 18+ реплик в батче
+                                    censored_fallback = true;
+                                    self.censorship_breaker.record_failure();
+                                }
                                 active_model = cloud_model.clone();
                                 for (k, v) in m {
                                     parsed_map.insert(k, (v, cloud_model.clone()));
@@ -480,17 +503,33 @@ impl RustTranslator {
                             } else if !is_refusal_response(&raw) {
                                 self.cloud_breaker.record_failure();
                             } else {
-                                tracing::info!(
-                                    "Облако ({}) зацензурило батч — мгновенное переключение на локальную модель",
-                                    cloud_model
-                                );
+                                censored_fallback = true;
+                                if allow_local && self.censorship_breaker.record_failure() {
+                                    tracing::info!(
+                                        "Облако ({}) зацензурило 2 страницы подряд — включаю прямой 18+ режим через локальную ИИ на 3 мин",
+                                        cloud_model
+                                    );
+                                } else {
+                                    tracing::info!(
+                                        "Облако ({}) зацензурило батч — мгновенное переключение на локальную модель",
+                                        cloud_model
+                                    );
+                                }
                             }
                         }
                         Err(TranslatorError::Refused) => {
-                            tracing::info!(
-                                "Облако ({}) вернуло отказ цензуры — переключаемся на локальную модель",
-                                cloud_model
-                            );
+                            censored_fallback = true;
+                            if allow_local && self.censorship_breaker.record_failure() {
+                                tracing::info!(
+                                    "Облако ({}) вернуло 2 отказа цензуры подряд — прямой переход на локальную ИИ на 3 мин",
+                                    cloud_model
+                                );
+                            } else {
+                                tracing::info!(
+                                    "Облако ({}) вернуло отказ цензуры — переключаемся на локальную модель",
+                                    cloud_model
+                                );
+                            }
                         }
                         Err(err) => {
                             tracing::warn!("Облачный переводчик не ответил: {}", err);
@@ -501,7 +540,6 @@ impl RustTranslator {
 
                 // Если все или часть реплик не переведены (например, облако зацензурило отдельные 18+ фразы в батче),
                 // мгновенно допереводим недостающие ключи через локальную модель!
-                let allow_local = is_explicit_ollama || !req.cloud_only_no_local_fallback;
                 if parsed_map.len() < expected_keys.len()
                     && allow_local
                     && !self.ollama_breaker.is_open()
@@ -607,6 +645,7 @@ impl RustTranslator {
             cache_hits,
             api_calls,
             elapsed_ms: t0.elapsed().as_millis(),
+            censored_fallback,
         })
     }
 
