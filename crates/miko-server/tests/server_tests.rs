@@ -751,3 +751,97 @@ async fn test_settings_persistence_across_restarts_and_deepseek_flash_default() 
 
     let _ = std::fs::remove_dir_all(&tmp_base);
 }
+
+#[tokio::test]
+async fn test_embedded_ui_and_setup_status_on_clean_portable_dir() {
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_portable_clean_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    std::fs::create_dir_all(&tmp_base).unwrap();
+
+    let state = AppState::init_in_memory(tmp_base.clone()).expect("init clean state");
+    let app = build_router(state);
+
+    // 1. UI serves embedded web_studio.html even when web_studio.html is absent from tmp_base
+    let ui_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ui_res.status(), StatusCode::OK);
+    let ui_bytes = axum::body::to_bytes(ui_res.into_body(), 2 * 1024 * 1024)
+        .await
+        .unwrap();
+    let ui_str = String::from_utf8_lossy(&ui_bytes);
+    assert!(
+        ui_str.contains("rust-setup-modal"),
+        "embedded UI must include First-Run Setup Wizard"
+    );
+
+    // 2. Embedded fox mascot PNG also serves 200 OK without loose PNG on disk
+    let fox_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/mascot_fox.png")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fox_res.status(), StatusCode::OK);
+
+    // 3. /setup/status reports needs_setup=true on empty models directory and enforces Origin check
+    let blocked_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/setup/status")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked_res.status(), StatusCode::FORBIDDEN);
+
+    let setup_res = app
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/setup/status")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(setup_res.status(), StatusCode::OK);
+    let setup_bytes = axum::body::to_bytes(setup_res.into_body(), 256 * 1024)
+        .await
+        .unwrap();
+    let setup_json: serde_json::Value = serde_json::from_slice(&setup_bytes).unwrap();
+    assert_eq!(setup_json["status"], "ok");
+    assert_eq!(setup_json["needs_setup"], true);
+    assert_eq!(setup_json["models_ready_count"], 0);
+    assert_eq!(setup_json["models_total_count"], 6);
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+}

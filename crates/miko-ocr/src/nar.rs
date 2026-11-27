@@ -19,6 +19,8 @@ pub enum NarError {
     Session(#[from] miko_ort::ort::Error),
 }
 
+const EMBEDDED_NAR_VOCAB_JSON: &str = include_str!("../assets/nar_vocabulary_6817.json");
+
 #[derive(Debug, Deserialize)]
 struct VocabJsonFile {
     characters: Vec<String>,
@@ -31,14 +33,25 @@ pub struct NarVocabulary {
 }
 
 impl NarVocabulary {
-    pub fn load(path: &Path) -> Result<Self, NarError> {
-        let raw = std::fs::read_to_string(path)?;
-        let parsed: VocabJsonFile = serde_json::from_str(&raw)?;
+    pub fn from_json_str(raw: &str) -> Result<Self, NarError> {
+        let parsed: VocabJsonFile = serde_json::from_str(raw)?;
         let eos_id = parsed.characters.len();
         Ok(Self {
             chars: parsed.characters,
             eos_id,
         })
+    }
+
+    pub fn embedded() -> Result<Self, NarError> {
+        Self::from_json_str(EMBEDDED_NAR_VOCAB_JSON)
+    }
+
+    pub fn load(path: &Path) -> Result<Self, NarError> {
+        if path.is_file() {
+            let raw = std::fs::read_to_string(path)?;
+            return Self::from_json_str(&raw);
+        }
+        Self::embedded()
     }
 
     pub fn from_chars(chars: Vec<String>) -> Self {

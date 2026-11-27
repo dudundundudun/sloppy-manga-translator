@@ -13,7 +13,8 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
 
     let mut host = "127.0.0.1".to_string();
     let mut port: u16 = 8000;
-    let mut base_dir = PathBuf::from(".");
+    let mut base_dir: Option<PathBuf> = None;
+    let mut open_browser: Option<bool> = None;
     let mut self_check = false;
     let mut verify_onnx = false;
     let mut ocr_image: Option<PathBuf> = None;
@@ -42,8 +43,14 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             }
             "--base-dir" => {
                 if let Some(v) = args.next() {
-                    base_dir = PathBuf::from(v);
+                    base_dir = Some(PathBuf::from(v));
                 }
+            }
+            "--open-browser" => {
+                open_browser = Some(true);
+            }
+            "--no-browser" => {
+                open_browser = Some(false);
             }
             "--self-check" => {
                 self_check = true;
@@ -97,33 +104,68 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         }
     }
 
-    let canon_base = std::fs::canonicalize(&base_dir).unwrap_or(base_dir);
+    let resolved_base = match base_dir {
+        Some(b) => b,
+        None => {
+            let cwd = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+            if cwd.join("web_studio.html").is_file() || cwd.join("Cargo.toml").is_file() {
+                cwd
+            } else if let Ok(exe_p) = std::env::current_exe() {
+                if let Some(exe_dir) = exe_p.parent() {
+                    if let Some(repo_cand) = exe_dir.parent().and_then(|p| p.parent()) {
+                        if repo_cand.join("Cargo.toml").is_file()
+                            && repo_cand.join("crates").is_dir()
+                        {
+                            repo_cand.to_path_buf()
+                        } else {
+                            exe_dir.to_path_buf()
+                        }
+                    } else {
+                        exe_dir.to_path_buf()
+                    }
+                } else {
+                    cwd
+                }
+            } else {
+                cwd
+            }
+        }
+    };
+
+    let canon_base = std::fs::canonicalize(&resolved_base).unwrap_or(resolved_base);
+    let cfg_json_path = canon_base.join("config.json");
+    if !cfg_json_path.exists() && !self_check {
+        let _ = std::fs::write(&cfg_json_path, miko_server::EMBEDDED_CONFIG_EXAMPLE_JSON);
+    }
     let state = AppState::init(canon_base)?;
 
     if self_check {
-        let ui_exists = state.base_dir.join("web_studio.html").exists();
+        let ui_exists = state.base_dir.join("web_studio.html").exists()
+            || !miko_server::EMBEDDED_WEB_STUDIO_HTML.is_empty();
         let metrics = state.db.metrics()?;
+        let inv = state.get_ort_inventory();
         println!(
             "SELF_CHECK OK | version={} | startup_ms={} | ui_exists={} | fonts={} | onnx_models={} | db_glossary={}",
             miko_server::APP_VERSION_RS,
             state.startup_ms,
             ui_exists,
             state.get_available_fonts().len(),
-            state.ort_inventory.models.len(),
+            inv.models.len(),
             metrics.glossary_rows
         );
         return Ok(());
     }
 
     if verify_onnx {
+        let inv = state.get_ort_inventory();
         println!(
             "ONNX INVENTORY | dir={} | models={} | cuda_compiled={} | dml_compiled={}",
-            state.ort_inventory.onnx_dir,
-            state.ort_inventory.models.len(),
-            state.ort_inventory.cuda_ep_compiled,
-            state.ort_inventory.directml_ep_compiled
+            inv.onnx_dir,
+            inv.models.len(),
+            inv.cuda_ep_compiled,
+            inv.directml_ep_compiled
         );
-        for entry in &state.ort_inventory.models {
+        for entry in &inv.models {
             match miko_ort::verify_onnx_model(std::path::Path::new(&entry.path), true) {
                 Ok(rep) => {
                     println!(
@@ -396,11 +438,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let addr: SocketAddr = format!("{host}:{port}").parse()?;
     let app = build_router(state.clone());
     let listener = tokio::net::TcpListener::bind(addr).await?;
+    let url = format!("http://{addr}");
+    println!("==================================================================");
+    println!("  Miko-chan Manga Studio (Rust Portable)");
+    println!("  Студия открыта по адресу: {url}");
+    println!("  Папка программы: {}", state.base_dir.display());
+    println!("  (Не закрывайте это окно, пока переводите мангу)");
+    println!("==================================================================");
     tracing::info!(
-        "Miko-chan Manga Studio (Rust) listening on http://{} (startup {} ms)",
-        addr,
+        "Miko-chan Manga Studio (Rust) listening on {} (startup {} ms)",
+        url,
         state.startup_ms
     );
+
+    if open_browser.unwrap_or(true) {
+        let url_clone = url.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(350)).await;
+            #[cfg(windows)]
+            {
+                let _ = std::process::Command::new("cmd")
+                    .args(["/C", "start", "", &url_clone])
+                    .spawn();
+            }
+        });
+    }
+
+    tokio::spawn(async move {
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_millis(900))
+            .build()
+            .unwrap_or_default();
+        if client.get("http://127.0.0.1:11434/api/tags").send().await.is_err() {
+            #[cfg(windows)]
+            {
+                use std::os::windows::process::CommandExt;
+                const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+                let _ = std::process::Command::new("ollama")
+                    .arg("serve")
+                    .creation_flags(CREATE_NO_WINDOW)
+                    .spawn();
+            }
+        }
+    });
 
     let bg_state = state.clone();
     tokio::spawn(async move {

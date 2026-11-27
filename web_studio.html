@@ -3564,6 +3564,10 @@
         <span>🔎</span>
         <span>Глоссарий / Поиск</span>
       </button>
+      <button class="icon-action-btn" id="btn-topbar-setup" onclick="openRustSetupModal()" style="display:none;" title="Установка и проверка нейросетей, ускорения NVIDIA CUDA и Ollama">
+        <span>📦</span>
+        <span id="topbar-setup-lbl">Модели ИИ</span>
+      </button>
       <button class="icon-action-btn" onclick="openSettingsOnTab('tab-ai')" title="Открыть все настройки моделей, API, фильтра вздохов, интерфейса и диагностики">
         <span>⚙️</span>
         <span>Настройки</span>
@@ -7419,6 +7423,9 @@
         const act = (data.active_model || "auto").replace(/^.*?::/, "");
         activeModelLabel = act;
         document.getElementById("gpu-badge").textContent = data.gpu?.device_name || "CPU";
+        if (data.runtime === "rust" && typeof syncRustTopbarAndFirstRun === "function") {
+          syncRustTopbarAndFirstRun(data);
+        }
         if (skipFormOverwrite) {
           if (data.status === "initializing" && !window._healthInitRetryScheduled) {
             window._healthInitRetryScheduled = true;
@@ -15437,6 +15444,513 @@
     setTargetLang(targetLang);
     loadHealth(false);
     reattachRunningFolderJobIfAny();
+  </script>
+
+  <!-- ==================== RUST PORTABLE FIRST-RUN SETUP WIZARD ==================== -->
+  <style>
+    .rust-setup-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 950;
+      background: rgba(8, 6, 16, 0.82);
+      backdrop-filter: blur(8px);
+      display: none;
+      align-items: center;
+      justify-content: center;
+      padding: 18px;
+    }
+    .rust-setup-backdrop.open {
+      display: flex;
+    }
+    .rust-setup-dialog {
+      width: min(680px, 100%);
+      max-height: 92vh;
+      overflow-y: auto;
+      background: linear-gradient(180deg, #1e1930 0%, #151223 100%);
+      border: 1px solid rgba(244, 114, 182, 0.34);
+      border-radius: 18px;
+      box-shadow: 0 24px 64px rgba(0, 0, 0, 0.72);
+      padding: 22px 24px;
+      color: var(--text-primary, #f8fafc);
+    }
+    .rust-setup-hdr {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .rust-setup-title {
+      font-size: 18px;
+      font-weight: 800;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .rust-setup-sub {
+      font-size: 12.5px;
+      color: var(--text-muted, #94a3b8);
+      margin-top: 4px;
+      line-height: 1.45;
+    }
+    .rust-setup-gpu-banner {
+      background: rgba(52, 211, 153, 0.09);
+      border: 1px solid rgba(52, 211, 153, 0.28);
+      border-radius: 12px;
+      padding: 10px 14px;
+      font-size: 12.5px;
+      margin-bottom: 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .rust-profile-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 14px;
+    }
+    @media (max-width: 600px) {
+      .rust-profile-grid { grid-template-columns: 1fr; }
+    }
+    .rust-profile-card {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1.5px solid rgba(255, 255, 255, 0.10);
+      border-radius: 12px;
+      padding: 12px 14px;
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 0.15s ease, background 0.15s ease;
+    }
+    .rust-profile-card:hover {
+      background: rgba(255, 255, 255, 0.06);
+    }
+    .rust-profile-card.selected {
+      background: rgba(244, 114, 182, 0.11);
+      border-color: rgba(244, 114, 182, 0.68);
+    }
+    .rust-profile-card-title {
+      font-size: 13px;
+      font-weight: 700;
+      margin-bottom: 4px;
+      color: #fff;
+    }
+    .rust-profile-card-desc {
+      font-size: 11.5px;
+      color: var(--text-muted, #94a3b8);
+      line-height: 1.38;
+    }
+    .rust-check-list {
+      background: rgba(0, 0, 0, 0.24);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 10px 14px;
+      margin-bottom: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      font-size: 12px;
+    }
+    .rust-check-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .rust-badge-ok {
+      color: #34d399;
+      font-weight: 700;
+      font-size: 11.5px;
+    }
+    .rust-badge-todo {
+      color: #fbbf24;
+      font-weight: 600;
+      font-size: 11.5px;
+    }
+    .rust-progress-box {
+      background: rgba(15, 23, 42, 0.65);
+      border: 1px solid rgba(244, 114, 182, 0.28);
+      border-radius: 12px;
+      padding: 12px 14px;
+      margin-bottom: 14px;
+      display: none;
+    }
+    .rust-progress-box.visible {
+      display: block;
+    }
+    .rust-progress-track {
+      width: 100%;
+      height: 10px;
+      background: rgba(255, 255, 255, 0.08);
+      border-radius: 999px;
+      overflow: hidden;
+      margin: 8px 0;
+    }
+    .rust-progress-bar {
+      height: 100%;
+      width: 0%;
+      background: linear-gradient(90deg, #f472b6, #fbbf24, #34d399);
+      transition: width 0.22s ease;
+    }
+    .rust-setup-logs {
+      max-height: 92px;
+      overflow-y: auto;
+      font-family: Consolas, monospace;
+      font-size: 11px;
+      color: #cbd5e1;
+      background: rgba(0, 0, 0, 0.32);
+      border-radius: 8px;
+      padding: 6px 9px;
+      margin-top: 8px;
+    }
+    .rust-llm-row {
+      background: rgba(255, 255, 255, 0.03);
+      border: 1px solid rgba(255, 255, 255, 0.08);
+      border-radius: 12px;
+      padding: 11px 14px;
+      margin-bottom: 16px;
+      font-size: 12px;
+    }
+    .rust-primary-btn {
+      width: 100%;
+      padding: 12px 18px;
+      border-radius: 12px;
+      border: none;
+      font-size: 14px;
+      font-weight: 800;
+      cursor: pointer;
+      background: linear-gradient(135deg, #ec4899 0%, #f59e0b 100%);
+      color: #fff;
+      box-shadow: 0 8px 22px rgba(236, 72, 153, 0.35);
+      transition: transform 0.12s ease, opacity 0.15s ease;
+    }
+    .rust-primary-btn:hover:not(:disabled) {
+      transform: translateY(-1px);
+    }
+    .rust-primary-btn:disabled {
+      opacity: 0.55;
+      cursor: not-allowed;
+    }
+  </style>
+
+  <div class="rust-setup-backdrop" id="rust-setup-modal" role="dialog" aria-modal="true">
+    <div class="rust-setup-dialog">
+      <div class="rust-setup-hdr">
+        <div>
+          <div class="rust-setup-title">
+            <span>🦊</span>
+            <span>Быстрая настройка Miko-chan Studio (Portable)</span>
+          </div>
+          <div class="rust-setup-sub">
+            Программа сама скачает официальный движок Microsoft ONNX Runtime, библиотеки видеокарты NVIDIA, комиксные шрифты и 6 нейросетей для чистки и распознавания манги. Python и CUDA ставить не нужно!
+          </div>
+        </div>
+        <button type="button" class="romaji-copy-btn" onclick="closeRustSetupModal()" title="Закрыть окно">✕</button>
+      </div>
+
+      <div class="rust-setup-gpu-banner">
+        <div>🖥 Видеокарта: <strong id="rs-gpu-name">Определение...</strong></div>
+        <span id="rs-overall-badge" class="rust-badge-todo">Проверка файлов...</span>
+      </div>
+
+      <div class="rust-profile-grid">
+        <div class="rust-profile-card selected" id="rs-card-cuda" onclick="selectRustSetupProfile('cuda')">
+          <div class="rust-profile-card-title">⚡ NVIDIA CUDA 13 Turbo</div>
+          <div class="rust-profile-card-desc">
+            Для видеокарт NVIDIA RTX / GTX. Максимальная скорость (~135 мс на страницу). Докачает официальные DLL CUDA + cuDNN (<span id="rs-est-cuda">~1.7 ГБ</span>).
+          </div>
+        </div>
+        <div class="rust-profile-card" id="rs-card-cpu" onclick="selectRustSetupProfile('cpu')">
+          <div class="rust-profile-card-title">💻 Лёгкий CPU режим</div>
+          <div class="rust-profile-card-desc">
+            Для любых ПК и ноутбуков с AMD / Intel без NVIDIA. Минимальный размер скачивания (<span id="rs-est-cpu">~820 МБ</span>).
+          </div>
+        </div>
+      </div>
+
+      <div class="rust-check-list" id="rs-checklist">
+        <div class="rust-check-row">
+          <span>🔤 Манга-шрифты RU / EN (Google Fonts)</span>
+          <span id="rs-chk-fonts" class="rust-badge-todo">Проверка...</span>
+        </div>
+        <div class="rust-check-row">
+          <span>⚙️ Движок ONNX Runtime + ускорение видеокарты (Microsoft / NVIDIA)</span>
+          <span id="rs-chk-ort" class="rust-badge-todo">Проверка...</span>
+        </div>
+        <div class="rust-check-row">
+          <span>🧠 Нейросети распознавания и чистки бабблов (HuggingFace + Anime-LaMa)</span>
+          <span id="rs-chk-models" class="rust-badge-todo">0 / 6</span>
+        </div>
+      </div>
+
+      <div class="rust-llm-row">
+        <div style="font-weight:700; margin-bottom:6px;">🌐 Переводчик текста (выберите удобный вариант):</div>
+        <div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">
+          <input type="password" id="rs-quick-api-key" placeholder="Облачный API-ключ (ModuleAPI / DeepSeek / OpenRouter)..." style="flex:1; min-width:210px; padding:6px 10px; border-radius:8px; border:1px solid rgba(255,255,255,0.16); background:rgba(0,0,0,0.35); color:#fff; font-size:12px;" />
+          <button type="button" class="pmode-btn" onclick="saveQuickRustApiKey()">💾 Сохранить ключ</button>
+          <span id="rs-key-status" style="font-size:11.5px; color:#94a3b8;"></span>
+        </div>
+        <div style="display:flex; gap:8px; align-items:center; justify-content:space-between; flex-wrap:wrap;">
+          <span style="color:#94a3b8; font-size:11.5px;">Или бесплатный локальный ИИ без цензуры через Ollama:</span>
+          <button type="button" class="pmode-btn" id="rs-btn-ollama" onclick="installOllamaOneClick()">🦙 Установить / запустить Ollama</button>
+        </div>
+      </div>
+
+      <div class="rust-progress-box" id="rs-progress-box">
+        <div style="display:flex; justify-content:space-between; gap:8px; font-size:12px; font-weight:700;">
+          <span id="rs-prog-phase">Подготовка...</span>
+          <span id="rs-prog-pct">0%</span>
+        </div>
+        <div class="rust-progress-track">
+          <div class="rust-progress-bar" id="rs-prog-bar"></div>
+        </div>
+        <div style="display:flex; justify-content:space-between; gap:8px; font-size:11.5px; color:#cbd5e1;">
+          <span id="rs-prog-item">Ожидание...</span>
+          <span id="rs-prog-speed"></span>
+        </div>
+        <div class="rust-setup-logs" id="rs-prog-logs"></div>
+      </div>
+
+      <div style="display:flex; gap:10px; align-items:center;">
+        <button type="button" class="rust-primary-btn" id="rs-btn-start" onclick="startRustAutoSetup()">
+          🚀 Скачать и настроить всё автоматически (в 1 клик)
+        </button>
+        <button type="button" class="pmode-btn" id="rs-btn-cancel" onclick="cancelRustAutoSetup()" style="display:none; padding:11px 16px;">
+          ⏸ Пауза
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let _rustSetupProfile = "cuda";
+    let _rustSetupAutoChecked = false;
+    let _rustSetupPollTimer = null;
+
+    function syncRustTopbarAndFirstRun(healthData) {
+      const btn = document.getElementById("btn-topbar-setup");
+      const lbl = document.getElementById("topbar-setup-lbl");
+      if (btn) {
+        btn.style.display = "inline-flex";
+        const readyCnt = healthData?.gpu?.onnx_ready_count ?? 0;
+        const fullReady = Boolean(healthData?.engines_ready);
+        if (lbl) {
+          lbl.textContent = fullReady ? `Модели (${readyCnt}/6)` : "Установка ИИ";
+        }
+        btn.style.borderColor = fullReady ? "" : "rgba(251, 191, 36, 0.65)";
+        btn.style.color = fullReady ? "" : "#fde68a";
+      }
+      if (!_rustSetupAutoChecked) {
+        _rustSetupAutoChecked = true;
+        refreshRustSetupStatus(true);
+      }
+    }
+
+    function selectRustSetupProfile(prof) {
+      _rustSetupProfile = prof === "cpu" ? "cpu" : "cuda";
+      document.getElementById("rs-card-cuda")?.classList.toggle("selected", _rustSetupProfile === "cuda");
+      document.getElementById("rs-card-cpu")?.classList.toggle("selected", _rustSetupProfile === "cpu");
+    }
+
+    function openRustSetupModal() {
+      document.getElementById("rust-setup-modal")?.classList.add("open");
+      refreshRustSetupStatus(false);
+    }
+
+    function closeRustSetupModal() {
+      document.getElementById("rust-setup-modal")?.classList.remove("open");
+    }
+
+    function renderRustSetupData(st, isAutoCheck) {
+      if (!st || st.status !== "ok") return;
+      const gpuName = st.gpu?.gpu_name || "Неизвестно";
+      document.getElementById("rs-gpu-name").textContent = gpuName;
+
+      if (!window._rustProfileInitialized && st.gpu?.recommended_profile) {
+        window._rustProfileInitialized = true;
+        selectRustSetupProfile(st.gpu.recommended_profile);
+      }
+
+      const estCuda = st.estimates_mb?.cuda_total_mb ?? 0;
+      const estCpu = st.estimates_mb?.cpu_total_mb ?? 0;
+      document.getElementById("rs-est-cuda").textContent = estCuda > 0 ? `~${Math.round(estCuda)} МБ` : "уже скачано";
+      document.getElementById("rs-est-cpu").textContent = estCpu > 0 ? `~${Math.round(estCpu)} МБ` : "уже скачано";
+
+      const fEl = document.getElementById("rs-chk-fonts");
+      fEl.textContent = st.fonts_ready ? "✓ Установлены" : "⬇ Скачаются (~2 МБ)";
+      fEl.className = st.fonts_ready ? "rust-badge-ok" : "rust-badge-todo";
+
+      const oEl = document.getElementById("rs-chk-ort");
+      if (st.cuda_dlls_ready) {
+        oEl.textContent = "✓ Готов (CUDA 13 + cuDNN)";
+        oEl.className = "rust-badge-ok";
+      } else if (st.ort_dll_ready) {
+        oEl.textContent = "✓ Готов (CPU / базовый)";
+        oEl.className = "rust-badge-ok";
+      } else {
+        oEl.textContent = "⬇ Требуется загрузка";
+        oEl.className = "rust-badge-todo";
+      }
+
+      const mCnt = st.models_ready_count ?? 0;
+      const mTot = st.models_total_count ?? 6;
+      const mEl = document.getElementById("rs-chk-models");
+      mEl.textContent = mCnt >= mTot ? `✓ Все готовы (${mCnt}/${mTot})` : `⬇ Установлено ${mCnt} из ${mTot}`;
+      mEl.className = mCnt >= mTot ? "rust-badge-ok" : "rust-badge-todo";
+
+      const ovEl = document.getElementById("rs-overall-badge");
+      if (!st.needs_setup) {
+        ovEl.textContent = st.cuda_dlls_ready ? "✓ Всё готово (CUDA GPU)" : "✓ Всё готово";
+        ovEl.className = "rust-badge-ok";
+      } else {
+        ovEl.textContent = "Требуется первичная загрузка моделей";
+        ovEl.className = "rust-badge-todo";
+      }
+
+      const keySt = document.getElementById("rs-key-status");
+      if (keySt) {
+        keySt.textContent = st.has_cloud_api_key ? "✓ Ключ сохранён" : "Ключ пока не задан";
+        keySt.style.color = st.has_cloud_api_key ? "#34d399" : "#94a3b8";
+      }
+
+      const olBtn = document.getElementById("rs-btn-ollama");
+      if (olBtn && st.ollama_cli_installed) {
+        olBtn.textContent = "✓ Ollama установлена (запустить)";
+      }
+
+      const prog = st.progress || {};
+      const pBox = document.getElementById("rs-progress-box");
+      const startBtn = document.getElementById("rs-btn-start");
+      const cancelBtn = document.getElementById("rs-btn-cancel");
+
+      if (prog.status && prog.status !== "idle") {
+        pBox.classList.add("visible");
+        document.getElementById("rs-prog-phase").textContent = prog.phase || "Загрузка...";
+        document.getElementById("rs-prog-pct").textContent = `${prog.progress_pct || 0}%`;
+        document.getElementById("rs-prog-bar").style.width = `${prog.progress_pct || 0}%`;
+        const mbInfo = prog.item_total_mb > 0 ? ` (${prog.item_downloaded_mb} / ${prog.item_total_mb} МБ)` : "";
+        document.getElementById("rs-prog-item").textContent = (prog.current_item || "") + mbInfo;
+        document.getElementById("rs-prog-speed").textContent = prog.speed_mbps > 0 ? `${prog.speed_mbps} МБ/с` : "";
+        if (Array.isArray(prog.logs)) {
+          const logsEl = document.getElementById("rs-prog-logs");
+          logsEl.textContent = prog.logs.slice(-12).join("\n");
+          logsEl.scrollTop = logsEl.scrollHeight;
+        }
+      }
+
+      if (prog.status === "running") {
+        startBtn.disabled = true;
+        startBtn.textContent = "⏳ Идёт автоматическая загрузка и настройка...";
+        cancelBtn.style.display = "inline-flex";
+        ensureRustSetupPolling();
+      } else {
+        startBtn.disabled = false;
+        cancelBtn.style.display = "none";
+        if (!st.needs_setup && (_rustSetupProfile !== "cuda" || st.cuda_dlls_ready)) {
+          startBtn.textContent = "✨ Всё установлено — закрыть и начать работу";
+          startBtn.onclick = closeRustSetupModal;
+        } else {
+          startBtn.textContent = prog.status === "cancelled" || prog.status === "error"
+            ? "🔄 Продолжить докачку с того же места"
+            : "🚀 Скачать и настроить всё автоматически (в 1 клик)";
+          startBtn.onclick = startRustAutoSetup;
+        }
+      }
+
+      if (isAutoCheck && (st.needs_setup || prog.status === "running")) {
+        document.getElementById("rust-setup-modal")?.classList.add("open");
+      }
+    }
+
+    async function refreshRustSetupStatus(isAutoCheck = false) {
+      try {
+        const res = await fetch("/setup/status");
+        if (!res.ok) return;
+        const st = await res.json();
+        renderRustSetupData(st, isAutoCheck);
+        return st;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function ensureRustSetupPolling() {
+      if (_rustSetupPollTimer) return;
+      _rustSetupPollTimer = setInterval(async () => {
+        const st = await refreshRustSetupStatus(false);
+        const pStatus = st?.progress?.status;
+        if (!st || (pStatus !== "running")) {
+          clearInterval(_rustSetupPollTimer);
+          _rustSetupPollTimer = null;
+          if (pStatus === "completed") {
+            await loadHealth(true);
+            if (typeof sayMiko === "function") {
+              sayMiko("Ура-а! Все нейросети и ускорение видеокарты установлены! Можешь открывать мангу~ 🦊✨");
+            }
+          }
+        }
+      }, 800);
+    }
+
+    async function startRustAutoSetup() {
+      const startBtn = document.getElementById("rs-btn-start");
+      if (startBtn) startBtn.disabled = true;
+      document.getElementById("rs-progress-box")?.classList.add("visible");
+      try {
+        const res = await fetch("/setup/install", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ profile: _rustSetupProfile })
+        });
+        if (!res.ok) {
+          const err = await res.json().catch(() => ({}));
+          alert("Не удалось запустить установку: " + (err.detail || res.status));
+          if (startBtn) startBtn.disabled = false;
+          return;
+        }
+        await refreshRustSetupStatus(false);
+        ensureRustSetupPolling();
+      } catch (e) {
+        if (startBtn) startBtn.disabled = false;
+        alert("Ошибка связи с локальным сервером: " + e);
+      }
+    }
+
+    async function cancelRustAutoSetup() {
+      try {
+        await fetch("/setup/cancel", { method: "POST" });
+        await refreshRustSetupStatus(false);
+      } catch (e) {}
+    }
+
+    async function saveQuickRustApiKey() {
+      const inp = document.getElementById("rs-quick-api-key");
+      const key = (inp?.value || "").trim();
+      if (!key) return;
+      try {
+        const res = await fetch("/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ unsloth_api_key: key })
+        });
+        if (res.ok) {
+          inp.value = "";
+          await refreshRustSetupStatus(false);
+          await loadHealth(true);
+        }
+      } catch (e) {}
+    }
+
+    async function installOllamaOneClick() {
+      const btn = document.getElementById("rs-btn-ollama");
+      if (btn) btn.textContent = "⏳ Запуск установщика Ollama...";
+      try {
+        await fetch("/setup/install_ollama", { method: "POST" });
+        setTimeout(() => refreshRustSetupStatus(false), 3000);
+      } catch (e) {}
+    }
   </script>
 </body>
 </html>

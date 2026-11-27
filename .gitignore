@@ -44,8 +44,11 @@ Desktop.ini
 *.jsonl
 *.tmp
 
-# 5. Rust-форк (артефакты сборки Cargo и встроенная БД SQLite)
+# 5. Rust-форк (артефакты сборки Cargo, релизные архивы и встроенная БД SQLite)
 /target/
+/dist/
+setup_sources.json
+*.onnx_dl_part
 *.db-wal
 *.db-shm
 miko_studio.db

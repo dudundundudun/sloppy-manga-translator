@@ -1,6 +1,13 @@
+pub mod bootstrap;
 pub mod folder_job;
 pub mod fonts;
 pub mod studio;
+
+pub const EMBEDDED_WEB_STUDIO_HTML: &str = include_str!("../../../web_studio.html");
+pub const EMBEDDED_MASCOT_PNG: &[u8] = include_bytes!("../../../mascot.png");
+pub const EMBEDDED_MASCOT_FOX_PNG: &[u8] = include_bytes!("../../../mascot_fox.png");
+pub const EMBEDDED_MASCOT_FOX_SPRITES_PNG: &[u8] = include_bytes!("../../../mascot_fox_sprites.png");
+pub const EMBEDDED_CONFIG_EXAMPLE_JSON: &str = include_str!("../../../config.example.json");
 
 use axum::body::Body;
 use axum::extract::{Query, Request, State};
@@ -45,7 +52,10 @@ pub struct AppState {
     pub folder_tx: watch::Sender<u64>,
     pub allowed_roots: AllowedRoots,
     pub available_fonts: RwLock<Vec<FontInfo>>,
-    pub ort_inventory: OrtInventory,
+    pub ort_inventory: RwLock<OrtInventory>,
+    pub bootstrap_state: RwLock<bootstrap::BootstrapProgress>,
+    pub bootstrap_cancel_flag: Arc<AtomicBool>,
+    pub ollama_pull_state: RwLock<bootstrap::OllamaPullProgress>,
     pub ocr_engine: Mutex<Option<RustOcrEngine>>,
     pub cleaner_engine: Mutex<Option<RustCleanerEngine>>,
     pub translator: Arc<RustTranslator>,
@@ -90,7 +100,10 @@ impl AppState {
             folder_tx,
             allowed_roots,
             available_fonts: RwLock::new(fonts),
-            ort_inventory,
+            ort_inventory: RwLock::new(ort_inventory),
+            bootstrap_state: RwLock::new(bootstrap::BootstrapProgress::default()),
+            bootstrap_cancel_flag: Arc::new(AtomicBool::new(false)),
+            ollama_pull_state: RwLock::new(bootstrap::OllamaPullProgress::default()),
             ocr_engine: Mutex::new(None),
             cleaner_engine: Mutex::new(None),
             translator,
@@ -127,7 +140,10 @@ impl AppState {
             folder_tx,
             allowed_roots,
             available_fonts: RwLock::new(fonts),
-            ort_inventory,
+            ort_inventory: RwLock::new(ort_inventory),
+            bootstrap_state: RwLock::new(bootstrap::BootstrapProgress::default()),
+            bootstrap_cancel_flag: Arc::new(AtomicBool::new(false)),
+            ollama_pull_state: RwLock::new(bootstrap::OllamaPullProgress::default()),
             ocr_engine: Mutex::new(None),
             cleaner_engine: Mutex::new(None),
             translator,
@@ -157,6 +173,21 @@ impl AppState {
     pub fn refresh_fonts(&self) -> Vec<FontInfo> {
         let fresh = list_available_fonts(&self.base_dir.join("fonts"));
         if let Ok(mut g) = self.available_fonts.write() {
+            *g = fresh.clone();
+        }
+        fresh
+    }
+
+    pub fn get_ort_inventory(&self) -> OrtInventory {
+        self.ort_inventory
+            .read()
+            .map(|g| g.clone())
+            .unwrap_or_default()
+    }
+
+    pub fn refresh_ort_inventory(&self) -> OrtInventory {
+        let fresh = scan_onnx_inventory(&self.base_dir.join("models").join("onnx"));
+        if let Ok(mut g) = self.ort_inventory.write() {
             *g = fresh.clone();
         }
         fresh
@@ -199,7 +230,7 @@ async fn serve_ui(State(state): State<Arc<AppState>>) -> Response {
     let html_path = state.base_dir.join("web_studio.html");
     match tokio::fs::read_to_string(&html_path).await {
         Ok(body) => Html(body).into_response(),
-        Err(_) => Html("<h1>Miko-chan Manga Studio (Rust Core)</h1><p>web_studio.html not found in base_dir.</p>").into_response(),
+        Err(_) => Html(EMBEDDED_WEB_STUDIO_HTML).into_response(),
     }
 }
 
@@ -207,7 +238,7 @@ async fn serve_mascot(State(state): State<Arc<AppState>>) -> Response {
     let mascot_path = state.base_dir.join("mascot.png");
     match tokio::fs::read(&mascot_path).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => ([(header::CONTENT_TYPE, "image/png")], EMBEDDED_MASCOT_PNG).into_response(),
     }
 }
 
@@ -215,7 +246,7 @@ async fn serve_mascot_fox(State(state): State<Arc<AppState>>) -> Response {
     let p = state.base_dir.join("mascot_fox.png");
     match tokio::fs::read(&p).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => ([(header::CONTENT_TYPE, "image/png")], EMBEDDED_MASCOT_FOX_PNG).into_response(),
     }
 }
 
@@ -223,7 +254,11 @@ async fn serve_mascot_fox_sprites(State(state): State<Arc<AppState>>) -> Respons
     let p = state.base_dir.join("mascot_fox_sprites.png");
     match tokio::fs::read(&p).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
+        Err(_) => (
+            [(header::CONTENT_TYPE, "image/png")],
+            EMBEDDED_MASCOT_FOX_SPRITES_PNG,
+        )
+            .into_response(),
     }
 }
 
@@ -233,6 +268,7 @@ struct HealthGpuInfo {
     cuda_ep_compiled: bool,
     directml_ep_compiled: bool,
     onnx_ready_count: usize,
+    device_name: String,
     runtime_note: &'static str,
 }
 
@@ -300,20 +336,31 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         .load_glossary("global")
         .unwrap_or_else(|_| cfg.glossary.clone());
     let fonts = state.refresh_fonts();
+    let inv = state.refresh_ort_inventory();
+    let sys_gpu = bootstrap::detect_system_gpu();
+    let dev_badge = if inv.cuda_ep_compiled && sys_gpu.has_nvidia {
+        "CUDA GPU".to_string()
+    } else if sys_gpu.has_nvidia {
+        "NVIDIA GPU".to_string()
+    } else {
+        "CPU Mode".to_string()
+    };
     let font_status = fonts::build_font_status(&state.base_dir.join("fonts"), &fonts);
     let first_font = fonts.first().map(|f| f.path.clone());
     let glossary_count = global_glossary.len();
 
     Json(HealthResponse {
         status: "ready",
-        engines_ready: true,
+        engines_ready: inv.models.len() >= bootstrap::REQUIRED_ONNX_MODELS.len()
+            && inv.ort_dylib_path.is_some(),
         runtime: "rust",
         version: APP_VERSION_RS,
         gpu: HealthGpuInfo {
-            cuda_available: state.ort_inventory.cuda_ep_compiled,
-            cuda_ep_compiled: state.ort_inventory.cuda_ep_compiled,
-            directml_ep_compiled: state.ort_inventory.directml_ep_compiled,
-            onnx_ready_count: state.ort_inventory.models.len(),
+            cuda_available: inv.cuda_ep_compiled,
+            cuda_ep_compiled: inv.cuda_ep_compiled,
+            directml_ep_compiled: inv.directml_ep_compiled,
+            onnx_ready_count: inv.models.len(),
+            device_name: dev_badge,
             runtime_note: "Phase 5 Full Rust Studio (Batch Folder + SSE + OCR + Cleaner + Translator + Renderer)",
         },
         ollama_model: cfg.selected_model.clone(),
@@ -734,6 +781,7 @@ async fn post_model_stack(
 
 async fn get_diagnostics(State(state): State<Arc<AppState>>) -> Json<Value> {
     let metrics = state.db.metrics().unwrap_or_default();
+    let inv = state.get_ort_inventory();
     Json(json!({
         "status": "ok",
         "runtime": "rust",
@@ -741,10 +789,10 @@ async fn get_diagnostics(State(state): State<Arc<AppState>>) -> Json<Value> {
         "startup_ms": state.startup_ms,
         "uptime_ms": state.started_at.elapsed().as_millis(),
         "fonts_count": state.get_available_fonts().len(),
-        "onnx_ready_count": state.ort_inventory.models.len(),
-        "onnx_models": state.ort_inventory.models,
-        "cuda_ep_compiled": state.ort_inventory.cuda_ep_compiled,
-        "directml_ep_compiled": state.ort_inventory.directml_ep_compiled,
+        "onnx_ready_count": inv.models.len(),
+        "onnx_models": inv.models,
+        "cuda_ep_compiled": inv.cuda_ep_compiled,
+        "directml_ep_compiled": inv.directml_ep_compiled,
         "sqlite": {
             "translation_cache_rows": metrics.translation_cache_rows,
             "glossary_rows": metrics.glossary_rows,
@@ -1012,6 +1060,12 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/fonts/catalog", get(fonts::get_fonts_catalog))
         .route("/fonts/install", post(fonts::install_fonts))
         .route("/fonts/upload", post(fonts::upload_font))
+        .route("/setup/status", get(bootstrap::get_setup_status))
+        .route("/setup/install", post(bootstrap::post_setup_install))
+        .route("/setup/cancel", post(bootstrap::post_setup_cancel))
+        .route("/setup/install_ollama", post(bootstrap::post_install_ollama))
+        .route("/pull_model", post(bootstrap::post_pull_model))
+        .route("/pull_status", get(bootstrap::get_pull_status))
         .route("/diagnostics", get(get_diagnostics))
         .route("/shutdown", post(shutdown_server))
         .layer(middleware::from_fn(local_security_middleware))

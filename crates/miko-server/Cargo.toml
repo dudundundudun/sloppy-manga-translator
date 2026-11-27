@@ -12,7 +12,9 @@ path = "src/main.rs"
 ab_glyph.workspace = true
 axum.workspace = true
 base64.workspace = true
+flate2.workspace = true
 futures-util.workspace = true
+hex.workspace = true
 image.workspace = true
 miko-cleaner = { path = "../miko-cleaner" }
 miko-core = { path = "../miko-core" }
@@ -24,6 +26,7 @@ regex.workspace = true
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

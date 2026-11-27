@@ -91,12 +91,19 @@ impl RustOcrEngine {
             None
         };
 
+        let onnx_vocab = onnx_dir.join("nar_vocabulary_6817.json");
+        let legacy_vocab = base_dir
+            .join("models")
+            .join("manga-ocr-nar-small")
+            .join("nar_vocabulary_6817.json");
+        let vocab_path = if onnx_vocab.is_file() {
+            onnx_vocab
+        } else {
+            legacy_vocab
+        };
         let nar = NarRecognizer::load(
             &onnx_dir.join("manga_ocr_nar_small.onnx"),
-            &base_dir
-                .join("models")
-                .join("manga-ocr-nar-small")
-                .join("nar_vocabulary_6817.json"),
+            &vocab_path,
             prefer_gpu,
         )?;
 

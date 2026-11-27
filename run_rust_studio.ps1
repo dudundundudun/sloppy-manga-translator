@@ -59,4 +59,4 @@ if ($env:MIKO_CUDA_DLL_DIR) {
 if ($OpenBrowser) {
     Start-Process powershell -WindowStyle Hidden -ArgumentList "-NoProfile -Command `"Start-Sleep -Seconds 2; Start-Process '$TargetUrl'`""
 }
-& $ExePath --base-dir $Root --host $HostAddr --port $Port
+& $ExePath --base-dir $Root --host $HostAddr --port $Port --no-browser

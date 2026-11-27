@@ -102,9 +102,58 @@ pub fn find_ort_dylib(base_dir: Option<&Path>) -> Option<PathBuf> {
 }
 
 #[cfg(windows)]
+fn auto_discover_cuda_dll_dirs() -> Vec<PathBuf> {
+    let mut found = Vec::new();
+    for env_key in ["CUDA_PATH", "CUDA_HOME"] {
+        if let Ok(val) = std::env::var(env_key) {
+            let bin = PathBuf::from(val.trim()).join("bin");
+            if bin.is_dir() {
+                found.push(bin);
+            }
+        }
+    }
+    let mut site_roots = Vec::new();
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        site_roots.push(PathBuf::from(appdata).join("Python"));
+    }
+    if let Ok(localapp) = std::env::var("LOCALAPPDATA") {
+        site_roots.push(PathBuf::from(localapp).join("Programs").join("Python"));
+    }
+    site_roots.push(PathBuf::from(r"C:\"));
+    for root in site_roots {
+        let Ok(entries) = std::fs::read_dir(&root) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let name = entry.file_name();
+            let s = name.to_string_lossy();
+            if !s.to_ascii_lowercase().starts_with("python3") {
+                continue;
+            }
+            for sub in [
+                entry.path().join("site-packages").join("torch").join("lib"),
+                entry
+                    .path()
+                    .join("Lib")
+                    .join("site-packages")
+                    .join("torch")
+                    .join("lib"),
+            ] {
+                if sub.join("cublas64_13.dll").is_file() || sub.join("cudart64_13.dll").is_file() {
+                    found.push(sub);
+                }
+            }
+        }
+    }
+    found
+}
+
+#[cfg(windows)]
 fn prepend_windows_dll_search_dirs(dll_path: &Path) {
     let mut dirs: Vec<PathBuf> = Vec::new();
+    let mut ort_has_cuda_libs = false;
     if let Some(parent) = dll_path.parent() {
+        ort_has_cuda_libs = parent.join("cublas64_13.dll").is_file();
         dirs.push(parent.to_path_buf());
     }
     if let Ok(extra_dir) = std::env::var("MIKO_CUDA_DLL_DIR") {
@@ -112,6 +161,8 @@ fn prepend_windows_dll_search_dirs(dll_path: &Path) {
         if !trimmed.is_empty() && Path::new(trimmed).is_dir() {
             dirs.push(PathBuf::from(trimmed));
         }
+    } else if !ort_has_cuda_libs {
+        dirs.extend(auto_discover_cuda_dll_dirs());
     }
     if dirs.is_empty() {
         return;
