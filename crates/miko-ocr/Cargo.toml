@@ -1,0 +1,15 @@
+[package]
+name = "miko-ocr"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+image.workspace = true
+miko-cleaner = { path = "../miko-cleaner" }
+miko-core = { path = "../miko-core" }
+miko-ort = { path = "../miko-ort" }
+regex.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true

@@ -43,3 +43,15 @@ Desktop.ini
 *.log
 *.jsonl
 *.tmp
+
+# 5. Rust-форк (артефакты сборки Cargo и встроенная БД SQLite)
+/target/
+*.db-wal
+*.db-shm
+miko_studio.db
+
+# 6. Пользовательские и автозагружаемые шрифты
+fonts/*.ttf
+fonts/*.otf
+fonts/*.ttc
+fonts/*.part

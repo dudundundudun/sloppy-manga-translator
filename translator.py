@@ -5824,8 +5824,10 @@ class OllamaTranslator:
             return False
         if BUBBLE_REFUSAL_VALUE_REGEX.search(s) or REFUSAL_PATTERNS_REGEX.search(s) or HALLUCINATION_TRANSLATION_REGEX.search(s):
             return True
-        low = re.sub(r"[\[\]\(\)\<\>\*\_\"\'\`\!\.\,\:\;\-\—]+", " ", s.lower()).strip()
+        low = re.sub(r"[\[\]\(\)\<\>\*\_\"\'\’\‘\`\!\.\,\:\;\-\—]+", " ", s.lower()).strip()
         low = re.sub(r"\s+", " ", low)
+        if any(p in low for p in ("involving a minor", "sexualized content", "can t translate sexual", "cannot translate sexual")):
+            return True
         if low in (
             "unable to translate",
             "cannot translate",

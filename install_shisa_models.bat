@@ -11,14 +11,14 @@ set no_proxy=127.0.0.1,localhost
 echo ==========================================================================
 echo   Download Best Manga Translation and VLM-OCR Models (v6.1.0 VPN Bypass)
 echo ==========================================================================
-echo   [1]  Shisa V2.1 14B (Phi-4, Top-1 for Japanese Manga, ~8.3 GB) [DEFAULT]
-echo   [2]  Shisa V2.1 8B  (Qwen3, Fast Japanese/Russian, ~5.0 GB)
-echo   [3]  Shisa V2 12B Uncensored (Mistral-Nemo 18+ NSFW, ~7.0 GB)
-echo   [4]  Sugoi 14B Ultra (Specialized JA to EN Uncensored, ~8.5 GB)
+echo   [1]  Gemma 4 12B Heretic Abliterated (2026 Top-1 RU/EN 18+ Uncensored, ~7.4 GB) [DEFAULT]
+echo   [2]  Qwen 3.5 9B Abliterated (2026 Ultra-Fast JA/RU/EN 18+ Uncensored, ~5.6 GB)
+echo   [3]  Shisa V2.1 14B (Phi-4, Specialized JA to EN Manga, ~8.3 GB)
+echo   [4]  Shisa V2 12B Uncensored (Mistral-Nemo 18+ NSFW, ~7.0 GB)
 echo   [5]  TranslateGemma 12B (Google Specialized JA/KO/ZH to RU/EN, ~7.3 GB)
 echo   [6]  Aya Expanse 8B (Fast Multilingual JA/KO/ZH to RU/EN, ~5.1 GB)
-echo   [7]  Google Gemma 3 12B (Literary Russian/English, ~7.3 GB)
-echo   [8]  Alibaba Qwen 3 14B (2026 Top All-rounder JA/KO/ZH + Romaji, ~9.0 GB)
+echo   [7]  Google Gemma 4 12B (Standard Literary Russian/English, ~7.4 GB)
+echo   [8]  Alibaba Qwen 3 14B (2026 All-rounder JA/KO/ZH + Romaji, ~9.0 GB)
 echo   [9]  GLM-OCR 0.9B Vision (Sniper VLM-OCR for SFX and Covers, ~1.9 GB)
 echo   [10] Qwen 3 VL 8B Vision (2026 Sniper VLM-OCR + Image-Aware Context, ~6.2 GB)
 echo   [11] Gemma 3 27B QAT Vision (Ultra 16GB VRAM Translator + Vision, ~14.5 GB)
@@ -30,13 +30,13 @@ if defined CHOICE set "CHOICE=%CHOICE:"=%"
 
 set "MODEL_TAG="
 set "SET_DEFAULT=True"
-if "%CHOICE%"=="1" set "MODEL_TAG=hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M"
-if "%CHOICE%"=="2" set "MODEL_TAG=hf.co/mradermacher/shisa-v2.1-qwen3-8b-GGUF:Q4_K_M"
-if "%CHOICE%"=="3" set "MODEL_TAG=hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF"
-if "%CHOICE%"=="4" set "MODEL_TAG=hf.co/sugoitoolkit/Sugoi-14B-Ultra-GGUF:Q4_K_M"
+if "%CHOICE%"=="1" set "MODEL_TAG=hf.co/culturerevolt/gemma-4-12b-heretic-abliterated-GGUF:Q4_K_M"
+if "%CHOICE%"=="2" set "MODEL_TAG=hf.co/mradermacher/Huihui-Qwen3.5-9B-abliterated-GGUF:Q4_K_M"
+if "%CHOICE%"=="3" set "MODEL_TAG=hf.co/mradermacher/shisa-v2.1-unphi4-14b-GGUF:Q4_K_M"
+if "%CHOICE%"=="4" set "MODEL_TAG=hf.co/yamatazen/Shisa-v2-Mistral-Nemo-12B-Abliterated-Q4_K_M-GGUF"
 if "%CHOICE%"=="5" set "MODEL_TAG=translategemma:12b"
 if "%CHOICE%"=="6" set "MODEL_TAG=aya-expanse:8b"
-if "%CHOICE%"=="7" set "MODEL_TAG=gemma3:12b"
+if "%CHOICE%"=="7" set "MODEL_TAG=gemma4:12b"
 if "%CHOICE%"=="8" set "MODEL_TAG=qwen3:14b"
 if "%CHOICE%"=="9" (
     set "MODEL_TAG=glm-ocr:latest"

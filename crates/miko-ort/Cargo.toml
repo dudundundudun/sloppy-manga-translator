@@ -1,0 +1,10 @@
+[package]
+name = "miko-ort"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ort = { version = "2.0.0-rc.15", default-features = false, features = ["std", "ndarray", "load-dynamic", "cuda", "directml", "api-31"] }
+serde.workspace = true
+thiserror.workspace = true

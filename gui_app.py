@@ -15,6 +15,7 @@ import io
 import json
 import logging
 import os
+import random
 import shutil
 import subprocess
 import sys
@@ -48,6 +49,8 @@ BASE_DIR = Path(__file__).resolve().parent
 SERVER_URL = "http://127.0.0.1:5000"
 GUI_SETTINGS_FILE = BASE_DIR / "gui_settings.json"
 MASCOT_PATH = BASE_DIR / "mascot.png"
+MASCOT_FOX_PATH = BASE_DIR / "mascot_fox.png"
+MASCOT_SPRITES_PATH = BASE_DIR / "mascot_fox_sprites.png"
 
 BG_DEEP = "#110f1a"
 BG_BENTO = "#1b182a"
@@ -154,6 +157,14 @@ class MikoMangaStudioGUI:
         self._idle_autosave_job: str | None = None
         self._closing: bool = False
         self._poll_after_id: str | None = None
+        self._fox_after_id: str | None = None
+        self._fox_frames: dict[tuple[int, int, bool], ImageTk.PhotoImage] = {}
+        self._fox_visible: bool = True
+        self._fox_x: float = 520.0
+        self._fox_dir: int = -1
+        self._fox_anim: str = "sit"
+        self._fox_frame_idx: int = 0
+        self._fox_ticks_left: int = 24
 
         self.var_source_lang = tk.StringVar(value="✨ Авто (JA/KO/ZH)")
         self.target_lang: str = "en"
@@ -190,8 +201,10 @@ class MikoMangaStudioGUI:
         self._build_ui()
 
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        self._load_kitsune_sprites()
         self.root.after(200, self._initial_server_check)
         self._poll_after_id = self.root.after(1200, self._poll_folder_status_loop)
+        self._fox_after_id = self.root.after(220, self._tick_kitsune_pet)
         print("[GUI] Окно интерфейса открыто! Проверка связи с локальным сервером...", flush=True)
 
     def _load_gui_settings(self) -> None:
@@ -324,11 +337,13 @@ class MikoMangaStudioGUI:
         )
 
     def _load_mascot_avatar(self, size: int = 92) -> ImageTk.PhotoImage | None:
-        if not MASCOT_PATH.exists():
+        src_path = MASCOT_FOX_PATH if MASCOT_FOX_PATH.exists() else MASCOT_PATH
+        if not src_path.exists():
             return None
         try:
-            with Image.open(MASCOT_PATH) as mascot_im:
-                img = mascot_im.convert("RGBA").resize((size, size), Image.Resampling.LANCZOS)
+            resample = Image.Resampling.NEAREST if src_path == MASCOT_FOX_PATH else Image.Resampling.LANCZOS
+            with Image.open(src_path) as mascot_im:
+                img = mascot_im.convert("RGBA").resize((size, size), resample)
             mask = Image.new("L", (size, size), 0)
             draw = ImageDraw.Draw(mask)
             draw.rounded_rectangle((0, 0, size - 1, size - 1), radius=18, fill=255)
@@ -337,6 +352,28 @@ class MikoMangaStudioGUI:
             return ImageTk.PhotoImage(out)
         except Exception:
             return None
+
+    _FOX_ROW_MAP = {
+        "idle": 0, "walk": 1, "sit": 2, "climb": 3, "dangle": 4, "read": 5,
+        "cook": 6, "sweep": 7, "sleep": 8, "happy": 9, "mofu": 10, "eat": 11,
+    }
+
+    def _load_kitsune_sprites(self, scale_px: int = 96) -> None:
+        if not MASCOT_SPRITES_PATH.exists():
+            return
+        try:
+            with Image.open(MASCOT_SPRITES_PATH) as sheet_im:
+                sheet = sheet_im.convert("RGBA")
+                rows = sheet.height // 48
+                for r in range(rows):
+                    for c in range(4):
+                        cell = sheet.crop((c * 48, r * 48, (c + 1) * 48, (r + 1) * 48))
+                        up = cell.resize((scale_px, scale_px), Image.Resampling.NEAREST)
+                        up_flip = up.transpose(Image.Transpose.FLIP_LEFT_RIGHT)
+                        self._fox_frames[(r, c, False)] = ImageTk.PhotoImage(up)
+                        self._fox_frames[(r, c, True)] = ImageTk.PhotoImage(up_flip)
+        except Exception as exc:
+            logger.debug("Не удалось загрузить спрайты лисички: %s", exc)
 
     def _build_ui(self) -> None:
         topbar = tk.Frame(self.root, bg=BG_BENTO, height=58, padx=18, pady=8)
@@ -846,6 +883,7 @@ class MikoMangaStudioGUI:
         self.preview_canvas.bind("<ButtonPress-1>", self._on_canvas_mouse_down)
         self.preview_canvas.bind("<B1-Motion>", self._on_canvas_mouse_drag)
         self.preview_canvas.bind("<ButtonRelease-1>", self._on_canvas_mouse_up)
+        self.preview_canvas.bind("<Button-3>", self._on_canvas_right_click)
         self.preview_canvas.bind("<MouseWheel>", self._on_canvas_mouse_wheel)
 
         self._set_target_lang(self.target_lang, refresh=False)
@@ -2318,6 +2356,7 @@ class MikoMangaStudioGUI:
                 font=("Segoe UI", 11),
                 justify=tk.CENTER,
             )
+            self._draw_kitsune_on_canvas()
             return
 
         if self.view_mode == "original" or (self.view_mode == "split" and trans is None):
@@ -2361,6 +2400,106 @@ class MikoMangaStudioGUI:
         self.preview_photo_ref = ImageTk.PhotoImage(resized)
         self.preview_canvas.create_image(cw // 2, ch // 2, anchor=tk.CENTER, image=self.preview_photo_ref)
         self._draw_interactive_bbox_pins()
+        self._draw_kitsune_on_canvas()
+
+    def _draw_kitsune_on_canvas(self) -> None:
+        self.preview_canvas.delete("kitsune_pet")
+        if not self._fox_visible or not self._fox_frames or self.is_draw_region_mode:
+            return
+        cw = max(120, self.preview_canvas.winfo_width())
+        ch = max(120, self.preview_canvas.winfo_height())
+        self._fox_x = max(56.0, min(float(cw - 56), self._fox_x))
+        row = self._FOX_ROW_MAP.get(self._fox_anim, 0)
+        col = self._fox_frame_idx % 4
+        flip = self._fox_dir < 0 and self._fox_anim not in ("climb", "sleep")
+        photo = self._fox_frames.get((row, col, flip))
+        if photo is not None:
+            self.preview_canvas.create_image(
+                int(self._fox_x),
+                ch - 2,
+                anchor=tk.S,
+                image=photo,
+                tags=("kitsune_pet",),
+            )
+
+    def _tick_kitsune_pet(self) -> None:
+        if self._closing:
+            return
+        if self._fox_visible and self._fox_frames:
+            cw = max(140, self.preview_canvas.winfo_width())
+            if self.is_translating_single or self.is_folder_job_running:
+                self._fox_anim = "cook" if (int(time.time()) % 8) < 5 else "read"
+            else:
+                self._fox_ticks_left -= 1
+                if self._fox_anim == "walk":
+                    self._fox_x += self._fox_dir * 9.0
+                    if self._fox_x <= 56.0:
+                        self._fox_x = 56.0
+                        self._fox_dir = 1
+                    elif self._fox_x >= cw - 56.0:
+                        self._fox_x = float(cw - 56)
+                        self._fox_dir = -1
+                if self._fox_ticks_left <= 0:
+                    nxt = random.choices(
+                        ["walk", "sit", "idle", "read", "cook", "sweep", "eat", "sleep"],
+                        weights=[34, 22, 12, 10, 8, 6, 4, 4],
+                        k=1,
+                    )[0]
+                    self._fox_anim = nxt
+                    if nxt == "walk":
+                        self._fox_dir = 1 if self._fox_x < 110 else (-1 if self._fox_x > cw - 110 else random.choice([-1, 1]))
+                        self._fox_ticks_left = random.randint(16, 36)
+                    elif nxt == "sleep":
+                        self._fox_ticks_left = random.randint(36, 65)
+                    else:
+                        self._fox_ticks_left = random.randint(18, 32)
+            self._fox_frame_idx = (self._fox_frame_idx + 1) % 4
+            self._draw_kitsune_on_canvas()
+        self._fox_after_id = self.root.after(200, self._tick_kitsune_pet)
+
+    def _hit_test_kitsune_pet(self, cx: int, cy: int) -> str:
+        if not self._fox_visible or not self._fox_frames or self.is_draw_region_mode:
+            return ""
+        ch = max(120, self.preview_canvas.winfo_height())
+        fx0 = int(self._fox_x) - 42
+        fy0 = ch - 92
+        fx1 = int(self._fox_x) + 42
+        fy1 = ch - 2
+        if not (fx0 <= cx <= fx1 and fy0 <= cy <= fy1):
+            return ""
+        sx = int(((cx - (int(self._fox_x) - 48)) / 96.0) * 48)
+        sy = int(((cy - (ch - 98)) / 96.0) * 48)
+        flip = self._fox_dir < 0 and self._fox_anim not in ("climb", "sleep")
+        if flip:
+            sx = 48 - sx
+        if sx <= 17 and sy >= 19 and self._fox_anim != "sleep":
+            return "tail"
+        return "head"
+
+    def _on_canvas_right_click(self, event: tk.Event[Any]) -> None:
+        if not self._hit_test_kitsune_pet(int(event.x), int(event.y)):
+            return
+        menu = tk.Menu(self.root, tearoff=0, bg=BG_BENTO, fg=FG_PRIMARY, activebackground=ACCENT_SAKURA, activeforeground="#ffffff")
+        menu.add_command(label="🍖 Угостить абурааге (тофу)", command=lambda: self._trigger_fox_act("eat", "Ам-ам! Хрустящий жареный тофу абурааге — объедение~ 🍖🦊💛"))
+        menu.add_command(label="📖 Почитать мангу в очках", command=lambda: self._trigger_fox_act("read", "Надеваю очки... Проверим вёрстку и реплики! 📖🤓"))
+        menu.add_command(label="🍲 Приготовить вкусняшку", command=lambda: self._trigger_fox_act("cook", "Варю для тебя тёплый супчик, чтобы работалось уютно~ 🍲✨"))
+        menu.add_command(label="🧹 Прибраться метёлочкой", command=lambda: self._trigger_fox_act("sweep", "Вжух-вжух! Наведём порядок в студии~ 🧹🌸"))
+        menu.add_command(label="💤 Уложить спать на хвостике", command=lambda: self._trigger_fox_act("sleep", "Мрр... чуточку вздремну на своём пушистом хвостике... 💤", ticks=55))
+        menu.add_separator()
+        menu.add_command(label="🙈 Спрятать лисичку с холста", command=self._toggle_fox_canvas_visibility)
+        menu.tk_popup(event.x_root, event.y_root)
+
+    def _trigger_fox_act(self, anim: str, msg: str, ticks: int = 22) -> None:
+        self._fox_visible = True
+        self._fox_anim = anim
+        self._fox_frame_idx = 0
+        self._fox_ticks_left = ticks
+        self._say_miko(msg)
+        self._draw_kitsune_on_canvas()
+
+    def _toggle_fox_canvas_visibility(self) -> None:
+        self._fox_visible = not self._fox_visible
+        self._draw_kitsune_on_canvas()
 
     def _redraw_pins_only(self) -> None:
         """Быстрая перерисовка только контуров рамок на холсте без тяжелого ресайза картинки (<0.3 мс)."""
@@ -2602,6 +2741,13 @@ class MikoMangaStudioGUI:
 
     def _on_canvas_mouse_down(self, event: tk.Event[Any]) -> None:
         if not self.is_draw_region_mode:
+            fox_part = self._hit_test_kitsune_pet(int(event.x), int(event.y))
+            if fox_part == "tail":
+                self._trigger_fox_act("mofu", "Фуа-а?! Х-хвостик так внезапно не пушат!.. Ну ладно, только чуть-чуть~ 🦊💗", ticks=18)
+                return
+            if fox_part == "head":
+                self._trigger_fox_act("happy", "Уму-уму~ Спасибо за ласку! Я рядом и присматриваю за переводом~ 🌸", ticks=18)
+                return
             blk, mode = self._hit_test_bbox_pin(int(event.x), int(event.y))
             if blk is not None:
                 if mode == "delete_pin":
@@ -2986,7 +3132,7 @@ class MikoMangaStudioGUI:
 
     def _on_close(self) -> None:
         self._closing = True
-        for job_attr in ("_poll_after_id", "_idle_autosave_job"):
+        for job_attr in ("_poll_after_id", "_idle_autosave_job", "_fox_after_id"):
             job_id = getattr(self, job_attr, None)
             if job_id:
                 try:
