@@ -3,8 +3,17 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 use tracing_subscriber::EnvFilter;
 
-#[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+fn main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    if let Some(exit_code) = miko_server::win_dialog::try_run_cli_dialog_from_args() {
+        std::process::exit(exit_code);
+    }
+    tokio::runtime::Builder::new_multi_thread()
+        .enable_all()
+        .build()?
+        .block_on(async_main())
+}
+
+async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     std::env::set_var("NO_PROXY", "127.0.0.1,localhost,::1");
     std::env::set_var("no_proxy", "127.0.0.1,localhost,::1");
     tracing_subscriber::fmt()

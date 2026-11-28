@@ -1,6 +1,7 @@
 use crate::prompts::{
     build_translation_prompts, compute_translation_cache_key, detect_source_language,
-    is_refusal_response, kana_to_romaji, parse_flat_json_translations,
+    is_refusal_response, kana_to_romaji, parse_flat_json_translations_for_lang,
+    restore_source_ellipses,
 };
 use crate::EndpointCircuitBreaker;
 use miko_core::{GlossaryEntry, StudioDb, TextBlock};
@@ -77,6 +78,7 @@ pub struct TranslateBatchResult {
     pub api_calls: usize,
     pub elapsed_ms: u128,
     pub censored_fallback: bool,
+    pub untranslated_count: usize,
 }
 
 /// Нативный async HTTP-переводчик манги (OpenAI-compatible Cloud + Local Ollama + SQLite WAL).
@@ -245,7 +247,8 @@ impl RustTranslator {
             "format": "json",
             "options": {
                 "temperature": 0.25,
-                "num_ctx": 4096
+                "num_ctx": 8192,
+                "num_predict": 2560
             },
             "messages": [
                 {"role": "system", "content": sys_prompt},
@@ -443,26 +446,62 @@ impl RustTranslator {
             missing_indices.push(idx);
         }
 
+        let mut untranslated_count = 0usize;
         if !missing_indices.is_empty() {
-            let chunk_size = 18usize;
-            for chunk in missing_indices.chunks(chunk_size) {
+            // Внутрипачковая дедупликация одинаковых фраз (например, на CG-вариациях одной сцены):
+            // отправляем в LLM только уникальные реплики с минимальным бюджетом символов и раздаём ответ всем дублям.
+            struct UniqueBatchItem {
+                src: String,
+                budget: Option<usize>,
+                block_indices: Vec<usize>,
+            }
+            let mut unique_items: Vec<UniqueBatchItem> = Vec::new();
+            let mut unique_pos: HashMap<String, usize> = HashMap::new();
+            for &b_idx in &missing_indices {
+                let b = &blocks[b_idx];
+                let src = b.original_text.trim().to_string();
+                let bw = (b.bbox[2] - b.bbox[0]).max(20) as usize;
+                let bh = (b.bbox[3] - b.bbox[1]).max(20) as usize;
+                let raw_budget = (bw * bh) / 380;
+                let blk_budget = if bw < 78 && bh >= bw * 2 {
+                    raw_budget.clamp(14, 48)
+                } else {
+                    raw_budget.clamp(18, 95)
+                };
+                if let Some(&pos) = unique_pos.get(&src) {
+                    unique_items[pos].block_indices.push(b_idx);
+                    unique_items[pos].budget = Some(
+                        unique_items[pos]
+                            .budget
+                            .map_or(blk_budget, |prev| prev.min(blk_budget)),
+                    );
+                } else {
+                    unique_pos.insert(src.clone(), unique_items.len());
+                    unique_items.push(UniqueBatchItem {
+                        src,
+                        budget: Some(blk_budget),
+                        block_indices: vec![b_idx],
+                    });
+                }
+            }
+
+            let mut rolling_ctx = req.context_lines.clone();
+            let chunk_size = 30usize;
+            let total_chunks = unique_items.len().div_ceil(chunk_size).max(1);
+            for (chunk_idx, chunk) in unique_items.chunks(chunk_size).enumerate() {
                 let mut items = Vec::with_capacity(chunk.len());
                 let mut expected_keys = Vec::with_capacity(chunk.len());
-                for (pos, &b_idx) in chunk.iter().enumerate() {
+                for (pos, u_item) in chunk.iter().enumerate() {
                     let k = pos.to_string();
                     expected_keys.push(k.clone());
-                    let b = &blocks[b_idx];
-                    let bw = (b.bbox[2] - b.bbox[0]).max(20) as usize;
-                    let bh = (b.bbox[3] - b.bbox[1]).max(20) as usize;
-                    let budget = Some(((bw * bh) / 380).clamp(18, 95));
-                    items.push((k, b.original_text.trim().to_string(), budget));
+                    items.push((k, u_item.src.clone(), u_item.budget));
                 }
 
                 let (sys_p, user_p) = build_translation_prompts(
                     &t_lang,
                     &items,
                     &req.glossary,
-                    &req.context_lines,
+                    &rolling_ctx,
                     req.anti_censorship,
                 );
 
@@ -473,6 +512,8 @@ impl RustTranslator {
                 }
 
                 let mut parsed_map: HashMap<String, (String, String)> = HashMap::new();
+                let mut cloud_got_some = false;
+                let mut cloud_censored_chunk = false;
                 if has_cloud && !self.cloud_breaker.is_open() && !bypass_censored_cloud {
                     api_calls += 1;
                     match self
@@ -486,23 +527,36 @@ impl RustTranslator {
                         .await
                     {
                         Ok(raw) => {
-                            let m = parse_flat_json_translations(&raw, &expected_keys);
+                            let m = parse_flat_json_translations_for_lang(
+                                &raw,
+                                &expected_keys,
+                                &t_lang,
+                                false,
+                            );
+                            let raw_has_refusal = is_refusal_response(&raw);
                             if !m.is_empty() {
+                                cloud_got_some = true;
                                 self.cloud_breaker.record_success();
                                 if m.len() == expected_keys.len() {
                                     self.censorship_breaker.record_success();
-                                } else if allow_local {
-                                    // Облако вырезало часть 18+ реплик в батче
-                                    censored_fallback = true;
-                                    self.censorship_breaker.record_failure();
+                                } else {
+                                    if raw_has_refusal {
+                                        cloud_censored_chunk = true;
+                                    }
+                                    if allow_local {
+                                        // Облако вырезало часть 18+ реплик в батче
+                                        censored_fallback = true;
+                                        self.censorship_breaker.record_failure();
+                                    }
                                 }
                                 active_model = cloud_model.clone();
                                 for (k, v) in m {
                                     parsed_map.insert(k, (v, cloud_model.clone()));
                                 }
-                            } else if !is_refusal_response(&raw) {
+                            } else if !raw_has_refusal {
                                 self.cloud_breaker.record_failure();
                             } else {
+                                cloud_censored_chunk = true;
                                 censored_fallback = true;
                                 if allow_local && self.censorship_breaker.record_failure() {
                                     tracing::info!(
@@ -518,6 +572,7 @@ impl RustTranslator {
                             }
                         }
                         Err(TranslatorError::Refused) => {
+                            cloud_censored_chunk = true;
                             censored_fallback = true;
                             if allow_local && self.censorship_breaker.record_failure() {
                                 tracing::info!(
@@ -538,7 +593,10 @@ impl RustTranslator {
                     }
                 }
 
-                // Если все или часть реплик не переведены (например, облако зацензурило отдельные 18+ фразы в батче),
+                // Кешируем резолв локальной модели на уровне чанка, чтобы не дергать Ollama повторно при отсутствии моделей
+                let mut ollama_model_resolved: Option<Option<String>> = None;
+
+                // Шаг 2: Если все или часть реплик не переведены (например, облако зацензурило отдельные 18+ фразы в батче),
                 // мгновенно допереводим недостающие ключи через локальную модель!
                 if parsed_map.len() < expected_keys.len()
                     && allow_local
@@ -551,6 +609,7 @@ impl RustTranslator {
                         let tags = self.ensure_ollama_models().await;
                         Self::pick_best_ollama_tag(&tags, &req.fallback_model)
                     };
+                    ollama_model_resolved = Some(ollama_model_opt.clone());
 
                     if let Some(ollama_model) = ollama_model_opt {
                         let mut fb_items = Vec::new();
@@ -566,7 +625,7 @@ impl RustTranslator {
                                 &t_lang,
                                 &fb_items,
                                 &req.glossary,
-                                &req.context_lines,
+                                &rolling_ctx,
                                 true,
                             );
                             api_calls += 1;
@@ -575,7 +634,12 @@ impl RustTranslator {
                                 .await
                             {
                                 Ok(raw) => {
-                                    let m = parse_flat_json_translations(&raw, &fb_keys);
+                                    let m = parse_flat_json_translations_for_lang(
+                                        &raw,
+                                        &fb_keys,
+                                        &t_lang,
+                                        false,
+                                    );
                                     if !m.is_empty() {
                                         self.ollama_breaker.record_success();
                                         active_model = ollama_model.clone();
@@ -595,10 +659,188 @@ impl RustTranslator {
                     }
                 }
 
-                for (pos, &b_idx) in chunk.iter().enumerate() {
+                // Шаг 3 (micro_retry): если после основного прохода и фоллбэка часть ключей всё ещё пропала
+                // (обрыв JSON на локальной модели или единичный пропуск/утечка алфавита), добиваем микро-пачками по 6 фраз.
+                if parsed_map.len() < expected_keys.len() {
+                    let missing_items: Vec<(String, String, Option<usize>)> = items
+                        .iter()
+                        .filter(|(k, _, _)| !parsed_map.contains_key(k))
+                        .cloned()
+                        .collect();
+
+                    for sub in missing_items.chunks(6) {
+                        let sub_keys: Vec<String> = sub.iter().map(|(k, _, _)| k.clone()).collect();
+                        if has_cloud
+                            && !self.cloud_breaker.is_open()
+                            && !bypass_censored_cloud
+                            && !cloud_censored_chunk
+                            && cloud_got_some
+                        {
+                            let (mr_sys, mr_user) = build_translation_prompts(
+                                &t_lang,
+                                sub,
+                                &req.glossary,
+                                &rolling_ctx,
+                                req.anti_censorship,
+                            );
+                            api_calls += 1;
+                            match self
+                                .call_cloud_openai(
+                                    &req.cloud_url,
+                                    &req.cloud_api_key,
+                                    &cloud_model,
+                                    &mr_sys,
+                                    &mr_user,
+                                )
+                                .await
+                            {
+                                Ok(raw) => {
+                                    let m = parse_flat_json_translations_for_lang(
+                                        &raw,
+                                        &sub_keys,
+                                        &t_lang,
+                                        false,
+                                    );
+                                    if !m.is_empty() {
+                                        self.cloud_breaker.record_success();
+                                        for (k, v) in m {
+                                            parsed_map.insert(k, (v, cloud_model.clone()));
+                                        }
+                                    } else if is_refusal_response(&raw) {
+                                        censored_fallback = true;
+                                    }
+                                }
+                                Err(TranslatorError::Refused) => {
+                                    censored_fallback = true;
+                                }
+                                Err(err) => {
+                                    tracing::warn!("Облачный micro_retry не ответил: {}", err);
+                                    self.cloud_breaker.record_failure();
+                                }
+                            }
+                        }
+
+                        let still_missing: Vec<(String, String, Option<usize>)> = sub
+                            .iter()
+                            .filter(|(k, _, _)| !parsed_map.contains_key(k))
+                            .cloned()
+                            .collect();
+                        if !still_missing.is_empty()
+                            && allow_local
+                            && !self.ollama_breaker.is_open()
+                        {
+                            let ollama_model_opt = match ollama_model_resolved {
+                                Some(ref cached) => cached.clone(),
+                                None => {
+                                    let resolved = if is_explicit_ollama && !req_bare.is_empty() {
+                                        let _ = self.ensure_ollama_models().await;
+                                        Some(req_bare.to_string())
+                                    } else {
+                                        let tags = self.ensure_ollama_models().await;
+                                        Self::pick_best_ollama_tag(&tags, &req.fallback_model)
+                                    };
+                                    ollama_model_resolved = Some(resolved.clone());
+                                    resolved
+                                }
+                            };
+
+                            if let Some(ollama_model) = ollama_model_opt {
+                                let still_keys: Vec<String> =
+                                    still_missing.iter().map(|(k, _, _)| k.clone()).collect();
+                                let (fb_sys, fb_user) = build_translation_prompts(
+                                    &t_lang,
+                                    &still_missing,
+                                    &req.glossary,
+                                    &rolling_ctx,
+                                    true,
+                                );
+                                api_calls += 1;
+                                match self
+                                    .call_ollama_chat(&ollama_model, &fb_sys, &fb_user)
+                                    .await
+                                {
+                                    Ok(raw) => {
+                                        let mut m = parse_flat_json_translations_for_lang(
+                                            &raw,
+                                            &still_keys,
+                                            &t_lang,
+                                            false,
+                                        );
+                                        for k in &still_keys {
+                                            if !m.contains_key(k) {
+                                                let rec = parse_flat_json_translations_for_lang(
+                                                    &raw,
+                                                    std::slice::from_ref(k),
+                                                    &t_lang,
+                                                    true,
+                                                );
+                                                if let Some((rk, rv)) = rec.into_iter().next() {
+                                                    m.insert(rk, rv);
+                                                }
+                                            }
+                                        }
+                                        if !m.is_empty() {
+                                            self.ollama_breaker.record_success();
+                                            active_model = ollama_model.clone();
+                                            for (k, v) in m {
+                                                parsed_map.insert(k, (v, ollama_model.clone()));
+                                            }
+                                        } else {
+                                            self.ollama_breaker.record_failure();
+                                        }
+                                    }
+                                    Err(err) => {
+                                        tracing::warn!(
+                                            "Ollama micro_retry ({}) не ответила: {}",
+                                            ollama_model,
+                                            err
+                                        );
+                                        self.ollama_breaker.record_failure();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                let chunk_got = parsed_map.len();
+                let chunk_exp = expected_keys.len();
+                if chunk_got < chunk_exp {
+                    tracing::warn!(
+                        "Чанк {}/{} ({}): переведено {}/{} уникальных фраз (активная модель: {})",
+                        chunk_idx + 1,
+                        total_chunks,
+                        t_lang,
+                        chunk_got,
+                        chunk_exp,
+                        active_model
+                    );
+                } else {
+                    tracing::info!(
+                        "Чанк {}/{} ({}): переведено {}/{} уникальных фраз (модель: {})",
+                        chunk_idx + 1,
+                        total_chunks,
+                        t_lang,
+                        chunk_got,
+                        chunk_exp,
+                        active_model
+                    );
+                }
+
+                for (pos, u_item) in chunk.iter().enumerate() {
                     let k = pos.to_string();
                     if let Some((tr, used_model)) = parsed_map.get(&k) {
-                        blocks[b_idx].translated_text = tr.clone();
+                        let final_tr = restore_source_ellipses(&u_item.src, tr);
+                        for &b_idx in &u_item.block_indices {
+                            blocks[b_idx].translated_text = final_tr.clone();
+                        }
+                        if !final_tr.trim().is_empty() {
+                            rolling_ctx.push(format!("{} => {}", u_item.src, final_tr));
+                            if rolling_ctx.len() > 12 {
+                                let d = rolling_ctx.len() - 12;
+                                rolling_ctx.drain(0..d);
+                            }
+                        }
                         if let Some(store) = db {
                             // Кэшируем и под запрошенной моделью (если сработал фоллбэк на цензуру, чтобы повторно не биться в облако), и под самой моделью
                             for cache_m in [&active_model, used_model, &cloud_model] {
@@ -606,23 +848,25 @@ impl RustTranslator {
                                     continue;
                                 }
                                 let ckey = compute_translation_cache_key(
-                                    blocks[b_idx].original_text.trim(),
+                                    &u_item.src,
                                     &t_lang,
                                     cache_m,
                                     &req.glossary,
                                 );
                                 let _ = store.put_cached_translation(
                                     &ckey,
-                                    blocks[b_idx].original_text.trim(),
+                                    &u_item.src,
                                     &t_lang,
-                                    tr,
+                                    &final_tr,
                                     used_model,
                                 );
                             }
                         }
                     } else if t_lang == "romaji" {
-                        blocks[b_idx].translated_text =
-                            kana_to_romaji(blocks[b_idx].original_text.trim());
+                        let rom = kana_to_romaji(&u_item.src);
+                        for &b_idx in &u_item.block_indices {
+                            blocks[b_idx].translated_text = rom.clone();
+                        }
                     }
                 }
             }
@@ -633,6 +877,7 @@ impl RustTranslator {
                 .iter()
                 .filter(|&&i| !blocks[i].translated_text.trim().is_empty())
                 .count();
+            untranslated_count = missing_indices.len().saturating_sub(translated_now);
             if translated_now == 0 && t_lang != "romaji" {
                 return Err(TranslatorError::UnavailableOrRefused);
             }
@@ -646,6 +891,7 @@ impl RustTranslator {
             api_calls,
             elapsed_ms: t0.elapsed().as_millis(),
             censored_fallback,
+            untranslated_count,
         })
     }
 

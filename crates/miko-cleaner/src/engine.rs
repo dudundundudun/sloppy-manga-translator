@@ -1,4 +1,4 @@
-use crate::cache::compute_clean_state_hash;
+use crate::cache::compute_clean_state_hash_opts;
 use crate::cv::{
     compute_rgb_median_and_std, connected_components, dilate_ellipse, distance_transform_l2,
     draw_circle, draw_polyline, erode_ellipse, fill_polygon, hermite_wall_bridge,
@@ -33,6 +33,7 @@ pub struct CleanOptions {
     pub use_neural_segmenter: bool,
     pub use_cache: bool,
     pub neural_conf: f32,
+    pub skip_untranslated: bool,
 }
 
 impl Default for CleanOptions {
@@ -43,6 +44,7 @@ impl Default for CleanOptions {
             use_neural_segmenter: true,
             use_cache: true,
             neural_conf: 0.25,
+            skip_untranslated: false,
         }
     }
 }
@@ -88,9 +90,22 @@ fn rgb_l1_dist(r: u8, g: u8, b: u8, bg: [u8; 3]) -> i32 {
         + (b as i32 - bg[2] as i32).abs()
 }
 
-fn is_block_skipped(blk: &TextBlock) -> bool {
-    blk.is_deleted
+fn is_block_skipped(blk: &TextBlock, skip_untranslated: bool) -> bool {
+    if blk.is_deleted
         || (blk.translated_text.trim().is_empty() && blk.original_text.trim().is_empty())
+    {
+        return true;
+    }
+    if skip_untranslated && blk.translated_text.trim().is_empty() {
+        let has_strokes = blk
+            .custom_mask_strokes
+            .as_ref()
+            .is_some_and(|s| !s.is_empty());
+        if !has_strokes {
+            return true;
+        }
+    }
+    false
 }
 
 fn effective_clean_bbox(blk: &TextBlock) -> [i32; 4] {
@@ -1513,7 +1528,7 @@ impl RustCleanerEngine {
         let nn_slice = neural_mask.filter(|nm| nm.len() >= wu * hu);
 
         for blk in blocks {
-            if is_block_skipped(blk) {
+            if is_block_skipped(blk, opts.skip_untranslated) {
                 continue;
             }
             let cpoly = clipped_block_polygon(blk, w as i32, h as i32);
@@ -1565,7 +1580,7 @@ impl RustCleanerEngine {
 
         // Ручная кисть пользователя (add / erase) имеет абсолютный приоритет поверх авто-маски
         for blk in blocks {
-            if is_block_skipped(blk) {
+            if is_block_skipped(blk, opts.skip_untranslated) {
                 continue;
             }
             if let Some(ref strokes) = blk.custom_mask_strokes {
@@ -1592,17 +1607,21 @@ impl RustCleanerEngine {
         src_mtime: i64,
     ) -> Result<CleanPageResult, CleanerError> {
         let t_total = Instant::now();
-        let active_blocks = blocks.iter().filter(|b| !is_block_skipped(b)).count();
+        let active_blocks = blocks
+            .iter()
+            .filter(|b| !is_block_skipped(b, opts.skip_untranslated))
+            .count();
 
         let cache_key = if opts.use_cache {
             src_file.map(|sf| {
-                compute_clean_state_hash(
+                compute_clean_state_hash_opts(
                     blocks,
                     sf,
                     src_mtime,
                     opts.dilate_size,
                     CLEAN_ALGO_VERSION,
                     &opts.pipeline_mode,
+                    opts.skip_untranslated,
                 )
             })
         } else {
@@ -1674,7 +1693,7 @@ impl RustCleanerEngine {
         let mut blocks_cleaned = 0usize;
 
         for blk in blocks {
-            if is_block_skipped(blk) {
+            if is_block_skipped(blk, opts.skip_untranslated) {
                 continue;
             }
             blocks_cleaned += 1;

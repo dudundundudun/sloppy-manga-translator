@@ -5,7 +5,7 @@ use axum::response::{IntoResponse, Json, Response};
 use base64::engine::general_purpose::STANDARD as B64;
 use base64::Engine as _;
 use image::{ImageFormat, RgbImage};
-use miko_cleaner::{compute_clean_state_hash, CleanOptions, RustCleanerEngine};
+use miko_cleaner::{compute_clean_state_hash_opts, CleanOptions, RustCleanerEngine};
 use miko_core::models::normalize_clean_bbox;
 use miko_core::security::reject_unc_path;
 use miko_core::TextBlock;
@@ -257,6 +257,9 @@ async fn run_full_rgb_pipeline(
 ) -> Result<Value, String> {
     let t_total = Instant::now();
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let default_font_path = cfg.resolve_default_font_path(&state.base_dir);
+    let scale_pct = cfg.font_scale_pct;
+    let overflow_mode = cfg.overflow_mode.clone();
     let (w, h) = rgb.dimensions();
 
     // 1. OCR на GPU/CPU
@@ -327,6 +330,7 @@ async fn run_full_rgb_pipeline(
                 &blocks_final,
                 &CleanOptions {
                     use_cache: use_cache && src_str.is_some(),
+                    skip_untranslated: true,
                     ..Default::default()
                 },
                 src_str.as_deref(),
@@ -343,9 +347,10 @@ async fn run_full_rgb_pipeline(
                 &RenderOptions {
                     min_font_size: min_fs,
                     max_font_size: max_fs,
+                    font_scale_pct: scale_pct,
                     uppercase,
-                    overflow_mode: cfg.overflow_mode,
-                    default_font_path: None,
+                    overflow_mode,
+                    default_font_path,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -363,13 +368,14 @@ async fn run_full_rgb_pipeline(
     };
 
     if let Some(ref sp) = src_file_hint {
-        let state_hash = compute_clean_state_hash(
+        let state_hash = compute_clean_state_hash_opts(
             &blocks_out,
             &sp.to_string_lossy(),
             src_mtime,
             9,
             miko_cleaner::CLEAN_ALGO_VERSION,
             "balanced",
+            true,
         );
         let _ = state
             .db
@@ -560,6 +566,8 @@ pub struct SaveEditedPagePayload {
     pub uppercase: Option<bool>,
     pub min_font_size: Option<u32>,
     pub max_font_size: Option<u32>,
+    pub font_scale_pct: Option<u32>,
+    pub default_font: Option<String>,
     pub return_image: Option<bool>,
     pub image_format: Option<String>,
 }
@@ -618,6 +626,8 @@ pub async fn save_edited_page(
     let uppercase = payload.uppercase.unwrap_or(cfg.uppercase);
     let min_fs = payload.min_font_size.unwrap_or(cfg.min_font_size) as i32;
     let max_fs = payload.max_font_size.unwrap_or(cfg.max_font_size) as i32;
+    let scale_pct = payload.font_scale_pct.unwrap_or(cfg.font_scale_pct);
+    let explicit_default_font = payload.default_font.clone();
     let ret_img = payload.return_image.unwrap_or(false);
     let img_fmt = payload.image_format.unwrap_or_else(|| "png".to_string());
 
@@ -638,12 +648,22 @@ pub async fn save_edited_page(
             .clean_image(
                 &rgb,
                 &blocks,
-                &CleanOptions::default(),
+                &CleanOptions {
+                    skip_untranslated: true,
+                    ..Default::default()
+                },
                 Some(&src_str),
                 mtime,
             )
             .map_err(|e| e.to_string())?;
 
+        let default_font_path = if let Some(ref df) = explicit_default_font {
+            let mut tmp_cfg = cfg.clone();
+            tmp_cfg.default_font = df.clone();
+            tmp_cfg.resolve_default_font_path(&st_clone.base_dir)
+        } else {
+            cfg.resolve_default_font_path(&st_clone.base_dir)
+        };
         let render_res = st_clone
             .renderer
             .render_page(
@@ -652,9 +672,10 @@ pub async fn save_edited_page(
                 &RenderOptions {
                     min_font_size: min_fs,
                     max_font_size: max_fs,
+                    font_scale_pct: scale_pct,
                     uppercase,
                     overflow_mode: cfg.overflow_mode,
-                    default_font_path: None,
+                    default_font_path,
                 },
             )
             .map_err(|e| e.to_string())?;
@@ -667,13 +688,44 @@ pub async fn save_edited_page(
             .save(&dest_clone)
             .map_err(|e| format!("Ошибка сохранения результата: {e}"))?;
 
-        let hash = compute_clean_state_hash(
+        // Синхронизируем правки текста и шрифта прямо в `.translation_state.json`, если страница принадлежит папке перевода
+        if let (Some(out_dir), Some(fname)) = (
+            dest_clone.parent(),
+            src_clone.file_name().and_then(|s| s.to_str()),
+        ) {
+            if crate::folder_job::manifest_path(out_dir).is_file() {
+                let mut manifest = crate::folder_job::load_manifest(out_dir);
+                let free_cnt = blocks.iter().filter(|b| b.is_free_text && !b.is_deleted).count();
+                if manifest["pages"][fname].is_object() {
+                    manifest["pages"][fname]["blocks"] = json!(blocks);
+                    manifest["pages"][fname]["blocks_count"] = json!(blocks.len());
+                    manifest["pages"][fname]["free_text_count"] = json!(free_cnt);
+                    manifest["pages"][fname]["uppercase"] = json!(uppercase);
+                    manifest["pages"][fname]["min_font_size"] = json!(min_fs);
+                    manifest["pages"][fname]["max_font_size"] = json!(max_fs);
+                } else {
+                    manifest["pages"][fname] = json!({
+                        "blocks_count": blocks.len(),
+                        "free_text_count": free_cnt,
+                        "detected_lang": "ja",
+                        "uppercase": uppercase,
+                        "min_font_size": min_fs,
+                        "max_font_size": max_fs,
+                        "blocks": blocks,
+                    });
+                }
+                let _ = crate::folder_job::save_manifest(out_dir, &manifest);
+            }
+        }
+
+        let hash = compute_clean_state_hash_opts(
             &blocks,
             &src_str,
             mtime,
             9,
             miko_cleaner::CLEAN_ALGO_VERSION,
             "balanced",
+            true,
         );
         let _ = st_clone.db.save_page_state(&src_str, &hash, &blocks);
 

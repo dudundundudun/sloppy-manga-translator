@@ -943,6 +943,222 @@ async fn test_live_monitor_sync_start_and_controls() {
 
     let _ = state.folder_stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+
+    // 4. Verify /chapter_qa_check and /chapter_qa_autofix + font_scale_pct settings roundtrip
+    let set_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/settings")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "font_scale_pct": 115,
+                        "default_font": "comic-test.ttf"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(set_res.status(), StatusCode::OK);
+
+    let out_dir = tmp_base.join("ch_live_EN");
+    std::fs::create_dir_all(&out_dir).unwrap();
+    let big_img = image::RgbImage::from_pixel(400, 500, image::Rgb([255, 255, 255]));
+    big_img.save(ch_dir.join("001.png")).unwrap();
+    std::fs::write(
+        out_dir.join(".translation_state.json"),
+        serde_json::json!({
+            "pages": {
+                "001.png": {
+                    "blocks_count": 1,
+                    "blocks": [{
+                        "id": 1,
+                        "bbox": [50, 50, 200, 320],
+                        "bubble_polygon": [[55, 55], [195, 55], [195, 315], [55, 315]],
+                        "original_text": "テスト",
+                        "translated_text": "Mmm.such a.strange.feeling.",
+                        "rendered_font_size": 10
+                    }]
+                }
+            },
+            "phrase_cache": {}
+        })
+        .to_string(),
+    )
+    .unwrap();
+
+    let qa_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/chapter_qa_check")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "en",
+                        "tiny_threshold_px": 14
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(qa_res.status(), StatusCode::OK);
+    let qa_val: Value =
+        serde_json::from_slice(&to_bytes(qa_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(qa_val["issues_count"], 1);
+
+    let fix_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/chapter_qa_autofix")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "en",
+                        "tiny_threshold_px": 14
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fix_res.status(), StatusCode::OK);
+    let fix_val: Value =
+        serde_json::from_slice(&to_bytes(fix_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(fix_val["fixed_pages"], 1);
+
+    let qa_after_res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/chapter_qa_check")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    serde_json::json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "en",
+                        "tiny_threshold_px": 14
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let qa_after: Value =
+        serde_json::from_slice(&to_bytes(qa_after_res.into_body(), 256 * 1024).await.unwrap())
+            .unwrap();
+    assert_eq!(
+        qa_after["issues_count"], 0,
+        "autofix should raise glued-dot 10px bubble above threshold!"
+    );
+
     let _ = std::fs::remove_dir_all(&tmp_base);
-    let _ = std::fs::remove_dir_all(tmp_base.join("ch_live_EN"));
+    let _ = std::fs::remove_dir_all(out_dir);
+}
+
+#[tokio::test]
+async fn test_open_folder_path_quotes_file_unwrap_and_security() {
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_open_path_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_millis()
+    ));
+    let ext_manga = std::env::temp_dir().join(format!(
+        "miko_ext_chapter_{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&tmp_base).unwrap();
+    std::fs::create_dir_all(&ext_manga).unwrap();
+    let img = image::RgbImage::from_pixel(320, 480, image::Rgb([255, 255, 255]));
+    let page_path = ext_manga.join("001.png");
+    img.save(&page_path).unwrap();
+
+    let state = AppState::init_in_memory(tmp_base.clone()).expect("init");
+    let app = build_router(state.clone());
+
+    // 1. Evil origin must be rejected on /open_folder_path
+    let evil = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/open_folder_path")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "folder_path": ext_manga.to_string_lossy() }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evil.status(), StatusCode::FORBIDDEN);
+
+    // 2. UNC path must be rejected with 400
+    let unc = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/open_folder_path")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "folder_path": r"\\192.168.1.50\share\manga" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(unc.status(), StatusCode::BAD_REQUEST);
+
+    // 3. Pasting a quoted file path ("C:\...\001.png" from Explorer 'Copy as path') unwraps to parent folder & registers root
+    let quoted_file = format!("\"{}\"", page_path.to_string_lossy());
+    let ok_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/open_folder_path")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({ "folder_path": quoted_file, "target_lang": "en" }).to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok_res.status(), StatusCode::OK);
+    let body: Value =
+        serde_json::from_slice(&to_bytes(ok_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(body["total_pages"], 1);
+    assert!(state.allowed_roots.is_within_allowed_roots(&ext_manga));
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    let _ = std::fs::remove_dir_all(&ext_manga);
 }

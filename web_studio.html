@@ -916,6 +916,70 @@
       background: rgba(56, 189, 248, 0.1) !important;
     }
 
+    .font-step-pill {
+      display: inline-flex;
+      align-items: center;
+      background: var(--bg-bento-inner);
+      border: 1px solid var(--border-soft);
+      border-radius: 999px;
+      padding: 1px 3px;
+      gap: 2px;
+    }
+    .font-step-btn {
+      border: none;
+      background: transparent;
+      color: var(--text-primary);
+      font-size: 11.5px;
+      font-weight: 800;
+      padding: 3px 7px;
+      border-radius: 999px;
+      cursor: pointer;
+      transition: background 0.14s ease, color 0.14s ease;
+    }
+    .font-step-btn:hover {
+      background: rgba(244, 114, 182, 0.22);
+      color: #fff;
+    }
+
+    .font-studio-popover {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 0;
+      width: 318px;
+      z-index: 220;
+      background: #171426;
+      border: 1px solid rgba(244, 114, 182, 0.38);
+      border-radius: 14px;
+      box-shadow: 0 18px 44px rgba(0, 0, 0, 0.68);
+      padding: 11px 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      font-size: 11.5px;
+    }
+
+    .qa-issue-card {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      padding: 9px 11px;
+      border-radius: 10px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(148, 163, 184, 0.2);
+      cursor: pointer;
+      transition: border-color 0.14s ease, background 0.14s ease;
+    }
+    .qa-issue-card:hover {
+      border-color: var(--sakura);
+      background: rgba(244, 114, 182, 0.09);
+    }
+    .pill-btn.qa-has-issues {
+      border-color: rgba(251, 191, 36, 0.65) !important;
+      color: #fde68a !important;
+      background: rgba(251, 191, 36, 0.13) !important;
+    }
+
     .cta-sub-row {
       display: none;
       grid-template-columns: 1fr 1fr;
@@ -3529,6 +3593,128 @@
       background: rgba(255, 255, 255, 0.08);
       margin: 3px 4px;
     }
+
+    /* Quick Folder Picker Status & Direct Path / Recent Folders Drawer */
+    .source-pickers-row {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 6px;
+      align-items: stretch;
+    }
+    #btn-pick-folder.picking-active {
+      border-color: rgba(244, 114, 182, 0.85) !important;
+      background: linear-gradient(135deg, rgba(244, 114, 182, 0.22), rgba(168, 85, 247, 0.18)) !important;
+      color: #fdf2f8 !important;
+      box-shadow: 0 0 0 1px rgba(244, 114, 182, 0.35), 0 0 14px rgba(244, 114, 182, 0.28);
+    }
+    .picker-inline-hint {
+      display: none;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 5px 8px;
+      border-radius: 8px;
+      font-size: 11px;
+      line-height: 1.3;
+      background: rgba(244, 114, 182, 0.11);
+      border: 1px solid rgba(244, 114, 182, 0.32);
+      color: #fbcfe8;
+    }
+    .picker-inline-hint.visible {
+      display: flex;
+    }
+    .picker-inline-hint.is-error {
+      background: rgba(251, 113, 133, 0.13);
+      border-color: rgba(251, 113, 133, 0.42);
+      color: #fecdd3;
+    }
+    .picker-reset-link {
+      background: rgba(255, 255, 255, 0.08);
+      border: 1px solid rgba(255, 255, 255, 0.18);
+      color: #fff;
+      border-radius: 6px;
+      padding: 2px 6px;
+      font-size: 10.5px;
+      font-weight: 700;
+      cursor: pointer;
+      white-space: nowrap;
+      flex-shrink: 0;
+    }
+    .picker-reset-link:hover {
+      background: rgba(244, 114, 182, 0.28);
+      border-color: rgba(244, 114, 182, 0.55);
+    }
+    .quick-folder-drawer {
+      display: none;
+      flex-direction: column;
+      gap: 6px;
+      padding: 8px;
+      border-radius: 10px;
+      background: rgba(13, 11, 22, 0.92);
+      border: 1px solid rgba(244, 114, 182, 0.28);
+    }
+    .quick-folder-drawer.open {
+      display: flex;
+    }
+    .quick-folder-input-row {
+      display: flex;
+      gap: 5px;
+      align-items: center;
+    }
+    .quick-folder-input {
+      flex: 1;
+      min-width: 0;
+      background: rgba(255, 255, 255, 0.05);
+      border: 1px solid rgba(255, 255, 255, 0.15);
+      border-radius: 7px;
+      color: var(--text-primary);
+      padding: 5px 8px;
+      font-size: 11.5px;
+      outline: none;
+    }
+    .quick-folder-input:focus {
+      border-color: rgba(244, 114, 182, 0.65);
+      background: rgba(255, 255, 255, 0.08);
+    }
+    .recent-folders-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 3px;
+      max-height: 132px;
+      overflow-y: auto;
+    }
+    .recent-folder-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 6px;
+      padding: 4px 7px;
+      border-radius: 7px;
+      background: rgba(255, 255, 255, 0.035);
+      border: 1px solid transparent;
+      color: var(--text-secondary);
+      font-size: 11px;
+      cursor: pointer;
+      text-align: left;
+    }
+    .recent-folder-item:hover {
+      background: rgba(244, 114, 182, 0.14);
+      border-color: rgba(244, 114, 182, 0.34);
+      color: #fff;
+    }
+    .recent-folder-del {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      font-size: 11px;
+      padding: 0 3px;
+      cursor: pointer;
+      line-height: 1;
+      flex-shrink: 0;
+    }
+    .recent-folder-del:hover {
+      color: #fb7185;
+    }
   </style>
 </head>
 <body>
@@ -3619,15 +3805,35 @@
       </div>
 
       <div class="bento-card chapter-card">
-        <div class="source-pickers" style="grid-template-columns: 1fr;">
-          <button class="soft-btn" onclick="pickFolderDialog()" style="justify-content:center; font-weight:700;">
-            <span>📁</span>
-            <span>Выбрать папку с мангой</span>
+        <div class="source-pickers source-pickers-row">
+          <button class="soft-btn" id="btn-pick-folder" onclick="pickFolderDialog(false)" style="justify-content:center; font-weight:700;" title="Открыть окно Проводника Windows для выбора папки с главой манги">
+            <span id="btn-pick-folder-icon">📁</span>
+            <span id="btn-pick-folder-lbl">Выбрать папку с мангой</span>
+          </button>
+          <button class="soft-btn" id="btn-quick-folder-toggle" onclick="toggleQuickFolderDrawer()" style="padding:7px 9px; font-weight:700;" title="Вставить путь к папке вручную (Ctrl+V) или выбрать из недавних глав">
+            <span>📋</span>
+            <span>Путь</span>
           </button>
           <button class="soft-btn" onclick="pickSingleFileDialog()" style="display:none;">
             <span>📄</span>
             <span>Одна страница</span>
           </button>
+        </div>
+
+        <div class="picker-inline-hint" id="picker-inline-hint" role="status" aria-live="polite">
+          <span id="picker-inline-hint-text" style="overflow:hidden; text-overflow:ellipsis;"></span>
+          <button type="button" class="picker-reset-link" id="picker-inline-reset-btn" style="display:none;" onclick="pickFolderDialog(true)" title="Принудительно перезапустить окно выбора папки">Переоткрыть</button>
+        </div>
+
+        <div class="quick-folder-drawer" id="quick-folder-drawer">
+          <div class="quick-folder-input-row">
+            <input type="text" id="inp-quick-folder-path" class="quick-folder-input" placeholder="Путь C:\Manga\Ch01 (Ctrl+V и Enter)" onkeydown="if(event.key==='Enter'){event.preventDefault();openFolderByPathInput();}" />
+            <button type="button" class="soft-btn" style="padding:5px 10px; font-size:11.5px; font-weight:700; flex-shrink:0;" onclick="openFolderByPathInput()">Открыть</button>
+          </div>
+          <div id="recent-folders-section" style="display:none; flex-direction:column; gap:3px;">
+            <div style="font-size:10px; color:var(--text-muted); font-weight:700; letter-spacing:0.03em; padding:0 2px;">НЕДАВНИЕ ПАПКИ:</div>
+            <div class="recent-folders-wrap" id="recent-folders-list"></div>
+          </div>
         </div>
 
         <div class="progress-strip">
@@ -3787,6 +3993,77 @@
             <button class="pill-btn subtle-active" id="btn-pins-toggle" onclick="toggleAlwaysShowPins()" title="Показывать интерактивные рамки #N на странице (Колесико мыши по рамке — шрифт, 🗑 на рамке — удалить)">📌 Рамки #N</button>
             <button class="pill-btn" id="btn-draw-region" onclick="toggleDrawRegionMode()" title="Обвести мышкой любой пропущенный кружок или текст на странице">➕ Обвести</button>
             <button class="pill-btn" id="btn-clean-page-noise" onclick="cleanPageNoiseBlocks(event)" style="border-color:rgba(244, 63, 94, 0.45); color:#fda4af;" title="В 1 клик удалить на этой странице все рамки фона (вне бабблов), вздохи, SFX и пустые блоки (Клавиша X)">🧹 Убрать шум</button>
+
+            <!-- Быстрый пульт шрифта и размера прямо в главном окне -->
+            <div class="font-step-pill" title="Быстро уменьшить / увеличить размер шрифта (для выбранного кружка #N или сразу для всех облачков на странице)">
+              <button type="button" class="font-step-btn" onclick="stepToolbarFontSize(-2)" title="Уменьшить шрифт на 2 px (выбранный кружок или вся открытая страница)">A−</button>
+              <button type="button" class="font-step-btn" onclick="stepToolbarFontSize(2)" title="Увеличить шрифт на 2 px (выбранный кружок или вся открытая страница)">A+</button>
+            </div>
+
+            <details class="toolbar-more-menu" id="toolbar-font-details" style="position:relative;" ontoggle="if(this.open) refreshFontsFromDisk(true)">
+              <summary class="pill-btn" id="tb-font-summary-btn" title="Управление шрифтами и размером (живой предпросмотр, загрузка своих .ttf/.otf, папка fonts/, применение к странице или ко всей главе)">🔤 Шрифт ▾</summary>
+              <div class="font-studio-popover" onclick="event.stopPropagation()" style="width:316px;">
+                <div style="display:flex; align-items:center; justify-content:space-between;">
+                  <b style="color:var(--sakura); font-size:12px;">🔤 Менеджер шрифтов и кегля</b>
+                  <button type="button" class="romaji-copy-btn" onclick="document.getElementById('toolbar-font-details').open=false">✕</button>
+                </div>
+
+                <div style="display:flex; flex-direction:column; gap:5px;">
+                  <div style="display:flex; align-items:center; justify-content:space-between;">
+                    <span style="color:var(--text-muted); font-size:10.5px;">Гарнитура шрифта (из <code>fonts/</code>):</span>
+                    <button type="button" class="romaji-copy-btn" style="padding:1px 6px; font-size:10px;" onclick="refreshFontsFromDisk(false)" title="Пересканировать папку fonts/ (если вы закинули туда новый .ttf/.otf файл)">🔄 Обновить</button>
+                  </div>
+                  <div style="display:flex; gap:4px; align-items:center;">
+                    <select id="tb-global-font-sel" class="font-override-select" style="flex:1; min-width:0; padding:5px 7px;" onchange="onToolbarGlobalFontFieldChange()"></select>
+                    <button type="button" class="romaji-copy-btn" id="tb-del-font-btn" style="padding:4px 7px; color:#fda4af;" onclick="deleteSelectedToolbarFont()" title="Удалить выбранный шрифт из папки fonts/">🗑</button>
+                  </div>
+                  <div id="tb-font-live-preview" style="background:#ffffff; color:#111111; border-radius:8px; padding:7px 9px; text-align:center; font-size:15px; line-height:1.25; font-weight:700; border:1.5px solid rgba(244,114,182,0.45); box-shadow:inset 0 1px 4px rgba(0,0,0,0.12);">
+                    Привет! Mmm… Strange feeling!
+                  </div>
+                  <div style="display:grid; grid-template-columns:1fr 1fr 1fr; gap:4px;">
+                    <input type="file" id="tb-upload-font-inp" accept=".ttf,.otf" style="display:none;" onchange="onToolbarFontFileChosen(this)" />
+                    <button type="button" class="romaji-copy-btn" style="justify-content:center; padding:4px 5px;" onclick="document.getElementById('tb-upload-font-inp').click()" title="Загрузить свой файл шрифта .ttf или .otf и сразу сделать активным">➕ Свой .ttf</button>
+                    <button type="button" class="romaji-copy-btn" style="justify-content:center; padding:4px 5px;" onclick="openFontsFolderInExplorer()" title="Открыть папку fonts/ в Проводнике Windows (можно просто перетащить туда шрифты)">📂 Папка fonts/</button>
+                    <button type="button" class="romaji-copy-btn" style="justify-content:center; padding:4px 5px;" onclick="installRecommendedFonts()" title="Скачать базовый набор комиксных шрифтов RU/EN">⬇️ Набор</button>
+                  </div>
+                </div>
+
+                <div style="display:flex; flex-direction:column; gap:3px;">
+                  <div style="display:flex; justify-content:space-between; align-items:center;">
+                    <span style="color:var(--text-muted); font-size:10.5px;">Масштаб базового кегля:</span>
+                    <b id="tb-font-scale-lbl" style="color:var(--mint);">100%</b>
+                  </div>
+                  <input type="range" id="tb-font-scale-rng" min="75" max="140" step="5" value="100" style="width:100%; accent-color:var(--sakura); cursor:pointer;" oninput="document.getElementById('tb-font-scale-lbl').textContent=this.value+'%'; updateToolbarFontLivePreview();" onchange="onToolbarGlobalFontFieldChange()" />
+                </div>
+
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:6px;">
+                  <label style="display:flex; align-items:center; justify-content:space-between; background:rgba(255,255,255,0.04); padding:4px 7px; border-radius:8px;">
+                    <span style="font-size:10.5px; color:var(--text-muted);">Мин:</span>
+                    <input type="number" id="tb-min-font" min="8" max="42" value="12" style="width:46px; background:transparent; border:1px solid rgba(255,255,255,0.16); color:#fff; border-radius:5px; padding:2px 4px; font-size:11.5px;" onchange="onToolbarGlobalFontFieldChange()" />
+                  </label>
+                  <label style="display:flex; align-items:center; justify-content:space-between; background:rgba(255,255,255,0.04); padding:4px 7px; border-radius:8px;">
+                    <span style="font-size:10.5px; color:var(--text-muted);">Макс:</span>
+                    <input type="number" id="tb-max-font" min="14" max="72" value="32" style="width:46px; background:transparent; border:1px solid rgba(255,255,255,0.16); color:#fff; border-radius:5px; padding:2px 4px; font-size:11.5px;" onchange="onToolbarGlobalFontFieldChange()" />
+                  </label>
+                </div>
+
+                <label style="display:flex; align-items:center; justify-content:space-between; cursor:pointer; padding:2px 0;">
+                  <span style="font-size:11px; color:var(--text-secondary);">🔠 ЗАГЛАВНЫЕ БУКВЫ (КАПС)</span>
+                  <input type="checkbox" id="tb-chk-uppercase" style="accent-color:var(--sakura); width:14px; height:14px;" onchange="onToolbarGlobalFontFieldChange()" />
+                </label>
+
+                <div style="display:grid; grid-template-columns:1fr 1fr; gap:5px; padding-top:4px; border-top:1px solid rgba(255,255,255,0.09);">
+                  <button type="button" class="pill-btn" style="justify-content:center;" onclick="applyToolbarFontToCurrentPage()" title="Перерисовать открытую страницу с выбранным шрифтом и размером">📄 К этой стр.</button>
+                  <button type="button" class="btn-save-edit" style="padding:5px 8px; font-size:11px;" onclick="applyToolbarFontToWholeChapter()" title="Мгновенно перерисовать ВСЮ главу новым шрифтом и размером из кэша (за ~2–4 сек, 0 токенов ИИ!)">⚡ Ко всей главе</button>
+                </div>
+
+                <div style="display:flex; justify-content:space-between; align-items:center; gap:5px;">
+                  <button type="button" class="romaji-copy-btn" style="width:100%; justify-content:center;" onclick="resetCurrentPageManualFontSizes()" title="Сбросить ручные размеры рамок на этой странице обратно на умный Авто-подбор">↺ Вернуть авто-кегль на открытой странице</button>
+                </div>
+              </div>
+            </details>
+
+            <button type="button" class="pill-btn" id="btn-chapter-qa" onclick="openChapterQaInspector(false)" title="Ревизор шрифтов и вёрстки: мгновенно найти все мелкие или перегруженные бабблы в главе и исправить в 1 клик">🔍 Проверить шрифты</button>
 
             <!-- Compact "⋯ Еще" Menu for Secondary / Rarely Used Tools -->
             <details class="toolbar-more-menu" id="toolbar-more-details">
@@ -4091,6 +4368,41 @@
           <button type="button" class="romaji-copy-btn" onclick="document.getElementById('popup-more-details').open=false; openFullEditorFromPopup()">📋 Открыть в списке блоков</button>
         </div>
       </details>
+    </div>
+  </div>
+
+  <!-- ==================== CHAPTER FONT & LAYOUT QA INSPECTOR MODAL ==================== -->
+  <div class="modal-backdrop" id="qa-inspector-modal" onclick="if(event.target===this) closeChapterQaModal()">
+    <div class="settings-modal" style="max-width:740px; width:94vw; max-height:84vh; display:flex; flex-direction:column;" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-header-title">
+          <span>🔍 Ревизор шрифтов и вёрстки главы</span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <label style="font-size:11.5px; color:var(--text-muted); display:inline-flex; align-items:center; gap:4px;">
+            Искать мельче:
+            <select id="qa-threshold-sel" class="font-override-select" onchange="openChapterQaInspector(false)">
+              <option value="13">≤ 13 px</option>
+              <option value="14" selected>≤ 14 px</option>
+              <option value="15">≤ 15 px</option>
+              <option value="16">≤ 16 px</option>
+            </select>
+          </label>
+          <button type="button" class="pill-btn" onclick="closeChapterQaModal()">✕ Закрыть</button>
+        </div>
+      </div>
+
+      <div style="padding:12px 16px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap;">
+        <div id="qa-summary-line" style="font-size:12.5px; color:var(--text-secondary);">Сканирование главы...</div>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button type="button" class="btn-save-edit" id="btn-qa-autofix-all" onclick="autofixChapterQa(false)" style="padding:6px 12px; font-size:12px;">⚡ Авто-исправить все мелкие</button>
+          <button type="button" class="pill-btn" id="btn-qa-autofix-ai" onclick="autofixChapterQa(true)" title="Дополнительно попросить ИИ компактнее сократить слишком длинные фразы в узких бабблах">✂️ Сжать длинные через ИИ + укрупнить</button>
+        </div>
+      </div>
+
+      <div id="qa-issues-container" style="padding:12px 16px; overflow-y:auto; display:flex; flex-direction:column; gap:7px; flex:1;">
+        <div style="color:var(--text-muted); text-align:center; padding:24px;">Нажмите «Проверить шрифты», чтобы просканировать переведённые страницы.</div>
+      </div>
     </div>
   </div>
 
@@ -7491,9 +7803,16 @@
           if (data.max_font_size) {
             document.getElementById("inp-max-font").value = data.max_font_size;
           }
+          if (typeof data.font_scale_pct === "number" && data.font_scale_pct > 0) {
+            globalFontScalePct = data.font_scale_pct;
+          }
+          if (typeof data.default_font === "string") {
+            globalDefaultFont = data.default_font;
+          }
           if (typeof data.uppercase === "boolean") {
             document.getElementById("chk-uppercase").checked = data.uppercase;
           }
+          syncToolbarFontStudioUi();
           if (data.overflow_mode && ["shrink", "overflow", "expand_bubble"].includes(data.overflow_mode)) {
             overflowMode = data.overflow_mode;
             try { localStorage.setItem("miko_overflow_mode_v1", overflowMode); } catch (e) {}
@@ -8226,16 +8545,185 @@
     }
 
     /* ==================== FOLDER & PAGE NAVIGATION ==================== */
+    const RECENT_FOLDERS_STORAGE_KEY = "miko_recent_folders_v1";
     let isPickingFolderDialog = false;
-    async function pickFolderDialog() {
-      if (isPickingFolderDialog) {
-        sayMiko("⚠️ Окно выбора папки уже открыто — проверь панель задач Windows! 🌸");
+    let pickerHintHideTimer = null;
+
+    function loadRecentFolders() {
+      try {
+        const raw = localStorage.getItem(RECENT_FOLDERS_STORAGE_KEY);
+        const arr = raw ? JSON.parse(raw) : [];
+        return Array.isArray(arr) ? arr.filter(x => typeof x === "string" && x.trim().length > 0) : [];
+      } catch (_) {
+        return [];
+      }
+    }
+
+    function saveRecentFolder(folderPath) {
+      const clean = String(folderPath || "").trim();
+      if (!clean) return;
+      try {
+        const normLower = clean.toLowerCase();
+        const prev = loadRecentFolders().filter(p => p.trim().toLowerCase() !== normLower);
+        prev.unshift(clean);
+        localStorage.setItem(RECENT_FOLDERS_STORAGE_KEY, JSON.stringify(prev.slice(0, 8)));
+      } catch (_) {}
+      renderRecentFoldersList();
+    }
+
+    function removeRecentFolder(folderPath, ev) {
+      if (ev) ev.stopPropagation();
+      const targetLower = String(folderPath || "").trim().toLowerCase();
+      try {
+        const next = loadRecentFolders().filter(p => p.trim().toLowerCase() !== targetLower);
+        localStorage.setItem(RECENT_FOLDERS_STORAGE_KEY, JSON.stringify(next));
+      } catch (_) {}
+      renderRecentFoldersList();
+    }
+
+    function renderRecentFoldersList() {
+      const sec = document.getElementById("recent-folders-section");
+      const list = document.getElementById("recent-folders-list");
+      if (!sec || !list) return;
+      const items = loadRecentFolders();
+      if (!items.length) {
+        sec.style.display = "none";
+        list.innerHTML = "";
         return;
       }
+      sec.style.display = "flex";
+      list.innerHTML = "";
+      items.forEach(fp => {
+        const row = document.createElement("div");
+        row.className = "recent-folder-item";
+        row.title = fp;
+        const leaf = fp.split(/[\\/]/).filter(Boolean).pop() || fp;
+        const lbl = document.createElement("span");
+        lbl.style.cssText = "overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1;";
+        lbl.textContent = `📁 ${leaf}`;
+        const del = document.createElement("button");
+        del.type = "button";
+        del.className = "recent-folder-del";
+        del.title = "Убрать из списка недавних";
+        del.textContent = "✕";
+        del.onclick = (ev) => removeRecentFolder(fp, ev);
+        row.onclick = () => openFolderByPathInput(fp);
+        row.appendChild(lbl);
+        row.appendChild(del);
+        list.appendChild(row);
+      });
+    }
+
+    function toggleQuickFolderDrawer(forceOpen) {
+      const dr = document.getElementById("quick-folder-drawer");
+      const btn = document.getElementById("btn-quick-folder-toggle");
+      if (!dr) return;
+      const next = typeof forceOpen === "boolean" ? forceOpen : !dr.classList.contains("open");
+      dr.classList.toggle("open", next);
+      if (btn) btn.classList.toggle("subtle-active", next);
+      if (next) {
+        renderRecentFoldersList();
+        const inp = document.getElementById("inp-quick-folder-path");
+        if (inp) {
+          if (!inp.value && currentFolder) inp.value = currentFolder;
+          setTimeout(() => { inp.focus(); inp.select(); }, 30);
+        }
+      }
+    }
+
+    function setPickerInlineHint(text, opts = {}) {
+      const box = document.getElementById("picker-inline-hint");
+      const txt = document.getElementById("picker-inline-hint-text");
+      const resetBtn = document.getElementById("picker-inline-reset-btn");
+      if (!box || !txt) return;
+      if (pickerHintHideTimer) {
+        clearTimeout(pickerHintHideTimer);
+        pickerHintHideTimer = null;
+      }
+      if (!text) {
+        box.classList.remove("visible", "is-error");
+        txt.textContent = "";
+        if (resetBtn) resetBtn.style.display = "none";
+        return;
+      }
+      txt.textContent = text;
+      box.classList.add("visible");
+      box.classList.toggle("is-error", Boolean(opts.isError));
+      if (resetBtn) {
+        resetBtn.style.display = opts.showReset ? "inline-block" : "none";
+      }
+      if (opts.autoHideMs && opts.autoHideMs > 0) {
+        pickerHintHideTimer = setTimeout(() => setPickerInlineHint(""), opts.autoHideMs);
+      }
+    }
+
+    function setPickFolderButtonActiveState(active) {
+      const btn = document.getElementById("btn-pick-folder");
+      const icon = document.getElementById("btn-pick-folder-icon");
+      const lbl = document.getElementById("btn-pick-folder-lbl");
+      if (btn) btn.classList.toggle("picking-active", active);
+      if (icon) icon.textContent = active ? "📂" : "📁";
+      if (lbl) lbl.textContent = active ? "Проводник открыт (показать)" : "Выбрать папку с мангой";
+    }
+
+    async function openFolderByPathInput(customPath) {
+      const inp = document.getElementById("inp-quick-folder-path");
+      const raw = (typeof customPath === "string" ? customPath : (inp ? inp.value : "")).trim();
+      if (!raw) {
+        setPickerInlineHint("⚠️ Вставьте путь к папке с мангой (например C:\\Manga\\Ch01)", { isError: true, autoHideMs: 4500 });
+        return;
+      }
+      try {
+        const res = await fetch("/open_folder_path", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ folder_path: raw, target_lang: targetLang })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.source_dir) {
+          const msg = data.detail || data.message || `HTTP ${res.status}`;
+          setPickerInlineHint(`⚠️ ${msg}`, { isError: true, autoHideMs: 6000 });
+          sayMiko(`⚠️ Не удалось открыть папку: ${msg}`);
+          return;
+        }
+        setPickerInlineHint("");
+        toggleQuickFolderDrawer(false);
+        currentFolder = data.source_dir;
+        if (inp) inp.value = data.source_dir;
+        renderFolderData(data);
+      } catch (err) {
+        const msg = err?.message || "нет связи с сервером";
+        setPickerInlineHint(`⚠️ Ошибка открытия пути: ${msg}`, { isError: true, autoHideMs: 6000 });
+      }
+    }
+
+    async function pickFolderDialog(forceReset = false) {
+      if (isPickingFolderDialog && !forceReset) {
+        try {
+          const fRes = await fetch("/pick_folder?focus=true", { method: "POST" });
+          const fData = await fRes.json().catch(() => ({}));
+          if (fData.status === "not_open") {
+            isPickingFolderDialog = false;
+            setPickFolderButtonActiveState(false);
+          } else {
+            const msg = fData.message || "Окно Проводника выведено на передний план!";
+            setPickerInlineHint(`📂 ${msg}`, { showReset: true });
+            sayMiko(`📂 ${msg} 🌸`);
+            return;
+          }
+        } catch (_) {
+          return;
+        }
+      }
       isPickingFolderDialog = true;
+      setPickFolderButtonActiveState(true);
+      setPickerInlineHint("📂 Открыто окно Проводника Windows — выберите папку...", { showReset: true });
       sayMiko("📂 Открываю окно выбора папки Windows (проверь окно проводника)... 🌸");
       try {
-        const res = await fetch("/pick_folder?target_lang=" + encodeURIComponent(targetLang), { method: "POST" });
+        const qs = new URLSearchParams({ target_lang: targetLang });
+        if (forceReset) qs.set("reset", "true");
+        if (currentFolder) qs.set("initial_dir", currentFolder);
+        const res = await fetch("/pick_folder?" + qs.toString(), { method: "POST" });
         if (!res.ok) {
           let errMsg = `Ошибка сервера (HTTP ${res.status})`;
           try {
@@ -8253,33 +8741,44 @@
               }
             }
           } catch (_2) {}
+          setPickerInlineHint(`⚠️ ${errMsg} (или нажмите «📋 Путь»)`, { isError: true, autoHideMs: 8000 });
           sayMiko(`⚠️ Не удалось открыть выбор папки: ${errMsg}`);
           return;
         }
         const data = await res.json();
-        if (data.status === "busy") {
-          sayMiko(`⚠️ ${data.message || "Окно выбора папки уже открыто — проверь панель задач Windows!"} 🌸`);
+        if (data.status === "busy" || data.status === "focused") {
+          const bMsg = data.message || "Окно выбора папки выведено на передний план!";
+          setPickerInlineHint(`📂 ${bMsg}`, { showReset: true, autoHideMs: 6000 });
+          sayMiko(`📂 ${bMsg} 🌸`);
           return;
         }
         if (data.status === "timeout" || data.status === "error") {
-          sayMiko(`⚠️ ${data.message || "Не удалось открыть системное окно выбора папки."} 🌸`);
+          const eMsg = data.message || "Не удалось открыть системное окно выбора папки.";
+          setPickerInlineHint(`⚠️ ${eMsg} (можно вставить путь через «📋 Путь»)`, { isError: true, autoHideMs: 9000 });
+          toggleQuickFolderDrawer(true);
+          sayMiko(`⚠️ ${eMsg} 🌸`);
           return;
         }
         if (data.status === "cancelled") {
-          sayMiko("Выбор папки отменен. Нажми «Выбрать папку с мангой», когда будешь готов! 🌸");
+          setPickerInlineHint("");
+          sayMiko("Выбор папки отменен. Нажми «Выбрать папку с мангой» или «📋 Путь», когда будешь готов! 🌸");
           return;
         }
         if (!data.source_dir) {
+          setPickerInlineHint("⚠️ Сервер вернул пустой путь к папке.", { isError: true, autoHideMs: 5000 });
           sayMiko("⚠️ Сервер вернул пустой путь к папке. Попробуй выбрать папку еще раз! 🌸");
           return;
         }
+        setPickerInlineHint("");
         currentFolder = data.source_dir;
         renderFolderData(data);
       } catch (err) {
         console.error("pickFolderDialog error:", err);
+        setPickerInlineHint(`⚠️ Нет связи с сервером (${err?.message || "ошибка сети"})`, { isError: true, autoHideMs: 7000 });
         sayMiko(`⚠️ Ошибка при открытии окна выбора папки: ${err?.message || "нет связи с сервером"}. Попробуй еще раз!`);
       } finally {
         isPickingFolderDialog = false;
+        setPickFolderButtonActiveState(false);
       }
     }
 
@@ -8340,6 +8839,9 @@
     }
 
     function renderFolderData(data, opts = {}) {
+      if (data && data.source_dir) {
+        saveRecentFolder(data.source_dir);
+      }
       currentOutputDir = data.output_dir || "";
       folderPages = data.pages || [];
       const total = data.total_pages || 0;
@@ -8360,6 +8862,9 @@
           sayMiko(`Все ${total} страниц в этой папке готовы! Кликни по любому кружку #N для правки ✨`);
         } else {
           sayMiko(`Открыта папка «${folderName}» (${total} стр.). Нажми «Перевести всю папку»!`);
+        }
+        if (done > 0) {
+          setTimeout(() => openChapterQaInspector(true), 80);
         }
       }
 
@@ -9446,17 +9951,47 @@
       sfx: "🔊 SFX"
     };
 
+    const _loadedWebFontIds = new Set();
+    function cssFontFamilyForFile(filename) {
+      return "MikoCustom_" + String(filename || "").replace(/[^a-zA-Z0-9_]/g, "_");
+    }
+
+    function ensureWebFontFacesLoaded(fonts) {
+      if (!Array.isArray(fonts)) return;
+      let styleEl = document.getElementById("miko-dynamic-fonts-style");
+      if (!styleEl) {
+        styleEl = document.createElement("style");
+        styleEl.id = "miko-dynamic-fonts-style";
+        document.head.appendChild(styleEl);
+      }
+      let cssAppend = "";
+      fonts.forEach(f => {
+        const fname = String(f.filename || f.id || "");
+        if (!fname || _loadedWebFontIds.has(fname)) return;
+        _loadedWebFontIds.add(fname);
+        const fam = cssFontFamilyForFile(fname);
+        const url = "/fonts/file?name=" + encodeURIComponent(fname);
+        cssAppend += `@font-face { font-family: "${fam}"; src: url("${url}"); font-display: swap; }\n`;
+      });
+      if (cssAppend) {
+        styleEl.textContent += cssAppend;
+      }
+    }
+
     function populateFontFamilySelect(selEl, selectedVal) {
       if (!selEl) return;
       const cur = selectedVal || "";
-      let optsHtml = `<option value="" ${cur === "" ? "selected" : ""}>Шрифт: По умолчанию</option>`;
+      let optsHtml = `<option value="" ${cur === "" ? "selected" : ""}>Авто (лучший манга-шрифт под язык)</option>`;
       const list = Array.isArray(availableFonts) ? availableFonts : [];
       const seen = new Set();
       list.forEach(f => {
-        const fid = String(f.id || f.name || "");
+        const fid = String(f.id || f.filename || f.name || "");
         if (!fid || seen.has(fid)) return;
         seen.add(fid);
-        const fname = escapeHtml(f.name || fid);
+        const langTag = (f.supports_ru && f.supports_en)
+          ? " [RU+EN]"
+          : (f.supports_ru ? " [RU]" : (f.supports_en ? " [EN]" : ""));
+        const fname = escapeHtml((f.name || fid) + langTag);
         optsHtml += `<option value="${escapeHtml(fid)}" ${cur === fid ? "selected" : ""}>${fname}</option>`;
       });
       if (cur && !seen.has(cur)) {
@@ -9468,14 +10003,20 @@
     function refreshFontSelectors(fonts, fontStatus) {
       if (Array.isArray(fonts)) {
         availableFonts = fonts;
+        ensureWebFontFacesLoaded(fonts);
       }
       const popFont = document.getElementById("popup-font-family");
       if (popFont) {
         populateFontFamilySelect(popFont, popFont.value || null);
       }
+      const tbGlobalFont = document.getElementById("tb-global-font-sel");
+      if (tbGlobalFont) {
+        populateFontFamilySelect(tbGlobalFont, globalDefaultFont || tbGlobalFont.value || "");
+      }
       document.querySelectorAll('select[id^="edit-font-family-"]').forEach(sel => {
         populateFontFamilySelect(sel, sel.value || null);
       });
+      syncToolbarFontStudioUi();
 
       const list = Array.isArray(availableFonts) ? availableFonts : [];
       const hasCustom = fontStatus && typeof fontStatus === "object"
@@ -13942,7 +14483,466 @@
         }
         if ((wasRunning || status === "completed" || status === "stopped") && currentFolder) {
           await inspectCurrentFolder({ preserveCurrentSelection: true });
+          if (wasRunning && status === "completed") {
+            openChapterQaInspector(true);
+          }
         }
+      }
+    }
+
+    /* ==================== TOOLBAR FONT STUDIO & CHAPTER QA INSPECTOR ==================== */
+    let globalFontScalePct = 100;
+    let globalDefaultFont = "";
+    let lastQaIssues = [];
+
+    function syncToolbarFontStudioUi() {
+      const minEl = document.getElementById("inp-min-font");
+      const maxEl = document.getElementById("inp-max-font");
+      const upEl = document.getElementById("chk-uppercase");
+      const tbMin = document.getElementById("tb-min-font");
+      const tbMax = document.getElementById("tb-max-font");
+      const tbUp = document.getElementById("tb-chk-uppercase");
+      const tbScale = document.getElementById("tb-font-scale-rng");
+      const tbScaleLbl = document.getElementById("tb-font-scale-lbl");
+      const tbFontSel = document.getElementById("tb-global-font-sel");
+      const sumBtn = document.getElementById("tb-font-summary-btn");
+
+      const minV = parseInt(minEl?.value, 10) || 12;
+      const maxV = parseInt(maxEl?.value, 10) || 32;
+      if (tbMin && document.activeElement !== tbMin) tbMin.value = minV;
+      if (tbMax && document.activeElement !== tbMax) tbMax.value = maxV;
+      if (tbUp && upEl) tbUp.checked = Boolean(upEl.checked);
+      if (tbScale) tbScale.value = globalFontScalePct || 100;
+      if (tbScaleLbl) tbScaleLbl.textContent = (globalFontScalePct || 100) + "%";
+      if (tbFontSel) populateFontFamilySelect(tbFontSel, globalDefaultFont || "");
+
+      if (sumBtn) {
+        const scaleTag = (globalFontScalePct && globalFontScalePct !== 100) ? ` · ${globalFontScalePct}%` : "";
+        const shortFont = globalDefaultFont ? ` (${globalDefaultFont.replace(/\.(ttf|otf|ttc)$/i, "").slice(0, 12)})` : "";
+        sumBtn.textContent = `🔤 ${minV}–${maxV}px${scaleTag}${shortFont} ▾`;
+      }
+      updateToolbarFontLivePreview();
+    }
+
+    function updateToolbarFontLivePreview() {
+      const prevEl = document.getElementById("tb-font-live-preview");
+      const delBtn = document.getElementById("tb-del-font-btn");
+      if (!prevEl) return;
+      const selFont = document.getElementById("tb-global-font-sel")?.value ?? globalDefaultFont ?? "";
+      const isCaps = Boolean(document.getElementById("tb-chk-uppercase")?.checked);
+      const scalePct = parseInt(document.getElementById("tb-font-scale-rng")?.value, 10) || globalFontScalePct || 100;
+      if (delBtn) {
+        delBtn.style.opacity = selFont ? "1" : "0.4";
+        delBtn.disabled = !selFont;
+      }
+      let effectiveFile = selFont;
+      if (!effectiveFile && Array.isArray(availableFonts) && availableFonts.length > 0) {
+        const pick = targetLang === "ru"
+          ? (availableFonts.find(f => f.supports_ru) || availableFonts[0])
+          : (availableFonts.find(f => f.supports_en) || availableFonts[0]);
+        effectiveFile = pick ? (pick.filename || pick.id || "") : "";
+      }
+      const fontMeta = (availableFonts || []).find(f => (f.filename || f.id) === effectiveFile);
+      const sample = (fontMeta && !fontMeta.supports_ru)
+        ? "Mmm… Strange feeling! 123"
+        : "Привет! Mmm… Strange feeling!";
+      prevEl.textContent = isCaps ? sample.toUpperCase() : sample;
+      prevEl.style.fontSize = Math.round(14.5 * (scalePct / 100)) + "px";
+      if (effectiveFile) {
+        ensureWebFontFacesLoaded(availableFonts);
+        prevEl.style.fontFamily = `"${cssFontFamilyForFile(effectiveFile)}", "CC Wild Words", "Comic Sans MS", sans-serif`;
+      } else {
+        prevEl.style.fontFamily = `"CC Wild Words", "Comic Sans MS", "Segoe UI Semibold", sans-serif`;
+      }
+    }
+
+    async function refreshFontsFromDisk(silent = false) {
+      try {
+        const res = await fetch("/fonts/catalog");
+        if (!res.ok) return;
+        const data = await res.json();
+        refreshFontSelectors(data.available_fonts, data.font_status);
+        if (!silent) {
+          const cnt = Array.isArray(data.available_fonts) ? data.available_fonts.length : 0;
+          sayMiko(`Список шрифтов обновлён! Найдено в fonts/: ${cnt} шт. 🔤`);
+        }
+      } catch (e) {
+        console.warn("refreshFontsFromDisk error:", e);
+      }
+    }
+
+    async function openFontsFolderInExplorer() {
+      try {
+        const res = await fetch("/fonts/open_folder", { method: "POST" });
+        if (res.ok) {
+          sayMiko("📂 Открыла папку fonts/ в Проводнике! Закинь туда любой .ttf/.otf и нажми «🔄 Обновить» 🌸");
+        }
+      } catch (e) {}
+    }
+
+    async function onToolbarFontFileChosen(inputEl) {
+      const file = inputEl?.files?.[0];
+      if (!file) return;
+      try {
+        const b64 = await new Promise((resolve, reject) => {
+          const r = new FileReader();
+          r.onload = () => resolve(String(r.result || ""));
+          r.onerror = () => reject(new Error("Ошибка чтения файла"));
+          r.readAsDataURL(file);
+        });
+        const res = await fetch("/fonts/upload", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: file.name, data_base64: b64, install_windows_user: false })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok || !data.font) {
+          sayMiko(`⚠️ Ошибка добавления шрифта: ${data.detail || res.status}`);
+          return;
+        }
+        globalDefaultFont = data.font.id || data.font.filename || "";
+        refreshFontSelectors(data.available_fonts, data.font_status);
+        const sel = document.getElementById("tb-global-font-sel");
+        if (sel) sel.value = globalDefaultFont;
+        await onToolbarGlobalFontFieldChange();
+        sayMiko(`✨ Шрифт «${data.font.name}» добавлен в fonts/ и выбран основным!`);
+      } catch (e) {
+        sayMiko(`⚠️ Не удалось загрузить шрифт: ${e?.message || e}`);
+      } finally {
+        inputEl.value = "";
+      }
+    }
+
+    async function deleteSelectedToolbarFont() {
+      const sel = document.getElementById("tb-global-font-sel");
+      const target = (sel?.value || "").trim();
+      if (!target) return;
+      if (!confirm(`Удалить файл шрифта «${target}» из папки fonts/?`)) return;
+      try {
+        const res = await fetch("/fonts/delete", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ filename: target })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          sayMiko(`⚠️ Не удалось удалить шрифт: ${data.detail || res.status}`);
+          return;
+        }
+        if (globalDefaultFont === target) globalDefaultFont = "";
+        refreshFontSelectors(data.available_fonts, data.font_status);
+        await onToolbarGlobalFontFieldChange();
+        sayMiko(`🗑 Шрифт «${target}» удалён из fonts/.`);
+      } catch (e) {}
+    }
+
+    async function onToolbarGlobalFontFieldChange() {
+      const tbMin = parseInt(document.getElementById("tb-min-font")?.value, 10) || 12;
+      const tbMax = Math.max(tbMin, parseInt(document.getElementById("tb-max-font")?.value, 10) || 32);
+      const tbUp = Boolean(document.getElementById("tb-chk-uppercase")?.checked);
+      const tbScale = parseInt(document.getElementById("tb-font-scale-rng")?.value, 10) || 100;
+      const tbFont = document.getElementById("tb-global-font-sel")?.value || "";
+
+      globalFontScalePct = tbScale;
+      globalDefaultFont = tbFont;
+      const minEl = document.getElementById("inp-min-font");
+      const maxEl = document.getElementById("inp-max-font");
+      const upEl = document.getElementById("chk-uppercase");
+      if (minEl) minEl.value = tbMin;
+      if (maxEl) maxEl.value = tbMax;
+      if (upEl) upEl.checked = tbUp;
+      syncToolbarFontStudioUi();
+      updateSummaryChip();
+
+      try {
+        await fetch("/settings", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            min_font_size: tbMin,
+            max_font_size: tbMax,
+            font_scale_pct: tbScale,
+            default_font: tbFont,
+            uppercase: tbUp
+          })
+        });
+      } catch (e) {
+        console.warn("Save font settings error:", e);
+      }
+    }
+
+    async function stepToolbarFontSize(delta) {
+      if (!selectedPage || !currentBlocks || currentBlocks.length === 0) {
+        // Если страница ещё не открыта — меняем глобальный масштаб
+        globalFontScalePct = Math.max(75, Math.min(140, (globalFontScalePct || 100) + (delta > 0 ? 5 : -5)));
+        syncToolbarFontStudioUi();
+        await onToolbarGlobalFontFieldChange();
+        sayMiko(`Глобальный масштаб шрифта: ${globalFontScalePct}% 🔤`);
+        return;
+      }
+
+      pushPageHistorySnapshot();
+      const targetId = popupBlockId || activeBlockId;
+      if (targetId !== null) {
+        const blk = currentBlocks.find(b => b.id === targetId);
+        if (blk && !blk.is_deleted) {
+          const baseFs = blk.font_size || blk.rendered_font_size || 20;
+          blk.font_size = Math.max(9, Math.min(64, baseFs + delta));
+          blk.rendered_font_size = blk.font_size;
+          updatePinDomForBlock(blk.id);
+          renderBlocksEditor();
+          if (popupBlockId === blk.id) populateInlinePopup(blk.id);
+          sayMiko(`Рамка #${blk.id}: шрифт ${blk.font_size} px ✨`);
+          await saveEditedPageTranslation();
+          return;
+        }
+      }
+
+      // Если конкретный кружок не выбран — пропорционально меняем размер сразу на ВСЕХ бабблах открытой страницы!
+      let changed = 0;
+      currentBlocks.forEach(b => {
+        if (!b.is_deleted && (b.translated_text || "").trim()) {
+          const baseFs = b.font_size || b.rendered_font_size || 20;
+          b.font_size = Math.max(9, Math.min(64, baseFs + delta));
+          b.rendered_font_size = b.font_size;
+          changed += 1;
+        }
+      });
+      if (changed > 0) {
+        renderBlocksEditor();
+        renderBboxPinsOnStage();
+        sayMiko(`Шрифт всех ${changed} блоков на странице изменён на ${delta > 0 ? "+" + delta : delta} px! 🎨`);
+        await saveEditedPageTranslation();
+      }
+    }
+
+    async function resetCurrentPageManualFontSizes() {
+      if (!selectedPage || !currentBlocks || currentBlocks.length === 0) return;
+      pushPageHistorySnapshot();
+      currentBlocks.forEach(b => { b.font_size = null; });
+      document.getElementById("toolbar-font-details").open = false;
+      sayMiko("Ручные размеры сброшены — пересчитываю умный авто-кегль страницы... ✨");
+      await saveEditedPageTranslation();
+    }
+
+    async function applyToolbarFontToCurrentPage() {
+      await onToolbarGlobalFontFieldChange();
+      document.getElementById("toolbar-font-details").open = false;
+      if (!selectedPage || !currentBlocks) {
+        sayMiko("Глобальные настройки шрифта сохранены! Откройте любую страницу для предпросмотра 🌸");
+        return;
+      }
+      await saveEditedPageTranslation();
+      sayMiko("Шрифт и масштаб применены к открытой странице! ✨");
+    }
+
+    async function applyToolbarFontToWholeChapter() {
+      await onToolbarGlobalFontFieldChange();
+      document.getElementById("toolbar-font-details").open = false;
+      if (!currentFolder) {
+        sayMiko("Настройки шрифта сохранены для будущих глав! Сначала выберите папку с мангой слева 📁");
+        return;
+      }
+      if (isJobRunning) {
+        sayMiko("Дождитесь завершения текущего перевода или поставьте на паузу.");
+        return;
+      }
+      const sbSkip = document.getElementById("chk-sidebar-skip-existing");
+      const forceChk = document.getElementById("chk-force-retranslate");
+      const prevSkip = sbSkip ? sbSkip.checked : true;
+      const prevForce = forceChk ? forceChk.checked : false;
+      if (sbSkip) sbSkip.checked = false;
+      if (forceChk) forceChk.checked = false;
+      try {
+        sayMiko("⚡ Быстро перерисовываю всю главу новым шрифтом (из кэша, 0 токенов ИИ)...");
+        await onPrimaryFolderButtonClick();
+      } finally {
+        if (sbSkip) sbSkip.checked = prevSkip;
+        if (forceChk) forceChk.checked = prevForce;
+      }
+    }
+
+    function closeChapterQaModal() {
+      document.getElementById("qa-inspector-modal")?.classList.remove("open");
+    }
+
+    async function openChapterQaInspector(silentBadgeOnly = false) {
+      if (!currentFolder) {
+        if (!silentBadgeOnly) sayMiko("Сначала выберите папку с переведённой мангой слева 📁");
+        return;
+      }
+      const thr = parseInt(document.getElementById("qa-threshold-sel")?.value, 10) || 14;
+      const modal = document.getElementById("qa-inspector-modal");
+      const listEl = document.getElementById("qa-issues-container");
+      const sumEl = document.getElementById("qa-summary-line");
+      if (!silentBadgeOnly && modal) {
+        modal.classList.add("open");
+        if (sumEl) sumEl.textContent = "⏳ Проверяю размеры шрифтов и укладку по всей главе...";
+      }
+
+      try {
+        const res = await fetch("/chapter_qa_check", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            folder_path: currentFolder,
+            target_lang: targetLang,
+            tiny_threshold_px: thr
+          })
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        lastQaIssues = Array.isArray(data.issues) ? data.issues : [];
+
+        const qaBtn = document.getElementById("btn-chapter-qa");
+        if (qaBtn) {
+          if (lastQaIssues.length > 0) {
+            qaBtn.classList.add("qa-has-issues");
+            qaBtn.textContent = `🔍 Шрифты (${lastQaIssues.length})`;
+          } else {
+            qaBtn.classList.remove("qa-has-issues");
+            qaBtn.textContent = "🔍 Шрифты ✓";
+          }
+        }
+        if (silentBadgeOnly) return;
+
+        if (sumEl) {
+          sumEl.innerHTML = `Страниц: <b>${data.translated_pages}/${data.total_pages}</b> · Блоков: <b>${data.total_blocks}</b> · Средний кегль: <b style="color:var(--mint);">${data.median_font_size || "—"} px</b> · Замечаний: <b style="color:${lastQaIssues.length ? "#fbbf24" : "var(--mint)"};">${lastQaIssues.length}</b>`;
+        }
+        if (!listEl) return;
+        if (lastQaIssues.length === 0) {
+          listEl.innerHTML = `<div style="text-align:center; padding:28px; color:var(--mint); font-weight:700;">✅ Отлично! Во всей главе нет ни одного слишком мелкого шрифта (все облачка крупнее ${thr} px).</div>`;
+          return;
+        }
+
+        listEl.innerHTML = "";
+        lastQaIssues.forEach((iss, idx) => {
+          const card = document.createElement("div");
+          card.className = "qa-issue-card";
+          card.onclick = () => jumpToQaIssue(idx);
+          card.innerHTML = `
+            <div style="min-width:0; flex:1;">
+              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:3px;">
+                <b style="color:var(--sakura);">Стр. #${iss.page_index} · Рамка #${iss.block_id}</b>
+                <span style="background:rgba(251,191,36,0.18); color:#fde68a; border:1px solid rgba(251,191,36,0.4); border-radius:999px; padding:1px 7px; font-size:10.5px; font-weight:700;">${iss.rendered_font_size} px ➔ ~${iss.recommended_font_size} px</span>
+                <span style="color:var(--text-muted); font-size:10.5px;">баббл ${escapeHtml(iss.bbox_size || "")}</span>
+              </div>
+              <div style="font-size:12px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">«${escapeHtml(iss.text || "")}»</div>
+              <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">${escapeHtml(iss.reason || "")}</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:5px; flex-shrink:0;" onclick="event.stopPropagation()">
+              <button type="button" class="pill-btn" onclick="fixSingleQaIssue(${idx})" title="Установить рекомендуемый размер ${iss.recommended_font_size} px и перерисовать страницу">🔼 ${iss.recommended_font_size} px</button>
+              <button type="button" class="pill-btn" onclick="shortenSingleQaIssue(${idx})" title="Коротко сжать текст этой реплики через ИИ и поднять шрифт до ${iss.recommended_font_size} px">✂️ ИИ</button>
+              <button type="button" class="romaji-copy-btn" onclick="jumpToQaIssue(${idx})" title="Перейти к этому бабблу на холсте">👁 Открыть</button>
+            </div>
+          `;
+          listEl.appendChild(card);
+        });
+      } catch (err) {
+        console.warn("QA check failed:", err);
+      }
+    }
+
+    async function jumpToQaIssue(idx) {
+      const iss = lastQaIssues[idx];
+      if (!iss) return;
+      closeChapterQaModal();
+      const targetPage = (folderPages || []).find(p => p.rel_path === iss.page || p.index === iss.page_index);
+      if (targetPage) {
+        selectPage(targetPage);
+        setTimeout(() => {
+          highlightBlock(iss.block_id, true, true);
+          const pinEl = document.querySelector(`.bbox-pin[data-block-id="${iss.block_id}"]`);
+          if (pinEl) openInlineBubblePopup(iss.block_id, pinEl);
+        }, 180);
+      }
+    }
+
+    async function fixSingleQaIssue(idx) {
+      const iss = lastQaIssues[idx];
+      if (!iss) return;
+      await jumpToQaIssue(idx);
+      setTimeout(async () => {
+        const blk = (currentBlocks || []).find(b => b.id === iss.block_id);
+        if (blk) {
+          pushPageHistorySnapshot();
+          blk.font_size = iss.recommended_font_size || 17;
+          blk.rendered_font_size = blk.font_size;
+          await saveEditedPageTranslation();
+          openChapterQaInspector(false);
+        }
+      }, 240);
+    }
+
+    async function shortenSingleQaIssue(idx) {
+      const iss = lastQaIssues[idx];
+      if (!iss) return;
+      await jumpToQaIssue(idx);
+      setTimeout(async () => {
+        const blk = (currentBlocks || []).find(b => b.id === iss.block_id);
+        if (!blk) return;
+        try {
+          sayMiko(`✂️ Сжимаю реплику #${blk.id} через ИИ под размер баббла...`);
+          const res = await fetch("/shorten_block_text", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              text: blk.translated_text || "",
+              original_text: blk.original_text || "",
+              target_lang: targetLang
+            })
+          });
+          const data = await res.json().catch(() => ({}));
+          pushPageHistorySnapshot();
+          if (res.ok && data.shortened_text) {
+            blk.translated_text = data.shortened_text;
+          }
+          blk.font_size = null; // пересчитать крупный авто-кегль на короткой фразе
+          await saveEditedPageTranslation();
+          openChapterQaInspector(false);
+        } catch (e) {
+          console.warn("shortenSingleQaIssue error:", e);
+        }
+      }, 240);
+    }
+
+    async function autofixChapterQa(useAiShorten = false) {
+      if (!currentFolder) return;
+      const thr = parseInt(document.getElementById("qa-threshold-sel")?.value, 10) || 14;
+      const btnAll = document.getElementById("btn-qa-autofix-all");
+      const btnAi = document.getElementById("btn-qa-autofix-ai");
+      if (btnAll) btnAll.disabled = true;
+      if (btnAi) btnAi.disabled = true;
+      const sumEl = document.getElementById("qa-summary-line");
+      if (sumEl) sumEl.textContent = useAiShorten ? "⏳ Сжимаю длинные реплики через ИИ и укрупняю мелкие бабблы..." : "⏳ Переверстываю проблемные страницы с крупным шрифтом...";
+
+      try {
+        const res = await fetch("/chapter_qa_autofix", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            folder_path: currentFolder,
+            target_lang: targetLang,
+            tiny_threshold_px: thr,
+            min_target_fs: Math.max(15, thr + 2),
+            shorten_crowded_ai: Boolean(useAiShorten)
+          })
+        });
+        const data = await res.json();
+        if (res.ok) {
+          await inspectCurrentFolder({ preserveCurrentSelection: true });
+          if (selectedPage) {
+            const refreshed = (folderPages || []).find(x => x.rel_path === selectedPage.rel_path);
+            if (refreshed) selectPage(refreshed);
+          }
+          await openChapterQaInspector(false);
+          sayMiko(`✅ Авто-ревизор исправил ${data.fixed_blocks || 0} бабблов на ${data.fixed_pages || 0} стр.! ✨`);
+        }
+      } catch (err) {
+        sayMiko(`⚠️ Ошибка авто-исправления: ${err}`);
+      } finally {
+        if (btnAll) btnAll.disabled = false;
+        if (btnAi) btnAi.disabled = false;
       }
     }
 
@@ -14389,6 +15389,10 @@
     document.getElementById("viewer-stage").addEventListener("pointerdown", (e) => {
       if (isFrameEraserMode && e.button === 0) { isFrameEraserDragging = true; }
       if (!e.target.closest("#toolbar-more-details")) closeToolbarMoreMenu();
+      if (!e.target.closest("#toolbar-font-details")) {
+        const fd = document.getElementById("toolbar-font-details");
+        if (fd) fd.open = false;
+      }
       if (!e.target.closest(".bbox-pin") && !e.target.closest(".inline-bubble-popup")) {
         closeInlineBubblePopup();
       }

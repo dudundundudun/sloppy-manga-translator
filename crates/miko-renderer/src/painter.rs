@@ -162,28 +162,141 @@ pub fn resolve_font_for_text(
     candidates.into_iter().next()
 }
 
-/// Заменяет типографские символы без глифа в выбранном шрифте (`—`, `…`, `’`, `“`, `~`, `〜`) на поддерживаемые аналоги
-/// и гарантирует отсутствие пустых прямоугольников `.notdef` (`□`).
+/// Возвращает синтетический горизонтальный advance для символов (`~`, `♥`),
+/// отсутствующих в комиксных шрифтах (напр. `cc-wild-words-roman.ttf`), чтобы они
+/// отрисовывались аккуратной векторной графикой вместо подмены на `!` или пропуска.
+#[inline]
+fn synthetic_glyph_advance(ch: char, px: f32) -> Option<f32> {
+    match ch {
+        '~' => Some(px * 0.58),
+        '♥' => Some(px * 0.66),
+        _ => None,
+    }
+}
+
+/// Процедурно растеризует антиалиасенный векторный глиф для `~` или `♥` в локальных пиксельных координатах страницы.
+fn rasterize_procedural_glyph(
+    ch: char,
+    cursor_x: f32,
+    y_baseline: f32,
+    px: f32,
+    py: f32,
+    ascent: f32,
+) -> Option<(i32, i32, i32, i32, Vec<(i32, i32, u8)>)> {
+    match ch {
+        '~' => {
+            let x0 = cursor_x + 0.06 * px;
+            let x1 = cursor_x + 0.52 * px;
+            let span_x = (x1 - x0).max(2.0);
+            let y_c = y_baseline - ascent * 0.38;
+            let amp = (py * 0.085).max(1.2);
+            let stroke_r = (py * 0.068).max(1.05);
+
+            const STEPS: usize = 36;
+            let mut pts = [(0.0f32, 0.0f32); STEPS + 1];
+            for (s, pt) in pts.iter_mut().enumerate() {
+                let t = (s as f32) / (STEPS as f32);
+                *pt = (
+                    x0 + span_x * t,
+                    y_c - amp * (std::f32::consts::TAU * t).sin(),
+                );
+            }
+
+            let min_x = (x0 - stroke_r - 2.0).floor() as i32;
+            let max_x = (x1 + stroke_r + 2.0).ceil() as i32;
+            let min_y = (y_c - amp - stroke_r - 2.0).floor() as i32;
+            let max_y = (y_c + amp + stroke_r + 2.0).ceil() as i32;
+            let mut pixels = Vec::new();
+
+            for py_i in min_y..=max_y {
+                let cy_p = py_i as f32 + 0.5;
+                for px_i in min_x..=max_x {
+                    let cx_p = px_i as f32 + 0.5;
+                    let mut min_d2 = f32::INFINITY;
+                    for seg in pts.windows(2) {
+                        let (ax, ay) = seg[0];
+                        let (bx, by) = seg[1];
+                        let dx = bx - ax;
+                        let dy = by - ay;
+                        let len2 = dx * dx + dy * dy;
+                        let proj = if len2 > 1e-6 {
+                            (((cx_p - ax) * dx + (cy_p - ay) * dy) / len2).clamp(0.0, 1.0)
+                        } else {
+                            0.0
+                        };
+                        let qx = ax + proj * dx;
+                        let qy = ay + proj * dy;
+                        let d2 = (cx_p - qx) * (cx_p - qx) + (cy_p - qy) * (cy_p - qy);
+                        if d2 < min_d2 {
+                            min_d2 = d2;
+                        }
+                    }
+                    let d = min_d2.sqrt();
+                    let cov = (stroke_r + 0.5 - d).clamp(0.0, 1.0);
+                    if cov > 0.01 {
+                        pixels.push((px_i, py_i, (cov * 255.0).round() as u8));
+                    }
+                }
+            }
+            Some((min_x, min_y, max_x + 1, max_y + 1, pixels))
+        }
+        '♥' => {
+            let cx = cursor_x + 0.33 * px;
+            let cy = y_baseline - ascent * 0.40;
+            let hx = (px * 0.24).max(2.0);
+            let hy = (py * 0.24).max(2.0);
+
+            let min_x = (cx - hx * 1.28 - 2.0).floor() as i32;
+            let max_x = (cx + hx * 1.28 + 2.0).ceil() as i32;
+            let min_y = (cy - hy * 1.38 - 2.0).floor() as i32;
+            let max_y = (cy + hy * 1.15 + 2.0).ceil() as i32;
+            let mut pixels = Vec::new();
+
+            for py_i in min_y..=max_y {
+                for px_i in min_x..=max_x {
+                    let mut inside = 0u32;
+                    for sy in 0..4 {
+                        let y_s = py_i as f32 + (sy as f32 + 0.5) * 0.25;
+                        let ny = (cy - y_s) / hy;
+                        let ny2 = ny * ny;
+                        let ny3 = ny2 * ny;
+                        for sx in 0..4 {
+                            let x_s = px_i as f32 + (sx as f32 + 0.5) * 0.25;
+                            let nx = (x_s - cx) / hx;
+                            let nx2 = nx * nx;
+                            let u = nx2 + ny2 - 1.0;
+                            if u * u * u - nx2 * ny3 <= 0.0 {
+                                inside += 1;
+                            }
+                        }
+                    }
+                    if inside > 0 {
+                        let cov = (inside as f32) / 16.0;
+                        pixels.push((px_i, py_i, (cov * 255.0).round() as u8));
+                    }
+                }
+            }
+            Some((min_x, min_y, max_x + 1, max_y + 1, pixels))
+        }
+        _ => None,
+    }
+}
+
+/// Заменяет типографские символы без глифа в выбранном шрифте (`—`, `…`, `’`, `“`) на поддерживаемые аналоги,
+/// сохраняет `~` и `♥` для процедурной отрисовки (без подмены тильды на `!`) и исключает квадраты `.notdef` (`□`).
 pub fn sanitize_text_for_font(font: &FontVec, text: &str) -> String {
-    let chars: Vec<char> = text.chars().collect();
     let mut out = String::with_capacity(text.len());
-    for (idx, &ch) in chars.iter().enumerate() {
+    for ch in text.chars() {
         if ch.is_whitespace() {
             out.push(ch);
             continue;
         }
-        // Волнистая тильда `〜`/`～` часто отсутствует или рисуется квадратом — сначала пробуем ASCII `~`
-        if matches!(ch, '〜' | '～' | '∼') {
-            if font.glyph_id('~').0 != 0 {
-                out.push('~');
-            } else {
-                let next_punct = chars
-                    .get(idx + 1)
-                    .is_some_and(|c| matches!(c, '?' | '!' | '.' | '…'));
-                if !next_punct && font.glyph_id('!').0 != 0 {
-                    out.push('!');
-                }
-            }
+        if matches!(ch, '〜' | '～' | '∼' | '~') {
+            out.push('~');
+            continue;
+        }
+        if matches!(ch, '♥' | '♡' | '❤') {
+            out.push('♥');
             continue;
         }
         if font.glyph_id(ch).0 != 0 {
@@ -191,14 +304,6 @@ pub fn sanitize_text_for_font(font: &FontVec, text: &str) -> String {
             continue;
         }
         match ch {
-            '~' => {
-                let next_punct = chars
-                    .get(idx + 1)
-                    .is_some_and(|c| matches!(c, '?' | '!' | '.' | '…'));
-                if !next_punct && font.glyph_id('!').0 != 0 {
-                    out.push('!');
-                }
-            }
             '—' => {
                 if font.glyph_id('-').0 != 0 {
                     out.push_str("--");
@@ -227,7 +332,7 @@ pub fn sanitize_text_for_font(font: &FontVec, text: &str) -> String {
                 }
             }
             _ => {
-                // Пропускаем неподдерживаемые декоративные спецсимволы (♪, ♡ и т.п.), чтобы не рисовать квадрат `.notdef` (□)
+                // Пропускаем неподдерживаемые декоративные спецсимволы (♪ и т.п.), чтобы не рисовать квадрат `.notdef` (□)
             }
         }
     }
@@ -260,6 +365,7 @@ pub fn check_text_lines_wall_contact(
     let px = (py * scale_x.clamp(0.85, 1.05)).max(1.0);
     let scale = PxScale { x: px, y: py };
     let scaled = font.as_scaled(scale);
+    let ascent = scaled.ascent();
     let offsets: [(i32, i32); 9] = [
         (0, 0),
         (-3, 0),
@@ -279,6 +385,49 @@ pub fn check_text_lines_wall_contact(
         let mut prev_gid = None;
         for ch_sym in text.chars() {
             let gid = font.glyph_id(ch_sym);
+            if gid.0 == 0 {
+                if let Some(adv) = synthetic_glyph_advance(ch_sym, px) {
+                    if let Some((_, _, _, _, pts)) =
+                        rasterize_procedural_glyph(ch_sym, cursor_x, y_baseline, px, py, ascent)
+                    {
+                        for (px_i, py_i, a) in pts {
+                            if a <= 64 {
+                                continue;
+                            }
+                            for &(dx, dy) in &offsets {
+                                let nx = px_i + dx;
+                                let ny = py_i + dy;
+                                if nx < 0 || nx >= iw || ny < 0 || ny >= ih {
+                                    continue;
+                                }
+                                let in_cavity = nx >= rect[0]
+                                    && nx < rect[2]
+                                    && ny >= rect[1]
+                                    && ny < rect[3]
+                                    && cavity[((ny - rect[1]) as usize) * cw
+                                        + ((nx - rect[0]) as usize)]
+                                        > 0;
+                                let p = cleaned_img.get_pixel(nx as u32, ny as u32);
+                                let lum = rgb_lum_u8([p[0], p[1], p[2]]);
+                                let conflict = if is_dark_text {
+                                    lum < 215 || (!in_cavity && lum < 232)
+                                } else {
+                                    lum > 95
+                                };
+                                if conflict {
+                                    contact_hits += 1;
+                                    if contact_hits >= 3 {
+                                        return true;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cursor_x += adv;
+                    prev_gid = None;
+                    continue;
+                }
+            }
             if let Some(prev) = prev_gid {
                 cursor_x += scaled.kern(prev, gid);
             }
@@ -349,6 +498,13 @@ pub fn measure_text_width_scaled(font: &FontVec, px_size: f32, scale_x: f32, tex
     let mut prev_gid = None;
     for ch in text.chars() {
         let gid = font.glyph_id(ch);
+        if gid.0 == 0 {
+            if let Some(adv) = synthetic_glyph_advance(ch, px) {
+                total += adv;
+                prev_gid = None;
+                continue;
+            }
+        }
         if let Some(prev) = prev_gid {
             total += scaled.kern(prev, gid);
         }
@@ -413,10 +569,12 @@ pub fn draw_text_line_scaled(
     let px = (py * scale_x.clamp(0.85, 1.05)).max(1.0);
     let scale = PxScale { x: px, y: py };
     let scaled = font.as_scaled(scale);
+    let ascent = scaled.ascent();
     let stroke_r = stroke.map(|(_, w)| w.clamp(0, 8)).unwrap_or(0) as usize;
     let pad = stroke_r as i32 + 4;
 
     let mut glyphs = Vec::new();
+    let mut proc_pixels: Vec<(i32, i32, u8)> = Vec::new();
     let mut cursor_x = x_left;
     let mut prev_gid = None;
     let mut min_x = i32::MAX;
@@ -426,6 +584,24 @@ pub fn draw_text_line_scaled(
 
     for ch in text.chars() {
         let gid = font.glyph_id(ch);
+        if gid.0 == 0 {
+            if let Some(adv) = synthetic_glyph_advance(ch, px) {
+                if let Some((bx0, by0, bx1, by1, pts)) =
+                    rasterize_procedural_glyph(ch, cursor_x, y_baseline, px, py, ascent)
+                {
+                    if !pts.is_empty() {
+                        min_x = min_x.min(bx0);
+                        min_y = min_y.min(by0);
+                        max_x = max_x.max(bx1);
+                        max_y = max_y.max(by1);
+                        proc_pixels.extend(pts);
+                    }
+                }
+                cursor_x += adv;
+                prev_gid = None;
+                continue;
+            }
+        }
         if let Some(prev) = prev_gid {
             cursor_x += scaled.kern(prev, gid);
         }
@@ -443,7 +619,7 @@ pub fn draw_text_line_scaled(
         }
     }
 
-    if glyphs.is_empty() || min_x >= max_x || min_y >= max_y {
+    if (glyphs.is_empty() && proc_pixels.is_empty()) || min_x >= max_x || min_y >= max_y {
         return;
     }
 
@@ -468,6 +644,17 @@ pub fn draw_text_line_scaled(
                 }
             }
         });
+    }
+
+    for (px_i, py_i, a) in proc_pixels {
+        let ax = px_i - ox;
+        let ay = py_i - oy;
+        if ax >= 0 && ay >= 0 && (ax as usize) < bw && (ay as usize) < bh {
+            let idx = (ay as usize) * bw + (ax as usize);
+            if a > alpha_buf[idx] {
+                alpha_buf[idx] = a;
+            }
+        }
     }
 
     if let Some((stroke_rgb, _)) = stroke {

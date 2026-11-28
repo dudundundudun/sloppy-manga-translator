@@ -463,10 +463,142 @@ fn sanitize_translated_value(val: &Value) -> Option<String> {
     }
 }
 
-/// Извлекает плоский JSON-словарь переводов из сырого ответа LLM, очищая `<think>`, код-блоки и утечки тегов.
-pub fn parse_flat_json_translations(
+fn is_disallowed_foreign_char(ch: char, target_lang: &str) -> bool {
+    let cp = ch as u32;
+    // Всегда запрещены посторонние письменности, возникающие при галлюцинациях мультискрипт-LLM
+    // (Devanagari/Indic, Arabic/Syriac, Thai/Lao/Myanmar)
+    if (0x0900..=0x0DFF).contains(&cp)
+        || (0x0600..=0x077F).contains(&cp)
+        || (0x0E00..=0x109F).contains(&cp)
+    {
+        return true;
+    }
+
+    let t = target_lang.trim().to_ascii_lowercase();
+    if matches!(t.as_str(), "en" | "ru" | "romaji") {
+        // Непереведённые японские/китайские/корейские символы в целевом тексте
+        if (0x3040..=0x30FF).contains(&cp)
+            || (0x3400..=0x4DBF).contains(&cp)
+            || (0x4E00..=0x9FFF).contains(&cp)
+            || (0xF900..=0xFAFF).contains(&cp)
+            || (0x1100..=0x11FF).contains(&cp)
+            || (0x3130..=0x318F).contains(&cp)
+            || (0xAC00..=0xD7AF).contains(&cp)
+        {
+            return true;
+        }
+    }
+
+    if matches!(t.as_str(), "en" | "romaji") && (0x0400..=0x04FF).contains(&cp) {
+        return true;
+    }
+
+    false
+}
+
+/// Проверяет, просочились ли в перевод символы посторонней письменности
+/// (например, деванагари `र्प`, арабский, тайский, либо непереведённая кана/кандзи/кириллица).
+pub fn has_foreign_script_leak(text: &str, target_lang: &str) -> bool {
+    text.chars()
+        .any(|ch| is_disallowed_foreign_char(ch, target_lang))
+}
+
+/// Удаляет символы посторонней письменности при последней попытке восстановления реплики,
+/// схлопывая лишние пробелы без повреждения знаков пунктуации и символов (`…`, `~`, `♥`).
+pub fn strip_foreign_script_chars(text: &str, target_lang: &str) -> String {
+    let filtered: String = text
+        .chars()
+        .filter(|&ch| !is_disallowed_foreign_char(ch, target_lang))
+        .collect();
+    let mut out = String::with_capacity(filtered.len());
+    let mut prev_space = false;
+    for ch in filtered.trim().chars() {
+        if ch == ' ' || ch == '\t' {
+            if !prev_space {
+                out.push(' ');
+                prev_space = true;
+            }
+        } else {
+            out.push(ch);
+            prev_space = false;
+        }
+    }
+    out.trim().to_string()
+}
+
+fn dangling_conj_period_regex() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)(,\s*(?:but|and|or|so|но|а|да))\.$").expect("dangling conj regex")
+    })
+}
+
+fn strip_trailing_closing_quotes(s: &str) -> (&str, &str) {
+    let trimmed = s.trim();
+    let mut cut = trimmed.len();
+    for (idx, ch) in trimmed.char_indices().rev() {
+        if matches!(ch, '」' | '』' | '"' | '\'' | '”' | '’' | '»') {
+            cut = idx;
+        } else {
+            break;
+        }
+    }
+    (&trimmed[..cut], &trimmed[cut..])
+}
+
+/// Восстанавливает потерянное LLM финальное или начальное многоточие `…`,
+/// если исходная реплика оканчивается/начинается на многоточие или перевод оборван на `, but.` / `I.`.
+pub fn restore_source_ellipses(source: &str, translated: &str) -> String {
+    let mut tr = translated.trim().to_string();
+    if tr.is_empty() {
+        return tr;
+    }
+
+    let (src_core, _) = strip_trailing_closing_quotes(source);
+    let src_starts_ellipsis = ["...", "..", "…", "‥"]
+        .iter()
+        .any(|p| source.trim_start().starts_with(p));
+    let src_ends_ellipsis = ["...", "..", "…", "‥"]
+        .iter()
+        .any(|p| src_core.ends_with(p));
+
+    if src_starts_ellipsis {
+        let mut chars = tr.chars();
+        if chars.next() == Some('.') && chars.next().is_some_and(|c| c.is_alphanumeric()) {
+            tr = format!("…{}", &tr[1..]);
+        }
+    }
+
+    if src_ends_ellipsis {
+        let (tr_core, tr_quotes) = strip_trailing_closing_quotes(&tr);
+        if let Some(without_dot) = tr_core.strip_suffix('.') {
+            if !without_dot.ends_with('.') && !without_dot.ends_with('…') {
+                tr = format!("{without_dot}…{tr_quotes}");
+            }
+        }
+    }
+
+    let replaced_conj = dangling_conj_period_regex().replace(&tr, "$1…");
+    if replaced_conj != tr {
+        tr = replaced_conj.into_owned();
+    }
+
+    if tr == "I." {
+        tr = "I…".to_string();
+    } else if tr == "Я." {
+        tr = "Я…".to_string();
+    }
+
+    tr
+}
+
+/// Извлекает плоский JSON-словарь переводов из сырого ответа LLM, очищая `<think>`, код-блоки и утечки тегов,
+/// а также фильтруя или очищая утечки посторонних алфавитов.
+pub fn parse_flat_json_translations_for_lang(
     raw: &str,
     expected_keys: &[String],
+    target_lang: &str,
+    strip_foreign_fallback: bool,
 ) -> HashMap<String, String> {
     let mut out = HashMap::new();
     let stripped = think_regex().replace_all(raw, "");
@@ -489,9 +621,31 @@ pub fn parse_flat_json_translations(
     for k in expected_keys {
         if let Some(v) = map.get(k) {
             if let Some(clean) = sanitize_translated_value(v) {
-                out.insert(k.clone(), clean);
+                if has_foreign_script_leak(&clean, target_lang) {
+                    if !strip_foreign_fallback {
+                        continue;
+                    }
+                    let recovered = strip_foreign_script_chars(&clean, target_lang);
+                    if recovered.is_empty()
+                        || !recovered.chars().any(|c| c.is_alphabetic())
+                        || is_refusal_response(&recovered)
+                    {
+                        continue;
+                    }
+                    out.insert(k.clone(), recovered);
+                } else {
+                    out.insert(k.clone(), clean);
+                }
             }
         }
     }
     out
+}
+
+/// Извлекает плоский JSON-словарь переводов из сырого ответа LLM, очищая `<think>`, код-блоки и утечки тегов.
+pub fn parse_flat_json_translations(
+    raw: &str,
+    expected_keys: &[String],
+) -> HashMap<String, String> {
+    parse_flat_json_translations_for_lang(raw, expected_keys, "", false)
 }

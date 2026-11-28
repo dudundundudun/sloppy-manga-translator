@@ -3,6 +3,7 @@ pub mod compat;
 pub mod folder_job;
 pub mod fonts;
 pub mod studio;
+pub mod win_dialog;
 
 pub const EMBEDDED_WEB_STUDIO_HTML: &str = include_str!("../../../web_studio.html");
 pub const EMBEDDED_MASCOT_PNG: &[u8] = include_bytes!("../../../mascot.png");
@@ -67,6 +68,7 @@ pub struct AppState {
     pub folder_abort_step: Arc<Notify>,
     pub folder_dynamic_model: RwLock<Option<String>>,
     pub picker_busy: Arc<AtomicBool>,
+    pub picker_child_pid: Mutex<Option<u32>>,
     pub shutdown_notify: Notify,
 }
 
@@ -118,6 +120,7 @@ impl AppState {
             folder_abort_step: Arc::new(Notify::new()),
             folder_dynamic_model: RwLock::new(None),
             picker_busy: Arc::new(AtomicBool::new(false)),
+            picker_child_pid: Mutex::new(None),
             shutdown_notify: Notify::new(),
         }))
     }
@@ -161,6 +164,7 @@ impl AppState {
             folder_abort_step: Arc::new(Notify::new()),
             folder_dynamic_model: RwLock::new(None),
             picker_busy: Arc::new(AtomicBool::new(false)),
+            picker_child_pid: Mutex::new(None),
             shutdown_notify: Notify::new(),
         }))
     }
@@ -244,10 +248,15 @@ async fn local_security_middleware(req: Request<Body>, next: Next) -> Response {
 
 async fn serve_ui(State(state): State<Arc<AppState>>) -> Response {
     let html_path = state.base_dir.join("web_studio.html");
-    match tokio::fs::read_to_string(&html_path).await {
-        Ok(body) => Html(body).into_response(),
-        Err(_) => Html(EMBEDDED_WEB_STUDIO_HTML).into_response(),
-    }
+    let body = match tokio::fs::read_to_string(&html_path).await {
+        Ok(b) => b,
+        Err(_) => EMBEDDED_WEB_STUDIO_HTML.to_string(),
+    };
+    (
+        [(header::CACHE_CONTROL, "no-store, no-cache, must-revalidate")],
+        Html(body),
+    )
+        .into_response()
 }
 
 async fn serve_mascot(State(state): State<Arc<AppState>>) -> Response {
@@ -315,6 +324,8 @@ struct HealthResponse {
     min_text_length: u32,
     min_font_size: u32,
     max_font_size: u32,
+    font_scale_pct: u32,
+    default_font: String,
     uppercase: bool,
     overflow_mode: String,
     batch_pages: u32,
@@ -419,7 +430,7 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         .db
         .load_glossary("global")
         .unwrap_or_else(|_| cfg.glossary.clone());
-    let fonts = state.get_available_fonts();
+    let fonts = state.refresh_fonts();
     let inv = state.get_ort_inventory();
     let sys_gpu = bootstrap::detect_system_gpu();
     let dev_badge = if inv.cuda_ep_compiled && sys_gpu.has_nvidia {
@@ -429,8 +440,20 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
     } else {
         "CPU Mode".to_string()
     };
-    let font_status = fonts::build_font_status(&state.base_dir.join("fonts"), &fonts);
-    let first_font = fonts.first().map(|f| f.path.clone());
+    let fonts_dir = state.base_dir.join("fonts");
+    let font_status = fonts::build_font_status(&fonts_dir, &fonts);
+    let first_font = cfg
+        .resolve_default_font_path(&state.base_dir)
+        .or_else(|| {
+            miko_renderer::resolve_font_for_text(
+                &fonts_dir,
+                &miko_renderer::FontCache::new(),
+                None,
+                "Hello World",
+            )
+        })
+        .map(|p| p.to_string_lossy().to_string())
+        .or_else(|| fonts.first().map(|f| f.path.clone()));
     let glossary_count = global_glossary.len();
     let ui_models = build_ui_model_entries(&cfg, &[]);
 
@@ -468,6 +491,8 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         min_text_length: cfg.min_text_length,
         min_font_size: cfg.min_font_size,
         max_font_size: cfg.max_font_size,
+        font_scale_pct: cfg.font_scale_pct,
+        default_font: cfg.default_font,
         uppercase: cfg.uppercase,
         overflow_mode: cfg.overflow_mode,
         batch_pages: cfg.batch_pages,
@@ -658,6 +683,8 @@ struct SettingsPayload {
     min_text_length: Option<u32>,
     min_font_size: Option<u32>,
     max_font_size: Option<u32>,
+    font_scale_pct: Option<u32>,
+    default_font: Option<String>,
     uppercase: Option<bool>,
     overflow_mode: Option<String>,
     batch_pages: Option<u32>,
@@ -745,6 +772,12 @@ async fn update_settings(
     }
     if let Some(v) = payload.max_font_size {
         cfg.max_font_size = v.clamp(8, 300);
+    }
+    if let Some(v) = payload.font_scale_pct {
+        cfg.font_scale_pct = v.clamp(65, 160);
+    }
+    if let Some(df) = payload.default_font {
+        cfg.default_font = df.trim().to_string();
     }
     if let Some(v) = payload.uppercase {
         cfg.uppercase = v;
@@ -1118,6 +1151,7 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/clean_rust", post(run_clean_rust))
         .route("/local_image", get(studio::local_image))
         .route("/folder_inspect", post(folder_job::folder_inspect))
+        .route("/open_folder_path", post(folder_job::open_folder_path))
         .route("/pick_folder", post(folder_job::pick_folder))
         .route("/pick_file", post(folder_job::pick_file))
         .route("/pick_web_save_folder", post(folder_job::pick_web_save_folder))
@@ -1138,6 +1172,9 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/folder_report", get(folder_job::folder_report))
         .route("/chapter_book", get(folder_job::chapter_book))
         .route("/fonts/catalog", get(fonts::get_fonts_catalog))
+        .route("/fonts/file", get(fonts::serve_font_file))
+        .route("/fonts/open_folder", post(fonts::open_fonts_folder))
+        .route("/fonts/delete", post(fonts::delete_font))
         .route("/fonts/install", post(fonts::install_fonts))
         .route("/fonts/upload", post(fonts::upload_font))
         .route("/setup/status", get(bootstrap::get_setup_status))
@@ -1162,6 +1199,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/shorten_block_text", post(compat::shorten_block_text))
         .route("/chapter_book/import", post(compat::chapter_book_import))
         .route("/chapter_book/proofread", post(compat::chapter_book_proofread))
+        .route("/chapter_qa_check", post(compat::chapter_qa_check))
+        .route("/chapter_qa_autofix", post(compat::chapter_qa_autofix))
         .route("/shutdown", post(shutdown_server))
         .layer(middleware::from_fn(local_security_middleware))
         .with_state(state)

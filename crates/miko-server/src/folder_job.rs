@@ -3,7 +3,7 @@ use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use image::imageops::crop_imm;
-use miko_cleaner::{compute_clean_state_hash, CleanOptions, RustCleanerEngine};
+use miko_cleaner::{compute_clean_state_hash_opts, CleanOptions, RustCleanerEngine};
 use miko_core::models::normalize_clean_bbox;
 use miko_core::security::reject_unc_path;
 use miko_core::{FolderJobState, TextBlock};
@@ -417,45 +417,155 @@ pub async fn process_chapter_folder_sync(
     let mut stopped_early = false;
     let mut rolling_context: Vec<String> = Vec::new();
 
-    for (idx, img_path) in opts.images.iter().enumerate() {
-        while state.folder_pause_flag.load(AtomicOrd::SeqCst)
-            && !state.folder_stop_flag.load(AtomicOrd::SeqCst)
-        {
+    let batch_sz = (cfg.batch_pages.clamp(1, 50) as usize).max(1);
+    let batches_total = total.div_ceil(batch_sz).max(1);
+
+    struct PreparedBatchPage {
+        global_idx: usize,
+        fname: String,
+        img_path: PathBuf,
+        dest_path: PathBuf,
+        rgb: image::RgbImage,
+        blocks: Vec<TextBlock>,
+        t_page: Instant,
+        from_saved_manifest: bool,
+    }
+
+    'batch_loop: for (batch_idx, batch_slice) in opts.images.chunks(batch_sz).enumerate() {
+        let base_idx = batch_idx * batch_sz;
+        let b_num = batch_idx + 1;
+        let mut prepared_pages: Vec<PreparedBatchPage> = Vec::with_capacity(batch_slice.len());
+
+        // --- ЭТАП 1 ПАЧКИ: Проверка пропуска / Быстрый кэш блоков / GPU OCR ---
+        for (local_i, img_path) in batch_slice.iter().enumerate() {
+            let idx = base_idx + local_i;
+            while state.folder_pause_flag.load(AtomicOrd::SeqCst)
+                && !state.folder_stop_flag.load(AtomicOrd::SeqCst)
+            {
+                push_folder_state(&state, |j| {
+                    j.phase = "paused".to_string();
+                    j.message = format!("Пауза на странице {}/{total}", idx + 1);
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            }
+            if state.folder_stop_flag.load(AtomicOrd::SeqCst) {
+                stopped_early = true;
+                break 'batch_loop;
+            }
+
+            let fname = img_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("page.png")
+                .to_string();
+            let dest_path = opts.output_dir.join(&fname);
+            let cur_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let cloud_only = cur_cfg.cloud_only_no_local_fallback;
+
+            if opts.skip_existing && !opts.force_retranslate && dest_path.is_file() {
+                skipped += 1;
+                let el = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.done = idx + 1;
+                    j.elapsed_sec = el;
+                    j.current_file = fname.clone();
+                    j.phase = "skipped".to_string();
+                    j.message = format!("Пропущена (уже готова): {fname}");
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "render",
+                        &format!("Пропущена {}/{total}: {fname}", idx + 1),
+                        &j.active_model.clone(),
+                        0,
+                        0,
+                        0,
+                        cloud_only,
+                        None,
+                    );
+                    if let Some(obj) = j.live.as_object_mut() {
+                        obj.insert("batch_index".into(), json!(b_num));
+                        obj.insert("batches_total".into(), json!(batches_total));
+                    }
+                });
+                if state.folder_pause_after_page.load(AtomicOrd::SeqCst) {
+                    stopped_early = true;
+                    break 'batch_loop;
+                }
+                continue;
+            }
+
+            let t_page = Instant::now();
+            let rgb = match image::open(img_path) {
+                Ok(im) => im.to_rgb8(),
+                Err(e) => {
+                    failed_pages += 1;
+                    let err_msg = format!("[ОШИБКА ЧТЕНИЯ] {fname}: {e} — страница пропущена");
+                    tracing::error!("{}", err_msg);
+                    let el_err = t_batch.elapsed().as_secs();
+                    push_folder_state(&state, |j| {
+                        j.elapsed_sec = el_err;
+                        j.current_file = fname.clone();
+                        j.phase = "page_error".to_string();
+                        j.message = err_msg.clone();
+                        j.logs.push(err_msg.clone());
+                        push_live_event_obj(
+                            &mut j.live,
+                            &run_id,
+                            "ocr",
+                            &err_msg,
+                            &j.active_model.clone(),
+                            0,
+                            0,
+                            0,
+                            cloud_only,
+                            Some(&err_msg),
+                        );
+                    });
+                    continue;
+                }
+            };
+
+            // Сверхбыстрый путь для перерисовки шрифта/размера по всей главе (`!force_retranslate`):
+            // если в `.translation_state.json` уже сохранены полигоны и тексты страницы — не гоняем повторный OCR!
+            if !opts.force_retranslate {
+                if let Some(raw_arr) = manifest["pages"][&fname]["blocks"].as_array() {
+                    if let Ok(mut saved_blocks) =
+                        serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
+                    {
+                        for b in &mut saved_blocks {
+                            normalize_clean_bbox(b);
+                        }
+                        prepared_pages.push(PreparedBatchPage {
+                            global_idx: idx,
+                            fname,
+                            img_path: img_path.clone(),
+                            dest_path,
+                            rgb,
+                            blocks: saved_blocks,
+                            t_page,
+                            from_saved_manifest: true,
+                        });
+                        continue;
+                    }
+                }
+            }
+
+            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
+            let el_ocr = t_batch.elapsed().as_secs();
             push_folder_state(&state, |j| {
-                j.phase = "paused".to_string();
-                j.message = format!("Пауза на странице {}/{total}", idx + 1);
-            });
-            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-        }
-        if state.folder_stop_flag.load(AtomicOrd::SeqCst) {
-            stopped_early = true;
-            break;
-        }
-
-        let fname = img_path
-            .file_name()
-            .and_then(|s| s.to_str())
-            .unwrap_or("page.png")
-            .to_string();
-        let dest_path = opts.output_dir.join(&fname);
-
-        let cur_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-        let cloud_only = cur_cfg.cloud_only_no_local_fallback;
-
-        if opts.skip_existing && !opts.force_retranslate && dest_path.is_file() {
-            skipped += 1;
-            let el = t_batch.elapsed().as_secs();
-            push_folder_state(&state, |j| {
-                j.done = idx + 1;
-                j.elapsed_sec = el;
+                j.elapsed_sec = el_ocr;
                 j.current_file = fname.clone();
-                j.phase = "skipped".to_string();
-                j.message = format!("Пропущена (уже готова): {fname}");
+                j.phase = "ocr".to_string();
+                j.message = format!(
+                    "Пачка {b_num}/{batches_total} · 🔍 OCR ({}/{total}): {fname}",
+                    idx + 1
+                );
                 push_live_event_obj(
                     &mut j.live,
                     &run_id,
-                    "render",
-                    &format!("Пропущена {}/{total}: {fname}", idx + 1),
+                    "ocr",
+                    &format!("🔍 OCR стр. {}/{total}: {fname}", idx + 1),
                     &j.active_model.clone(),
                     0,
                     0,
@@ -463,148 +573,117 @@ pub async fn process_chapter_folder_sync(
                     cloud_only,
                     None,
                 );
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("batch_index".into(), json!(b_num));
+                    obj.insert("batches_total".into(), json!(batches_total));
+                }
             });
-            if state.folder_pause_after_page.load(AtomicOrd::SeqCst) {
-                stopped_early = true;
-                break;
-            }
-            continue;
+
+            let st_ocr = state.clone();
+            let rgb_ocr = rgb.clone();
+            let det_free = opts.detect_free_text;
+            let tf_mode = opts.text_filter_mode.clone();
+            let ocr_task_res = tokio::task::spawn_blocking(move || {
+                let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
+                if g.is_none() {
+                    let eng =
+                        RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
+                    *g = Some(eng);
+                }
+                g.as_mut()
+                    .expect("ocr init")
+                    .process_rgb_image(
+                        &rgb_ocr,
+                        &OcrOptions {
+                            detect_free_text: det_free,
+                            text_filter_mode: tf_mode,
+                            ..Default::default()
+                        },
+                    )
+                    .map_err(|e| e.to_string())
+            })
+            .await;
+
+            let ocr_res = match ocr_task_res {
+                Ok(Ok(r)) => r,
+                Ok(Err(err)) => {
+                    failed_pages += 1;
+                    let err_msg = format!("[ОШИБКА OCR] {fname}: {err} — страница пропущена");
+                    tracing::error!("{}", err_msg);
+                    let el_err = t_batch.elapsed().as_secs();
+                    push_folder_state(&state, |j| {
+                        j.elapsed_sec = el_err;
+                        j.current_file = fname.clone();
+                        j.phase = "page_error".to_string();
+                        j.message = err_msg.clone();
+                        j.logs.push(err_msg.clone());
+                        push_live_event_obj(
+                            &mut j.live,
+                            &run_id,
+                            "ocr",
+                            &err_msg,
+                            &j.active_model.clone(),
+                            0,
+                            0,
+                            0,
+                            cloud_only,
+                            Some(&err_msg),
+                        );
+                    });
+                    continue;
+                }
+                Err(join_err) => {
+                    failed_pages += 1;
+                    let err_msg =
+                        format!("[ПАНИКА OCR] {fname}: {join_err} — страница пропущена");
+                    tracing::error!("{}", err_msg);
+                    let el_err = t_batch.elapsed().as_secs();
+                    push_folder_state(&state, |j| {
+                        j.elapsed_sec = el_err;
+                        j.current_file = fname.clone();
+                        j.phase = "page_error".to_string();
+                        j.message = err_msg.clone();
+                        j.logs.push(err_msg.clone());
+                        push_live_event_obj(
+                            &mut j.live,
+                            &run_id,
+                            "ocr",
+                            &err_msg,
+                            &j.active_model.clone(),
+                            0,
+                            0,
+                            0,
+                            cloud_only,
+                            Some(&err_msg),
+                        );
+                    });
+                    continue;
+                }
+            };
+
+            prepared_pages.push(PreparedBatchPage {
+                global_idx: idx,
+                fname,
+                img_path: img_path.clone(),
+                dest_path,
+                rgb,
+                blocks: ocr_res.blocks,
+                t_page,
+                from_saved_manifest: false,
+            });
         }
 
-        let t_step = Instant::now();
-        step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
-        let el_ocr = t_batch.elapsed().as_secs();
-        push_folder_state(&state, |j| {
-            j.elapsed_sec = el_ocr;
-            j.current_file = fname.clone();
-            j.phase = "ocr".to_string();
-            j.message = format!("🔍 OCR ({}/{total}): {fname}", idx + 1);
-            push_live_event_obj(
-                &mut j.live,
-                &run_id,
-                "ocr",
-                &format!("🔍 OCR стр. {}/{total}: {fname}", idx + 1),
-                &j.active_model.clone(),
-                0,
-                0,
-                0,
-                cloud_only,
-                None,
-            );
-        });
+        if prepared_pages.is_empty() {
+            continue;
+        }
+        if state.folder_stop_flag.load(AtomicOrd::SeqCst) {
+            stopped_early = true;
+            break 'batch_loop;
+        }
 
-        let rgb = match image::open(img_path) {
-            Ok(im) => im.to_rgb8(),
-            Err(e) => {
-                failed_pages += 1;
-                let err_msg = format!("[ОШИБКА ЧТЕНИЯ] {fname}: {e} — страница пропущена");
-                tracing::error!("{}", err_msg);
-                let el_err = t_batch.elapsed().as_secs();
-                push_folder_state(&state, |j| {
-                    j.elapsed_sec = el_err;
-                    j.current_file = fname.clone();
-                    j.phase = "page_error".to_string();
-                    j.message = err_msg.clone();
-                    j.logs.push(err_msg.clone());
-                    push_live_event_obj(
-                        &mut j.live,
-                        &run_id,
-                        "ocr",
-                        &err_msg,
-                        &j.active_model.clone(),
-                        0,
-                        0,
-                        0,
-                        cloud_only,
-                        Some(&err_msg),
-                    );
-                });
-                continue;
-            }
-        };
-
-        // 1. OCR
-        let st_ocr = state.clone();
-        let rgb_ocr = rgb.clone();
-        let det_free = opts.detect_free_text;
-        let tf_mode = opts.text_filter_mode.clone();
-        let ocr_task_res = tokio::task::spawn_blocking(move || {
-            let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
-            if g.is_none() {
-                let eng = RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
-                *g = Some(eng);
-            }
-            g.as_mut()
-                .expect("ocr init")
-                .process_rgb_image(
-                    &rgb_ocr,
-                    &OcrOptions {
-                        detect_free_text: det_free,
-                        text_filter_mode: tf_mode,
-                        ..Default::default()
-                    },
-                )
-                .map_err(|e| e.to_string())
-        })
-        .await;
-
-        let ocr_res = match ocr_task_res {
-            Ok(Ok(r)) => r,
-            Ok(Err(err)) => {
-                failed_pages += 1;
-                let err_msg = format!("[ОШИБКА OCR] {fname}: {err} — страница пропущена");
-                tracing::error!("{}", err_msg);
-                let el_err = t_batch.elapsed().as_secs();
-                push_folder_state(&state, |j| {
-                    j.elapsed_sec = el_err;
-                    j.current_file = fname.clone();
-                    j.phase = "page_error".to_string();
-                    j.message = err_msg.clone();
-                    j.logs.push(err_msg.clone());
-                    push_live_event_obj(
-                        &mut j.live,
-                        &run_id,
-                        "ocr",
-                        &err_msg,
-                        &j.active_model.clone(),
-                        0,
-                        0,
-                        0,
-                        cloud_only,
-                        Some(&err_msg),
-                    );
-                });
-                continue;
-            }
-            Err(join_err) => {
-                failed_pages += 1;
-                let err_msg = format!("[ПАНИКА OCR] {fname}: {join_err} — страница пропущена");
-                tracing::error!("{}", err_msg);
-                let el_err = t_batch.elapsed().as_secs();
-                push_folder_state(&state, |j| {
-                    j.elapsed_sec = el_err;
-                    j.current_file = fname.clone();
-                    j.phase = "page_error".to_string();
-                    j.message = err_msg.clone();
-                    j.logs.push(err_msg.clone());
-                    push_live_event_obj(
-                        &mut j.live,
-                        &run_id,
-                        "ocr",
-                        &err_msg,
-                        &j.active_model.clone(),
-                        0,
-                        0,
-                        0,
-                        cloud_only,
-                        Some(&err_msg),
-                    );
-                });
-                continue;
-            }
-        };
-
-        let mut blocks = ocr_res.blocks;
+        // --- ЭТАП 2 ПАЧКИ: Единый пакетный перевод всех реплик пачки (`batch_pages` страниц сразу!) ---
+        let cur_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let cloud_only = cur_cfg.cloud_only_no_local_fallback;
         let mut active_model = state
             .folder_dynamic_model
             .read()
@@ -612,34 +691,72 @@ pub async fn process_chapter_folder_sync(
             .and_then(|g| g.clone())
             .unwrap_or_else(|| cur_cfg.selected_model.clone());
         let mut detected_lang = "ja".to_string();
-        let mut llm_ms: u128 = 0;
+        let mut batch_llm_ms: u128 = 0;
         let mut nsfw_local_used = false;
 
-        // 2. Перевод батча (или --mock-text для оффлайн E2E бенчмарка)
-        if !blocks.is_empty() {
-            let b_cnt = blocks.len();
+        let mut combined_blocks: Vec<TextBlock> = Vec::new();
+        let mut page_slices: Vec<(usize, usize)> = Vec::with_capacity(prepared_pages.len());
+        for p in &prepared_pages {
+            let start = combined_blocks.len();
+            let len = p.blocks.len();
+            combined_blocks.extend(p.blocks.iter().cloned());
+            page_slices.push((start, len));
+        }
+
+        let needs_llm_pass = opts.mock_text.is_some()
+            || opts.force_retranslate
+            || combined_blocks.iter().any(|b| {
+                !b.is_deleted
+                    && !b.original_text.trim().is_empty()
+                    && b.translated_text.trim().is_empty()
+            });
+
+        if !combined_blocks.is_empty() && needs_llm_pass {
+            let b_cnt = combined_blocks
+                .iter()
+                .filter(|b| !b.is_deleted && !b.original_text.trim().is_empty())
+                .count();
+            let first_pg = prepared_pages.first().map(|p| p.global_idx + 1).unwrap_or(1);
+            let last_pg = prepared_pages.last().map(|p| p.global_idx + 1).unwrap_or(first_pg);
+            let range_lbl = if first_pg == last_pg {
+                format!("стр. {first_pg}/{total}")
+            } else {
+                format!("стр. {first_pg}–{last_pg}/{total}")
+            };
+            let first_fname = prepared_pages[0].fname.clone();
+
             step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
             let el_tr = t_batch.elapsed().as_secs();
             push_folder_state(&state, |j| {
                 j.elapsed_sec = el_tr;
+                j.current_file = first_fname.clone();
                 j.phase = "llm".to_string();
                 j.active_model = active_model.clone();
-                j.message = format!("🤖 ИИ перевод ({b_cnt} фраз, стр. {}/{total}): {fname}", idx + 1);
+                j.message = format!(
+                    "Пачка {b_num}/{batches_total} · 🤖 ИИ перевод ({b_cnt} фраз, {range_lbl})"
+                );
                 push_live_event_obj(
                     &mut j.live,
                     &run_id,
                     "llm",
-                    &format!("🤖 ИИ ({b_cnt} фраз, стр. {}/{total}): {fname}", idx + 1),
+                    &format!("🤖 ИИ ({b_cnt} фраз, {range_lbl})"),
                     &active_model,
                     0,
                     b_cnt,
                     0,
                     cloud_only,
-                    None,
+                    Some(&format!(
+                        "Пачка {b_num}/{batches_total}: отправка {b_cnt} фраз ({range_lbl})"
+                    )),
                 );
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("batch_index".into(), json!(b_num));
+                    obj.insert("batches_total".into(), json!(batches_total));
+                }
             });
+
             if let Some(ref mock) = opts.mock_text {
-                for b in &mut blocks {
+                for b in &mut combined_blocks {
                     b.translated_text = mock.clone();
                     if b.romaji_text.trim().is_empty() {
                         b.romaji_text = kana_to_romaji(&b.original_text);
@@ -647,10 +764,17 @@ pub async fn process_chapter_folder_sync(
                 }
                 active_model = "mock-rust".to_string();
             } else {
+                if opts.force_retranslate {
+                    for b in &mut combined_blocks {
+                        if !b.is_deleted {
+                            b.translated_text.clear();
+                        }
+                    }
+                }
                 let abort_fut = state.folder_abort_step.notified();
                 let tr_fut = state.translator.translate_blocks(
                     TranslateBatchRequest {
-                        blocks: blocks.clone(),
+                        blocks: combined_blocks.clone(),
                         target_lang: opts.target_lang.clone(),
                         model: active_model.clone(),
                         fallback_model: cur_cfg.local_fallback_model_multilang.clone(),
@@ -668,18 +792,53 @@ pub async fn process_chapter_folder_sync(
                     res = tr_fut => Some(res),
                     _ = abort_fut => None,
                 };
-                let tr_res = match tr_outcome {
-                    Some(Ok(res)) => res,
+                match tr_outcome {
+                    Some(Ok(tr_res)) => {
+                        batch_llm_ms = tr_res.elapsed_ms;
+                        nsfw_local_used = tr_res.censored_fallback;
+                        combined_blocks = tr_res.blocks;
+                        active_model = tr_res.active_model;
+                        detected_lang = tr_res.detected_lang;
+                        let nsfw_tag = if nsfw_local_used {
+                            " [18+ фоллбэк]"
+                        } else {
+                            ""
+                        };
+                        let miss_tag = if tr_res.untranslated_count > 0 {
+                            format!(" · ⚠️ пропущено фраз: {}", tr_res.untranslated_count)
+                        } else {
+                            String::new()
+                        };
+                        let llm_log = format!(
+                            "[ИИ] Пачка {b_num}/{batches_total}: модель={active_model}, фраз={b_cnt}, кэш={}, запросов={}, время={:.1}с{nsfw_tag}{miss_tag}",
+                            tr_res.cache_hits,
+                            tr_res.api_calls,
+                            batch_llm_ms as f32 / 1000.0,
+                        );
+                        push_folder_state(&state, |j| {
+                            j.logs.push(llm_log.clone());
+                        });
+                        for b in &combined_blocks {
+                            let o = b.original_text.trim();
+                            let t = b.translated_text.trim();
+                            if !b.is_deleted && !o.is_empty() && !t.is_empty() {
+                                rolling_context.push(format!("{o} => {t}"));
+                            }
+                        }
+                        if rolling_context.len() > 16 {
+                            let drain_n = rolling_context.len() - 16;
+                            rolling_context.drain(0..drain_n);
+                        }
+                    }
                     Some(Err(err)) => {
-                        failed_pages += 1;
+                        failed_pages += prepared_pages.len();
                         let warn_msg = format!(
-                            "[ОШИБКА LLM] {fname}: не удалось перевести бабблы ({err}) — страница НЕ помечена готовой"
+                            "[ОШИБКА LLM] Пачка {b_num}/{batches_total} ({range_lbl}): не удалось перевести ({err})"
                         );
                         tracing::warn!("{}", warn_msg);
                         let el_err = t_batch.elapsed().as_secs();
                         push_folder_state(&state, |j| {
                             j.elapsed_sec = el_err;
-                            j.current_file = fname.clone();
                             j.phase = "llm_error".to_string();
                             j.message = warn_msg.clone();
                             j.logs.push(warn_msg.clone());
@@ -696,17 +855,16 @@ pub async fn process_chapter_folder_sync(
                                 Some(&warn_msg),
                             );
                         });
-                        continue;
+                        continue 'batch_loop;
                     }
                     None => {
-                        failed_pages += 1;
+                        failed_pages += prepared_pages.len();
                         let warn_msg = format!(
-                            "[ПРЕРВАНО] {fname}: запрос ИИ прерван пользователем — переход к следующей странице"
+                            "[ПРЕРВАНО] Пачка {b_num}/{batches_total} ({range_lbl}): запрос ИИ прерван пользователем"
                         );
                         let el_err = t_batch.elapsed().as_secs();
                         push_folder_state(&state, |j| {
                             j.elapsed_sec = el_err;
-                            j.current_file = fname.clone();
                             j.phase = "llm_aborted".to_string();
                             j.message = warn_msg.clone();
                             j.logs.push(warn_msg.clone());
@@ -723,261 +881,324 @@ pub async fn process_chapter_folder_sync(
                                 Some(&warn_msg),
                             );
                         });
-                        continue;
-                    }
-                };
-                llm_ms = tr_res.elapsed_ms;
-                nsfw_local_used = tr_res.censored_fallback;
-                blocks = tr_res.blocks;
-                active_model = tr_res.active_model;
-                detected_lang = tr_res.detected_lang;
-                for b in &blocks {
-                    let o = b.original_text.trim();
-                    let t = b.translated_text.trim();
-                    if !b.is_deleted && !o.is_empty() && !t.is_empty() {
-                        rolling_context.push(format!("{o} => {t}"));
+                        continue 'batch_loop;
                     }
                 }
-                if rolling_context.len() > 10 {
-                    let drain_n = rolling_context.len() - 10;
-                    rolling_context.drain(0..drain_n);
-                }
+            }
+
+            for (p, &(start, len)) in prepared_pages.iter_mut().zip(page_slices.iter()) {
+                p.blocks = combined_blocks[start..start + len].to_vec();
             }
         }
 
-        // 3. Очистка + Рендер + Запись на диск
-        step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
-        let el_cl = t_batch.elapsed().as_secs();
-        let tr_cnt = blocks.len();
-        push_folder_state(&state, |j| {
-            j.elapsed_sec = el_cl;
-            j.phase = "render".to_string();
-            j.active_model = active_model.clone();
-            j.message = format!("🎨 Очистка и вёрстка ({}/{total}): {fname}", idx + 1);
-            let nsfw_note = if nsfw_local_used {
-                Some(format!("🔞 Стр. {}: перехват цензуры → {}", idx + 1, active_model))
-            } else {
-                None
+        if nsfw_local_used {
+            let note = format!(
+                "🔞 Пачка {b_num}/{batches_total}: цензура облака → перевод через {active_model}"
+            );
+            push_folder_state(&state, |j| {
+                push_live_event_obj(
+                    &mut j.live,
+                    &run_id,
+                    "render",
+                    &note,
+                    &active_model,
+                    0,
+                    0,
+                    0,
+                    cloud_only,
+                    Some(&note),
+                );
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("nsfw_mode".into(), json!(true));
+                    obj.insert("batch_index".into(), json!(b_num));
+                    obj.insert("batches_total".into(), json!(batches_total));
+                }
+            });
+        }
+
+        // --- ЭТАП 3 ПАЧКИ: Очистка + Рендер + Запись каждой страницы пачки ---
+        let pages_in_batch = prepared_pages.len().max(1) as u128;
+        let avg_llm_ms_per_page = batch_llm_ms / pages_in_batch;
+
+        for p in prepared_pages {
+            if state.folder_stop_flag.load(AtomicOrd::SeqCst) {
+                stopped_early = true;
+                break 'batch_loop;
+            }
+            let idx = p.global_idx;
+            let fname = p.fname;
+            let mut blocks = p.blocks;
+            let tr_cnt = blocks.len();
+
+            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
+            let el_cl = t_batch.elapsed().as_secs();
+            push_folder_state(&state, |j| {
+                j.elapsed_sec = el_cl;
+                j.current_file = fname.clone();
+                j.phase = "render".to_string();
+                j.active_model = active_model.clone();
+                j.message = format!(
+                    "Пачка {b_num}/{batches_total} · 🎨 Вёрстка ({}/{total}): {fname}",
+                    idx + 1
+                );
+                push_live_event_obj(
+                    &mut j.live,
+                    &run_id,
+                    "render",
+                    &format!("🎨 Вёрстка стр. {}/{total}: {fname}", idx + 1),
+                    &active_model,
+                    0,
+                    tr_cnt,
+                    tr_cnt,
+                    cloud_only,
+                    None,
+                );
+                if let Some(obj) = j.live.as_object_mut() {
+                    obj.insert("batch_index".into(), json!(b_num));
+                    obj.insert("batches_total".into(), json!(batches_total));
+                    if nsfw_local_used {
+                        obj.insert("nsfw_mode".into(), json!(true));
+                    }
+                }
+            });
+
+            let render_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let st_cr = state.clone();
+            let src_p_clone = p.img_path.clone();
+            let dest_p_clone = p.dest_path.clone();
+            let rgb = p.rgb;
+            let up = opts.uppercase;
+            let min_fs = opts.min_font_size;
+            let max_fs = opts.max_font_size;
+            let scale_pct = render_cfg.font_scale_pct;
+            let overflow_mode = render_cfg.overflow_mode.clone();
+            let def_font_path = render_cfg.resolve_default_font_path(&state.base_dir);
+            let mtime = file_mtime_secs(&p.img_path);
+
+            let clean_render_task = tokio::task::spawn_blocking(
+                move || -> Result<(Vec<TextBlock>, u128), String> {
+                    let t_p = Instant::now();
+                    if blocks.is_empty() {
+                        std::fs::copy(&src_p_clone, &dest_p_clone)
+                            .map_err(|e| format!("Ошибка копирования пустой страницы: {e}"))?;
+                        return Ok((blocks, t_p.elapsed().as_millis()));
+                    }
+                    let mut cguard =
+                        st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+                    if cguard.is_none() {
+                        *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
+                    }
+                    let src_str = src_p_clone.to_string_lossy().to_string();
+                    let clean_res = cguard
+                        .as_mut()
+                        .expect("cleaner init")
+                        .clean_image(
+                            &rgb,
+                            &blocks,
+                            &CleanOptions {
+                                skip_untranslated: true,
+                                ..Default::default()
+                            },
+                            Some(&src_str),
+                            mtime,
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                    let render_res = st_cr
+                        .renderer
+                        .render_page(
+                            &clean_res.cleaned,
+                            &mut blocks,
+                            &RenderOptions {
+                                min_font_size: min_fs,
+                                max_font_size: max_fs,
+                                font_scale_pct: scale_pct,
+                                uppercase: up,
+                                overflow_mode,
+                                default_font_path: def_font_path,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+
+                    render_res
+                        .rendered
+                        .save(&dest_p_clone)
+                        .map_err(|e| format!("Ошибка сохранения {dest_p_clone:?}: {e}"))?;
+
+                    let hash = compute_clean_state_hash_opts(
+                        &blocks,
+                        &src_str,
+                        mtime,
+                        9,
+                        miko_cleaner::CLEAN_ALGO_VERSION,
+                        "balanced",
+                        true,
+                    );
+                    let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
+                    Ok((blocks, t_p.elapsed().as_millis()))
+                },
+            )
+            .await;
+
+            let (blocks_after, page_ms) = match clean_render_task {
+                Ok(Ok(pair)) => pair,
+                Ok(Err(err)) => {
+                    failed_pages += 1;
+                    let err_msg = format!("[ОШИБКА РЕНДЕРА] {fname}: {err} — страница пропущена");
+                    tracing::error!("{}", err_msg);
+                    let el_err = t_batch.elapsed().as_secs();
+                    push_folder_state(&state, |j| {
+                        j.elapsed_sec = el_err;
+                        j.current_file = fname.clone();
+                        j.phase = "page_error".to_string();
+                        j.message = err_msg.clone();
+                        j.logs.push(err_msg.clone());
+                        push_live_event_obj(
+                            &mut j.live,
+                            &run_id,
+                            "render",
+                            &err_msg,
+                            &active_model,
+                            0,
+                            tr_cnt,
+                            0,
+                            cloud_only,
+                            Some(&err_msg),
+                        );
+                    });
+                    continue;
+                }
+                Err(join_err) => {
+                    failed_pages += 1;
+                    let err_msg = format!(
+                        "[ПАНИКА КЛИНЕРА/РЕНДЕРА] {fname}: {join_err} — страница пропущена"
+                    );
+                    tracing::error!("{}", err_msg);
+                    let el_err = t_batch.elapsed().as_secs();
+                    push_folder_state(&state, |j| {
+                        j.elapsed_sec = el_err;
+                        j.current_file = fname.clone();
+                        j.phase = "page_error".to_string();
+                        j.message = err_msg.clone();
+                        j.logs.push(err_msg.clone());
+                        push_live_event_obj(
+                            &mut j.live,
+                            &run_id,
+                            "render",
+                            &err_msg,
+                            &active_model,
+                            0,
+                            tr_cnt,
+                            0,
+                            cloud_only,
+                            Some(&err_msg),
+                        );
+                    });
+                    continue;
+                }
             };
-            push_live_event_obj(
-                &mut j.live,
-                &run_id,
-                "render",
-                &format!("🎨 Очистка и вёрстка стр. {}/{total}: {fname}", idx + 1),
-                &active_model,
-                0,
-                tr_cnt,
-                tr_cnt,
-                cloud_only,
-                nsfw_note.as_deref(),
-            );
-            if nsfw_local_used {
+
+            if let Some(pc) = manifest.get_mut("phrase_cache").and_then(|v| v.as_object_mut()) {
+                let lang_low = opts.target_lang.to_ascii_lowercase();
+                for b in &blocks_after {
+                    let orig = b.original_text.trim();
+                    let tr = b.translated_text.trim();
+                    let rom = b.romaji_text.trim();
+                    if !orig.is_empty() && !tr.is_empty() {
+                        pc.insert(format!("{lang_low}||{orig}"), json!(tr));
+                    }
+                    if !orig.is_empty() && !rom.is_empty() {
+                        pc.insert(format!("romaji||{orig}"), json!(rom));
+                    }
+                }
+            }
+            let free_cnt = blocks_after.iter().filter(|b| b.is_free_text).count();
+            manifest["pages"][&fname] = json!({
+                "blocks_count": blocks_after.len(),
+                "free_text_count": free_cnt,
+                "detected_lang": detected_lang,
+                "model": active_model,
+                "uppercase": opts.uppercase,
+                "min_font_size": opts.min_font_size,
+                "max_font_size": opts.max_font_size,
+                "updated_at": unix_ts_now(),
+                "blocks": blocks_after,
+            });
+            save_manifest(&opts.output_dir, &manifest).map_err(|e| e.to_string())?;
+
+            processed += 1;
+            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
+            let el_done = t_batch.elapsed().as_secs();
+            let total_step_s = p.t_page.elapsed().as_secs_f32();
+            let untranslated_cnt = blocks_after
+                .iter()
+                .filter(|b| {
+                    !b.is_deleted
+                        && !b.original_text.trim().is_empty()
+                        && b.translated_text.trim().is_empty()
+                })
+                .count();
+            let mut ev_msg = if avg_llm_ms_per_page > 0 {
+                format!(
+                    "[OK] #{}/{total} {fname}: {} бл. · ИИ ~{:.1}с · вёрстка {page_ms}мс",
+                    idx + 1,
+                    blocks_after.len(),
+                    avg_llm_ms_per_page as f32 / 1000.0,
+                )
+            } else if p.from_saved_manifest {
+                format!(
+                    "[OK] #{}/{total} {fname}: {} бл. · быстрая перерисовка {page_ms}мс",
+                    idx + 1,
+                    blocks_after.len(),
+                )
+            } else {
+                format!(
+                    "[OK] #{}/{total} {fname}: {} бл. · вёрстка {page_ms}мс (всего {:.1}с)",
+                    idx + 1,
+                    blocks_after.len(),
+                    total_step_s
+                )
+            };
+            if untranslated_cnt > 0 {
+                ev_msg.push_str(&format!(
+                    " · ⚠️ недопереведено {untranslated_cnt} бл. (оригинал сохранён)"
+                ));
+            }
+            let pause_after = state.folder_pause_after_page.load(AtomicOrd::SeqCst);
+            push_folder_state(&state, |j| {
+                j.done = idx + 1;
+                j.elapsed_sec = el_done;
+                j.current_file = fname.clone();
+                j.phase = "render".to_string();
+                j.message = format!("✅ Готово {}/{total}: {fname}", idx + 1);
+                j.logs.push(ev_msg.clone());
+                push_live_event_obj(
+                    &mut j.live,
+                    &run_id,
+                    "render",
+                    &format!("✅ Готово {}/{total}: {fname}", idx + 1),
+                    &active_model,
+                    0,
+                    blocks_after.len(),
+                    blocks_after.len(),
+                    cloud_only,
+                    Some(&ev_msg),
+                );
                 if let Some(obj) = j.live.as_object_mut() {
-                    obj.insert("nsfw_mode".to_string(), json!(true));
+                    obj.insert("batch_index".into(), json!(b_num));
+                    obj.insert("batches_total".into(), json!(batches_total));
+                    if pause_after {
+                        obj.insert("pause_after_batch".into(), json!(true));
+                    }
+                    if nsfw_local_used {
+                        obj.insert("nsfw_mode".into(), json!(true));
+                    }
                 }
-            }
-        });
-
-        let st_cr = state.clone();
-        let src_p_clone = img_path.clone();
-        let dest_p_clone = dest_path.clone();
-        let up = opts.uppercase;
-        let min_fs = opts.min_font_size;
-        let max_fs = opts.max_font_size;
-        let overflow_mode = cur_cfg.overflow_mode.clone();
-        let mtime = file_mtime_secs(img_path);
-
-        let clean_render_task = tokio::task::spawn_blocking(move || -> Result<(Vec<TextBlock>, u128), String> {
-            let t_p = Instant::now();
-            if blocks.is_empty() {
-                std::fs::copy(&src_p_clone, &dest_p_clone)
-                    .map_err(|e| format!("Ошибка копирования пустой страницы: {e}"))?;
-                return Ok((blocks, t_p.elapsed().as_millis()));
-            }
-            let mut cguard = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
-            if cguard.is_none() {
-                *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
-            }
-            let src_str = src_p_clone.to_string_lossy().to_string();
-            let clean_res = cguard
-                .as_mut()
-                .expect("cleaner init")
-                .clean_image(
-                    &rgb,
-                    &blocks,
-                    &CleanOptions::default(),
-                    Some(&src_str),
-                    mtime,
-                )
-                .map_err(|e| e.to_string())?;
-
-            let render_res = st_cr
-                .renderer
-                .render_page(
-                    &clean_res.cleaned,
-                    &mut blocks,
-                    &RenderOptions {
-                        min_font_size: min_fs,
-                        max_font_size: max_fs,
-                        uppercase: up,
-                        overflow_mode,
-                        default_font_path: None,
-                    },
-                )
-                .map_err(|e| e.to_string())?;
-
-            render_res
-                .rendered
-                .save(&dest_p_clone)
-                .map_err(|e| format!("Ошибка сохранения {dest_p_clone:?}: {e}"))?;
-
-            let hash = compute_clean_state_hash(
-                &blocks,
-                &src_str,
-                mtime,
-                9,
-                miko_cleaner::CLEAN_ALGO_VERSION,
-                "balanced",
-            );
-            let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
-            Ok((blocks, t_p.elapsed().as_millis()))
-        })
-        .await;
-
-        let (blocks_after, page_ms) = match clean_render_task {
-            Ok(Ok(pair)) => pair,
-            Ok(Err(err)) => {
-                failed_pages += 1;
-                let err_msg = format!("[ОШИБКА РЕНДЕРА] {fname}: {err} — страница пропущена");
-                tracing::error!("{}", err_msg);
-                let el_err = t_batch.elapsed().as_secs();
-                push_folder_state(&state, |j| {
-                    j.elapsed_sec = el_err;
-                    j.current_file = fname.clone();
-                    j.phase = "page_error".to_string();
-                    j.message = err_msg.clone();
-                    j.logs.push(err_msg.clone());
-                    push_live_event_obj(
-                        &mut j.live,
-                        &run_id,
-                        "clean",
-                        &err_msg,
-                        &active_model,
-                        0,
-                        tr_cnt,
-                        0,
-                        cloud_only,
-                        Some(&err_msg),
-                    );
-                });
-                continue;
-            }
-            Err(join_err) => {
-                failed_pages += 1;
-                let err_msg = format!("[ПАНИКА КЛИНЕРА/РЕНДЕРА] {fname}: {join_err} — страница пропущена");
-                tracing::error!("{}", err_msg);
-                let el_err = t_batch.elapsed().as_secs();
-                push_folder_state(&state, |j| {
-                    j.elapsed_sec = el_err;
-                    j.current_file = fname.clone();
-                    j.phase = "page_error".to_string();
-                    j.message = err_msg.clone();
-                    j.logs.push(err_msg.clone());
-                    push_live_event_obj(
-                        &mut j.live,
-                        &run_id,
-                        "clean",
-                        &err_msg,
-                        &active_model,
-                        0,
-                        tr_cnt,
-                        0,
-                        cloud_only,
-                        Some(&err_msg),
-                    );
-                });
-                continue;
-            }
-        };
-
-        // Обновляем phrase_cache + pages в manifest
-        if let Some(pc) = manifest.get_mut("phrase_cache").and_then(|v| v.as_object_mut()) {
-            let lang_low = opts.target_lang.to_ascii_lowercase();
-            for b in &blocks_after {
-                let orig = b.original_text.trim();
-                let tr = b.translated_text.trim();
-                let rom = b.romaji_text.trim();
-                if !orig.is_empty() && !tr.is_empty() {
-                    pc.insert(format!("{lang_low}||{orig}"), json!(tr));
-                }
-                if !orig.is_empty() && !rom.is_empty() {
-                    pc.insert(format!("romaji||{orig}"), json!(rom));
-                }
-            }
-        }
-        let free_cnt = blocks_after.iter().filter(|b| b.is_free_text).count();
-        manifest["pages"][&fname] = json!({
-            "blocks_count": blocks_after.len(),
-            "free_text_count": free_cnt,
-            "detected_lang": detected_lang,
-            "model": active_model,
-            "uppercase": opts.uppercase,
-            "min_font_size": opts.min_font_size,
-            "max_font_size": opts.max_font_size,
-            "updated_at": unix_ts_now(),
-            "blocks": blocks_after,
-        });
-        save_manifest(&opts.output_dir, &manifest).map_err(|e| e.to_string())?;
-
-        processed += 1;
-        step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
-        let el_done = t_batch.elapsed().as_secs();
-        let total_step_s = t_step.elapsed().as_secs_f32();
-        let ev_msg = if llm_ms > 0 {
-            format!(
-                "[OK] #{}/{total} {fname}: {} бл. · ИИ {:.1}с · вёрстка {page_ms}мс (всего {:.1}с)",
-                idx + 1,
-                blocks_after.len(),
-                llm_ms as f32 / 1000.0,
-                total_step_s
-            )
-        } else {
-            format!(
-                "[OK] #{}/{total} {fname}: {} бл. · вёрстка {page_ms}мс (всего {:.1}с)",
-                idx + 1,
-                blocks_after.len(),
-                total_step_s
-            )
-        };
-        let pause_after = state.folder_pause_after_page.load(AtomicOrd::SeqCst);
-        push_folder_state(&state, |j| {
-            j.done = idx + 1;
-            j.elapsed_sec = el_done;
-            j.current_file = fname.clone();
-            j.phase = "render".to_string();
-            j.message = format!("✅ Готово {}/{total}: {fname}", idx + 1);
-            j.logs.push(ev_msg.clone());
-            push_live_event_obj(
-                &mut j.live,
-                &run_id,
-                "render",
-                &format!("✅ Готово {}/{total}: {fname}", idx + 1),
-                &active_model,
-                0,
-                blocks_after.len(),
-                blocks_after.len(),
-                cloud_only,
-                Some(&ev_msg),
-            );
+            });
             if pause_after {
-                if let Some(obj) = j.live.as_object_mut() {
-                    obj.insert("pause_after_batch".to_string(), json!(true));
-                }
+                stopped_early = true;
+                break 'batch_loop;
             }
-        });
-        if pause_after {
-            stopped_early = true;
-            break;
         }
     }
 
@@ -1069,6 +1290,9 @@ pub struct TranslateFolderPayload {
     pub uppercase: Option<bool>,
     pub min_font_size: Option<u32>,
     pub max_font_size: Option<u32>,
+    pub font_scale_pct: Option<u32>,
+    pub default_font: Option<String>,
+    pub batch_pages: Option<u32>,
 }
 
 pub async fn translate_folder(
@@ -1148,6 +1372,22 @@ pub async fn translate_folder(
         0
     };
 
+    if payload.batch_pages.is_some()
+        || payload.font_scale_pct.is_some()
+        || payload.default_font.is_some()
+    {
+        let mut wcfg = state.config.write().unwrap_or_else(|e| e.into_inner());
+        if let Some(bp) = payload.batch_pages {
+            wcfg.batch_pages = bp.clamp(1, 50);
+        }
+        if let Some(sc) = payload.font_scale_pct {
+            wcfg.font_scale_pct = sc.clamp(65, 160);
+        }
+        if let Some(ref df) = payload.default_font {
+            wcfg.default_font = df.trim().to_string();
+        }
+        state.persist_config_if_enabled(&wcfg);
+    }
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let total_images = images.len();
     let req_model = payload.ollama_model.or(payload.model);
@@ -1859,6 +2099,8 @@ pub async fn folder_find_replace(
             let up = cfg.uppercase;
             let min_fs = cfg.min_font_size as i32;
             let max_fs = cfg.max_font_size as i32;
+            let scale_pct = cfg.font_scale_pct;
+            let def_font = cfg.resolve_default_font_path(&state.base_dir);
             let ov = cfg.overflow_mode.clone();
 
             let rr = tokio::task::spawn_blocking(move || -> Result<(), String> {
@@ -1872,7 +2114,16 @@ pub async fn folder_find_replace(
                 let clean_res = cg
                     .as_mut()
                     .expect("cleaner init")
-                    .clean_image(&rgb, &blocks, &CleanOptions::default(), Some(&src_str), mtime)
+                    .clean_image(
+                        &rgb,
+                        &blocks,
+                        &CleanOptions {
+                            skip_untranslated: true,
+                            ..Default::default()
+                        },
+                        Some(&src_str),
+                        mtime,
+                    )
                     .map_err(|e| e.to_string())?;
                 let render_res = st_cr
                     .renderer
@@ -1882,9 +2133,10 @@ pub async fn folder_find_replace(
                         &RenderOptions {
                             min_font_size: min_fs,
                             max_font_size: max_fs,
+                            font_scale_pct: scale_pct,
                             uppercase: up,
                             overflow_mode: ov,
-                            default_font_path: None,
+                            default_font_path: def_font,
                         },
                     )
                     .map_err(|e| e.to_string())?;
@@ -1892,13 +2144,14 @@ pub async fn folder_find_replace(
                     let _ = std::fs::create_dir_all(par);
                 }
                 render_res.rendered.save(&dest_c).map_err(|e| e.to_string())?;
-                let hash = compute_clean_state_hash(
+                let hash = compute_clean_state_hash_opts(
                     &blocks,
                     &src_str,
                     mtime,
                     9,
                     miko_cleaner::CLEAN_ALGO_VERSION,
                     "balanced",
+                    true,
                 );
                 let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
                 Ok(())
@@ -2179,108 +2432,27 @@ impl Drop for PickerBusyGuard {
     }
 }
 
-enum NativePickOutcome {
-    Selected(PathBuf),
-    Cancelled,
-    Error(String),
-}
+use crate::win_dialog::{
+    focus_or_check_active_picker, spawn_picker_subprocess, ActivePickerCheck, DialogMode,
+    NativePickOutcome,
+};
 
-fn run_windows_dialog(ps_script: &str) -> NativePickOutcome {
-    #[cfg(windows)]
-    {
-        let out = std::process::Command::new("powershell")
-            .args(["-NoProfile", "-STA", "-Command", ps_script])
-            .output();
-        match out {
-            Ok(o) => {
-                if !o.status.success() {
-                    let err = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    return NativePickOutcome::Error(if err.is_empty() {
-                        "Системный диалог вернул ошибку".to_string()
-                    } else {
-                        err
-                    });
-                }
-                let picked = String::from_utf8_lossy(&o.stdout).trim().to_string();
-                if picked.is_empty() {
-                    NativePickOutcome::Cancelled
-                } else {
-                    NativePickOutcome::Selected(PathBuf::from(picked))
-                }
+const PICKER_TIMEOUT_SEC: u64 = 180;
+
+fn default_picker_initial_dir(state: &AppState) -> Option<PathBuf> {
+    if let Ok(job) = state.folder_job.read() {
+        let s = job.source_dir.trim();
+        if !s.is_empty() {
+            let p = Path::new(s);
+            if let Some(parent) = p.parent().filter(|d| d.is_dir()) {
+                return Some(parent.to_path_buf());
             }
-            Err(e) => NativePickOutcome::Error(e.to_string()),
+            if p.is_dir() {
+                return Some(p.to_path_buf());
+            }
         }
     }
-    #[cfg(not(windows))]
-    {
-        let _ = ps_script;
-        NativePickOutcome::Error("Нативный диалог выбора поддерживается только в Windows".to_string())
-    }
-}
-
-fn pick_folder_blocking() -> NativePickOutcome {
-    let script = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class MikoWin32 {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-"@
-$owner = New-Object System.Windows.Forms.Form
-$owner.Text = 'Miko-chan Studio: Выбор папки'
-$owner.TopMost = $true
-$owner.ShowInTaskbar = $true
-$owner.StartPosition = 'CenterScreen'
-$owner.Size = New-Object System.Drawing.Size(320, 40)
-$owner.Opacity = 0.01
-$owner.Show()
-[void][MikoWin32]::SetForegroundWindow($owner.Handle)
-$owner.Activate()
-$dlg = New-Object System.Windows.Forms.FolderBrowserDialog
-$dlg.Description = 'Выберите папку с главой манги'
-$dlg.UseDescriptionForTitle = $true
-$dlg.ShowNewFolderButton = $true
-$res = $dlg.ShowDialog($owner)
-$owner.Close()
-$owner.Dispose()
-if ($res -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dlg.SelectedPath) }
-"#;
-    run_windows_dialog(script)
-}
-
-fn pick_file_blocking() -> NativePickOutcome {
-    let script = r#"
-[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type @"
-using System;
-using System.Runtime.InteropServices;
-public static class MikoWin32File {
-    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
-}
-"@
-$owner = New-Object System.Windows.Forms.Form
-$owner.Text = 'Miko-chan Studio: Выбор страницы'
-$owner.TopMost = $true
-$owner.ShowInTaskbar = $true
-$owner.StartPosition = 'CenterScreen'
-$owner.Size = New-Object System.Drawing.Size(320, 40)
-$owner.Opacity = 0.01
-$owner.Show()
-[void][MikoWin32File]::SetForegroundWindow($owner.Handle)
-$owner.Activate()
-$dlg = New-Object System.Windows.Forms.OpenFileDialog
-$dlg.Title = 'Выберите страницу манги'
-$dlg.Filter = 'Images|*.png;*.jpg;*.jpeg;*.webp;*.bmp|All Files|*.*'
-$res = $dlg.ShowDialog($owner)
-$owner.Close()
-$owner.Dispose()
-if ($res -eq [System.Windows.Forms.DialogResult]::OK) { [Console]::Out.Write($dlg.FileName) }
-"#;
-    run_windows_dialog(script)
+    None
 }
 
 fn open_in_explorer(target: &Path) -> Result<(), String> {
@@ -2326,7 +2498,7 @@ pub async fn folder_inspect(
     {
         return (
             StatusCode::FORBIDDEN,
-            Json(json!({"detail": "Сначала выберите папку через системный диалог выбора папки."})),
+            Json(json!({"detail": "Сначала выберите папку через системный диалог выбора папки или кнопку «Путь»."})),
         )
             .into_response();
     }
@@ -2334,15 +2506,120 @@ pub async fn folder_inspect(
     Json(inspect_folder_pages_json(&state, &raw_dir, &t_lang)).into_response()
 }
 
-#[derive(Debug, Deserialize)]
+pub async fn open_folder_path(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<FolderInspectPayload>,
+) -> Response {
+    let cleaned = payload
+        .folder_path
+        .trim()
+        .trim_matches('"')
+        .trim_matches('\'')
+        .trim();
+    if cleaned.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": "Введите путь к папке с мангой"})),
+        )
+            .into_response();
+    }
+    if let Err(err) = reject_unc_path(Some(cleaned), "folder_path") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+    }
+    let mut raw_dir = PathBuf::from(cleaned);
+    if raw_dir.is_file() {
+        if let Some(parent) = raw_dir.parent() {
+            raw_dir = parent.to_path_buf();
+        }
+    }
+    let src_dir = unwrap_source_folder(&raw_dir);
+    if !src_dir.is_dir() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": format!("Папка не найдена: {}", src_dir.display())})),
+        )
+            .into_response();
+    }
+    if let Err(err) = state.allowed_roots.register_root(&src_dir) {
+        return (StatusCode::FORBIDDEN, Json(json!({"detail": err.to_string()}))).into_response();
+    }
+    if raw_dir != src_dir && raw_dir.is_dir() {
+        let _ = state.allowed_roots.register_root(&raw_dir);
+    }
+    let t_lang = payload.target_lang.unwrap_or_else(|| "en".to_string());
+    Json(inspect_folder_pages_json(&state, &raw_dir, &t_lang)).into_response()
+}
+
+#[derive(Debug, Deserialize, Default)]
 pub struct PickFolderQuery {
     pub target_lang: Option<String>,
+    pub focus: Option<String>,
+    pub reset: Option<String>,
+    pub initial_dir: Option<String>,
+}
+
+fn is_truthy_query(val: Option<&str>) -> bool {
+    matches!(
+        val.map(|s| s.trim().to_ascii_lowercase()).as_deref(),
+        Some("1" | "true" | "yes" | "on")
+    )
 }
 
 pub async fn pick_folder(
     State(state): State<Arc<AppState>>,
     Query(q): Query<PickFolderQuery>,
 ) -> Response {
+    let want_focus = is_truthy_query(q.focus.as_deref());
+    let want_reset = is_truthy_query(q.reset.as_deref());
+    if state.picker_busy.load(AtomicOrd::SeqCst) {
+        match focus_or_check_active_picker(&state.picker_child_pid, want_reset) {
+            ActivePickerCheck::Focused => {
+                return Json(json!({
+                    "status": if want_focus { "focused" } else { "busy" },
+                    "focused": true,
+                    "message": "Окно проводника Windows выведено на передний план!",
+                }))
+                .into_response();
+            }
+            ActivePickerCheck::ResetKilled | ActivePickerCheck::StaleCleared => {
+                for _ in 0..10 {
+                    if !state.picker_busy.load(AtomicOrd::SeqCst) {
+                        break;
+                    }
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                }
+                state.picker_busy.store(false, AtomicOrd::SeqCst);
+                if want_focus {
+                    return Json(json!({
+                        "status": "not_open",
+                        "message": "Предыдущее окно выбора закрыто — нажмите кнопку еще раз",
+                    }))
+                    .into_response();
+                }
+            }
+            ActivePickerCheck::NotRunning => {
+                if want_focus {
+                    return Json(json!({
+                        "status": "busy",
+                        "message": "Окно выбора папки открывается...",
+                    }))
+                    .into_response();
+                }
+                return Json(json!({
+                    "status": "busy",
+                    "message": "Окно выбора папки уже открыто — проверьте панель задач Windows",
+                }))
+                .into_response();
+            }
+        }
+    } else if want_focus {
+        return Json(json!({
+            "status": "not_open",
+            "message": "Окно выбора сейчас не открыто",
+        }))
+        .into_response();
+    }
+
     if state.picker_busy.swap(true, AtomicOrd::SeqCst) {
         return Json(json!({
             "status": "busy",
@@ -2350,10 +2627,25 @@ pub async fn pick_folder(
         }))
         .into_response();
     }
+    let init_dir = q
+        .initial_dir
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .and_then(|s| reject_unc_path(Some(s), "initial_dir").ok().map(|_| PathBuf::from(s)))
+        .filter(|p| p.is_dir())
+        .or_else(|| default_picker_initial_dir(&state));
+
     let guard = PickerBusyGuard(state.picker_busy.clone());
+    let state_bg = state.clone();
     let res = tokio::task::spawn_blocking(move || {
         let _g = guard;
-        pick_folder_blocking()
+        spawn_picker_subprocess(
+            DialogMode::Folder,
+            init_dir.as_deref(),
+            &state_bg.picker_child_pid,
+            std::time::Duration::from_secs(PICKER_TIMEOUT_SEC),
+        )
     })
     .await;
 
@@ -2370,6 +2662,11 @@ pub async fn pick_folder(
             Json(inspect_folder_pages_json(&state, &dir_p, &t_lang)).into_response()
         }
         Ok(NativePickOutcome::Cancelled) => Json(json!({"status": "cancelled"})).into_response(),
+        Ok(NativePickOutcome::Timeout) => Json(json!({
+            "status": "timeout",
+            "message": "Время ожидания выбора папки истекло (3 мин). Нажмите «Выбрать папку» или вставьте путь вручную.",
+        }))
+        .into_response(),
         Ok(NativePickOutcome::Error(msg)) => {
             Json(json!({"status": "error", "message": msg})).into_response()
         }
@@ -2382,6 +2679,19 @@ pub async fn pick_folder(
 }
 
 pub async fn pick_file(State(state): State<Arc<AppState>>) -> Response {
+    if state.picker_busy.load(AtomicOrd::SeqCst) {
+        if let ActivePickerCheck::Focused =
+            focus_or_check_active_picker(&state.picker_child_pid, false)
+        {
+            return Json(json!({
+                "status": "busy",
+                "focused": true,
+                "message": "Окно выбора файла выведено на передний план!",
+            }))
+            .into_response();
+        }
+        state.picker_busy.store(false, AtomicOrd::SeqCst);
+    }
     if state.picker_busy.swap(true, AtomicOrd::SeqCst) {
         return Json(json!({
             "status": "busy",
@@ -2389,10 +2699,17 @@ pub async fn pick_file(State(state): State<Arc<AppState>>) -> Response {
         }))
         .into_response();
     }
+    let init_dir = default_picker_initial_dir(&state);
     let guard = PickerBusyGuard(state.picker_busy.clone());
+    let state_bg = state.clone();
     let res = tokio::task::spawn_blocking(move || {
         let _g = guard;
-        pick_file_blocking()
+        spawn_picker_subprocess(
+            DialogMode::ImageFile,
+            init_dir.as_deref(),
+            &state_bg.picker_child_pid,
+            std::time::Duration::from_secs(PICKER_TIMEOUT_SEC),
+        )
     })
     .await;
 
@@ -2421,6 +2738,11 @@ pub async fn pick_file(State(state): State<Arc<AppState>>) -> Response {
             .into_response()
         }
         Ok(NativePickOutcome::Cancelled) => Json(json!({"status": "cancelled"})).into_response(),
+        Ok(NativePickOutcome::Timeout) => Json(json!({
+            "status": "timeout",
+            "message": "Время ожидания выбора файла истекло.",
+        }))
+        .into_response(),
         Ok(NativePickOutcome::Error(msg)) => {
             Json(json!({"status": "error", "message": msg})).into_response()
         }
@@ -2438,6 +2760,20 @@ pub async fn pick_web_save_folder(State(state): State<Arc<AppState>>) -> Respons
         .read()
         .map(|c| c.web_save_dir.clone())
         .unwrap_or_default();
+    if state.picker_busy.load(AtomicOrd::SeqCst) {
+        if let ActivePickerCheck::Focused =
+            focus_or_check_active_picker(&state.picker_child_pid, false)
+        {
+            return Json(json!({
+                "status": "busy",
+                "focused": true,
+                "message": "Окно выбора папки сохранения выведено на передний план!",
+                "web_save_dir": current_dir,
+            }))
+            .into_response();
+        }
+        state.picker_busy.store(false, AtomicOrd::SeqCst);
+    }
     if state.picker_busy.swap(true, AtomicOrd::SeqCst) {
         return Json(json!({
             "status": "busy",
@@ -2446,10 +2782,22 @@ pub async fn pick_web_save_folder(State(state): State<Arc<AppState>>) -> Respons
         }))
         .into_response();
     }
+    let init_save = PathBuf::from(&current_dir);
+    let init_opt = if init_save.is_dir() {
+        Some(init_save)
+    } else {
+        init_save.parent().filter(|p| p.is_dir()).map(Path::to_path_buf)
+    };
     let guard = PickerBusyGuard(state.picker_busy.clone());
+    let state_bg = state.clone();
     let res = tokio::task::spawn_blocking(move || {
         let _g = guard;
-        pick_folder_blocking()
+        spawn_picker_subprocess(
+            DialogMode::SaveFolder,
+            init_opt.as_deref(),
+            &state_bg.picker_child_pid,
+            std::time::Duration::from_secs(PICKER_TIMEOUT_SEC),
+        )
     })
     .await;
 
@@ -2461,6 +2809,7 @@ pub async fn pick_web_save_folder(State(state): State<Arc<AppState>>) -> Respons
             let auto_save = {
                 let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
                 cfg.web_save_dir = dir_str.clone();
+                state.persist_config_if_enabled(&cfg);
                 cfg.auto_save_web_pages
             };
             Json(json!({
@@ -2473,6 +2822,12 @@ pub async fn pick_web_save_folder(State(state): State<Arc<AppState>>) -> Respons
         Ok(NativePickOutcome::Cancelled) => {
             Json(json!({"status": "cancelled", "web_save_dir": current_dir})).into_response()
         }
+        Ok(NativePickOutcome::Timeout) => Json(json!({
+            "status": "timeout",
+            "message": "Время ожидания выбора папки истекло.",
+            "web_save_dir": current_dir,
+        }))
+        .into_response(),
         Ok(NativePickOutcome::Error(msg)) => {
             Json(json!({"status": "error", "message": msg, "web_save_dir": current_dir}))
                 .into_response()

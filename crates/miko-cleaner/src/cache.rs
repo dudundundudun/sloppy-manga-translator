@@ -52,9 +52,22 @@ fn block_poly_sig(block: &TextBlock) -> u64 {
     ((poly.len() as u64) << 16) ^ (((p0[0] & 0xFF) as u64) << 8) ^ ((pm[1] & 0xFF) as u64)
 }
 
-fn is_block_skipped(block: &TextBlock) -> bool {
-    block.is_deleted
+fn is_block_skipped(block: &TextBlock, skip_untranslated: bool) -> bool {
+    if block.is_deleted
         || (block.translated_text.trim().is_empty() && block.original_text.trim().is_empty())
+    {
+        return true;
+    }
+    if skip_untranslated && block.translated_text.trim().is_empty() {
+        let has_strokes = block
+            .custom_mask_strokes
+            .as_ref()
+            .is_some_and(|s| !s.is_empty());
+        if !has_strokes {
+            return true;
+        }
+    }
+    false
 }
 
 /// Вычисляет детерминированный SHA-256 ключ CleanCache (инвариантен к сдвигу рамки перевода `bbox`).
@@ -66,9 +79,31 @@ pub fn compute_clean_state_hash(
     inpaint_backend: &str,
     pipeline_mode: &str,
 ) -> String {
+    compute_clean_state_hash_opts(
+        blocks,
+        src_file,
+        src_mtime,
+        dilate_size,
+        inpaint_backend,
+        pipeline_mode,
+        false,
+    )
+}
+
+/// Вычисляет SHA-256 ключ CleanCache с явным флагом `skip_untranslated`,
+/// чтобы допереведённые позже бабблы автоматически сбрасывали старый кэш.
+pub fn compute_clean_state_hash_opts(
+    blocks: &[TextBlock],
+    src_file: &str,
+    src_mtime: i64,
+    dilate_size: u8,
+    inpaint_backend: &str,
+    pipeline_mode: &str,
+    skip_untranslated: bool,
+) -> String {
     let mut specs: Vec<CleanHashBlockSpec> = Vec::new();
     for blk in blocks {
-        if is_block_skipped(blk) {
+        if is_block_skipped(blk, skip_untranslated) {
             continue;
         }
         let coords = effective_clean_bbox(blk);

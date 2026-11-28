@@ -1,5 +1,5 @@
 use crate::typography::{
-    auto_diamond_wrap_lines, join_wrap_tokens, tokenize_word_for_wrap, WrapToken,
+    auto_diamond_wrap_lines_opts, join_wrap_tokens, tokenize_word_for_wrap, WrapToken,
 };
 use miko_cleaner::distance_transform_l2;
 
@@ -256,6 +256,31 @@ fn validate_lines_in_chords<F: Fn(&str, f32, f32) -> f32>(
     Some(line_cxs)
 }
 
+/// Проверяет, появился ли в строках искусственный слоговой перенос (`LECH-` / `EROUS`),
+/// отсутствовавший в исходной строке как естественное дефисное слово (`great-granddaughter`).
+fn has_artificial_hyphen(lines: &[String], raw_text: &str) -> bool {
+    for win in lines.windows(2) {
+        let l1 = win[0].trim_end();
+        if !l1.ends_with('-') {
+            continue;
+        }
+        let l2 = win[1].trim_start();
+        let last_frag = l1.split_whitespace().last().unwrap_or("");
+        let first_frag = l2.split_whitespace().next().unwrap_or("");
+        let has_alpha_stem = last_frag
+            .strip_suffix('-')
+            .is_some_and(|s| s.chars().any(|c| c.is_alphabetic()));
+        if !has_alpha_stem || first_frag.is_empty() {
+            continue;
+        }
+        let natural_joined = format!("{last_frag}{first_frag}");
+        if !raw_text.contains(&natural_joined) {
+            return true;
+        }
+    }
+    false
+}
+
 /// Chord-aware 2D-DP разбиение текста под сужающиеся верхние/нижние хорды овала с сохранением вертикальной центровки.
 #[allow(clippy::too_many_arguments)]
 fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
@@ -269,6 +294,7 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
     scale_x: f32,
     side_pad: f32,
     ref_w: usize,
+    allow_soft_hyphen: bool,
     measure_scaled: &F,
 ) -> Option<(Vec<String>, Vec<f32>, usize)> {
     let clean = text.trim();
@@ -288,12 +314,13 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
     }
 
     let is_narrow_col = cav_h >= ref_w.saturating_mul(2) || ref_w < 115;
-    let hy_width_ratio = if is_narrow_col { 0.68 } else { 0.80 };
+    let hy_width_ratio = if is_narrow_col { 0.82 } else { 0.88 };
     let mut tokens: Vec<WrapToken> = Vec::new();
     for w in words {
         let w_px = measure_scaled(w, fs_f, scale_x);
         let has_compound_hyphen = w.contains('-') && !w.contains("--");
-        let allow_hy = has_compound_hyphen || w_px > (ref_w as f32 * hy_width_ratio);
+        let allow_hy =
+            has_compound_hyphen || (allow_soft_hyphen && w_px > (ref_w as f32 * hy_width_ratio));
         tokens.extend(tokenize_word_for_wrap(w, allow_hy));
     }
 
@@ -377,7 +404,7 @@ fn wrap_lines_to_chords<F: Fn(&str, f32, f32) -> f32>(
                         let slack_pen = (1.0 - fill).powi(2) * 45.0;
                         let shape_pen = (fill - target_fill).powi(2) * 28.0;
                         let hy_pen = if i < n && tokens[i - 1].soft_hyphen_after {
-                            42.0
+                            120.0
                         } else if i < n && tokens[i - 1].glue_next {
                             6.0
                         } else {
@@ -571,17 +598,24 @@ pub fn solve_bubble_layout_anchored<F: Fn(&str, f32, f32) -> f32>(
     let allow_condense = cav_h * 100 >= ref_w * 145 || ref_w < 140;
 
     let try_fs_with_params =
-        |fs: i32, scale_x: f32, lh_mult: f32, require_breathing_room: bool| -> (bool, BubbleLayout) {
+        |fs: i32,
+         scale_x: f32,
+         lh_mult: f32,
+         require_breathing_room: bool,
+         allow_soft_hyphen: bool|
+         -> (bool, BubbleLayout) {
             let fs_f = fs as f32;
             let line_h = (fs_f * lh_mult).max(9.5);
             let eff_side_pad = if require_breathing_room {
                 (ref_w as f32 * 0.075).clamp(3.5, 14.0)
+            } else if ref_w >= 88 {
+                (ref_w as f32 * 0.045).clamp(3.0, 6.5)
             } else {
-                1.5f32
+                (ref_w as f32 * 0.025).clamp(1.5, 2.8)
             };
             let wrap_ratio = if require_breathing_room { 0.80 } else { 0.90 };
             let target_wrap_w = (ref_w as f32 * wrap_ratio).max(20.0);
-            let mut lines = auto_diamond_wrap_lines(text, target_wrap_w, |s| {
+            let mut lines = auto_diamond_wrap_lines_opts(text, target_wrap_w, allow_soft_hyphen, |s| {
                 measure_scaled(s, fs_f, scale_x)
             });
             let mut total_h = (lines.len() as f32 * line_h).ceil() as usize;
@@ -686,6 +720,7 @@ pub fn solve_bubble_layout_anchored<F: Fn(&str, f32, f32) -> f32>(
                     scale_x,
                     eff_side_pad,
                     ref_w,
+                    allow_soft_hyphen,
                     &measure_scaled,
                 ) {
                     let dp_total_h = (dp_lines.len() as f32 * line_h).ceil() as usize;
@@ -739,43 +774,44 @@ pub fn solve_bubble_layout_anchored<F: Fn(&str, f32, f32) -> f32>(
             )
         };
 
-    let try_fs = |fs: i32| -> (bool, BubbleLayout) {
+    let try_fs_mode = |fs: i32, allow_soft_hyphen: bool| -> (bool, BubbleLayout) {
         let need_air = comfort_anchor_fs.is_some_and(|anc| fs > anc);
-        let (ok1, lay1) = try_fs_with_params(fs, 1.0, 1.12, need_air);
+        let (ok1, lay1) = try_fs_with_params(fs, 1.0, 1.12, need_air, allow_soft_hyphen);
         if ok1 {
             return (true, lay1);
         }
         // На кеглях <= якорного сначала пробуем чуть более плотный комиксный интервал (1.06) и мягкое сжатие ширины,
         // чтобы удержать крупный читаемый размер букв вместо резкого уменьшения шрифта!
         if !need_air {
-            let (ok_tight, lay_tight) = try_fs_with_params(fs, 1.0, 1.06, false);
+            let (ok_tight, lay_tight) = try_fs_with_params(fs, 1.0, 1.06, false, allow_soft_hyphen);
             if ok_tight {
                 return (true, lay_tight);
             }
             if allow_condense {
                 for &sx in &[0.93f32, 0.88f32, 0.85f32] {
-                    let (ok_s, lay_s) = try_fs_with_params(fs, sx, 1.06, false);
+                    let (ok_s, lay_s) = try_fs_with_params(fs, sx, 1.06, false, allow_soft_hyphen);
                     if ok_s {
                         return (true, lay_s);
                     }
                 }
             } else {
-                let (ok_s, lay_s) = try_fs_with_params(fs, 0.94, 1.06, false);
+                let (ok_s, lay_s) = try_fs_with_params(fs, 0.94, 1.06, false, allow_soft_hyphen);
                 if ok_s {
                     return (true, lay_s);
                 }
             }
         } else if allow_condense {
-            let (ok_s, lay_s) = try_fs_with_params(fs, 0.93, 1.12, true);
+            let (ok_s, lay_s) = try_fs_with_params(fs, 0.93, 1.12, true, allow_soft_hyphen);
             if ok_s {
                 return (true, lay_s);
             }
         }
         (false, lay1)
     };
+    let try_fs = |fs: i32| -> (bool, BubbleLayout) { try_fs_mode(fs, true) };
 
     if let Some(fs_fix) = fixed_fs {
-        let (_, lay) = try_fs_with_params(fs_fix.clamp(6, 220), 1.0, 1.12, false);
+        let (_, lay) = try_fs_with_params(fs_fix.clamp(6, 220), 1.0, 1.12, false, true);
         return lay;
     }
 
@@ -795,6 +831,26 @@ pub fn solve_bubble_layout_anchored<F: Fn(&str, f32, f32) -> f32>(
             hi = mid.saturating_sub(1);
             if mid == 0 {
                 break;
+            }
+        }
+    }
+
+    // Если максимальный кегль уложился только ценой слогового переноса (`LECH-EROUS`),
+    // предпочитаем сбросить кегль до уровня `anchor_fs - 4` (не ниже 16 px), чтобы все слова читались целиком!
+    if let Some(ref lay) = best_layout {
+        if has_artificial_hyphen(&lay.lines, text) {
+            let fs_best = lay.font_size;
+            let raw_floor = match comfort_anchor_fs {
+                Some(anc) => (anc - 4).min(fs_best - 2),
+                None => fs_best - 4,
+            };
+            let floor_alt = raw_floor.max(lo_init.max(16));
+            for fs_alt in (floor_alt..=fs_best).rev() {
+                let (ok_no_hy, lay_no_hy) = try_fs_mode(fs_alt, false);
+                if ok_no_hy {
+                    best_layout = Some(lay_no_hy);
+                    break;
+                }
             }
         }
     }

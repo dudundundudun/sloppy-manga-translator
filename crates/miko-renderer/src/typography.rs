@@ -24,7 +24,129 @@ fn broken_hesitation_re() -> &'static Regex {
     })
 }
 
-/// Нормализует комиксную типографику: длинное тире, многоточие, артефакты `.?`/`.!`, пробелы и правило Crossbar-I.
+/// Разлепляет склеенные нейросетью точки внутри реплик без пробела (`"Mmm.such a.strange.feeling."` -> `"Mmm… such a… strange… feeling."`,
+/// `"Something's.c-coming."` -> `"Something's… c-coming."`), не трогая аббревиатуры (`U.S.A.`, `e.g.`) и домены/расширения.
+fn split_glued_sentence_dots(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    if len < 4 || !chars.contains(&'.') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len() + 8);
+    let mut i = 0usize;
+    while i < len {
+        let ch = chars[i];
+        if ch == '.' && i > 0 && i + 1 < len {
+            let prev = chars[i - 1];
+            let next = chars[i + 1];
+            let prev_ok = prev.is_alphabetic() || matches!(prev, '\'' | '’');
+            let next_ok = next.is_alphabetic();
+            if prev_ok && next_ok {
+                let mut left_alpha = 0usize;
+                let mut l = i;
+                while l > 0 {
+                    let c = chars[l - 1];
+                    if c.is_alphabetic() {
+                        left_alpha += 1;
+                        l -= 1;
+                    } else if matches!(c, '\'' | '’' | '-') {
+                        l -= 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let mut right_word = String::new();
+                let mut right_alpha = 0usize;
+                let mut r = i + 1;
+                while r < len {
+                    let c = chars[r];
+                    if c.is_alphabetic() {
+                        right_alpha += 1;
+                        right_word.push(c.to_ascii_lowercase());
+                        r += 1;
+                    } else if matches!(c, '\'' | '’' | '-') {
+                        r += 1;
+                    } else {
+                        break;
+                    }
+                }
+
+                let is_domain_ext = matches!(
+                    right_word.as_str(),
+                    "com" | "net" | "org" | "jp" | "ru" | "io" | "co" | "png" | "jpg" | "webp" | "exe"
+                );
+                if (left_alpha >= 2 || right_alpha >= 2) && !is_domain_ext {
+                    out.push('…');
+                    out.push(' ');
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+fn trailing_dangling_conj_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)(,\s*(?:but|and|or|so|но|а|да))\.$").expect("dangling conj regex")
+    })
+}
+
+/// Исправляет оборванные точки внутри реплики перед строчным словом (`"Mmm. It feels. strange."` -> `"Mmm. It feels… strange."`),
+/// не затрагивая стандартные сокращения (`Mr.`, `Dr.`, `etc.`).
+fn repair_mid_sentence_periods(input: &str) -> String {
+    let chars: Vec<char> = input.chars().collect();
+    let len = chars.len();
+    if len < 5 || !chars.contains(&'.') {
+        return input.to_string();
+    }
+    let mut out = String::with_capacity(input.len() + 4);
+    let mut i = 0usize;
+    while i < len {
+        let ch = chars[i];
+        if ch == '.' && i >= 2 && i + 2 < len && chars[i - 1].is_alphabetic() {
+            let prev_is_dot = chars[i - 1] == '.' || (i >= 2 && chars[i - 2] == '.');
+            let mut j = i + 1;
+            let mut saw_space = false;
+            while j < len && matches!(chars[j], ' ' | '\t') {
+                saw_space = true;
+                j += 1;
+            }
+            if !prev_is_dot
+                && saw_space
+                && j < len
+                && chars[j].is_alphabetic()
+                && chars[j].is_lowercase()
+            {
+                let mut w_start = i;
+                while w_start > 0 && chars[w_start - 1].is_alphabetic() {
+                    w_start -= 1;
+                }
+                let word: String = chars[w_start..i].iter().collect();
+                let word_len = word.chars().count();
+                let is_abbrev = matches!(
+                    word.to_ascii_lowercase().as_str(),
+                    "mr" | "mrs" | "ms" | "dr" | "st" | "vs" | "etc"
+                );
+                if word_len >= 2 && !is_abbrev {
+                    out.push('…');
+                    i += 1;
+                    continue;
+                }
+            }
+        }
+        out.push(ch);
+        i += 1;
+    }
+    out
+}
+
+/// Нормализует комиксную типографику: длинное тире, многоточие, артефакты `.?`/`.!`, склеенные точки ИИ, пробелы и правило Crossbar-I.
 pub fn format_comic_typography(text: &str, uppercase: bool) -> String {
     let mut s = text
         .replace("\r\n", "\n")
@@ -33,9 +155,20 @@ pub fn format_comic_typography(text: &str, uppercase: bool) -> String {
         .replace(".?", "…?")
         .replace(".!", "…!")
         .replace("--", "—");
+    s = split_glued_sentence_dots(&s);
     s = multi_space_re().replace_all(&s, " ").trim().to_string();
     s = leading_dot_word_re().replace_all(&s, "…$1").to_string();
     s = broken_hesitation_re().replace_all(&s, "$1… $2").to_string();
+    s = repair_mid_sentence_periods(&s);
+    let replaced_conj = trailing_dangling_conj_re().replace(&s, "$1…");
+    if replaced_conj != s {
+        s = replaced_conj.into_owned();
+    }
+    if s == "I." || s == "i." {
+        s = "I…".to_string();
+    } else if s == "Я." || s == "я." {
+        s = "Я…".to_string();
+    }
     if uppercase {
         s = s.to_uppercase();
     } else if s.chars().any(|c| c.is_ascii_alphabetic()) {
@@ -46,13 +179,19 @@ pub fn format_comic_typography(text: &str, uppercase: bool) -> String {
 }
 
 /// Для узких вертикальных бабблов крика (`tategaki`, `cav_h >= cav_w * 2`) мягко поджимает
-/// сверхдлинные серии одинаковых букв (`Whaaaaaaaaaat?!` -> `Whaaaat?!`, `Nooooooo!!!` -> `Noooo!!!`),
+/// сверхдлинные серии одинаковых букв (`Whaaaaaaaaaat?!` -> `Whaaaat?!`, `Sluuurp` в 65px -> `Sluurp`),
 /// полностью сохраняя экспрессию крика, но позволяя набрать его крупным читаемым кеглем!
 pub fn compact_scream_for_narrow_bubble(text: &str, cav_w: usize, cav_h: usize) -> String {
     if cav_w >= 185 || cav_h < cav_w.saturating_mul(2) {
         return text.to_string();
     }
-    let max_repeat = if cav_w < 95 { 3usize } else { 4usize };
+    let max_repeat = if cav_w < 78 && cav_h * 10 >= cav_w * 22 {
+        2usize
+    } else if cav_w < 100 {
+        3usize
+    } else {
+        4usize
+    };
     let mut out = String::with_capacity(text.len());
     let mut prev_low: Option<char> = None;
     let mut run_len = 0usize;
@@ -247,7 +386,38 @@ pub fn join_wrap_tokens(tokens: &[WrapToken], i: usize, j: usize) -> String {
 /// Слоговой и дефисный перенос длинных слов (RU и EN) с отделением краевых знаков препинания
 /// (`Whaaaaat?!`, `matter-of-factly.`, `smartphone.`) и защитой односложных слов и дифтонгов от разрыва.
 pub fn hyphenate_word(word: &str) -> Vec<String> {
-    if word.is_empty() || word.contains('\'') || word.contains('’') {
+    if word.is_empty() {
+        return vec![word.to_string()];
+    }
+
+    // Разрешаем слоговой перенос длинных слов с апострофным окончанием ("Something's" -> ["Some", "thing's"], "EVERYTHING'S!"),
+    // оставляя короткие стяжения ("don't", "can't", "I'm", "you're") неделимыми!
+    if word.contains('\'') || word.contains('’') {
+        for apos in ['\'', '’'] {
+            if let Some(pos) = word.rfind(apos) {
+                let stem = &word[..pos];
+                let suffix = &word[pos..]; // напр. "'s", "'ll", "'ve!"
+                let suffix_alpha: String = suffix
+                    .chars()
+                    .filter(|c| c.is_alphabetic())
+                    .map(|c| c.to_ascii_lowercase())
+                    .collect();
+                let stem_alpha = stem.chars().filter(|c| c.is_alphabetic()).count();
+                if matches!(suffix_alpha.as_str(), "s" | "d" | "ll" | "ve" | "re")
+                    && stem_alpha >= 7
+                    && !stem.contains('\'')
+                    && !stem.contains('’')
+                {
+                    let mut parts = hyphenate_word(stem);
+                    if parts.len() >= 2 {
+                        if let Some(last) = parts.last_mut() {
+                            last.push_str(suffix);
+                        }
+                        return parts;
+                    }
+                }
+            }
+        }
         return vec![word.to_string()];
     }
 
@@ -306,8 +476,8 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
     }
 
     let n = core_chars.len();
-    let is_scream_stretch = max_char_run(core_chars) >= 4;
-    let min_len = if is_scream_stretch { 7 } else { 8 };
+    let is_scream_stretch = max_char_run(core_chars) >= 3;
+    let min_len = if is_scream_stretch { 6 } else { 7 };
     if n < min_len {
         return vec![word.to_string()];
     }
@@ -475,6 +645,16 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
     max_width_px: f32,
     measure_width: F,
 ) -> Vec<String> {
+    auto_diamond_wrap_lines_opts(text, max_width_px, true, measure_width)
+}
+
+/// DP-разбивка текста на строки с управлением мягкими слоговыми переносами (`allow_soft_hyphen`).
+pub fn auto_diamond_wrap_lines_opts<F: Fn(&str) -> f32>(
+    text: &str,
+    max_width_px: f32,
+    allow_soft_hyphen: bool,
+    measure_width: F,
+) -> Vec<String> {
     let clean = text.trim();
     if clean.is_empty() {
         return Vec::new();
@@ -489,7 +669,8 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
         }
         let mut tokens: Vec<WrapToken> = Vec::new();
         for w in p_trim.split_whitespace() {
-            let need_split = measure_width(w) > max_w || (w.contains('-') && !w.contains("--"));
+            let has_compound = w.contains('-') && !w.contains("--");
+            let need_split = has_compound || (allow_soft_hyphen && measure_width(w) > max_w);
             tokens.extend(tokenize_word_for_wrap(w, need_split));
         }
 
@@ -525,7 +706,7 @@ pub fn auto_diamond_wrap_lines<F: Fn(&str) -> f32>(
                 let overflow_pen = if w > max_w { (w - max_w) * 60.0 + 4000.0 } else { 0.0 };
                 let slack = (target_w - w).abs();
                 let hy_pen = if j < n && tokens[j - 1].soft_hyphen_after {
-                    45.0
+                    120.0
                 } else {
                     0.0
                 };

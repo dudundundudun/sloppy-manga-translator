@@ -404,8 +404,10 @@ pub async fn shorten_block_text(
             let up = payload.uppercase.unwrap_or(cfg.uppercase);
             let min_fs = payload.min_font_size.unwrap_or(cfg.min_font_size as i32);
             let max_fs = payload.max_font_size.unwrap_or(cfg.max_font_size as i32);
+            let scale_pct = cfg.font_scale_pct;
+            let def_font = cfg.resolve_default_font_path(&state.base_dir);
             let ovf = payload.overflow_mode.unwrap_or(cfg.overflow_mode);
-            let _ = tokio::task::spawn_blocking(move || -> Result<(), String> {
+            if let Some(updated) = tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
                 let rgb = image::open(&src_p).map_err(|e| e.to_string())?.to_rgb8();
                 let mut cguard = st_clone.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
                 if cguard.is_none() {
@@ -415,7 +417,16 @@ pub async fn shorten_block_text(
                 let cl = cguard
                     .as_mut()
                     .expect("cleaner")
-                    .clean_image(&rgb, &blks_clone, &CleanOptions::default(), Some(&src_s), 0)
+                    .clean_image(
+                        &rgb,
+                        &blks_clone,
+                        &CleanOptions {
+                            skip_untranslated: true,
+                            ..Default::default()
+                        },
+                        Some(&src_s),
+                        0,
+                    )
                     .map_err(|e| e.to_string())?;
                 let rr = st_clone
                     .renderer
@@ -425,16 +436,34 @@ pub async fn shorten_block_text(
                         &RenderOptions {
                             min_font_size: min_fs,
                             max_font_size: max_fs,
+                            font_scale_pct: scale_pct,
                             uppercase: up,
                             overflow_mode: ovf,
-                            default_font_path: None,
+                            default_font_path: def_font,
                         },
                     )
                     .map_err(|e| e.to_string())?;
                 rr.rendered.save(&dst_p).map_err(|e| e.to_string())?;
-                Ok(())
+                if let (Some(out_dir), Some(fname)) = (
+                    dst_p.parent(),
+                    src_p.file_name().and_then(|s| s.to_str()),
+                ) {
+                    if folder_job::manifest_path(out_dir).is_file() {
+                        let mut man = folder_job::load_manifest(out_dir);
+                        if man["pages"][fname].is_object() {
+                            man["pages"][fname]["blocks"] = json!(blks_clone);
+                            let _ = folder_job::save_manifest(out_dir, &man);
+                        }
+                    }
+                }
+                Ok::<Vec<TextBlock>, String>(blks_clone)
             })
-            .await;
+            .await
+            .ok()
+            .and_then(|r| r.ok())
+            {
+                payload.blocks = updated;
+            }
         }
     }
 
@@ -526,4 +555,365 @@ pub async fn chapter_book_proofread(
     Json(payload): Json<ChapterBookImportPayload>,
 ) -> Response {
     chapter_book_import(State(state), Json(payload)).await
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChapterQaPayload {
+    pub folder_path: String,
+    pub target_lang: Option<String>,
+    pub tiny_threshold_px: Option<i32>,
+}
+
+fn has_glued_dots(text: &str) -> bool {
+    let chars: Vec<char> = text.chars().collect();
+    for i in 1..chars.len().saturating_sub(1) {
+        if chars[i] == '.' && chars[i - 1].is_alphabetic() && chars[i + 1].is_alphabetic() {
+            let left_two = i >= 2 && chars[i - 2].is_alphabetic();
+            let right_two = i + 2 < chars.len() && chars[i + 2].is_alphabetic();
+            if left_two || right_two {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+pub async fn chapter_qa_check(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ChapterQaPayload>,
+) -> Response {
+    if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+    }
+    let src_dir = folder_job::unwrap_source_folder(Path::new(payload.folder_path.trim()));
+    if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"detail": "Папка вне разрешённых директорий"})),
+        )
+            .into_response();
+    }
+    let t_lang = payload.target_lang.unwrap_or_else(|| "en".to_string());
+    let out_dir = folder_job::output_dir_for_folder(&src_dir, &t_lang);
+    let images = folder_job::collect_folder_images(&src_dir);
+    let manifest = folder_job::load_manifest(&out_dir);
+    let threshold = payload.tiny_threshold_px.unwrap_or(14).clamp(9, 26);
+
+    let mut all_fs: Vec<i32> = Vec::new();
+    let mut issues: Vec<Value> = Vec::new();
+    let mut translated_pages = 0usize;
+
+    for (idx, img_path) in images.iter().enumerate() {
+        let fname = img_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(raw_arr) = manifest["pages"][&fname]["blocks"].as_array() else {
+            continue;
+        };
+        let Ok(blocks) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone())) else {
+            continue;
+        };
+        translated_pages += 1;
+
+        let mut page_fs_list: Vec<i32> = blocks
+            .iter()
+            .filter(|b| !b.is_deleted && !b.translated_text.trim().is_empty())
+            .filter_map(|b| b.font_size.or(b.rendered_font_size))
+            .collect();
+        page_fs_list.sort_unstable();
+        let page_med = if page_fs_list.is_empty() {
+            20
+        } else {
+            page_fs_list[page_fs_list.len() / 2]
+        };
+
+        for b in &blocks {
+            if b.is_deleted {
+                continue;
+            }
+            let tr = b.translated_text.trim();
+            if tr.is_empty() {
+                continue;
+            }
+            let fs = b.font_size.or(b.rendered_font_size).unwrap_or(page_med);
+            all_fs.push(fs);
+
+            let bw = (b.bbox[2] - b.bbox[0]).max(1);
+            let bh = (b.bbox[3] - b.bbox[1]).max(1);
+            let area = (bw as usize) * (bh as usize);
+            let chars = tr.chars().count();
+            let glued = has_glued_dots(tr);
+            let is_decent_bubble = bw >= 52 && bh >= 80 && area >= 5_200;
+            let is_tiny = fs <= threshold && is_decent_bubble;
+            let is_severe_drop = fs <= (page_med - 6).min(15) && bw >= 80 && bh >= 110;
+            let is_crowded = fs <= threshold + 1 && chars > ((area / 210).max(24));
+
+            if is_tiny || is_severe_drop || glued {
+                let rec_fs = (page_med - 2).clamp((threshold + 2).max(15), 22);
+                let (kind, reason) = if glued {
+                    (
+                        "glued_dots",
+                        format!("Склеенные точки без пробела ({fs} px в баббле {bw}×{bh} px)"),
+                    )
+                } else if is_crowded {
+                    (
+                        "crowded_bubble",
+                        format!("Длинный текст ({chars} симв.) сжал шрифт до {fs} px в баббле {bw}×{bh} px — можно сжать фразу ИИ или поднять кегль"),
+                    )
+                } else {
+                    (
+                        "tiny_font",
+                        format!("Мелкий шрифт {fs} px в баббле {bw}×{bh} px (средний по стр. {page_med} px)"),
+                    )
+                };
+                issues.push(json!({
+                    "page": fname,
+                    "page_index": idx + 1,
+                    "source_path": img_path.to_string_lossy(),
+                    "dest_path": out_dir.join(&fname).to_string_lossy(),
+                    "block_id": b.id,
+                    "kind": kind,
+                    "rendered_font_size": fs,
+                    "recommended_font_size": rec_fs,
+                    "bbox_size": format!("{bw}×{bh}"),
+                    "is_crowded": is_crowded,
+                    "text": tr,
+                    "original_text": b.original_text,
+                    "reason": reason,
+                }));
+            }
+        }
+    }
+
+    all_fs.sort_unstable();
+    let median_fs = if all_fs.is_empty() {
+        0
+    } else {
+        all_fs[all_fs.len() / 2]
+    };
+    let min_fs = all_fs.first().copied().unwrap_or(0);
+
+    Json(json!({
+        "status": "ok",
+        "total_pages": images.len(),
+        "translated_pages": translated_pages,
+        "total_blocks": all_fs.len(),
+        "median_font_size": median_fs,
+        "min_rendered_font_size": min_fs,
+        "threshold_px": threshold,
+        "issues_count": issues.len(),
+        "issues": issues,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ChapterQaAutofixPayload {
+    pub folder_path: String,
+    pub target_lang: Option<String>,
+    pub tiny_threshold_px: Option<i32>,
+    pub min_target_fs: Option<i32>,
+    pub shorten_crowded_ai: Option<bool>,
+}
+
+pub async fn chapter_qa_autofix(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<ChapterQaAutofixPayload>,
+) -> Response {
+    if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
+        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+    }
+    let src_dir = folder_job::unwrap_source_folder(Path::new(payload.folder_path.trim()));
+    if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"detail": "Папка вне разрешённых директорий"})),
+        )
+            .into_response();
+    }
+    let t_lang = payload.target_lang.unwrap_or_else(|| "en".to_string());
+    let out_dir = folder_job::output_dir_for_folder(&src_dir, &t_lang);
+    let images = folder_job::collect_folder_images(&src_dir);
+    let mut manifest = folder_job::load_manifest(&out_dir);
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let threshold = payload.tiny_threshold_px.unwrap_or(14).clamp(9, 26);
+    let min_target = payload
+        .min_target_fs
+        .unwrap_or((threshold + 2).max(15))
+        .clamp(12, 26);
+    let use_ai_shorten = payload.shorten_crowded_ai.unwrap_or(false);
+
+    let mut fixed_pages = 0usize;
+    let mut fixed_blocks = 0usize;
+
+    for img_path in &images {
+        let fname = img_path
+            .file_name()
+            .and_then(|s| s.to_str())
+            .unwrap_or("")
+            .to_string();
+        let Some(raw_arr) = manifest["pages"][&fname]["blocks"].as_array() else {
+            continue;
+        };
+        let Ok(mut blocks) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
+        else {
+            continue;
+        };
+
+        let mut page_needs_fix = false;
+        for b in &mut blocks {
+            if b.is_deleted || b.translated_text.trim().is_empty() {
+                continue;
+            }
+            let bw = (b.bbox[2] - b.bbox[0]).max(1);
+            let bh = (b.bbox[3] - b.bbox[1]).max(1);
+            let fs = b.font_size.or(b.rendered_font_size).unwrap_or(20);
+            let glued = has_glued_dots(&b.translated_text);
+            if (fs <= threshold && bw >= 52 && bh >= 80) || glued {
+                page_needs_fix = true;
+                fixed_blocks += 1;
+                if glued {
+                    b.translated_text =
+                        miko_renderer::format_comic_typography(&b.translated_text, false);
+                }
+                // Если пользователь вручную зажал мелкий font_size — сбрасываем к Авто, чтобы сработал новый крупный укладчик
+                if b.font_size.is_some_and(|f| f <= threshold) {
+                    b.font_size = None;
+                }
+                if use_ai_shorten && b.translated_text.chars().count() > 28 {
+                    let prompt_text = format!(
+                        "Сократи эту реплику на 35% короче по символам для узкого облачка комикса, сохранив живой смысл (верни ТОЛЬКО короткую фразу на языке {t_lang}): {}",
+                        b.translated_text.trim()
+                    );
+                    if let Ok(short_s) = state
+                        .translator
+                        .translate_single_text(
+                            &prompt_text,
+                            &t_lang,
+                            &cfg.selected_model,
+                            &cfg.unsloth_url,
+                            &cfg.unsloth_api_key,
+                            &[],
+                            cfg.anti_censorship_prompt,
+                            None,
+                        )
+                        .await
+                    {
+                        if !short_s.trim().is_empty() {
+                            b.translated_text = short_s.trim().to_string();
+                        }
+                    }
+                }
+            }
+        }
+
+        if !page_needs_fix {
+            continue;
+        }
+
+        let st_cr = state.clone();
+        let src_p = img_path.clone();
+        let dst_p = out_dir.join(&fname);
+        let cfg_c = cfg.clone();
+        let eff_min_fs = (cfg_c.min_font_size as i32).max(min_target - 1);
+        let eff_max_fs = (cfg_c.max_font_size as i32).max(eff_min_fs + 4);
+
+        if let Ok(Ok(updated_blocks)) =
+            tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
+                let rgb = image::open(&src_p).map_err(|e| e.to_string())?.to_rgb8();
+                let mut cg = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+                if cg.is_none() {
+                    *cg = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
+                }
+                let src_s = src_p.to_string_lossy().to_string();
+                let cl = cg
+                    .as_mut()
+                    .expect("cleaner")
+                    .clean_image(
+                        &rgb,
+                        &blocks,
+                        &CleanOptions {
+                            skip_untranslated: true,
+                            ..Default::default()
+                        },
+                        Some(&src_s),
+                        0,
+                    )
+                    .map_err(|e| e.to_string())?;
+                let def_font = cfg_c.resolve_default_font_path(&st_cr.base_dir);
+                let mut rr = st_cr
+                    .renderer
+                    .render_page(
+                        &cl.cleaned,
+                        &mut blocks,
+                        &RenderOptions {
+                            min_font_size: eff_min_fs,
+                            max_font_size: eff_max_fs,
+                            font_scale_pct: cfg_c.font_scale_pct,
+                            uppercase: cfg_c.uppercase,
+                            overflow_mode: cfg_c.overflow_mode.clone(),
+                            default_font_path: def_font.clone(),
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+
+                // Если какой-то крупный баббл всё ещё остался <= threshold (напр. сверхплотная фраза без AI),
+                // мягко фиксируем ему читаемый кегль `min_target` с защитной белой обводкой
+                let mut forced_any = false;
+                for b in &mut blocks {
+                    let bw = (b.bbox[2] - b.bbox[0]).max(1);
+                    let bh = (b.bbox[3] - b.bbox[1]).max(1);
+                    if !b.is_deleted
+                        && !b.translated_text.trim().is_empty()
+                        && bw >= 62
+                        && bh >= 95
+                        && b.rendered_font_size.unwrap_or(20) <= threshold
+                    {
+                        b.font_size = Some(min_target);
+                        forced_any = true;
+                    }
+                }
+                if forced_any {
+                    rr = st_cr
+                        .renderer
+                        .render_page(
+                            &cl.cleaned,
+                            &mut blocks,
+                            &RenderOptions {
+                                min_font_size: eff_min_fs,
+                                max_font_size: eff_max_fs,
+                                font_scale_pct: cfg_c.font_scale_pct,
+                                uppercase: cfg_c.uppercase,
+                                overflow_mode: "overflow".to_string(),
+                                default_font_path: def_font,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                }
+
+                if let Some(par) = dst_p.parent() {
+                    let _ = std::fs::create_dir_all(par);
+                }
+                rr.rendered.save(&dst_p).map_err(|e| e.to_string())?;
+                Ok(blocks)
+            })
+            .await
+        {
+            manifest["pages"][&fname]["blocks"] = json!(updated_blocks);
+            fixed_pages += 1;
+        }
+    }
+
+    if fixed_pages > 0 {
+        let _ = folder_job::save_manifest(&out_dir, &manifest);
+    }
+
+    Json(json!({
+        "status": "ok",
+        "fixed_pages": fixed_pages,
+        "fixed_blocks": fixed_blocks,
+    }))
+    .into_response()
 }

@@ -16,8 +16,8 @@ pub use painter::{
     FontCache,
 };
 pub use typography::{
-    auto_diamond_wrap_lines, compact_scream_for_narrow_bubble, format_comic_typography,
-    hyphenate_word,
+    auto_diamond_wrap_lines, auto_diamond_wrap_lines_opts, compact_scream_for_narrow_bubble,
+    format_comic_typography, hyphenate_word,
 };
 
 use serde::{Deserialize, Serialize};
@@ -29,13 +29,37 @@ pub struct FontInfo {
     pub name: String,
     pub filename: String,
     pub path: String,
+    #[serde(default)]
+    pub supports_ru: bool,
+    #[serde(default)]
+    pub supports_en: bool,
 }
 
-/// Сканирует директорию шрифтов (`fonts/`) без Python/Pillow.
+fn font_sort_rank(filename: &str) -> u8 {
+    let low = filename.to_ascii_lowercase();
+    if low.contains("wild") || low.contains("anime") || low.contains("manga") || low.contains("chinacat") {
+        0 // Классические манга-шрифты всегда на первом месте
+    } else if matches!(
+        low.as_str(),
+        "balsamiqsans-bold.ttf"
+            | "pangolin-regular.ttf"
+            | "neucha.ttf"
+            | "russoone-regular.ttf"
+            | "comicneue-bold.ttf"
+            | "bangers-regular.ttf"
+    ) {
+        2 // Базовый авто-пак Google Fonts ниже пользовательских шрифтов
+    } else {
+        1 // Любые пользовательские шрифты, закинутые вручную в fonts/
+    }
+}
+
+/// Сканирует директорию шрифтов (`fonts/`) без Python/Pillow и проверяет поддержку RU/EN глифов.
 pub fn list_available_fonts(fonts_dir: &Path) -> Vec<FontInfo> {
     let Ok(entries) = std::fs::read_dir(fonts_dir) else {
         return Vec::new();
     };
+    let cache = FontCache::new();
     let mut out = Vec::new();
     for entry in entries.flatten() {
         let p = entry.path();
@@ -60,14 +84,22 @@ pub fn list_available_fonts(fonts_dir: &Path) -> Vec<FontInfo> {
             .and_then(|s| s.to_str())
             .unwrap_or(&filename)
             .to_string();
+        let supports_ru = cache.font_supports_text(&p, "Привет мир");
+        let supports_en = cache.font_supports_text(&p, "Hello World");
         out.push(FontInfo {
             id: filename.clone(),
             name,
             filename,
             path: p.to_string_lossy().to_string(),
+            supports_ru,
+            supports_en,
         });
     }
-    out.sort_by(|a, b| a.filename.cmp(&b.filename));
+    out.sort_by(|a, b| {
+        font_sort_rank(&a.filename)
+            .cmp(&font_sort_rank(&b.filename))
+            .then_with(|| a.filename.to_ascii_lowercase().cmp(&b.filename.to_ascii_lowercase()))
+    });
     out
 }
 
@@ -797,6 +829,269 @@ mod tests {
         assert!(
             white_halo_px >= 80,
             "expected white halo pixels (>225 lum), got {white_halo_px}"
+        );
+    }
+
+    #[test]
+    fn test_glued_dots_apostrophe_hyphenation_and_narrow_sluuurp_rescue() {
+        // Проверка всех трёх реальных багов со скриншотов пользователя:
+        // 1) "Mmm.such a.strange.feeling." (133x287) — было 10px из-за точек без пробелов
+        // 2) "Something's.c-coming." (136x232) — было 10px из-за точек и запрета переноса апострофа
+        // 3) "Sluuurp" (66x202) — было 10px в узком вертикальном баббле
+        // 4) "THOOM" (225x485) со спидлайнами внутри полигона — было 10px из-за урезания flood-маски
+        assert_eq!(
+            format_comic_typography("Mmm.such a.strange.feeling.", false),
+            "Mmm… such a… strange… feeling."
+        );
+        assert_eq!(
+            format_comic_typography("Something's.c-coming.", false),
+            "Something's… c-coming."
+        );
+        assert!(
+            hyphenate_word("Something's").len() >= 2,
+            "expected Something's to hyphenate cleanly"
+        );
+        assert_eq!(compact_scream_for_narrow_bubble("Sluuurp", 66, 202), "Sluurp");
+
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let engine = RustRendererEngine::new(fonts_dir);
+
+        let mut img = image::RgbImage::from_pixel(1280, 1750, image::Rgb([255, 255, 255]));
+        // Внутри баббла #4 (THOOM, многоугольник 8 вершин) рисуем тёмные диагональные спидлайны, чтобы flood fill покрывал <50% полигона
+        for y in 220..640u32 {
+            for x in 730..895u32 {
+                if (x + y) % 9 < 3 {
+                    img.put_pixel(x, y, image::Rgb([35, 35, 35]));
+                }
+            }
+        }
+
+        let mut blocks = vec![
+            TextBlock {
+                id: 1,
+                bbox: [1030, 100, 1163, 387],
+                bubble_polygon: Some(vec![[1032, 105], [1157, 105], [1157, 375], [1032, 375]]),
+                original_text: "ん…変な感じ…".into(),
+                translated_text: "Mmm.such a.strange.feeling.".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 2,
+                bbox: [450, 256, 586, 488],
+                bubble_polygon: Some(vec![[454, 262], [584, 262], [584, 482], [454, 482]]),
+                original_text: "なんか…くる…".into(),
+                translated_text: "Something's.c-coming.".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 3,
+                bbox: [154, 1082, 220, 1284],
+                bubble_polygon: Some(vec![[156, 1086], [218, 1086], [218, 1280], [156, 1280]]),
+                original_text: "じゅるっ".into(),
+                translated_text: "Sluuurp".into(),
+                ..Default::default()
+            },
+            TextBlock {
+                id: 4,
+                bbox: [700, 181, 925, 666],
+                bubble_polygon: Some(vec![
+                    [725, 217],
+                    [812, 210],
+                    [898, 217],
+                    [904, 420],
+                    [898, 642],
+                    [812, 648],
+                    [725, 642],
+                    [718, 420],
+                ]),
+                style_preset: "shout".into(),
+                original_text: "ドクン".into(),
+                translated_text: "THOOM!!".into(),
+                ..Default::default()
+            },
+        ];
+
+        let opts = RenderOptions {
+            min_font_size: 12,
+            max_font_size: 32,
+            font_scale_pct: 100,
+            uppercase: true,
+            ..Default::default()
+        };
+        let _ = engine.render_page(&img, &mut blocks, &opts).expect("render screenshot regressions");
+
+        let fs1 = blocks[0].rendered_font_size.unwrap_or(0);
+        let fs2 = blocks[1].rendered_font_size.unwrap_or(0);
+        let fs3 = blocks[2].rendered_font_size.unwrap_or(0);
+        let fs4 = blocks[3].rendered_font_size.unwrap_or(0);
+
+        assert!(fs1 >= 18, "Mmm.such a.strange.feeling. stayed too small: {fs1}px");
+        assert!(fs2 >= 18, "Something's.c-coming. stayed too small: {fs2}px");
+        assert!(fs3 >= 14, "Sluuurp in narrow 66x202 bubble stayed too small: {fs3}px");
+        assert!(fs4 >= 25, "THOOM!! in 225x485 burst bubble stayed too small: {fs4}px");
+    }
+
+    #[test]
+    fn test_cc_wild_words_tilde_and_heart_never_become_bang_or_vanish() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let font_path = fonts_dir.join("cc-wild-words-roman.ttf");
+        if !font_path.is_file() {
+            return;
+        }
+        let cache = FontCache::new();
+        let font = cache.load_font(&font_path).expect("load cc-wild-words");
+        let sanitized = sanitize_text_for_font(&font, "it~ ♥");
+        assert_eq!(sanitized, "it~ ♥");
+        assert!(!sanitized.contains('!'));
+
+        let engine = RustRendererEngine::new(fonts_dir);
+        let img = image::RgbImage::from_pixel(280, 140, image::Rgb([255, 255, 255]));
+        let mut blocks_heart = vec![TextBlock {
+            id: 1,
+            bbox: [40, 20, 240, 120],
+            bubble_polygon: Some(vec![[45, 25], [235, 25], [235, 115], [45, 115]]),
+            original_text: "♥".into(),
+            translated_text: "♥".into(),
+            ..Default::default()
+        }];
+        let res_h = engine
+            .render_page(
+                &img,
+                &mut blocks_heart,
+                &RenderOptions {
+                    default_font_path: Some(font_path.clone()),
+                    ..Default::default()
+                },
+            )
+            .expect("render procedural heart");
+        let mut dark_heart_px = 0usize;
+        for y in 20..120u32 {
+            for x in 40..240u32 {
+                if res_h.rendered.get_pixel(x, y)[0] < 120 {
+                    dark_heart_px += 1;
+                }
+            }
+        }
+        assert!(dark_heart_px >= 15, "procedural heart drew too few pixels: {dark_heart_px}");
+
+        let mut blocks_tilde = vec![TextBlock {
+            id: 1,
+            bbox: [20, 20, 260, 120],
+            bubble_polygon: Some(vec![[25, 25], [255, 25], [255, 115], [25, 115]]),
+            original_text: "残念ですね〜".into(),
+            translated_text: "it~ ♥".into(),
+            ..Default::default()
+        }];
+        let res_t = engine
+            .render_page(
+                &img,
+                &mut blocks_tilde,
+                &RenderOptions {
+                    default_font_path: Some(font_path),
+                    ..Default::default()
+                },
+            )
+            .expect("render tilde and heart");
+        let mut right_tail_ink = 0usize;
+        for y in 25..115u32 {
+            for x in 130..255u32 {
+                if res_t.rendered.get_pixel(x, y)[0] < 120 {
+                    right_tail_ink += 1;
+                }
+            }
+        }
+        assert!(right_tail_ink >= 15, "tilde/heart right tail ink missing: {right_tail_ink}");
+    }
+
+    #[test]
+    fn test_dehyphenation_prefers_minor_fontsize_stepdown_over_broken_words() {
+        let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("fonts");
+        let font_path = fonts_dir.join("cc-wild-words-roman.ttf");
+        if !font_path.is_file() {
+            return;
+        }
+        let cache = FontCache::new();
+        let font = cache.load_font(&font_path).expect("load cc-wild-words");
+
+        for (text, w, h, min_expected_fs) in [
+            ("You lecherous monk.", 121usize, 199usize, 16i32),
+            ("YOU LECHEROUS MONK.", 121usize, 199usize, 16i32),
+            ("BUT I AM INTERESTED IN THE ACT OF SEX ITSELF.", 143usize, 270usize, 17i32),
+        ] {
+            let mut mask = vec![0u8; w * h];
+            let cx = w as f32 * 0.5;
+            let cy = h as f32 * 0.5;
+            let rx = (w as f32 * 0.45).max(4.0);
+            let ry = (h as f32 * 0.45).max(4.0);
+            for y in 0..h {
+                let dy = (y as f32 + 0.5 - cy) / ry;
+                for x in 0..w {
+                    let dx = (x as f32 + 0.5 - cx) / rx;
+                    if dx * dx + dy * dy <= 1.0 {
+                        mask[y * w + x] = 255;
+                    }
+                }
+            }
+            let lay = solve_bubble_layout_anchored(
+                text,
+                &mask,
+                w,
+                h,
+                12,
+                23,
+                None,
+                Some(20),
+                true,
+                |s, fs, sx| measure_text_width_scaled(&font, fs, sx, s),
+            );
+            assert!(
+                lay.font_size >= min_expected_fs,
+                "expected readable font_size >= {min_expected_fs}px for {text:?}, got {}px (lines: {:?})",
+                lay.font_size,
+                lay.lines
+            );
+            for line in &lay.lines {
+                assert!(
+                    !line.ends_with('-'),
+                    "expected whole words without soft hyphen break in {text:?}, got line {line:?} (all: {:?})",
+                    lay.lines
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_ellipsis_typography_repairs() {
+        assert_eq!(
+            format_comic_typography("Mmm. It feels. strange.", false),
+            "Mmm. It feels… strange."
+        );
+        assert_eq!(
+            format_comic_typography("I don't hate it, but.", false),
+            "I don't hate it, but…"
+        );
+        assert_eq!(
+            format_comic_typography("Wait. hold on", false),
+            "Wait… hold on"
+        );
+        assert_eq!(
+            format_comic_typography("Mr. Smith went home.", false),
+            "Mr. Smith went home."
         );
     }
 }

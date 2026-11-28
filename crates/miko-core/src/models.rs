@@ -322,6 +322,8 @@ pub struct AppConfig {
     pub min_text_length: u32,
     pub min_font_size: u32,
     pub max_font_size: u32,
+    pub font_scale_pct: u32,
+    pub default_font: String,
     pub uppercase: bool,
     pub overflow_mode: String,
     pub batch_pages: u32,
@@ -340,6 +342,22 @@ pub struct AppConfig {
 }
 
 impl AppConfig {
+    pub fn resolve_default_font_path(&self, base_dir: &Path) -> Option<std::path::PathBuf> {
+        let f = self.default_font.trim();
+        if f.is_empty() || f.eq_ignore_ascii_case("auto") {
+            return None;
+        }
+        let direct = Path::new(f);
+        if direct.is_file() {
+            return Some(direct.to_path_buf());
+        }
+        let in_fonts = base_dir.join("fonts").join(f);
+        if in_fonts.is_file() {
+            return Some(in_fonts);
+        }
+        None
+    }
+
     pub fn default_with_base(base_dir: &Path) -> Self {
         Self {
             selected_model: "unsloth::deepseek-v4-flash".to_string(),
@@ -355,6 +373,8 @@ impl AppConfig {
             min_text_length: 2,
             min_font_size: 12,
             max_font_size: 32,
+            font_scale_pct: 100,
+            default_font: String::new(),
             uppercase: false,
             overflow_mode: "shrink".to_string(),
             batch_pages: 15,
@@ -396,6 +416,8 @@ impl AppConfig {
             obj.insert("min_text_length".into(), serde_json::json!(self.min_text_length));
             obj.insert("min_font_size".into(), serde_json::json!(self.min_font_size));
             obj.insert("max_font_size".into(), serde_json::json!(self.max_font_size));
+            obj.insert("font_scale_pct".into(), serde_json::json!(self.font_scale_pct));
+            obj.insert("default_font".into(), serde_json::json!(self.default_font));
             obj.insert("uppercase".into(), serde_json::json!(self.uppercase));
             obj.insert("overflow_mode".into(), serde_json::json!(self.overflow_mode));
             obj.insert("batch_pages".into(), serde_json::json!(self.batch_pages));
@@ -523,6 +545,12 @@ impl AppConfig {
         }
         if let Some(v) = pick_u32("max_font_size") {
             cfg.max_font_size = v.clamp(8, 300);
+        }
+        if let Some(v) = pick_u32("font_scale_pct") {
+            cfg.font_scale_pct = v.clamp(65, 160);
+        }
+        if let Some(v) = pick_str("default_font") {
+            cfg.default_font = v.trim().to_string();
         }
         if let Some(v) = pick_bool("uppercase") {
             cfg.uppercase = v;

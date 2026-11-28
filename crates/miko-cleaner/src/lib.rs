@@ -5,7 +5,7 @@ pub mod engine;
 pub mod lama;
 pub mod segmenter;
 
-pub use cache::compute_clean_state_hash;
+pub use cache::{compute_clean_state_hash, compute_clean_state_hash_opts};
 pub use cv::{
     compute_rgb_median_and_std, connected_components, dilate_ellipse, distance_transform_l2,
     draw_circle, draw_polyline, erode_ellipse, fill_polygon, hermite_wall_bridge,
@@ -666,5 +666,76 @@ mod tests {
         assert_eq!(mask[70 * 140 + 70], 255, "dark stroke core must be masked");
         assert_eq!(mask[70 * 140 + 64], 255, "white halo around stroke must be masked");
         assert_eq!(mask[70 * 140 + 30], 0, "surrounding screentone must stay clean");
+    }
+
+    #[test]
+    fn test_skip_untranslated_preserves_original_ink_and_updates_hash() {
+        let mut img = image::RgbImage::from_pixel(120, 120, image::Rgb([252, 252, 252]));
+        for y in 45..75 {
+            for x in 45..75 {
+                if (x + y) % 3 == 0 {
+                    img.put_pixel(x, y, image::Rgb([18, 18, 18]));
+                }
+            }
+        }
+        let mut blk = TextBlock {
+            id: 1,
+            bbox: [20, 20, 100, 100],
+            bubble_polygon: Some(vec![[20, 20], [100, 20], [100, 100], [20, 100]]),
+            original_text: "テスト".into(),
+            translated_text: String::new(),
+            ..Default::default()
+        };
+
+        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_skip_untr"));
+        let res_skip = engine.clean_image_with_neural_mask(
+            &img,
+            std::slice::from_ref(&blk),
+            None,
+            &CleanOptions {
+                use_neural_segmenter: false,
+                use_cache: false,
+                skip_untranslated: true,
+                ..Default::default()
+            },
+        );
+        assert_eq!(res_skip.blocks_cleaned, 0);
+        // Оригинальные тёмные пиксели должны остаться нетронутыми!
+        assert!(res_skip.cleaned.get_pixel(51, 51)[0] < 40);
+
+        let res_clean = engine.clean_image_with_neural_mask(
+            &img,
+            std::slice::from_ref(&blk),
+            None,
+            &CleanOptions {
+                use_neural_segmenter: false,
+                use_cache: false,
+                skip_untranslated: false,
+                ..Default::default()
+            },
+        );
+        assert_eq!(res_clean.blocks_cleaned, 1);
+        assert!(res_clean.cleaned.get_pixel(51, 51)[0] > 235);
+
+        let h_empty = compute_clean_state_hash_opts(
+            std::slice::from_ref(&blk),
+            "p1.webp",
+            100,
+            9,
+            CLEAN_ALGO_VERSION,
+            "balanced",
+            true,
+        );
+        blk.translated_text = "Тест".into();
+        let h_done = compute_clean_state_hash_opts(
+            &[blk],
+            "p1.webp",
+            100,
+            9,
+            CLEAN_ALGO_VERSION,
+            "balanced",
+            true,
+        );
+        assert_ne!(h_empty, h_done);
     }
 }

@@ -359,12 +359,163 @@ pub fn upload_custom_font(
         let _ = install_font_for_windows_user(&dst_path, &stem);
     }
 
+    let cache = FontCache::new();
+    let supports_ru = cache.font_supports_text(&dst_path, "Привет мир");
+    let supports_en = cache.font_supports_text(&dst_path, "Hello World");
+
     Ok(FontInfo {
         id: safe_name.clone(),
         name: stem,
         filename: safe_name,
         path: dst_path.to_string_lossy().to_string(),
+        supports_ru,
+        supports_en,
     })
+}
+
+#[derive(Debug, Deserialize)]
+pub struct FontFileQuery {
+    pub name: String,
+}
+
+pub async fn serve_font_file(
+    State(state): State<Arc<AppState>>,
+    axum::extract::Query(q): axum::extract::Query<FontFileQuery>,
+) -> Response {
+    let trimmed = q.name.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains('\0')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "detail": "Недопустимое имя файла шрифта" })),
+        )
+            .into_response();
+    }
+    let path = state.base_dir.join("fonts").join(trimmed);
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if !matches!(ext.as_str(), "ttf" | "otf" | "ttc") || !path.is_file() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "detail": "Шрифт не найден" })),
+        )
+            .into_response();
+    }
+    match tokio::fs::read(&path).await {
+        Ok(bytes) => {
+            let mime = match ext.as_str() {
+                "otf" => "font/otf",
+                "ttc" => "font/collection",
+                _ => "font/ttf",
+            };
+            (
+                [
+                    (axum::http::header::CONTENT_TYPE, mime),
+                    (axum::http::header::CACHE_CONTROL, "public, max-age=3600"),
+                ],
+                bytes,
+            )
+                .into_response()
+        }
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "detail": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+pub async fn open_fonts_folder(State(state): State<Arc<AppState>>) -> Response {
+    let fonts_dir = state.base_dir.join("fonts");
+    let _ = std::fs::create_dir_all(&fonts_dir);
+    #[cfg(windows)]
+    {
+        match std::process::Command::new("explorer.exe")
+            .arg(&fonts_dir)
+            .spawn()
+        {
+            Ok(_) => Json(json!({
+                "status": "ok",
+                "fonts_dir": fonts_dir.to_string_lossy(),
+            }))
+            .into_response(),
+            Err(e) => (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({ "detail": e.to_string() })),
+            )
+                .into_response(),
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        Json(json!({
+            "status": "ok",
+            "fonts_dir": fonts_dir.to_string_lossy(),
+        }))
+        .into_response()
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct DeleteFontPayload {
+    pub filename: String,
+}
+
+pub async fn delete_font(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<DeleteFontPayload>,
+) -> Response {
+    let trimmed = payload.filename.trim();
+    if trimmed.is_empty()
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains("..")
+        || trimmed.contains('\0')
+    {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "detail": "Недопустимое имя файла шрифта" })),
+        )
+            .into_response();
+    }
+    let fonts_dir = state.base_dir.join("fonts");
+    let target = fonts_dir.join(trimmed);
+    if !target.is_file() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(json!({ "detail": "Файл шрифта не найден" })),
+        )
+            .into_response();
+    }
+    if let Err(e) = std::fs::remove_file(&target) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "detail": format!("Не удалось удалить шрифт: {e}") })),
+        )
+            .into_response();
+    }
+    if let Ok(mut cfg) = state.config.write() {
+        if cfg.default_font.eq_ignore_ascii_case(trimmed) {
+            cfg.default_font.clear();
+            state.persist_config_if_enabled(&cfg);
+        }
+    }
+    let available = state.refresh_fonts();
+    let status = build_font_status(&fonts_dir, &available);
+    Json(json!({
+        "status": "ok",
+        "deleted": trimmed,
+        "available_fonts": available,
+        "font_status": status,
+    }))
+    .into_response()
 }
 
 pub async fn get_fonts_catalog(State(state): State<Arc<AppState>>) -> Json<Value> {

@@ -29,6 +29,7 @@ pub enum RendererError {
 pub struct RenderOptions {
     pub min_font_size: i32,
     pub max_font_size: i32,
+    pub font_scale_pct: u32,
     pub uppercase: bool,
     pub overflow_mode: String,
     pub default_font_path: Option<PathBuf>,
@@ -39,6 +40,7 @@ impl Default for RenderOptions {
         Self {
             min_font_size: 12,
             max_font_size: 36,
+            font_scale_pct: 100,
             uppercase: false,
             overflow_mode: "shrink".to_string(),
             default_font_path: None,
@@ -134,11 +136,11 @@ fn build_cavity_mask(
     let ch = (y2 - y1) as usize;
     let oval_mask = build_oval_fallback_mask(cw, ch, blk.is_free_text);
     let min_dim = cw.min(ch);
-    let erode_r = if min_dim < 75 {
+    let erode_r = if min_dim < 72 {
         2
-    } else if min_dim < 115 {
+    } else if min_dim < 92 {
         3
-    } else if min_dim < 155 {
+    } else if min_dim < 145 {
         4
     } else {
         5
@@ -205,10 +207,21 @@ fn build_cavity_mask(
                     }
                     let perim_total = 2 * (cw + ch).max(1);
                     if perim_touch * 100 <= perim_total * 24 {
-                        // Заменяем грубый полигон на попиксельно точную светлую полость (исключая внешние рамки!)
+                        // Заменяем грубый полигон на попиксельно точную светлую полость, но если детальный контур (>6 вершин)
+                        // внутри перегорожен тёмными спидлайнами (`flood_area < 72% poly_area`, напр. `022 #2 THOOM`),
+                        // объединяем `raw_mask | flood` вместо урезания полигона!
                         let flood_area = flood.iter().filter(|&&v| v > 0).count();
                         if flood_area * 100 >= (cw * ch) * 28 {
-                            raw_mask = flood;
+                            let poly_area = raw_mask.iter().filter(|&&v| v > 0).count();
+                            if poly.len() <= 6 || flood_area * 100 >= poly_area * 72 {
+                                raw_mask = flood;
+                            } else {
+                                for i in 0..(cw * ch) {
+                                    if flood[i] > 0 {
+                                        raw_mask[i] = 255;
+                                    }
+                                }
+                            }
                             flood_succeeded = true;
                         }
                     }
@@ -369,12 +382,15 @@ impl RustRendererEngine {
         }
 
         let t_layout = Instant::now();
-        let anchor_fs = compute_page_target_base_fs(
+        let raw_anchor_fs = compute_page_target_base_fs(
             cleaned_img.width(),
             cleaned_img.height(),
             opts.min_font_size,
             opts.max_font_size,
         );
+        let scale_mult = (opts.font_scale_pct.clamp(65, 160) as f32) / 100.0;
+        let anchor_fs = ((raw_anchor_fs as f32 * scale_mult).round() as i32)
+            .clamp(opts.min_font_size.max(8), opts.max_font_size.max(12));
         let page_area = (iw.max(1) as usize) * (ih.max(1) as usize);
         let mut prepared: Vec<PreparedBlock> = Vec::new();
         let mut harm_inputs: Vec<PageHarmonizeInput> = Vec::new();
@@ -489,7 +505,7 @@ impl RustRendererEngine {
                 _ => Some(anchor_fs),
             };
 
-            let layout = solve_bubble_layout_anchored(
+            let mut layout = solve_bubble_layout_anchored(
                 &formatted,
                 &cavity,
                 cw,
@@ -502,6 +518,51 @@ impl RustRendererEngine {
                 |s, fs, sx| measure_text_width_scaled(&font, fs, sx, s),
             );
             let is_fixed = blk.font_size.is_some();
+
+            // Авто-спасатель мелкого шрифта (Auto-Rescue Pass < 1мс):
+            // срабатывает при аварийном провале кегля (`<= 13 px`) в т.ч. на уменьшенных разворотах (`cw >= 36 && ch >= 58`),
+            // мягко возвращая 2 px запаса эрозии строго внутри реальной светлой полости баббла без захода на чёрные стенки!
+            let rescue_floor = 13.max(opts.min_font_size);
+            if !is_fixed && layout.font_size <= rescue_floor && cw >= 36 && ch >= 58 {
+                let mut relaxed_mask = dilate_ellipse(&cavity, cw, ch, 2);
+                for my in 0..ch {
+                    for mx in 0..cw {
+                        if relaxed_mask[my * cw + mx] > 0 && cavity[my * cw + mx] == 0 {
+                            let p = cleaned_img.get_pixel((rect[0] + mx as i32) as u32, (rect[1] + my as i32) as u32);
+                            if rgb_lum([p[0], p[1], p[2]]) < 175 {
+                                relaxed_mask[my * cw + mx] = 0;
+                            }
+                        }
+                    }
+                }
+                let extra_condense = if cw < 64 {
+                    0.84f32
+                } else if cw < 80 && ch >= cw * 2 {
+                    0.88f32
+                } else {
+                    0.94f32
+                };
+                let rescue_cap = (anchor_fs - 2).clamp(15, pass1_max_fs);
+                let rescued = solve_bubble_layout_anchored(
+                    &formatted,
+                    &relaxed_mask,
+                    cw,
+                    ch,
+                    opts.min_font_size,
+                    rescue_cap,
+                    None,
+                    None,
+                    allow_emergency,
+                    |s, fs, sx| measure_text_width_scaled(&font, fs, sx * extra_condense, s),
+                );
+                let rescued_h = (rescued.lines.len() as f32) * rescued.line_height;
+                if rescued.font_size > layout.font_size
+                    && rescued.max_line_w <= (cw as f32) * 0.97
+                    && rescued_h <= (ch as f32) * 0.94
+                {
+                    layout = rescued;
+                }
+            }
             let char_cnt = formatted.chars().count();
             harm_inputs.push(PageHarmonizeInput {
                 raw_fs: layout.font_size,
