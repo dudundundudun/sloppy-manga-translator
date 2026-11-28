@@ -8,7 +8,8 @@ pub mod win_dialog;
 pub const EMBEDDED_WEB_STUDIO_HTML: &str = include_str!("../../../web_studio.html");
 pub const EMBEDDED_MASCOT_PNG: &[u8] = include_bytes!("../../../mascot.png");
 pub const EMBEDDED_MASCOT_FOX_PNG: &[u8] = include_bytes!("../../../mascot_fox.png");
-pub const EMBEDDED_MASCOT_FOX_SPRITES_PNG: &[u8] = include_bytes!("../../../mascot_fox_sprites.png");
+pub const EMBEDDED_MASCOT_FOX_SPRITES_PNG: &[u8] =
+    include_bytes!("../../../mascot_fox_sprites.png");
 pub const EMBEDDED_CONFIG_EXAMPLE_JSON: &str = include_str!("../../../config.example.json");
 
 use axum::body::Body;
@@ -24,7 +25,7 @@ use miko_core::security::{
     is_trusted_host_header, is_trusted_local_origin, is_trusted_referer, mask_api_key,
     reject_unc_path, AllowedRoots, PRIVILEGED_ENDPOINTS,
 };
-use miko_core::{AppConfig, FolderJobState, GlossaryEntry, StudioDb, TextBlock};
+use miko_core::{AppConfig, CanonOverride, FolderJobState, GlossaryEntry, StudioDb, TextBlock};
 use miko_ocr::{OcrOptions, RustOcrEngine};
 use miko_ort::{scan_onnx_inventory, OrtInventory};
 use miko_renderer::{list_available_fonts, FontInfo, RustRendererEngine};
@@ -222,6 +223,8 @@ pub fn prompt_config_from_app(cfg: &AppConfig) -> PromptConfig {
         anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
         custom_system_prompt: cfg.custom_system_prompt.clone(),
         custom_context_prompt: cfg.custom_context_prompt.clone(),
+        adult_canon_en: cfg.adult_canon_en,
+        ..Default::default()
     }
 }
 
@@ -282,7 +285,11 @@ async fn serve_mascot_fox(State(state): State<Arc<AppState>>) -> Response {
     let p = state.base_dir.join("mascot_fox.png");
     match tokio::fs::read(&p).await {
         Ok(bytes) => ([(header::CONTENT_TYPE, "image/png")], bytes).into_response(),
-        Err(_) => ([(header::CONTENT_TYPE, "image/png")], EMBEDDED_MASCOT_FOX_PNG).into_response(),
+        Err(_) => (
+            [(header::CONTENT_TYPE, "image/png")],
+            EMBEDDED_MASCOT_FOX_PNG,
+        )
+            .into_response(),
     }
 }
 
@@ -351,6 +358,13 @@ struct HealthResponse {
     custom_system_prompt: String,
     custom_context_prompt: String,
     prompt_preset_id: String,
+    adult_canon_en: bool,
+    chapter_prepass: bool,
+    name_lock: bool,
+    qa_linter_mode: String,
+    lookahead_lines: u32,
+    canon_version: String,
+    canon_entries_count: usize,
     default_system_prompt: &'static str,
     default_anti_censorship_prompt: &'static str,
     preflight_nsfw_split: bool,
@@ -441,8 +455,16 @@ fn build_ui_model_entries(cfg: &AppConfig, ollama_tags: &[String]) -> Vec<Value>
 }
 
 async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse> {
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let job = state.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let job = state
+        .folder_job
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let global_glossary = state
         .db
         .load_glossary("global")
@@ -524,6 +546,13 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         custom_system_prompt: cfg.custom_system_prompt,
         custom_context_prompt: cfg.custom_context_prompt,
         prompt_preset_id: cfg.prompt_preset_id,
+        adult_canon_en: cfg.adult_canon_en,
+        chapter_prepass: cfg.chapter_prepass,
+        name_lock: cfg.name_lock,
+        qa_linter_mode: cfg.qa_linter_mode,
+        lookahead_lines: cfg.lookahead_lines,
+        canon_version: miko_translator::builtin_canon_en().version.clone(),
+        canon_entries_count: miko_translator::builtin_canon_en().entries.len(),
         default_system_prompt: DEFAULT_SYSTEM_STYLE_PROMPT,
         default_anti_censorship_prompt: DEFAULT_ANTI_CENSORSHIP_PREAMBLE,
         preflight_nsfw_split: cfg.preflight_nsfw_split,
@@ -555,7 +584,11 @@ async fn get_models(
     State(state): State<Arc<AppState>>,
     Query(q): Query<ModelsQuery>,
 ) -> Json<Value> {
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let ollama_tags = state.translator.list_ollama_models().await;
     let mut models = build_ui_model_entries(&cfg, &ollama_tags);
 
@@ -633,7 +666,11 @@ async fn get_models(
 }
 
 async fn get_folder_status(State(state): State<Arc<AppState>>) -> Json<FolderJobState> {
-    let job = state.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let job = state
+        .folder_job
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     Json(job)
 }
 
@@ -645,10 +682,9 @@ async fn stream_folder_status(
         (state, rx, false),
         |(st, mut rx, sent_initial)| async move {
             if sent_initial {
-                let is_active = st
-                    .folder_job
-                    .read()
-                    .is_ok_and(|j| matches!(j.status.as_str(), "starting" | "running" | "stopping"));
+                let is_active = st.folder_job.read().is_ok_and(|j| {
+                    matches!(j.status.as_str(), "starting" | "running" | "stopping")
+                });
                 let wait = if is_active {
                     Duration::from_secs(1)
                 } else {
@@ -656,7 +692,11 @@ async fn stream_folder_status(
                 };
                 let _ = tokio::time::timeout(wait, rx.changed()).await;
             }
-            let snap = st.folder_job.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let snap = st
+                .folder_job
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let data = serde_json::to_string(&snap).unwrap_or_else(|_| "{}".to_string());
             let ev = Event::default().event("status").data(data);
             Some((Ok(ev), (st, rx, true)))
@@ -676,7 +716,11 @@ async fn get_glossary(
 ) -> Response {
     if let Some(ref fp) = q.folder_path {
         if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
+                .into_response();
         }
     }
     let global_list = state.db.load_glossary("global").unwrap_or_default();
@@ -715,13 +759,21 @@ async fn save_glossary(
 ) -> Response {
     if let Some(ref fp) = payload.folder_path {
         if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
+                .into_response();
         }
     }
     if let Some(ref g) = payload.global_glossary {
         let norm = normalize_glossary_entries(g);
         if let Err(e) = state.db.replace_glossary("global", &norm) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"detail": e.to_string()})),
+            )
+                .into_response();
         }
         if let Ok(mut cfg) = state.config.write() {
             cfg.glossary = norm;
@@ -732,7 +784,11 @@ async fn save_glossary(
         let scope = format!("folder:{}", fp.trim().to_ascii_lowercase());
         let norm_f = normalize_glossary_entries(fg);
         if let Err(e) = state.db.replace_glossary(&scope, &norm_f) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({"detail": e.to_string()}))).into_response();
+            return (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                Json(json!({"detail": e.to_string()})),
+            )
+                .into_response();
         }
     }
     let global_list = state.db.load_glossary("global").unwrap_or_default();
@@ -772,6 +828,11 @@ struct SettingsPayload {
     custom_system_prompt: Option<String>,
     custom_context_prompt: Option<String>,
     prompt_preset_id: Option<String>,
+    adult_canon_en: Option<bool>,
+    chapter_prepass: Option<bool>,
+    name_lock: Option<bool>,
+    qa_linter_mode: Option<String>,
+    lookahead_lines: Option<u32>,
     preflight_nsfw_split: Option<bool>,
     cloud_only_no_local_fallback: Option<bool>,
     cloud_fallback_model: Option<String>,
@@ -800,7 +861,21 @@ async fn update_settings(
 ) -> Response {
     if let Some(ref sd) = payload.web_save_dir {
         if let Err(err) = reject_unc_path(Some(sd), "web_save_dir") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
+                .into_response();
+        }
+    }
+    if let Some(ref qm) = payload.qa_linter_mode {
+        let m = qm.trim().to_ascii_lowercase();
+        if !matches!(m.as_str(), "off" | "fix" | "fix_and_retry") {
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": "Недопустимый qa_linter_mode (допустимо: off, fix, fix_and_retry)"})),
+            )
+                .into_response();
         }
     }
     let mut cfg = state.config.write().unwrap_or_else(|e| e.into_inner());
@@ -850,6 +925,21 @@ async fn update_settings(
         if !v.trim().is_empty() {
             cfg.prompt_preset_id = v.trim().to_string();
         }
+    }
+    if let Some(v) = payload.adult_canon_en {
+        cfg.adult_canon_en = v;
+    }
+    if let Some(v) = payload.chapter_prepass {
+        cfg.chapter_prepass = v;
+    }
+    if let Some(v) = payload.name_lock {
+        cfg.name_lock = v;
+    }
+    if let Some(v) = payload.qa_linter_mode {
+        cfg.qa_linter_mode = v.trim().to_ascii_lowercase();
+    }
+    if let Some(v) = payload.lookahead_lines {
+        cfg.lookahead_lines = v.clamp(0, 8);
     }
     if let Some(v) = payload.preflight_nsfw_split {
         cfg.preflight_nsfw_split = v;
@@ -939,6 +1029,11 @@ async fn update_settings(
         "custom_system_prompt": cfg.custom_system_prompt,
         "custom_context_prompt": cfg.custom_context_prompt,
         "prompt_preset_id": cfg.prompt_preset_id,
+        "adult_canon_en": cfg.adult_canon_en,
+        "chapter_prepass": cfg.chapter_prepass,
+        "name_lock": cfg.name_lock,
+        "qa_linter_mode": cfg.qa_linter_mode,
+        "lookahead_lines": cfg.lookahead_lines,
         "has_unsloth_key": !cfg.unsloth_api_key.trim().is_empty(),
         "masked_api_key": mask_api_key(Some(&cfg.unsloth_api_key)),
     }))
@@ -952,6 +1047,7 @@ struct PromptPreviewPayload {
     anti_censorship_custom_prompt: Option<String>,
     custom_system_prompt: Option<String>,
     custom_context_prompt: Option<String>,
+    adult_canon_en: Option<bool>,
     folder_path: Option<String>,
     sample_lines: Option<Vec<String>>,
 }
@@ -962,11 +1058,22 @@ async fn post_prompt_preview(
 ) -> Response {
     if let Some(ref fp) = payload.folder_path {
         if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
+                .into_response();
         }
     }
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let global_g = state.db.load_glossary("global").unwrap_or_else(|_| cfg.glossary.clone());
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let global_g = state
+        .db
+        .load_glossary("global")
+        .unwrap_or_else(|_| cfg.glossary.clone());
     let folder_g = payload
         .folder_path
         .as_deref()
@@ -985,6 +1092,7 @@ async fn post_prompt_preview(
     let mut merged = merge_glossaries(&global_g, &folder_g);
 
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
+    let canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
     let prompt_cfg = PromptConfig {
         anti_censorship: payload
             .anti_censorship_prompt
@@ -998,6 +1106,9 @@ async fn post_prompt_preview(
         custom_context_prompt: payload
             .custom_context_prompt
             .unwrap_or(cfg.custom_context_prompt),
+        adult_canon_en: payload.adult_canon_en.unwrap_or(cfg.adult_canon_en),
+        canon_overrides,
+        ..Default::default()
     };
 
     let raw_samples = payload.sample_lines.unwrap_or_default();
@@ -1070,6 +1181,7 @@ struct TestPromptPayload {
     anti_censorship_custom_prompt: Option<String>,
     custom_system_prompt: Option<String>,
     custom_context_prompt: Option<String>,
+    adult_canon_en: Option<bool>,
     folder_path: Option<String>,
 }
 
@@ -1079,7 +1191,11 @@ async fn post_test_prompt(
 ) -> Response {
     if let Some(ref fp) = payload.folder_path {
         if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
+                .into_response();
         }
     }
     let src_text = payload.text.trim().to_string();
@@ -1091,8 +1207,15 @@ async fn post_test_prompt(
             .into_response();
     }
 
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let global_g = state.db.load_glossary("global").unwrap_or_else(|_| cfg.glossary.clone());
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let global_g = state
+        .db
+        .load_glossary("global")
+        .unwrap_or_else(|_| cfg.glossary.clone());
     let folder_g = payload
         .folder_path
         .as_deref()
@@ -1115,6 +1238,7 @@ async fn post_test_prompt(
         .model
         .filter(|s| !s.trim().is_empty() && !s.trim().eq_ignore_ascii_case("auto"))
         .unwrap_or_else(|| cfg.selected_model.clone());
+    let canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
     let prompt_cfg = PromptConfig {
         anti_censorship: payload
             .anti_censorship_prompt
@@ -1128,6 +1252,9 @@ async fn post_test_prompt(
         custom_context_prompt: payload
             .custom_context_prompt
             .unwrap_or_else(|| cfg.custom_context_prompt.clone()),
+        adult_canon_en: payload.adult_canon_en.unwrap_or(cfg.adult_canon_en),
+        canon_overrides,
+        ..Default::default()
     };
 
     let preview_items = vec![("0".to_string(), src_text.clone(), Some(58))];
@@ -1184,7 +1311,11 @@ struct ModelStackPayload {
 }
 
 async fn get_model_stack(State(state): State<Arc<AppState>>) -> Json<Value> {
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     Json(json!({
         "status": "ok",
         "active_model": cfg.selected_model,
@@ -1260,8 +1391,152 @@ async fn get_diagnostics(State(state): State<Arc<AppState>>) -> Json<Value> {
             "translation_cache_rows": metrics.translation_cache_rows,
             "glossary_rows": metrics.glossary_rows,
             "page_state_rows": metrics.page_state_rows,
+            "canon_override_rows": metrics.canon_override_rows,
         }
     }))
+}
+
+#[derive(Debug, Deserialize)]
+struct CanonSavePayload {
+    #[serde(default)]
+    overrides: Vec<CanonOverride>,
+}
+
+async fn get_canon_en(State(state): State<Arc<AppState>>) -> Json<Value> {
+    let base = miko_translator::builtin_canon_en();
+    let overrides = state.db.load_canon_overrides("en").unwrap_or_default();
+    let merged = miko_translator::merge_overrides(base, &overrides);
+    let builtin_list: Vec<CanonOverride> = base
+        .entries
+        .iter()
+        .map(miko_translator::canon_entry_to_override)
+        .collect();
+    Json(json!({
+        "status": "ok",
+        "version": merged.version,
+        "builtin_version": base.version,
+        "builtin": builtin_list,
+        "overrides": overrides,
+        "merged_count": merged.entries.len(),
+    }))
+}
+
+async fn post_canon_en(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<CanonSavePayload>,
+) -> Response {
+    for ov in &payload.overrides {
+        if let Err(err_msg) = miko_translator::validate_canon_override(ov) {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "detail": err_msg }))).into_response();
+        }
+    }
+    if let Err(e) = state.db.replace_canon_overrides("en", &payload.overrides) {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "detail": e.to_string() })),
+        )
+            .into_response();
+    }
+    let base = miko_translator::builtin_canon_en();
+    let saved = state.db.load_canon_overrides("en").unwrap_or_default();
+    let merged = miko_translator::merge_overrides(base, &saved);
+    Json(json!({
+        "status": "ok",
+        "version": merged.version,
+        "overrides": saved,
+        "merged_count": merged.entries.len(),
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct ChapterAnalysisQuery {
+    folder_path: String,
+    target_lang: Option<String>,
+}
+
+async fn get_chapter_analysis(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ChapterAnalysisQuery>,
+) -> Response {
+    if let Err(err) = reject_unc_path(Some(&q.folder_path), "folder_path") {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "detail": err.to_string() })),
+        )
+            .into_response();
+    }
+    let source_dir = folder_job::unwrap_source_folder(Path::new(q.folder_path.trim()));
+    if !state.allowed_roots.is_within_allowed_roots(&source_dir) {
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({ "detail": "Папка вне разрешённых директорий" })),
+        )
+            .into_response();
+    }
+    let t_lang = q.target_lang.unwrap_or_else(|| "en".to_string());
+    let output_dir = folder_job::output_dir_for_folder(&source_dir, &t_lang);
+    let manifest = folder_job::load_manifest(&output_dir);
+
+    let mut all_blocks: Vec<TextBlock> = Vec::new();
+    if let Some(pre_obj) = manifest.get("ocr_prepass").and_then(|v| v.as_object()) {
+        let mut keys: Vec<&String> = pre_obj.keys().collect();
+        keys.sort_by(|a, b| folder_job::natural_cmp(a, b));
+        for k in keys {
+            if let Some(arr) = pre_obj[k].get("blocks").and_then(|v| v.as_array()) {
+                if let Ok(parsed) =
+                    serde_json::from_value::<Vec<TextBlock>>(Value::Array(arr.clone()))
+                {
+                    all_blocks.extend(parsed);
+                }
+            }
+        }
+    }
+    if all_blocks.is_empty() {
+        if let Some(pages_obj) = manifest.get("pages").and_then(|v| v.as_object()) {
+            let mut keys: Vec<&String> = pages_obj.keys().collect();
+            keys.sort_by(|a, b| folder_job::natural_cmp(a, b));
+            for k in keys {
+                if let Some(arr) = pages_obj[k].get("blocks").and_then(|v| v.as_array()) {
+                    if let Ok(parsed) =
+                        serde_json::from_value::<Vec<TextBlock>>(Value::Array(arr.clone()))
+                    {
+                        all_blocks.extend(parsed);
+                    }
+                }
+            }
+        }
+    }
+
+    let series_hint = miko_translator::extract_series_hint_from_path(&source_dir);
+    let overrides = state.db.load_canon_overrides("en").unwrap_or_default();
+    let canon_db =
+        miko_translator::merge_overrides(miko_translator::builtin_canon_en(), &overrides);
+    let mut analysis = miko_translator::ChapterAnalysis::build(
+        &all_blocks,
+        series_hint.as_deref(),
+        &canon_db,
+        miko_translator::builtin_fandom_db(),
+    );
+    if let Some(saved_lock) = manifest
+        .get("name_lock")
+        .cloned()
+        .and_then(|v| serde_json::from_value::<Vec<GlossaryEntry>>(v).ok())
+    {
+        if !saved_lock.is_empty() {
+            analysis.name_lock = saved_lock;
+        }
+    }
+    let brief = analysis.chapter_brief(600);
+
+    Json(json!({
+        "status": "ok",
+        "source_dir": source_dir.to_string_lossy(),
+        "output_dir": output_dir.to_string_lossy(),
+        "chapter_brief": brief,
+        "analysis": analysis,
+    }))
+    .into_response()
 }
 
 #[derive(Debug, Deserialize)]
@@ -1270,6 +1545,9 @@ struct OcrRustPayload {
     detect_free_text: Option<bool>,
     text_filter_mode: Option<String>,
     rtl: Option<bool>,
+    skip_sfx: Option<bool>,
+    skip_sighs: Option<bool>,
+    min_text_length: Option<usize>,
 }
 
 async fn run_ocr_rust(
@@ -1277,7 +1555,11 @@ async fn run_ocr_rust(
     Json(payload): Json<OcrRustPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.image_path), "image_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let img_p = Path::new(payload.image_path.trim());
     if !img_p.is_file() {
@@ -1295,19 +1577,32 @@ async fn run_ocr_rust(
             .into_response();
     }
 
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let opts = OcrOptions {
-        detect_free_text: payload.detect_free_text.unwrap_or(false),
+        detect_free_text: payload.detect_free_text.unwrap_or(cfg.detect_free_text),
         text_filter_mode: payload
             .text_filter_mode
-            .unwrap_or_else(|| "dialogue_only".to_string()),
+            .unwrap_or_else(|| cfg.text_filter_mode.clone()),
+        min_text_length: payload
+            .min_text_length
+            .unwrap_or((cfg.min_text_length as usize).max(1)),
         rtl: payload.rtl.unwrap_or(true),
+        skip_sfx: payload.skip_sfx.unwrap_or(cfg.skip_sfx),
+        skip_sighs: payload.skip_sighs.unwrap_or(cfg.skip_sighs),
         ..Default::default()
     };
     let img_owned = img_p.to_path_buf();
     let st_clone = state.clone();
 
     let res = tokio::task::spawn_blocking(move || {
-        let mut guard = st_clone.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
+        let mut guard = st_clone
+            .ocr_engine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
             let eng = RustOcrEngine::load(&st_clone.base_dir, true)?;
             *guard = Some(eng);
@@ -1357,11 +1652,18 @@ async fn run_clean_rust(
     Json(payload): Json<CleanRustPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.image_path), "image_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     if let Some(ref op) = payload.out_path {
         if let Err(err) = reject_unc_path(Some(op), "out_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
                 .into_response();
         }
     }
@@ -1382,7 +1684,10 @@ async fn run_clean_rust(
     }
     if let Some(ref op) = payload.out_path {
         let out_p = Path::new(op.trim());
-        let check_target = out_p.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(out_p);
+        let check_target = out_p
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(out_p);
         if !state.allowed_roots.is_within_allowed_roots(check_target) {
             return (
                 StatusCode::FORBIDDEN,
@@ -1417,10 +1722,13 @@ async fn run_clean_rust(
         let blocks = match supplied_blocks {
             Some(b) if !b.is_empty() => b,
             _ => {
-                let mut ocr_guard = st_clone.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
+                let mut ocr_guard = st_clone
+                    .ocr_engine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if ocr_guard.is_none() {
-                    let eng = RustOcrEngine::load(&st_clone.base_dir, true)
-                        .map_err(|e| e.to_string())?;
+                    let eng =
+                        RustOcrEngine::load(&st_clone.base_dir, true).map_err(|e| e.to_string())?;
                     *ocr_guard = Some(eng);
                 }
                 let ocr_res = ocr_guard
@@ -1432,7 +1740,10 @@ async fn run_clean_rust(
             }
         };
 
-        let mut clean_guard = st_clone.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+        let mut clean_guard = st_clone
+            .cleaner_engine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if clean_guard.is_none() {
             *clean_guard = Some(RustCleanerEngine::load(&st_clone.base_dir, true));
         }
@@ -1495,6 +1806,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/folder_status", get(get_folder_status))
         .route("/folder_stream", get(stream_folder_status))
         .route("/glossary", get(get_glossary).post(save_glossary))
+        .route("/canon/en", get(get_canon_en).post(post_canon_en))
+        .route("/chapter_analysis", get(get_chapter_analysis))
         .route("/settings", post(update_settings))
         .route("/prompt_preview", post(post_prompt_preview))
         .route("/test_prompt", post(post_test_prompt))
@@ -1506,21 +1819,36 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/open_folder_path", post(folder_job::open_folder_path))
         .route("/pick_folder", post(folder_job::pick_folder))
         .route("/pick_file", post(folder_job::pick_file))
-        .route("/pick_web_save_folder", post(folder_job::pick_web_save_folder))
+        .route(
+            "/pick_web_save_folder",
+            post(folder_job::pick_web_save_folder),
+        )
         .route("/open_folder", post(folder_job::open_folder))
-        .route("/open_web_save_folder", post(folder_job::open_web_save_folder))
+        .route(
+            "/open_web_save_folder",
+            post(folder_job::open_web_save_folder),
+        )
         .route("/auto_diamond_wrap", post(studio::auto_diamond_wrap))
-        .route("/retranslate_single_block", post(studio::retranslate_single_block))
+        .route(
+            "/retranslate_single_block",
+            post(studio::retranslate_single_block),
+        )
         .route("/translate", post(studio::translate_page))
         .route("/translate_page_file", post(studio::translate_page_file))
         .route("/save_edited_page", post(studio::save_edited_page))
         .route("/page_blocks", post(folder_job::page_blocks))
         .route("/page_romaji", post(folder_job::page_romaji))
-        .route("/translate_manual_region", post(folder_job::translate_manual_region))
+        .route(
+            "/translate_manual_region",
+            post(folder_job::translate_manual_region),
+        )
         .route("/translate_folder", post(folder_job::translate_folder))
         .route("/folder_stop", post(folder_job::folder_stop))
         .route("/folder_control", post(folder_job::folder_control))
-        .route("/folder_find_replace", post(folder_job::folder_find_replace))
+        .route(
+            "/folder_find_replace",
+            post(folder_job::folder_find_replace),
+        )
         .route("/folder_report", get(folder_job::folder_report))
         .route("/chapter_book", get(folder_job::chapter_book))
         .route("/fonts/catalog", get(fonts::get_fonts_catalog))
@@ -1532,25 +1860,40 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/setup/status", get(bootstrap::get_setup_status))
         .route("/setup/install", post(bootstrap::post_setup_install))
         .route("/setup/cancel", post(bootstrap::post_setup_cancel))
-        .route("/setup/install_ollama", post(bootstrap::post_install_ollama))
+        .route(
+            "/setup/install_ollama",
+            post(bootstrap::post_install_ollama),
+        )
         .route("/pull_model", post(bootstrap::post_pull_model))
         .route("/pull_status", get(bootstrap::get_pull_status))
         .route("/model_storage", get(compat::get_model_storage))
         .route("/delete_model", post(compat::post_delete_model))
         .route("/ux_telemetry/record", post(compat::ux_telemetry_record))
         .route("/ux_telemetry/report", get(compat::ux_telemetry_report))
-        .route("/ux_telemetry/open_report", post(compat::ux_telemetry_open_report))
+        .route(
+            "/ux_telemetry/open_report",
+            post(compat::ux_telemetry_open_report),
+        )
         .route("/ux_telemetry/clear", post(compat::ux_telemetry_clear))
         .route("/diagnostics", get(get_diagnostics))
         .route("/diagnostics/report", get(compat::get_diagnostics_report))
-        .route("/diagnostics/download_log", get(compat::download_diagnostics_log))
-        .route("/diagnostics/open_logs", post(compat::open_diagnostics_logs))
+        .route(
+            "/diagnostics/download_log",
+            get(compat::download_diagnostics_log),
+        )
+        .route(
+            "/diagnostics/open_logs",
+            post(compat::open_diagnostics_logs),
+        )
         .route("/diagnostics/clear", post(compat::clear_diagnostics_logs))
         .route("/open_folder_report", post(compat::open_folder_report))
         .route("/folder_clean_noise", post(compat::folder_clean_noise))
         .route("/shorten_block_text", post(compat::shorten_block_text))
         .route("/chapter_book/import", post(compat::chapter_book_import))
-        .route("/chapter_book/proofread", post(compat::chapter_book_proofread))
+        .route(
+            "/chapter_book/proofread",
+            post(compat::chapter_book_proofread),
+        )
         .route("/chapter_qa_check", post(compat::chapter_qa_check))
         .route("/chapter_qa_autofix", post(compat::chapter_qa_autofix))
         .route("/shutdown", post(shutdown_server))

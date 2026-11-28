@@ -1,10 +1,12 @@
+use crate::canon::{builtin_canon_en, match_pure_moan_en, merge_overrides};
 use crate::prompts::{
     build_translation_prompts_with_config, compute_translation_cache_key_with_prompts,
     detect_source_language, is_refusal_response, kana_to_romaji,
     parse_flat_json_translations_for_lang, restore_source_ellipses, PromptConfig,
 };
+use crate::qa_lint::{lint_pair, QaIssue, QaMode, QaResult};
 use crate::EndpointCircuitBreaker;
-use miko_core::{GlossaryEntry, StudioDb, TextBlock};
+use miko_core::{CanonOverride, GlossaryEntry, StudioDb, TextBlock};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -52,6 +54,12 @@ pub struct TranslateBatchRequest {
     pub custom_system_prompt: String,
     pub custom_context_prompt: String,
     pub use_cache: bool,
+    pub adult_canon_en: bool,
+    pub chapter_brief: String,
+    pub lookahead_lines: Vec<String>,
+    pub qa_linter_mode: QaMode,
+    pub canon_overrides: Vec<CanonOverride>,
+    pub force_local_nsfw_bypass: bool,
 }
 
 impl Default for TranslateBatchRequest {
@@ -71,6 +79,12 @@ impl Default for TranslateBatchRequest {
             custom_system_prompt: String::new(),
             custom_context_prompt: String::new(),
             use_cache: true,
+            adult_canon_en: true,
+            chapter_brief: String::new(),
+            lookahead_lines: Vec::new(),
+            qa_linter_mode: QaMode::FixAndRetry,
+            canon_overrides: Vec::new(),
+            force_local_nsfw_bypass: false,
         }
     }
 }
@@ -82,6 +96,11 @@ impl TranslateBatchRequest {
             anti_censorship_custom_prompt: self.anti_censorship_custom_prompt.clone(),
             custom_system_prompt: self.custom_system_prompt.clone(),
             custom_context_prompt: self.custom_context_prompt.clone(),
+            adult_canon_en: self.adult_canon_en,
+            chapter_brief: self.chapter_brief.clone(),
+            lookahead_lines: self.lookahead_lines.clone(),
+            qa_hints: Vec::new(),
+            canon_overrides: self.canon_overrides.clone(),
         }
     }
 }
@@ -96,6 +115,10 @@ pub struct TranslateBatchResult {
     pub elapsed_ms: u128,
     pub censored_fallback: bool,
     pub untranslated_count: usize,
+    pub qa_issues: Vec<(usize, QaIssue)>,
+    pub qa_fixed: usize,
+    pub qa_retried: usize,
+    pub fallback_warning: Option<String>,
 }
 
 /// Нативный async HTTP-переводчик манги (OpenAI-compatible Cloud + Local Ollama + SQLite WAL).
@@ -284,10 +307,7 @@ impl RustTranslator {
             return Err(TranslatorError::ApiStatus { status, body: txt });
         }
         let val: Value = resp.json().await?;
-        Ok(val["message"]["content"]
-            .as_str()
-            .unwrap_or("")
-            .to_string())
+        Ok(val["message"]["content"].as_str().unwrap_or("").to_string())
     }
 
     /// Проверяет локальную Ollama и при необходимости автоматически поднимает `ollama serve` в фоне.
@@ -334,29 +354,35 @@ impl RustTranslator {
 
     fn resolve_cloud_model(requested: &str) -> &str {
         let (prefix, bare) = strip_model_prefix(requested);
-        if matches!(prefix, Some("ollama")) || bare.is_empty() || bare.eq_ignore_ascii_case("auto") {
+        if matches!(prefix, Some("ollama")) || bare.is_empty() || bare.eq_ignore_ascii_case("auto")
+        {
             "deepseek-v4-flash"
         } else {
             bare
         }
     }
 
-    fn pick_best_ollama_tag(tags: &[String], preferred_fallback: &str) -> Option<String> {
+    fn pick_best_ollama_tag_with_warn(
+        tags: &[String],
+        preferred_fallback: &str,
+    ) -> (Option<String>, Option<String>) {
         let (_, pref_bare) = strip_model_prefix(preferred_fallback);
-        if !pref_bare.is_empty() && !pref_bare.eq_ignore_ascii_case("auto") {
+        let has_explicit_pref = !pref_bare.is_empty() && !pref_bare.eq_ignore_ascii_case("auto");
+        if has_explicit_pref {
             if let Some(exact) = tags.iter().find(|t| t.eq_ignore_ascii_case(pref_bare)) {
-                return Some(exact.clone());
+                return (Some(exact.clone()), None);
             }
             let short_pref = pref_bare.split('/').next_back().unwrap_or(pref_bare);
             if !short_pref.is_empty() {
-                if let Some(hit) = tags
-                    .iter()
-                    .find(|t| t.to_ascii_lowercase().contains(&short_pref.to_ascii_lowercase()))
-                {
-                    return Some(hit.clone());
+                if let Some(hit) = tags.iter().find(|t| {
+                    t.to_ascii_lowercase()
+                        .contains(&short_pref.to_ascii_lowercase())
+                }) {
+                    return (Some(hit.clone()), None);
                 }
             }
         }
+        let mut chosen: Option<String> = None;
         for pref in [
             "abliterated",
             "uncensored",
@@ -375,16 +401,33 @@ impl RustTranslator {
                 let low = t.to_ascii_lowercase();
                 low.contains(pref) && !low.contains("-vl") && !low.contains("glm-ocr")
             }) {
-                return Some(hit.clone());
+                chosen = Some(hit.clone());
+                break;
             }
         }
-        tags.iter()
-            .find(|t| {
-                let low = t.to_ascii_lowercase();
-                !low.contains("-vl") && !low.contains("glm-ocr")
-            })
-            .or_else(|| tags.first())
-            .cloned()
+        if chosen.is_none() {
+            chosen = tags
+                .iter()
+                .find(|t| {
+                    let low = t.to_ascii_lowercase();
+                    !low.contains("-vl") && !low.contains("glm-ocr")
+                })
+                .or_else(|| tags.first())
+                .cloned();
+        }
+        let warn_msg = if has_explicit_pref {
+            if let Some(ref actual) = chosen {
+                let msg =
+                    format!("Модель {pref_bare} из пресета не установлена → используется {actual}");
+                tracing::warn!("{}", msg);
+                Some(msg)
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        (chosen, warn_msg)
     }
 
     fn is_pure_kana_ascii(text: &str) -> bool {
@@ -417,12 +460,16 @@ impl RustTranslator {
 
         let (req_prefix, req_bare) = strip_model_prefix(&req.model);
         let is_explicit_ollama = matches!(req_prefix, Some("ollama"));
-        let has_cloud =
-            !is_explicit_ollama && !req.cloud_url.trim().is_empty() && !self.cloud_breaker.is_open();
+        let has_cloud = !is_explicit_ollama
+            && !req.cloud_url.trim().is_empty()
+            && !self.cloud_breaker.is_open();
         let cloud_model = Self::resolve_cloud_model(&req.model).to_string();
         let mut active_model = if has_cloud {
             cloud_model.clone()
-        } else if !req_bare.is_empty() && !req_bare.eq_ignore_ascii_case("auto") && !req_bare.starts_with("deepseek") {
+        } else if !req_bare.is_empty()
+            && !req_bare.eq_ignore_ascii_case("auto")
+            && !req_bare.starts_with("deepseek")
+        {
             req_bare.to_string()
         } else {
             "sugoi-14b-ultra".to_string()
@@ -431,7 +478,21 @@ impl RustTranslator {
         let mut cache_hits = 0usize;
         let mut api_calls = 0usize;
         let mut censored_fallback = false;
+        let mut qa_issues: Vec<(usize, QaIssue)> = Vec::new();
+        let mut qa_fixed = 0usize;
+        let mut qa_retried = 0usize;
+        let mut fallback_warning: Option<String> = None;
         let mut missing_indices: Vec<usize> = Vec::new();
+
+        let is_en = t_lang == "en";
+        let merged_canon_owned = if is_en && !req.canon_overrides.is_empty() {
+            Some(merge_overrides(builtin_canon_en(), &req.canon_overrides))
+        } else {
+            None
+        };
+        let canon_db = merged_canon_owned
+            .as_ref()
+            .unwrap_or_else(|| builtin_canon_en());
 
         for (idx, blk) in blocks.iter_mut().enumerate() {
             if blk.is_deleted {
@@ -454,6 +515,15 @@ impl RustTranslator {
                 continue;
             }
 
+            // Детерминированный перевод чистых стонов/вздохов для EN без обращения к LLM
+            if is_en && req.adult_canon_en {
+                if let Some(moan_tr) = match_pure_moan_en(canon_db, &src) {
+                    blk.translated_text = moan_tr;
+                    cache_hits += 1;
+                    continue;
+                }
+            }
+
             if req.use_cache {
                 if let Some(store) = db {
                     let ckey = compute_translation_cache_key_with_prompts(
@@ -465,9 +535,33 @@ impl RustTranslator {
                     );
                     if let Ok(Some(cached)) = store.get_cached_translation(&ckey) {
                         if !cached.trim().is_empty() {
-                            blk.translated_text = cached;
-                            cache_hits += 1;
-                            continue;
+                            if is_en && req.adult_canon_en && req.qa_linter_mode != QaMode::Off {
+                                let qa = lint_pair(&src, &cached, &req.glossary, canon_db);
+                                if qa.needs_retry && req.qa_linter_mode == QaMode::FixAndRetry {
+                                    // В кэше устаревшая ошибка без автозамены — отправляем на живой переперевод
+                                } else {
+                                    if qa.issues.iter().any(|i| i.fixed) {
+                                        qa_fixed += 1;
+                                        let _ = store.put_cached_translation(
+                                            &ckey,
+                                            &src,
+                                            &t_lang,
+                                            &qa.text,
+                                            &active_model,
+                                        );
+                                    }
+                                    for iss in qa.issues {
+                                        qa_issues.push((idx, iss));
+                                    }
+                                    blk.translated_text = qa.text;
+                                    cache_hits += 1;
+                                    continue;
+                                }
+                            } else {
+                                blk.translated_text = cached;
+                                cache_hits += 1;
+                                continue;
+                            }
                         }
                     }
                 }
@@ -536,7 +630,8 @@ impl RustTranslator {
                 );
 
                 let allow_local = is_explicit_ollama || !req.cloud_only_no_local_fallback;
-                let bypass_censored_cloud = allow_local && self.censorship_breaker.is_open();
+                let bypass_censored_cloud = allow_local
+                    && (self.censorship_breaker.is_open() || req.force_local_nsfw_bypass);
                 if bypass_censored_cloud {
                     censored_fallback = true;
                 }
@@ -638,7 +733,12 @@ impl RustTranslator {
                         Some(req_bare.to_string())
                     } else {
                         let tags = self.ensure_ollama_models().await;
-                        Self::pick_best_ollama_tag(&tags, &req.fallback_model)
+                        let (picked, warn) =
+                            Self::pick_best_ollama_tag_with_warn(&tags, &req.fallback_model);
+                        if fallback_warning.is_none() {
+                            fallback_warning = warn;
+                        }
+                        picked
                     };
                     ollama_model_resolved = Some(ollama_model_opt.clone());
 
@@ -679,10 +779,7 @@ impl RustTranslator {
                             {
                                 Ok(raw) => {
                                     let m = parse_flat_json_translations_for_lang(
-                                        &raw,
-                                        &fb_keys,
-                                        &t_lang,
-                                        false,
+                                        &raw, &fb_keys, &t_lang, false,
                                     );
                                     if !m.is_empty() {
                                         self.ollama_breaker.record_success();
@@ -695,7 +792,11 @@ impl RustTranslator {
                                     }
                                 }
                                 Err(err) => {
-                                    tracing::warn!("Ollama ({}) не ответила: {}", ollama_model, err);
+                                    tracing::warn!(
+                                        "Ollama ({}) не ответила: {}",
+                                        ollama_model,
+                                        err
+                                    );
                                     self.ollama_breaker.record_failure();
                                 }
                             }
@@ -754,10 +855,7 @@ impl RustTranslator {
                             {
                                 Ok(raw) => {
                                     let m = parse_flat_json_translations_for_lang(
-                                        &raw,
-                                        &sub_keys,
-                                        &t_lang,
-                                        false,
+                                        &raw, &sub_keys, &t_lang, false,
                                     );
                                     if !m.is_empty() {
                                         self.cloud_breaker.record_success();
@@ -795,7 +893,14 @@ impl RustTranslator {
                                         Some(req_bare.to_string())
                                     } else {
                                         let tags = self.ensure_ollama_models().await;
-                                        Self::pick_best_ollama_tag(&tags, &req.fallback_model)
+                                        let (picked, warn) = Self::pick_best_ollama_tag_with_warn(
+                                            &tags,
+                                            &req.fallback_model,
+                                        );
+                                        if fallback_warning.is_none() {
+                                            fallback_warning = warn;
+                                        }
+                                        picked
                                     };
                                     ollama_model_resolved = Some(resolved.clone());
                                     resolved
@@ -855,6 +960,211 @@ impl RustTranslator {
                                         );
                                         self.ollama_breaker.record_failure();
                                     }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Шаг 4 (Post-QA Linter для EN): детерминированные фиксы имён/сленга + до 1 микро-переперевода на чанк (<= 6 строк)
+                if is_en && req.adult_canon_en && req.qa_linter_mode != QaMode::Off {
+                    struct QaRetryItem {
+                        key: String,
+                        src: String,
+                        budget: Option<usize>,
+                        block_indices: Vec<usize>,
+                        prev_qa: QaResult,
+                    }
+                    let mut qa_retries: Vec<QaRetryItem> = Vec::new();
+
+                    for (pos, u_item) in chunk.iter().enumerate() {
+                        let k = pos.to_string();
+                        let Some((raw_tr, used_m)) = parsed_map.get(&k).cloned() else {
+                            continue;
+                        };
+                        let tr_ell = restore_source_ellipses(&u_item.src, &raw_tr);
+                        let qa = lint_pair(&u_item.src, &tr_ell, &req.glossary, canon_db);
+                        if qa.issues.iter().any(|i| i.fixed) {
+                            qa_fixed += 1;
+                        }
+                        parsed_map.insert(k.clone(), (qa.text.clone(), used_m));
+
+                        if qa.needs_retry
+                            && req.qa_linter_mode == QaMode::FixAndRetry
+                            && qa_retries.len() < 6
+                        {
+                            qa_retries.push(QaRetryItem {
+                                key: k,
+                                src: u_item.src.clone(),
+                                budget: u_item.budget,
+                                block_indices: u_item.block_indices.clone(),
+                                prev_qa: qa,
+                            });
+                        } else {
+                            for iss in qa.issues {
+                                for &b_idx in &u_item.block_indices {
+                                    qa_issues.push((b_idx, iss.clone()));
+                                }
+                            }
+                        }
+                    }
+
+                    if !qa_retries.is_empty() {
+                        let retry_keys: Vec<String> =
+                            qa_retries.iter().map(|r| r.key.clone()).collect();
+                        let retry_items: Vec<(String, String, Option<usize>)> = qa_retries
+                            .iter()
+                            .map(|r| (r.key.clone(), r.src.clone(), r.budget))
+                            .collect();
+                        let mut hints: Vec<String> = Vec::new();
+                        for r in &qa_retries {
+                            for iss in &r.prev_qa.issues {
+                                if let Some(ref h) = iss.hint_for_retry {
+                                    let formatted = format!("Key \"{}\": {}", r.key, h);
+                                    if !hints.contains(&formatted) {
+                                        hints.push(formatted);
+                                    }
+                                }
+                            }
+                        }
+
+                        let mut qa_ctx = rolling_ctx.clone();
+                        for (pos, u_item) in chunk.iter().enumerate() {
+                            let pk = pos.to_string();
+                            if retry_keys.contains(&pk) {
+                                continue;
+                            }
+                            if let Some((tr, _)) = parsed_map.get(&pk) {
+                                let fixed = restore_source_ellipses(&u_item.src, tr);
+                                if !fixed.trim().is_empty() {
+                                    qa_ctx.push(format!("{} => {}", u_item.src, fixed));
+                                }
+                            }
+                        }
+                        if qa_ctx.len() > 12 {
+                            let d = qa_ctx.len() - 12;
+                            qa_ctx.drain(0..d);
+                        }
+
+                        let mut retried_map: HashMap<String, (String, String)> = HashMap::new();
+                        let mut qa_cloud_cfg = prompt_cfg.clone();
+                        qa_cloud_cfg.qa_hints = hints.clone();
+                        let mut qa_fb_cfg = fb_prompt_cfg.clone();
+                        qa_fb_cfg.qa_hints = hints;
+
+                        if has_cloud
+                            && !self.cloud_breaker.is_open()
+                            && !bypass_censored_cloud
+                            && !cloud_censored_chunk
+                            && cloud_got_some
+                        {
+                            let (q_sys, q_user) = build_translation_prompts_with_config(
+                                &t_lang,
+                                &retry_items,
+                                &req.glossary,
+                                &qa_ctx,
+                                &qa_cloud_cfg,
+                            );
+                            api_calls += 1;
+                            if let Ok(raw) = self
+                                .call_cloud_openai(
+                                    &req.cloud_url,
+                                    &req.cloud_api_key,
+                                    &cloud_model,
+                                    &q_sys,
+                                    &q_user,
+                                    !allow_local,
+                                )
+                                .await
+                            {
+                                let m = parse_flat_json_translations_for_lang(
+                                    &raw,
+                                    &retry_keys,
+                                    &t_lang,
+                                    false,
+                                );
+                                for (k, v) in m {
+                                    retried_map.insert(k, (v, cloud_model.clone()));
+                                }
+                            }
+                        }
+
+                        let still_qa: Vec<(String, String, Option<usize>)> = retry_items
+                            .iter()
+                            .filter(|(k, _, _)| !retried_map.contains_key(k))
+                            .cloned()
+                            .collect();
+                        if !still_qa.is_empty() && allow_local && !self.ollama_breaker.is_open() {
+                            let ollama_model_opt = match ollama_model_resolved {
+                                Some(ref cached) => cached.clone(),
+                                None => {
+                                    if is_explicit_ollama && !req_bare.is_empty() {
+                                        let _ = self.ensure_ollama_models().await;
+                                        Some(req_bare.to_string())
+                                    } else {
+                                        let tags = self.ensure_ollama_models().await;
+                                        let (picked, warn) = Self::pick_best_ollama_tag_with_warn(
+                                            &tags,
+                                            &req.fallback_model,
+                                        );
+                                        if fallback_warning.is_none() {
+                                            fallback_warning = warn;
+                                        }
+                                        picked
+                                    }
+                                }
+                            };
+                            if let Some(ollama_model) = ollama_model_opt {
+                                let still_keys: Vec<String> =
+                                    still_qa.iter().map(|(k, _, _)| k.clone()).collect();
+                                let (q_sys, q_user) = build_translation_prompts_with_config(
+                                    &t_lang,
+                                    &still_qa,
+                                    &req.glossary,
+                                    &qa_ctx,
+                                    &qa_fb_cfg,
+                                );
+                                api_calls += 1;
+                                if let Ok(raw) =
+                                    self.call_ollama_chat(&ollama_model, &q_sys, &q_user).await
+                                {
+                                    let m = parse_flat_json_translations_for_lang(
+                                        &raw,
+                                        &still_keys,
+                                        &t_lang,
+                                        false,
+                                    );
+                                    for (k, v) in m {
+                                        retried_map.insert(k, (v, ollama_model.clone()));
+                                    }
+                                }
+                            }
+                        }
+
+                        for r in qa_retries {
+                            qa_retried += 1;
+                            if let Some((new_raw, new_model)) = retried_map.remove(&r.key) {
+                                let new_ell = restore_source_ellipses(&r.src, &new_raw);
+                                let qa2 = lint_pair(&r.src, &new_ell, &req.glossary, canon_db);
+                                let prev_unfixed =
+                                    r.prev_qa.issues.iter().filter(|i| !i.fixed).count();
+                                let new_unfixed = qa2.issues.iter().filter(|i| !i.fixed).count();
+                                if !qa2.needs_retry || new_unfixed <= prev_unfixed {
+                                    if qa2.issues.iter().any(|i| i.fixed) {
+                                        qa_fixed += 1;
+                                    }
+                                    parsed_map.insert(r.key.clone(), (qa2.text, new_model));
+                                    for iss in qa2.issues {
+                                        for &b_idx in &r.block_indices {
+                                            qa_issues.push((b_idx, iss.clone()));
+                                        }
+                                    }
+                                    continue;
+                                }
+                            }
+                            for iss in r.prev_qa.issues {
+                                for &b_idx in &r.block_indices {
+                                    qa_issues.push((b_idx, iss.clone()));
                                 }
                             }
                         }
@@ -951,6 +1261,10 @@ impl RustTranslator {
             elapsed_ms: t0.elapsed().as_millis(),
             censored_fallback,
             untranslated_count,
+            qa_issues,
+            qa_fixed,
+            qa_retried,
+            fallback_warning,
         })
     }
 
@@ -1020,6 +1334,12 @@ impl RustTranslator {
                     custom_system_prompt: prompt_cfg.custom_system_prompt.clone(),
                     custom_context_prompt: prompt_cfg.custom_context_prompt.clone(),
                     use_cache,
+                    adult_canon_en: prompt_cfg.adult_canon_en,
+                    chapter_brief: prompt_cfg.chapter_brief.clone(),
+                    lookahead_lines: prompt_cfg.lookahead_lines.clone(),
+                    qa_linter_mode: QaMode::FixAndRetry,
+                    canon_overrides: prompt_cfg.canon_overrides.clone(),
+                    force_local_nsfw_bypass: false,
                 },
                 db,
             )

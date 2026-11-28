@@ -245,7 +245,10 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
         let ocr_res = ocr.process_rgb_image(&rgb, &miko_ocr::OcrOptions::default())?;
         println!(
             "OCR READY | ep={} | load={} ms | ocr_total={} ms | blocks={}",
-            ocr_res.timings.ep, ocr_load_ms, ocr_res.timings.total_ms, ocr_res.blocks.len()
+            ocr_res.timings.ep,
+            ocr_load_ms,
+            ocr_res.timings.total_ms,
+            ocr_res.blocks.len()
         );
 
         let src_str = img_path.to_string_lossy().to_string();
@@ -289,21 +292,11 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             use_cache: true,
             ..Default::default()
         };
-        let write_res = cleaner.clean_image(
-            &rgb,
-            &ocr_res.blocks,
-            &cached_opts,
-            Some(&src_str),
-            mtime,
-        )?;
+        let write_res =
+            cleaner.clean_image(&rgb, &ocr_res.blocks, &cached_opts, Some(&src_str), mtime)?;
         cleaner.cache_mut().clear_ram();
-        let read_res = cleaner.clean_image(
-            &rgb,
-            &ocr_res.blocks,
-            &cached_opts,
-            Some(&src_str),
-            mtime,
-        )?;
+        let read_res =
+            cleaner.clean_image(&rgb, &ocr_res.blocks, &cached_opts, Some(&src_str), mtime)?;
         println!(
             "CACHE ROUNDTRIP | write_ms={} | disk_hit={} | read_ms={}",
             write_res.timings.total_ms, read_res.timings.cache_hit, read_res.timings.total_ms
@@ -348,6 +341,14 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                             cloud_api_key: cfg.unsloth_api_key.clone(),
                             glossary: state.db.load_glossary("global").unwrap_or_default(),
                             anti_censorship: cfg.anti_censorship_prompt,
+                            adult_canon_en: cfg.adult_canon_en,
+                            qa_linter_mode: miko_translator::QaMode::from_str_lossy(
+                                &cfg.qa_linter_mode,
+                            ),
+                            canon_overrides: state
+                                .db
+                                .load_canon_overrides("en")
+                                .unwrap_or_default(),
                             ..Default::default()
                         },
                         Some(&state.db),
@@ -452,7 +453,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let listener = match tokio::net::TcpListener::bind(addr).await {
         Ok(l) => l,
         Err(bind_err) => {
-            eprintln!("Порт {addr} уже занят ({bind_err}) — открываем уже запущенную студию {url}...");
+            eprintln!(
+                "Порт {addr} уже занят ({bind_err}) — открываем уже запущенную студию {url}..."
+            );
             if open_browser.unwrap_or(true) {
                 #[cfg(windows)]
                 {
@@ -495,7 +498,12 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
             .timeout(std::time::Duration::from_millis(900))
             .build()
             .unwrap_or_default();
-        if client.get("http://127.0.0.1:11434/api/tags").send().await.is_err() {
+        if client
+            .get("http://127.0.0.1:11434/api/tags")
+            .send()
+            .await
+            .is_err()
+        {
             #[cfg(windows)]
             {
                 use std::os::windows::process::CommandExt;
@@ -516,12 +524,9 @@ async fn async_main() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
                 .iter()
                 .map(|s| (*s).to_string())
                 .collect();
-            let rep = miko_server::fonts::download_and_install_fonts(
-                &fonts_dir,
-                Some(&base_ids),
-                false,
-            )
-            .await;
+            let rep =
+                miko_server::fonts::download_and_install_fonts(&fonts_dir, Some(&base_ids), false)
+                    .await;
             bg_state.refresh_fonts();
             tracing::info!(
                 "Автозагрузка базовых манга-шрифтов: installed={:?}, skipped={:?}, failed={:?}",

@@ -97,7 +97,9 @@ impl NeuralStrokeSegmenter {
             .first()
             .map(|i| i.name().to_string())
             .unwrap_or_else(|| "images".to_string());
-        let outputs = self.session.run(miko_ort::ort::inputs![in_name => in_tensor])?;
+        let outputs = self
+            .session
+            .run(miko_ort::ort::inputs![in_name => in_tensor])?;
 
         let (s0, d0) = outputs["output0"].try_extract_tensor::<f32>()?;
         let (s1, d1) = outputs["output1"].try_extract_tensor::<f32>()?;

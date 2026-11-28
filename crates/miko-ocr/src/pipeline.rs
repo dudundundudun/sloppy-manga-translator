@@ -1,8 +1,7 @@
-use crate::detectors::{
-    fuse_detections, RtDetrDetector, YoloBubbleDetector, YoloSegDetector,
-};
+use crate::detectors::{fuse_detections, RtDetrDetector, YoloBubbleDetector, YoloSegDetector};
 use crate::filter::{
-    classify_filter_reason, is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only,
+    classify_filter_reason, is_dialogue_whitelist, is_drawn_sfx_with_shape,
+    is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only, is_pure_sigh_text,
     sanitize_nar_stutter,
 };
 use crate::nar::{NarError, NarRecognizer};
@@ -34,6 +33,10 @@ pub struct OcrOptions {
     pub min_text_length: usize,
     pub conf_threshold: f32,
     pub rtl: bool,
+    #[serde(default)]
+    pub skip_sfx: bool,
+    #[serde(default)]
+    pub skip_sighs: bool,
 }
 
 impl Default for OcrOptions {
@@ -44,6 +47,8 @@ impl Default for OcrOptions {
             min_text_length: 1,
             conf_threshold: 0.35,
             rtl: true,
+            skip_sfx: false,
+            skip_sighs: false,
         }
     }
 }
@@ -197,7 +202,11 @@ impl RustOcrEngine {
             }
 
             let tight_tb = compute_tight_ink_bbox(img, det.bbox, det.text_bbox, det.is_free_text);
-            let ocr_box = if !det.is_free_text { tight_tb } else { det.bbox };
+            let ocr_box = if !det.is_free_text {
+                tight_tb
+            } else {
+                det.bbox
+            };
             let raw_crop = crop_with_padding(img, ocr_box, 0);
             let (has_ink, ink_px) = has_meaningful_ink(&raw_crop, det.is_free_text);
             if !has_ink {
@@ -228,6 +237,15 @@ impl RustOcrEngine {
                 && det.confidence < 0.65
                 && recognized.chars().count() <= 2
             {
+                continue;
+            }
+            if opts.skip_sfx
+                && is_drawn_sfx_with_shape(&recognized, Some(det.bbox))
+                && !is_dialogue_whitelist(&recognized)
+            {
+                continue;
+            }
+            if opts.skip_sighs && det.is_free_text && is_pure_sigh_text(&recognized) {
                 continue;
             }
             if mode_lc == "dialogue_only"
@@ -309,10 +327,7 @@ fn merge_split_column_strips(
         let mut y = y0;
         while y <= y1 {
             total_rows += 1;
-            let row_min = (-2..=2)
-                .map(|dx| lum_at(seam_x + dx, y))
-                .min()
-                .unwrap_or(0);
+            let row_min = (-2..=2).map(|dx| lum_at(seam_x + dx, y)).min().unwrap_or(0);
             if row_min >= 220 {
                 clear_rows += 1;
             }
@@ -419,7 +434,8 @@ fn find_clean_vertical_split_x(crop: &RgbImage) -> Option<u32> {
         let mut light = 0u32;
         for y in y0..y1 {
             let px = crop.get_pixel(x, y);
-            let lum = ((77u32 * px[0] as u32) + (150u32 * px[1] as u32) + (29u32 * px[2] as u32)) >> 8;
+            let lum =
+                ((77u32 * px[0] as u32) + (150u32 * px[1] as u32) + (29u32 * px[2] as u32)) >> 8;
             if lum >= 215 {
                 light += 1;
             }
@@ -446,8 +462,7 @@ fn recognize_nar_adaptive(nar: &mut NarRecognizer, crop: &RgbImage) -> Result<St
         let (cw, ch) = crop.dimensions();
         if split_x >= 48 && cw.saturating_sub(split_x) >= 48 {
             let left = image::imageops::crop_imm(crop, 0, 0, split_x, ch).to_image();
-            let right =
-                image::imageops::crop_imm(crop, split_x, 0, cw - split_x, ch).to_image();
+            let right = image::imageops::crop_imm(crop, split_x, 0, cw - split_x, ch).to_image();
             let l_txt = sanitize_nar_stutter(nar.recognize_crop(&left)?.trim());
             let r_txt = sanitize_nar_stutter(nar.recognize_crop(&right)?.trim());
             let joined = format!("{l_txt}{r_txt}");

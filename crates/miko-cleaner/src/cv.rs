@@ -264,7 +264,12 @@ pub fn distance_transform_l2(binary: &[u8], width: usize, height: usize) -> Vec<
         for y in 0..height {
             f_buf[y] = grid[y * width + x];
         }
-        dt_1d(&f_buf[..height], &mut d_buf[..height], &mut v_buf, &mut z_buf);
+        dt_1d(
+            &f_buf[..height],
+            &mut d_buf[..height],
+            &mut v_buf,
+            &mut z_buf,
+        );
         for y in 0..height {
             grid[y * width + x] = d_buf[y];
         }
@@ -365,15 +370,7 @@ pub fn fill_polygon(poly: &[[i32; 2]], width: usize, height: usize) -> Vec<u8> {
 }
 
 /// Рисует заполненный круг радиуса `radius` в одноканальной маске.
-pub fn draw_circle(
-    mask: &mut [u8],
-    w: usize,
-    h: usize,
-    cx: i32,
-    cy: i32,
-    radius: i32,
-    val: u8,
-) {
+pub fn draw_circle(mask: &mut [u8], w: usize, h: usize, cx: i32, cy: i32, radius: i32, val: u8) {
     let n = w.saturating_mul(h);
     if w == 0 || h == 0 || mask.len() < n {
         return;
@@ -412,14 +409,7 @@ pub fn draw_circle(
 }
 
 /// Рисует ломаную линию толщиной `radius` (через круговую кисть).
-pub fn draw_polyline(
-    mask: &mut [u8],
-    w: usize,
-    h: usize,
-    pts: &[[i32; 2]],
-    radius: i32,
-    val: u8,
-) {
+pub fn draw_polyline(mask: &mut [u8], w: usize, h: usize, pts: &[[i32; 2]], radius: i32, val: u8) {
     if pts.is_empty() {
         return;
     }
@@ -451,7 +441,10 @@ pub fn dilate_ellipse(mask: &[u8], w: usize, h: usize, radius: usize) -> Vec<u8>
         return vec![0u8; n];
     }
     if radius == 0 {
-        return mask[..n].iter().map(|&p| if p > 0 { 255 } else { 0 }).collect();
+        return mask[..n]
+            .iter()
+            .map(|&p| if p > 0 { 255 } else { 0 })
+            .collect();
     }
     if !mask[..n].iter().any(|&p| p > 0) {
         return vec![0u8; n];
@@ -474,7 +467,10 @@ pub fn erode_ellipse(mask: &[u8], w: usize, h: usize, radius: usize) -> Vec<u8> 
         return vec![0u8; n];
     }
     if radius == 0 {
-        return mask[..n].iter().map(|&p| if p > 0 { 255 } else { 0 }).collect();
+        return mask[..n]
+            .iter()
+            .map(|&p| if p > 0 { 255 } else { 0 })
+            .collect();
     }
     if !mask[..n].iter().any(|&p| p == 0) {
         return vec![255u8; n];
@@ -542,7 +538,10 @@ pub fn compute_rgb_median_and_std(rgb: &[u8], selector: &[u8]) -> Option<([u8; 3
         .sum::<f64>()
         / 3.0;
 
-    Some(([hist_median(&hr), hist_median(&hg), hist_median(&hb)], std_c as f32))
+    Some((
+        [hist_median(&hr), hist_median(&hg), hist_median(&hb)],
+        std_c as f32,
+    ))
 }
 
 /// Гармонический солвер Лапласа (Red-Black Gauss-Seidel SOR) для бесшовного инпейнтинга бабблов и градиентов.
@@ -636,35 +635,32 @@ pub fn inpaint_laplace_sor(
     let w_sor = omega.clamp(1.0, 1.92);
     let iters = max_iters.max(1);
 
-    let step_color = |pts: &[(usize, usize)],
-                      fr: &mut [f32],
-                      fg: &mut [f32],
-                      fb: &mut [f32]|
-     -> f32 {
-        let mut max_delta = 0.0f32;
-        for &(x, y) in pts {
-            let idx = y * w + x;
-            let l = if x > 0 { idx - 1 } else { idx };
-            let r = if x + 1 < w { idx + 1 } else { idx };
-            let u = if y > 0 { idx - w } else { idx };
-            let d = if y + 1 < h { idx + w } else { idx };
+    let step_color =
+        |pts: &[(usize, usize)], fr: &mut [f32], fg: &mut [f32], fb: &mut [f32]| -> f32 {
+            let mut max_delta = 0.0f32;
+            for &(x, y) in pts {
+                let idx = y * w + x;
+                let l = if x > 0 { idx - 1 } else { idx };
+                let r = if x + 1 < w { idx + 1 } else { idx };
+                let u = if y > 0 { idx - w } else { idx };
+                let d = if y + 1 < h { idx + w } else { idx };
 
-            let avg_r = 0.25 * (fr[l] + fr[r] + fr[u] + fr[d]);
-            let avg_g = 0.25 * (fg[l] + fg[r] + fg[u] + fg[d]);
-            let avg_b = 0.25 * (fb[l] + fb[r] + fb[u] + fb[d]);
+                let avg_r = 0.25 * (fr[l] + fr[r] + fr[u] + fr[d]);
+                let avg_g = 0.25 * (fg[l] + fg[r] + fg[u] + fg[d]);
+                let avg_b = 0.25 * (fb[l] + fb[r] + fb[u] + fb[d]);
 
-            let dr = w_sor * (avg_r - fr[idx]);
-            let dg = w_sor * (avg_g - fg[idx]);
-            let db = w_sor * (avg_b - fb[idx]);
+                let dr = w_sor * (avg_r - fr[idx]);
+                let dg = w_sor * (avg_g - fg[idx]);
+                let db = w_sor * (avg_b - fb[idx]);
 
-            fr[idx] = (fr[idx] + dr).clamp(0.0, 255.0);
-            fg[idx] = (fg[idx] + dg).clamp(0.0, 255.0);
-            fb[idx] = (fb[idx] + db).clamp(0.0, 255.0);
+                fr[idx] = (fr[idx] + dr).clamp(0.0, 255.0);
+                fg[idx] = (fg[idx] + dg).clamp(0.0, 255.0);
+                fb[idx] = (fb[idx] + db).clamp(0.0, 255.0);
 
-            max_delta = max_delta.max(dr.abs()).max(dg.abs()).max(db.abs());
-        }
-        max_delta
-    };
+                max_delta = max_delta.max(dr.abs()).max(dg.abs()).max(db.abs());
+            }
+            max_delta
+        };
 
     for _ in 0..iters {
         let d_red = step_color(&red_pts, &mut fr, &mut fg, &mut fb);

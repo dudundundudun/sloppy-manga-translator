@@ -3,8 +3,8 @@ pub mod security;
 pub mod storage;
 
 pub use models::{
-    clip_polygon_to_rect, normalize_clean_bbox, polygon_area_abs, AppConfig, FolderJobState,
-    GlossaryEntry, MaskStroke, TextBlock,
+    clip_polygon_to_rect, normalize_clean_bbox, polygon_area_abs, AppConfig, AutoFixRaw,
+    CanonOverride, FolderJobState, GlossaryEntry, MaskStroke, TextBlock,
 };
 pub use security::{
     is_blocked_ip, is_filesystem_root, is_trusted_host_header, is_trusted_local_origin,
@@ -26,7 +26,9 @@ mod tests {
         assert_eq!(mask_api_key(Some("  ")), "");
 
         assert!(is_trusted_local_origin(Some("http://127.0.0.1:8000")));
-        assert!(is_trusted_local_origin(Some("chrome-extension://abcdef123")));
+        assert!(is_trusted_local_origin(Some(
+            "chrome-extension://abcdef123"
+        )));
         assert!(!is_trusted_local_origin(Some("https://evil.example.com")));
         assert!(!is_trusted_local_origin(Some("null")));
 
@@ -100,14 +102,7 @@ mod tests {
     #[test]
     fn test_sutherland_hodgman_clips_concave_polygon_without_hull_bleed() {
         // Невыпуклый «песочные часы» полигон: широкий вверху и внизу, узкая талия x=45..55 на y=45..55
-        let hourglass = vec![
-            [10, 10],
-            [45, 50],
-            [10, 90],
-            [90, 90],
-            [55, 50],
-            [90, 10],
-        ];
+        let hourglass = vec![[10, 10], [45, 50], [10, 90], [90, 90], [55, 50], [90, 10]];
         let waist_clip = clip_polygon_to_rect(&hourglass, [0, 46, 100, 54]);
         assert!(waist_clip.len() >= 3);
         // Внутри талии x не должен выходить далеко за 40..60 (выпуклая оболочка дала бы 10..90!)

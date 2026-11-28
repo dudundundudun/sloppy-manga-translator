@@ -30,7 +30,8 @@ impl FontCache {
                 return Ok(f.clone());
             }
         }
-        let bytes = std::fs::read(path).map_err(|e| format!("Ошибка чтения шрифта {path:?}: {e}"))?;
+        let bytes =
+            std::fs::read(path).map_err(|e| format!("Ошибка чтения шрифта {path:?}: {e}"))?;
         let is_ttc = path
             .extension()
             .and_then(|s| s.to_str())
@@ -128,9 +129,9 @@ pub fn resolve_font_for_text(
             .map(|e| e.path())
             .filter(|p| {
                 p.is_file()
-                    && p.extension()
-                        .and_then(|s| s.to_str())
-                        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc"))
+                    && p.extension().and_then(|s| s.to_str()).is_some_and(|e| {
+                        matches!(e.to_ascii_lowercase().as_str(), "ttf" | "otf" | "ttc")
+                    })
             })
             .collect();
         extra.sort();
@@ -549,7 +550,9 @@ pub fn draw_text_line(
     fill: [u8; 3],
     stroke: Option<([u8; 3], i32)>,
 ) {
-    draw_text_line_scaled(img, font, px_size, 1.0, x_left, y_baseline, text, fill, stroke);
+    draw_text_line_scaled(
+        img, font, px_size, 1.0, x_left, y_baseline, text, fill, stroke,
+    );
 }
 
 /// Рисует строку текста с векторным горизонтальным сжатием `scale_x` (`0.88..=1.0` для узких вертикальных бабблов).

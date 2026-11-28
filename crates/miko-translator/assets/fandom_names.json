@@ -1,0 +1,265 @@
+{
+  "series": [
+    {
+      "id": "frieren",
+      "aliases": [
+        "sousou no frieren",
+        "frieren",
+        "葬送のフリーレン",
+        "frieren beyond journey's end"
+      ],
+      "names": {
+        "フリーレン": "Frieren",
+        "ヒンメル": "Himmel",
+        "ハイター": "Heiter",
+        "アイゼン": "Eisen",
+        "フェルン": "Fern",
+        "シュタルク": "Stark",
+        "ザイン": "Sein",
+        "ユーベル": "Übel",
+        "ラント": "Land",
+        "ゼーリエ": "Serie",
+        "フランメ": "Flamme",
+        "アウラ": "Aura",
+        "リュグナー": "Lügner",
+        "リーニエ": "Linie",
+        "ドラート": "Draht",
+        "ゼンゼ": "Sense",
+        "メトーデ": "Methode",
+        "デンケン": "Denken",
+        "ヴィアベル": "Wirbel",
+        "カンネ": "Kanne",
+        "ラヴィーネ": "Lawine"
+      },
+      "known_mistranslations": {
+        "ハイター": ["the bleach", "bleach"],
+        "アイゼン": ["iron"],
+        "ヒンメル": ["himmle", "himm", "hymmer", "sky", "heaven"],
+        "フェルン": ["fern plant"],
+        "生臭坊主": ["rough, monk", "rough monk", "fishy monk"]
+      },
+      "terms": {
+        "生臭坊主": "corrupt priest",
+        "勇者一行": "the Hero's party",
+        "勇者": "Hero",
+        "魔族": "demon"
+      }
+    },
+    {
+      "id": "blue_archive",
+      "aliases": ["blue archive", "ブルーアーカイブ", "ブルアカ", "buraka"],
+      "names": {
+        "アロナ": "Arona",
+        "プラナ": "Plana",
+        "ユウカ": "Yuuka",
+        "ノア": "Noa",
+        "アスナ": "Asuna",
+        "カリン": "Karin",
+        "シロコ": "Shiroko",
+        "ホシノ": "Hoshino",
+        "アル": "Aru",
+        "ヒナ": "Hina",
+        "アコ": "Ako",
+        "イオリ": "Iori",
+        "ミカ": "Mika",
+        "ナギサ": "Nagisa",
+        "ハナコ": "Hanako",
+        "コハル": "Koharu",
+        "アリス": "Aris",
+        "トキ": "Toki",
+        "リオ": "Rio",
+        "キサキ": "Kisaki"
+      },
+      "known_mistranslations": {
+        "アリス": ["alice"],
+        "シロコ": ["white child"]
+      },
+      "terms": {
+        "先生": "Sensei",
+        "シャーレ": "Schale",
+        "キヴォトス": "Kivotos"
+      }
+    },
+    {
+      "id": "genshin",
+      "aliases": ["genshin impact", "genshin", "原神"],
+      "names": {
+        "パイモン": "Paimon",
+        "蛍": "Lumine",
+        "空": "Aether",
+        "フリーナ": "Furina",
+        "ナヒーダ": "Nahida",
+        "雷電将軍": "Raiden Shogun",
+        "八重神子": "Yae Miko",
+        "胡桃": "Hu Tao",
+        "甘雨": "Ganyu",
+        "刻晴": "Keqing",
+        "夜蘭": "Yelan",
+        "申鶴": "Shenhe",
+        "ナヴィア": "Navia",
+        "クロリンデ": "Clorinde",
+        "アルレッキーノ": "Arlecchino",
+        "モナ": "Mona",
+        "フィッシュル": "Fischl"
+      },
+      "known_mistranslations": {},
+      "terms": {
+        "旅人": "Traveler",
+        "テイワット": "Teyvat"
+      }
+    },
+    {
+      "id": "honkai_sr",
+      "aliases": ["honkai: star rail", "honkai star rail", "star rail", "崩壊：スターレイル", "スタレ"],
+      "names": {
+        "カフカ": "Kafka",
+        "ホタル": "Firefly",
+        "銀狼": "Silver Wolf",
+        "黄泉": "Acheron",
+        "ブラックスワン": "Black Swan",
+        "花火": "Sparkle",
+        "トパーズ": "Topaz",
+        "ジェイド": "Jade",
+        "ルアン・メェイ": "Ruan Mei",
+        "鏡流": "Jingliu",
+        "符玄": "Fu Xuan",
+        "三月なのか": "March 7th",
+        "星": "Stelle",
+        "穹": "Caelus",
+        "ロビン": "Robin"
+      },
+      "known_mistranslations": {
+        "ホタル": ["hotaru"],
+        "花火": ["hanabi", "fireworks"]
+      },
+      "terms": {
+        "開拓者": "Trailblazer"
+      }
+    },
+    {
+      "id": "fgo",
+      "aliases": ["fate/grand order", "fgo", "fate grand order"],
+      "names": {
+        "マシュ": "Mash",
+        "アルトリア": "Altria",
+        "ジャンヌ": "Jeanne",
+        "モルガン": "Morgan",
+        "キャストリア": "Castoria",
+        "メリュジーヌ": "Melusine",
+        "バーゲスト": "Barghest",
+        "バーヴァン・シー": "Baobhan Sith",
+        "イシュタル": "Ishtar",
+        "エレシュキガル": "Ereshkigal",
+        "カーマ": "Kama",
+        "スカサハ": "Scathach",
+        "武蔵": "Musashi",
+        "藤丸": "Fujimaru",
+        "ぐだ子": "Gudako"
+      },
+      "known_mistranslations": {},
+      "terms": {
+        "マスター": "Master",
+        "サーヴァント": "Servant",
+        "カルデア": "Chaldea"
+      }
+    },
+    {
+      "id": "chainsaw_man",
+      "aliases": ["chainsaw man", "チェンソーマン"],
+      "names": {
+        "デンジ": "Denji",
+        "マキマ": "Makima",
+        "パワー": "Power",
+        "アキ": "Aki",
+        "レゼ": "Reze",
+        "コベニ": "Kobeni",
+        "姫野": "Himeno",
+        "アサ": "Asa",
+        "ヨル": "Yoru",
+        "クァンシ": "Quanxi"
+      },
+      "known_mistranslations": {},
+      "terms": {
+        "悪魔": "Devil"
+      }
+    },
+    {
+      "id": "jujutsu_kaisen",
+      "aliases": ["jujutsu kaisen", "呪術廻戦"],
+      "names": {
+        "虎杖": "Itadori",
+        "伏黒": "Fushiguro",
+        "釘崎": "Kugisaki",
+        "五条": "Gojo",
+        "宿儺": "Sukuna",
+        "真希": "Maki",
+        "野薔薇": "Nobara",
+        "冥冥": "Mei Mei",
+        "歌姫": "Utahime",
+        "九十九": "Tsukumo"
+      },
+      "known_mistranslations": {},
+      "terms": {
+        "呪霊": "cursed spirit",
+        "領域展開": "Domain Expansion"
+      }
+    },
+    {
+      "id": "bocchi",
+      "aliases": ["bocchi the rock", "ぼっち・ざ・ろっく", "ぼざろ"],
+      "names": {
+        "ひと里": "Hitori",
+        "ひとり": "Hitori",
+        "ぼっち": "Bocchi",
+        "虹夏": "Nijika",
+        "リョウ": "Ryo",
+        "郁代": "Ikuyo",
+        "喜多": "Kita",
+        "きくり": "Kikuri",
+        "星歌": "Seika",
+        "PAさん": "PA-san"
+      },
+      "known_mistranslations": {},
+      "terms": {
+        "結束バンド": "Kessoku Band"
+      }
+    },
+    {
+      "id": "spy_x_family",
+      "aliases": ["spy x family", "spy family", "スパイファミリー"],
+      "names": {
+        "ロイド": "Loid",
+        "ヨル": "Yor",
+        "アーニャ": "Anya",
+        "ボンド": "Bond",
+        "ユーリ": "Yuri",
+        "フィオナ": "Fiona",
+        "ダミアン": "Damian",
+        "ベッキー": "Becky"
+      },
+      "known_mistranslations": {
+        "ロイド": ["lloyd"]
+      },
+      "terms": {
+        "黄昏": "Twilight",
+        "いばら姫": "Thorn Princess"
+      }
+    },
+    {
+      "id": "dungeon_meshi",
+      "aliases": ["dungeon meshi", "delicious in dungeon", "ダンジョン飯"],
+      "names": {
+        "ライオス": "Laios",
+        "マルシル": "Marcille",
+        "チルチャック": "Chilchuck",
+        "センシ": "Senshi",
+        "ファリン": "Falin",
+        "イヅツミ": "Izutsumi",
+        "カブルー": "Kabru",
+        "ミスルン": "Mithrun"
+      },
+      "known_mistranslations": {},
+      "terms": {}
+    }
+  ]
+}

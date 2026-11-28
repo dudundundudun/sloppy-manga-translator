@@ -214,7 +214,8 @@ async fn test_health_glossary_and_security_middleware() {
     assert!(wrap_val["lines"].as_array().unwrap().len() >= 2);
 
     // End-to-end /save_edited_page inside allowed root
-    let tmp_dir = std::env::temp_dir().join(format!("miko_save_edited_test_{}", std::process::id()));
+    let tmp_dir =
+        std::env::temp_dir().join(format!("miko_save_edited_test_{}", std::process::id()));
     std::fs::create_dir_all(&tmp_dir).unwrap();
     let src_p = tmp_dir.join("src.png");
     let dst_p = tmp_dir.join("out.png");
@@ -237,7 +238,10 @@ async fn test_health_glossary_and_security_middleware() {
             .to_path_buf(),
     )
     .unwrap();
-    state_with_tmp.allowed_roots.register_root(&tmp_dir).unwrap();
+    state_with_tmp
+        .allowed_roots
+        .register_root(&tmp_dir)
+        .unwrap();
     let app_tmp = build_router(state_with_tmp.clone());
 
     let save_res = app_tmp
@@ -276,7 +280,10 @@ async fn test_health_glossary_and_security_middleware() {
 
     // 6. Phase 5 batch/chapter endpoints: /page_blocks, /folder_find_replace, /folder_report, /chapter_book, /folder_control
     let ch_dir = std::env::temp_dir().join(format!("miko_ch5_test_{}", std::process::id()));
-    let ch_out = ch_dir.parent().unwrap().join(format!("{}_RU", ch_dir.file_name().unwrap().to_str().unwrap()));
+    let ch_out = ch_dir.parent().unwrap().join(format!(
+        "{}_RU",
+        ch_dir.file_name().unwrap().to_str().unwrap()
+    ));
     let _ = std::fs::remove_dir_all(&ch_dir);
     let _ = std::fs::remove_dir_all(&ch_out);
     std::fs::create_dir_all(&ch_dir).unwrap();
@@ -349,7 +356,8 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(pb_res.status(), StatusCode::OK);
-    let pb_val: Value = serde_json::from_slice(&to_bytes(pb_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let pb_val: Value =
+        serde_json::from_slice(&to_bytes(pb_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
     assert_eq!(pb_val["blocks"][0]["romaji_text"], "konnichiha");
 
     // Dry-run Find & Replace
@@ -376,7 +384,8 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(fr_dry.status(), StatusCode::OK);
-    let fr_dry_val: Value = serde_json::from_slice(&to_bytes(fr_dry.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let fr_dry_val: Value =
+        serde_json::from_slice(&to_bytes(fr_dry.into_body(), 1024 * 1024).await.unwrap()).unwrap();
     assert_eq!(fr_dry_val["matches_count"], 1);
     assert_eq!(fr_dry_val["rerendered_pages_count"], 0);
 
@@ -404,16 +413,21 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(fr_apply.status(), StatusCode::OK);
-    let fr_apply_val: Value = serde_json::from_slice(&to_bytes(fr_apply.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let fr_apply_val: Value =
+        serde_json::from_slice(&to_bytes(fr_apply.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
     assert_eq!(fr_apply_val["rerendered_pages_count"], 1);
     assert!(ch_out.join("001.png").is_file());
 
-    let encoded_ch = url::form_urlencoded::byte_serialize(ch_dir.to_string_lossy().as_bytes()).collect::<String>();
+    let encoded_ch = url::form_urlencoded::byte_serialize(ch_dir.to_string_lossy().as_bytes())
+        .collect::<String>();
     let rep_res = app5
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/folder_report?folder_path={encoded_ch}&target_lang=ru"))
+                .uri(format!(
+                    "/folder_report?folder_path={encoded_ch}&target_lang=ru"
+                ))
                 .header("host", "127.0.0.1:8000")
                 .body(Body::empty())
                 .unwrap(),
@@ -421,7 +435,8 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(rep_res.status(), StatusCode::OK);
-    let rep_val: Value = serde_json::from_slice(&to_bytes(rep_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let rep_val: Value =
+        serde_json::from_slice(&to_bytes(rep_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
     assert_eq!(rep_val["translated_pages"], 1);
     assert_eq!(rep_val["total_blocks"], 1);
 
@@ -429,7 +444,9 @@ async fn test_health_glossary_and_security_middleware() {
         .clone()
         .oneshot(
             Request::builder()
-                .uri(format!("/chapter_book?folder_path={encoded_ch}&target_lang=ru"))
+                .uri(format!(
+                    "/chapter_book?folder_path={encoded_ch}&target_lang=ru"
+                ))
                 .header("host", "127.0.0.1:8000")
                 .body(Body::empty())
                 .unwrap(),
@@ -437,8 +454,13 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(book_res.status(), StatusCode::OK);
-    let book_val: Value = serde_json::from_slice(&to_bytes(book_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
-    assert!(book_val["script_text"].as_str().unwrap().contains("Новое слово!"));
+    let book_val: Value =
+        serde_json::from_slice(&to_bytes(book_res.into_body(), 1024 * 1024).await.unwrap())
+            .unwrap();
+    assert!(book_val["script_text"]
+        .as_str()
+        .unwrap()
+        .contains("Новое слово!"));
 
     let ctrl_res = app5
         .clone()
@@ -448,7 +470,9 @@ async fn test_health_glossary_and_security_middleware() {
                 .uri("/folder_control")
                 .header("host", "127.0.0.1:8000")
                 .header("content-type", "application/json")
-                .body(Body::from(json!({"action": "toggle_cloud_only", "cloud_only": true}).to_string()))
+                .body(Body::from(
+                    json!({"action": "toggle_cloud_only", "cloud_only": true}).to_string(),
+                ))
                 .unwrap(),
         )
         .await
@@ -476,8 +500,12 @@ async fn test_health_glossary_and_security_middleware() {
         .await
         .unwrap();
     assert_eq!(inspect_res.status(), StatusCode::OK);
-    let insp_val: Value =
-        serde_json::from_slice(&to_bytes(inspect_res.into_body(), 1024 * 1024).await.unwrap()).unwrap();
+    let insp_val: Value = serde_json::from_slice(
+        &to_bytes(inspect_res.into_body(), 1024 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(insp_val["total_pages"], 1);
     assert_eq!(insp_val["translated_pages"], 1);
     assert_eq!(insp_val["pages"][0]["filename"], "001.png");
@@ -725,7 +753,12 @@ async fn test_settings_persistence_across_restarts_and_deepseek_flash_default() 
                         "uppercase": true,
                         "min_font_size": 14,
                         "max_font_size": 34,
-                        "anti_censorship_prompt": true
+                        "anti_censorship_prompt": true,
+                        "adult_canon_en": false,
+                        "chapter_prepass": false,
+                        "name_lock": false,
+                        "qa_linter_mode": "fix",
+                        "lookahead_lines": 6
                     })
                     .to_string(),
                 ))
@@ -734,7 +767,10 @@ async fn test_settings_persistence_across_restarts_and_deepseek_flash_default() 
         .await
         .unwrap();
     assert_eq!(res.status(), StatusCode::OK);
-    assert!(tmp_base.join("config.json").is_file(), "config.json must be written on POST /settings");
+    assert!(
+        tmp_base.join("config.json").is_file(),
+        "config.json must be written on POST /settings"
+    );
 
     // 3. Simulated app restart reloads saved settings instead of resetting to defaults
     let st2 = AppState::init(tmp_base.clone()).expect("init st2");
@@ -743,6 +779,11 @@ async fn test_settings_persistence_across_restarts_and_deepseek_flash_default() 
         assert!(cfg2.uppercase);
         assert_eq!(cfg2.min_font_size, 14);
         assert_eq!(cfg2.max_font_size, 34);
+        assert!(!cfg2.adult_canon_en);
+        assert!(!cfg2.chapter_prepass);
+        assert!(!cfg2.name_lock);
+        assert_eq!(cfg2.qa_linter_mode, "fix");
+        assert_eq!(cfg2.lookahead_lines, 6);
         assert_eq!(
             cfg2.local_fallback_model_multilang,
             "ollama::huihui_ai/qwen3.5-abliterated:9b"
@@ -941,7 +982,9 @@ async fn test_live_monitor_sync_start_and_controls() {
         "live.run_id must be synchronously populated before HTTP 200"
     );
 
-    let _ = state.folder_stop_flag.store(true, std::sync::atomic::Ordering::SeqCst);
+    let _ = state
+        .folder_stop_flag
+        .store(true, std::sync::atomic::Ordering::SeqCst);
     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
 
     // 4. Verify /chapter_qa_check and /chapter_qa_autofix + font_scale_pct settings roundtrip
@@ -1061,9 +1104,12 @@ async fn test_live_monitor_sync_start_and_controls() {
         )
         .await
         .unwrap();
-    let qa_after: Value =
-        serde_json::from_slice(&to_bytes(qa_after_res.into_body(), 256 * 1024).await.unwrap())
-            .unwrap();
+    let qa_after: Value = serde_json::from_slice(
+        &to_bytes(qa_after_res.into_body(), 256 * 1024)
+            .await
+            .unwrap(),
+    )
+    .unwrap();
     assert_eq!(
         qa_after["issues_count"], 0,
         "autofix should raise glued-dot 10px bubble above threshold!"
@@ -1189,7 +1235,8 @@ async fn test_prompt_editor_preview_live_test_and_reset_persistence() {
             let mut buf = vec![0u8; 16384];
             let n = sock.read(&mut buf).await.unwrap_or(0);
             *cap_clone.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
-            let body = r#"{"choices":[{"message":{"content":"{\"0\":\"Йоу, Сэмпай, ты серьёзно?!\"}"}}]}"#;
+            let body =
+                r#"{"choices":[{"message":{"content":"{\"0\":\"Йоу, Сэмпай, ты серьёзно?!\"}"}}]}"#;
             let resp = format!(
                 "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
                 body.len(),
@@ -1245,14 +1292,23 @@ async fn test_prompt_editor_preview_live_test_and_reset_persistence() {
         .unwrap();
     let h_val: Value =
         serde_json::from_slice(&to_bytes(h_res.into_body(), 512 * 1024).await.unwrap()).unwrap();
-    assert_eq!(h_val["anti_censorship_custom_prompt"], "[18+ CUSTOM PREAMBLE]");
+    assert_eq!(
+        h_val["anti_censorship_custom_prompt"],
+        "[18+ CUSTOM PREAMBLE]"
+    );
     assert_eq!(
         h_val["custom_system_prompt"],
         "Переводи дерзким сленгом на {{LANG}}!"
     );
-    assert_eq!(h_val["custom_context_prompt"], "Герои — байкеры из Иокогамы.");
+    assert_eq!(
+        h_val["custom_context_prompt"],
+        "Герои — байкеры из Иокогамы."
+    );
     assert_eq!(h_val["prompt_preset_id"], "custom");
-    assert!(!h_val["default_system_prompt"].as_str().unwrap_or("").is_empty());
+    assert!(!h_val["default_system_prompt"]
+        .as_str()
+        .unwrap_or("")
+        .is_empty());
 
     // 3. POST /prompt_preview returns assembled system + user prompts and blocks evil origin
     let evil_prev = app1
@@ -1316,7 +1372,10 @@ async fn test_prompt_editor_preview_live_test_and_reset_persistence() {
     let test_val: Value =
         serde_json::from_slice(&to_bytes(test_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
     assert_eq!(test_val["translated_text"], "Йоу, Сэмпай, ты серьёзно?!");
-    assert!(captured_body.lock().unwrap().contains("[18+ CUSTOM PREAMBLE]"));
+    assert!(captured_body
+        .lock()
+        .unwrap()
+        .contains("[18+ CUSTOM PREAMBLE]"));
 
     // 5. Resetting custom prompts back to "" persists cleanly across restart
     let reset_res = app1
@@ -1351,4 +1410,326 @@ async fn test_prompt_editor_preview_live_test_and_reset_persistence() {
     }
 
     let _ = std::fs::remove_dir_all(&tmp_base);
+}
+
+#[tokio::test]
+async fn test_canon_endpoint_roundtrip_and_regex_validation() {
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_canon_srv_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    std::fs::create_dir_all(tmp_base.join("fonts")).unwrap();
+
+    let st = AppState::init_in_memory(tmp_base.clone()).expect("init");
+    let app = build_router(st);
+
+    // 1. Security middleware protects /canon/en against cross-origin CSRF
+    let evil_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/canon/en")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evil_res.status(), StatusCode::FORBIDDEN);
+
+    // 2. GET /canon/en returns builtin entries
+    let get_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/canon/en")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(get_res.status(), StatusCode::OK);
+    let get_val: Value =
+        serde_json::from_slice(&to_bytes(get_res.into_body(), 512 * 1024).await.unwrap()).unwrap();
+    let builtin_len = get_val["builtin"].as_array().unwrap().len();
+    assert!(
+        builtin_len >= 30,
+        "expected >= 30 builtin canon rules, got {builtin_len}"
+    );
+    assert_eq!(get_val["overrides"].as_array().unwrap().len(), 0);
+
+    // 3. Invalid regex in POST /canon/en returns 400 Bad Request
+    let bad_post = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/canon/en")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "overrides": [{
+                            "id": "bad_rule",
+                            "category": "act",
+                            "jp": ["テスト"],
+                            "en": "test",
+                            "forbid_en": ["([unclosed_group"]
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(bad_post.status(), StatusCode::BAD_REQUEST);
+
+    // 4. Valid override roundtrips cleanly through SQLite
+    let ok_post = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/canon/en")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "overrides": [{
+                            "id": "custom_user_term",
+                            "category": "anatomy",
+                            "jp": ["秘蜜"],
+                            "en": "nectar",
+                            "forbid_en": ["(?i)\\bsap\\b"],
+                            "priority": 99,
+                            "enabled": true
+                        }]
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok_post.status(), StatusCode::OK);
+    let ok_val: Value =
+        serde_json::from_slice(&to_bytes(ok_post.into_body(), 512 * 1024).await.unwrap()).unwrap();
+    assert_eq!(ok_val["overrides"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        ok_val["merged_count"].as_u64().unwrap() as usize,
+        builtin_len + 1
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+}
+
+#[tokio::test]
+async fn test_chapter_prepass_two_phase_with_mock_text_and_chapter_qa_canon_issues() {
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_prepass_qa_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let ch_dir = tmp_base.join("[ProudBanana] Mirrored Lotus (Sousou no Frieren)");
+    std::fs::create_dir_all(&ch_dir).unwrap();
+    std::fs::create_dir_all(tmp_base.join("fonts")).unwrap();
+
+    for name in ["001.png", "002.png"] {
+        let mut img = image::RgbImage::from_pixel(260, 320, image::Rgb([252, 252, 252]));
+        for y in 60..140 {
+            for x in 50..210 {
+                if (x + y) % 6 == 0 {
+                    img.put_pixel(x, y, image::Rgb([18, 18, 18]));
+                }
+            }
+        }
+        img.save(ch_dir.join(name)).unwrap();
+    }
+
+    let state = AppState::init_in_memory(tmp_base.clone()).expect("init");
+    state.allowed_roots.register_root(&ch_dir).unwrap();
+    let out_dir = miko_server::folder_job::output_dir_for_folder(&ch_dir, "en");
+    let images = miko_server::folder_job::collect_folder_images(&ch_dir);
+
+    let rep = miko_server::folder_job::process_chapter_folder_sync(
+        state.clone(),
+        miko_server::folder_job::BatchFolderOptions {
+            source_dir: ch_dir.clone(),
+            output_dir: out_dir.clone(),
+            images,
+            target_lang: "en".to_string(),
+            model_override: None,
+            detect_free_text: false,
+            text_filter_mode: "dialogue_only".to_string(),
+            skip_existing: false,
+            force_retranslate: true,
+            uppercase: false,
+            min_font_size: 12,
+            max_font_size: 28,
+            mock_text: Some("Hello, Himmel and Frieren!".to_string()),
+        },
+    )
+    .await
+    .expect("two-phase prepass ok");
+
+    assert_eq!(rep.processed, 2);
+    assert!(out_dir.join("001.png").is_file());
+    assert!(out_dir.join("002.png").is_file());
+
+    let manifest = miko_server::folder_job::load_manifest(&out_dir);
+    assert!(manifest["ocr_prepass"]["001.png"]["blocks"].is_array());
+    assert!(manifest["ocr_prepass"]["002.png"]["blocks"].is_array());
+    assert!(manifest["pages"]["001.png"]["blocks"].is_array());
+    assert!(manifest["pages"]["002.png"]["blocks"].is_array());
+    let name_lock_arr = manifest["name_lock"]
+        .as_array()
+        .expect("name_lock in manifest");
+    assert!(
+        name_lock_arr
+            .iter()
+            .any(|e| e["src"] == "ヒンメル" && e["dst"] == "Himmel"),
+        "name_lock must contain Himmel: {name_lock_arr:?}"
+    );
+
+    let job_logs = state.folder_job.read().unwrap().logs.clone();
+    assert!(
+        job_logs.iter().any(|l| l.contains("[Анализ]")),
+        "folder_job logs must include [Анализ] line: {job_logs:?}"
+    );
+
+    let app = build_router(state.clone());
+    let encoded_ch = url::form_urlencoded::byte_serialize(ch_dir.to_string_lossy().as_bytes())
+        .collect::<String>();
+
+    // Security check on /chapter_analysis + valid response
+    let evil_an = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/chapter_analysis?folder_path={encoded_ch}&target_lang=en"
+                ))
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evil_an.status(), StatusCode::FORBIDDEN);
+
+    let ok_an = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!(
+                    "/chapter_analysis?folder_path={encoded_ch}&target_lang=en"
+                ))
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(ok_an.status(), StatusCode::OK);
+    let an_val: Value =
+        serde_json::from_slice(&to_bytes(ok_an.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(an_val["analysis"]["matched_fandom_id"], "frieren");
+
+    // Verify /chapter_qa_check reports canon_slang, name_drift, and grammar_anchor issues
+    let mut bad_manifest = manifest.clone();
+    bad_manifest["pages"]["001.png"]["blocks"] = json!([
+        {
+            "id": 1,
+            "bbox": [30, 30, 230, 140],
+            "bubble_polygon": [[30, 30], [230, 30], [230, 140], [30, 140]],
+            "original_text": "ヒンメルのちんちんキレイでかわいいね",
+            "translated_text": "Himm's junk is so clean and cute!",
+            "rendered_font_size": 18
+        },
+        {
+            "id": 2,
+            "bbox": [30, 160, 230, 290],
+            "bubble_polygon": [[30, 160], [230, 160], [230, 290], [30, 290]],
+            "original_text": "こうしてヒンメル以外は一晩中ヤリまくりだった",
+            "translated_text": "Thus, Himmel and the rest fucked all night long",
+            "rendered_font_size": 18
+        }
+    ]);
+    miko_server::folder_job::save_manifest(&out_dir, &bad_manifest).unwrap();
+
+    let qa_res = app
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/chapter_qa_check")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "en",
+                        "tiny_threshold_px": 14
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(qa_res.status(), StatusCode::OK);
+    let qa_val: Value =
+        serde_json::from_slice(&to_bytes(qa_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    let issues = qa_val["issues"].as_array().unwrap();
+    assert!(
+        issues.len() >= 2,
+        "expected canon/grammar QA issues, got: {issues:?}"
+    );
+    assert_eq!(
+        issues[0]["suggested_text"],
+        "Himmel's dick is so clean and cute!"
+    );
+    assert!(issues.iter().any(|i| i["kind"] == "grammar_anchor"));
+
+    // Verify /chapter_qa_autofix deterministically fixes block #1
+    let fix_res = app
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/chapter_qa_autofix")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "folder_path": ch_dir.to_string_lossy(),
+                        "target_lang": "en",
+                        "tiny_threshold_px": 14
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(fix_res.status(), StatusCode::OK);
+    let fixed_man = miko_server::folder_job::load_manifest(&out_dir);
+    assert_eq!(
+        fixed_man["pages"]["001.png"]["blocks"][0]["translated_text"],
+        "Himmel's dick is so clean and cute!"
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    let _ = std::fs::remove_dir_all(&out_dir);
 }

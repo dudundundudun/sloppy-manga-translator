@@ -87,12 +87,7 @@ pub const RECOMMENDED_FONT_PACK: &[RecommendedFontSpec] = &[
     },
 ];
 
-pub const BASE_CYRILLIC_IDS: &[&str] = &[
-    "balsamiq-bold",
-    "pangolin",
-    "neucha",
-    "russo-one",
-];
+pub const BASE_CYRILLIC_IDS: &[&str] = &["balsamiq-bold", "pangolin", "neucha", "russo-one"];
 
 #[derive(Debug, Clone, Serialize, Default)]
 pub struct FontInstallReport {
@@ -130,7 +125,10 @@ pub fn build_font_status(fonts_dir: &Path, available_fonts: &[FontInfo]) -> Valu
 
 fn validate_font_bytes(bytes: &[u8], ext: &str) -> Result<(), String> {
     if bytes.len() < 1024 || bytes.len() > 20 * 1024 * 1024 {
-        return Err(format!("Некорректный размер файла шрифта: {} байт", bytes.len()));
+        return Err(format!(
+            "Некорректный размер файла шрифта: {} байт",
+            bytes.len()
+        ));
     }
     let res = if ext.eq_ignore_ascii_case("ttc") {
         FontVec::try_from_vec_and_index(bytes.to_vec(), 0)
@@ -143,7 +141,8 @@ fn validate_font_bytes(bytes: &[u8], ext: &str) -> Result<(), String> {
 
 fn atomic_write_font(dst_path: &Path, bytes: &[u8]) -> Result<(), String> {
     if let Some(parent) = dst_path.parent() {
-        std::fs::create_dir_all(parent).map_err(|e| format!("Ошибка создания папки шрифтов: {e}"))?;
+        std::fs::create_dir_all(parent)
+            .map_err(|e| format!("Ошибка создания папки шрифтов: {e}"))?;
     }
     let tmp_path = dst_path.with_extension("part");
     std::fs::write(&tmp_path, bytes).map_err(|e| format!("Ошибка записи шрифта: {e}"))?;
@@ -166,7 +165,8 @@ pub fn install_font_for_windows_user(src_path: &Path, display_name: &str) -> Res
         .file_name()
         .ok_or_else(|| "Пустое имя файла шрифта".to_string())?;
     let dst = win_fonts.join(fname);
-    std::fs::copy(src_path, &dst).map_err(|e| format!("Ошибка копирования в Windows Fonts: {e}"))?;
+    std::fs::copy(src_path, &dst)
+        .map_err(|e| format!("Ошибка копирования в Windows Fonts: {e}"))?;
 
     let safe_name: String = display_name
         .chars()
@@ -268,7 +268,9 @@ pub async fn download_and_install_fonts(
         let bytes = match resp.bytes().await {
             Ok(b) => b,
             Err(e) => {
-                report.failed.push(format!("{}: read body {e}", spec.filename));
+                report
+                    .failed
+                    .push(format!("{}: read body {e}", spec.filename));
                 continue;
             }
         };
@@ -593,7 +595,12 @@ pub async fn upload_font(
 ) -> Response {
     let fonts_dir = state.base_dir.join("fonts");
     let win_install = payload.install_windows_user.unwrap_or(false);
-    match upload_custom_font(&fonts_dir, &payload.filename, &payload.data_base64, win_install) {
+    match upload_custom_font(
+        &fonts_dir,
+        &payload.filename,
+        &payload.data_base64,
+        win_install,
+    ) {
         Ok(info) => {
             let available = state.refresh_fonts();
             let status = build_font_status(&fonts_dir, &available);

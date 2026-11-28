@@ -160,7 +160,8 @@ fn build_cavity_mask(
                 let anchor = blk.text_bbox.unwrap_or(blk.bbox);
                 let seed_x = (((anchor[0] + anchor[2]) / 2) - x1).clamp(0, cw as i32 - 1) as usize;
                 let seed_y = (((anchor[1] + anchor[3]) / 2) - y1).clamp(0, ch as i32 - 1) as usize;
-                let center_p = cleaned_img.get_pixel((x1 + seed_x as i32) as u32, (y1 + seed_y as i32) as u32);
+                let center_p =
+                    cleaned_img.get_pixel((x1 + seed_x as i32) as u32, (y1 + seed_y as i32) as u32);
                 if rgb_lum([center_p[0], center_p[1], center_p[2]]) >= 225 {
                     let mut flood = vec![0u8; cw * ch];
                     let mut q = std::collections::VecDeque::new();
@@ -346,7 +347,12 @@ impl RustRendererEngine {
         }
     }
 
-    fn resolve_block_font(&self, blk: &TextBlock, opts: &RenderOptions, text: &str) -> Result<Arc<FontVec>, RendererError> {
+    fn resolve_block_font(
+        &self,
+        blk: &TextBlock,
+        opts: &RenderOptions,
+        text: &str,
+    ) -> Result<Arc<FontVec>, RendererError> {
         let pref = blk
             .font_family
             .as_deref()
@@ -485,7 +491,8 @@ impl RustRendererEngine {
             if formatted.is_empty() {
                 continue;
             }
-            let role = classify_bubble_role(&formatted, &blk.style_preset, cw, ch, blk.is_free_text);
+            let role =
+                classify_bubble_role(&formatted, &blk.style_preset, cw, ch, blk.is_free_text);
             let font = self.resolve_block_font(blk, opts, &formatted)?;
             formatted = sanitize_text_for_font(&font, &formatted);
             let allow_emergency =
@@ -528,7 +535,10 @@ impl RustRendererEngine {
                 for my in 0..ch {
                     for mx in 0..cw {
                         if relaxed_mask[my * cw + mx] > 0 && cavity[my * cw + mx] == 0 {
-                            let p = cleaned_img.get_pixel((rect[0] + mx as i32) as u32, (rect[1] + my as i32) as u32);
+                            let p = cleaned_img.get_pixel(
+                                (rect[0] + mx as i32) as u32,
+                                (rect[1] + my as i32) as u32,
+                            );
                             if rgb_lum([p[0], p[1], p[2]]) < 175 {
                                 relaxed_mask[my * cw + mx] = 0;
                             }
@@ -598,8 +608,11 @@ impl RustRendererEngine {
             let target_fs = harmonized[pos];
             if !item.is_fixed && target_fs < item.layout.font_size {
                 let blk_ref = &blocks[item.blk_idx];
-                let allow_emergency =
-                    blk_ref.overflow_mode.as_deref().unwrap_or(&opts.overflow_mode) != "overflow";
+                let allow_emergency = blk_ref
+                    .overflow_mode
+                    .as_deref()
+                    .unwrap_or(&opts.overflow_mode)
+                    != "overflow";
                 let comfort_ref = match harm_inputs[pos].role {
                     BubbleTextRole::Shout => Some(anchor_fs + 2),
                     _ => Some(anchor_fs),
@@ -756,8 +769,9 @@ impl RustRendererEngine {
                     .and_then(parse_hex_color)
                     .unwrap_or([255, 255, 255]);
                 let box_w = item.layout.max_line_w.ceil() as i32 + 2 * pad;
-                let box_h =
-                    (item.layout.lines.len() as f32 * item.layout.line_height).ceil() as i32 + 2 * pad;
+                let box_h = (item.layout.lines.len() as f32 * item.layout.line_height).ceil()
+                    as i32
+                    + 2 * pad;
                 let cx = rx0 + item.layout.center_xy[0];
                 let cy = ry0 + item.layout.center_xy[1];
                 let x_a = (cx - box_w / 2).clamp(0, iw - 1);
@@ -772,7 +786,8 @@ impl RustRendererEngine {
                 }
                 for py in y_a..y_b {
                     for px in x_a..x_b {
-                        let m = pill_mask[((py - y_a) as usize) * ((x_b - x_a) as usize) + (px - x_a) as usize];
+                        let m = pill_mask
+                            [((py - y_a) as usize) * ((x_b - x_a) as usize) + (px - x_a) as usize];
                         if m > 0 {
                             rendered.put_pixel(px as u32, py as u32, image::Rgb(bg_fill));
                         }

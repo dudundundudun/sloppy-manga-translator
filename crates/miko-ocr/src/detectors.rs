@@ -86,7 +86,14 @@ impl RtDetrDetector {
         img_w: i32,
         img_h: i32,
         conf_thresh: f32,
-    ) -> Result<(Vec<BubbleDetection>, Vec<BubbleDetection>, Vec<BubbleDetection>), OrtError> {
+    ) -> Result<
+        (
+            Vec<BubbleDetection>,
+            Vec<BubbleDetection>,
+            Vec<BubbleDetection>,
+        ),
+        OrtError,
+    > {
         let chw = resize_rtdetr_chw(slice_rgb, 640);
         let input_tensor = Tensor::from_array(([1usize, 3, 640, 640], chw))?;
         let in_name = self
@@ -161,7 +168,14 @@ impl RtDetrDetector {
         &mut self,
         img: &RgbImage,
         conf_thresh: f32,
-    ) -> Result<(Vec<BubbleDetection>, Vec<BubbleDetection>, Vec<BubbleDetection>), OrtError> {
+    ) -> Result<
+        (
+            Vec<BubbleDetection>,
+            Vec<BubbleDetection>,
+            Vec<BubbleDetection>,
+        ),
+        OrtError,
+    > {
         let (w, h) = img.dimensions();
         let mut all0 = Vec::new();
         let mut all1 = Vec::new();
@@ -210,7 +224,11 @@ impl YoloBubbleDetector {
         Ok(Self { session, ep })
     }
 
-    pub fn detect(&mut self, img: &RgbImage, conf_thresh: f32) -> Result<Vec<BubbleDetection>, OrtError> {
+    pub fn detect(
+        &mut self,
+        img: &RgbImage,
+        conf_thresh: f32,
+    ) -> Result<Vec<BubbleDetection>, OrtError> {
         let (iw, ih) = (img.width() as i32, img.height() as i32);
         let (chw, meta) = letterbox_yolo_chw(img, 640);
         let in_tensor = Tensor::from_array(([1usize, 3, 640, 640], chw))?;
@@ -220,7 +238,9 @@ impl YoloBubbleDetector {
             .first()
             .map(|i| i.name().to_string())
             .unwrap_or_else(|| "images".to_string());
-        let outputs = self.session.run(miko_ort::ort::inputs![in_name => in_tensor])?;
+        let outputs = self
+            .session
+            .run(miko_ort::ort::inputs![in_name => in_tensor])?;
         let out_val = outputs.values().next().expect("yolo output0");
         let (shape, data) = out_val.try_extract_tensor::<f32>()?;
         let ch = shape.get(1).copied().unwrap_or(6) as usize;
@@ -369,7 +389,9 @@ impl YoloSegDetector {
             .first()
             .map(|i| i.name().to_string())
             .unwrap_or_else(|| "images".to_string());
-        let outputs = self.session.run(miko_ort::ort::inputs![in_name => in_tensor])?;
+        let outputs = self
+            .session
+            .run(miko_ort::ort::inputs![in_name => in_tensor])?;
 
         let (s0, d0) = outputs["output0"].try_extract_tensor::<f32>()?;
         let (s1, d1) = outputs["output1"].try_extract_tensor::<f32>()?;
@@ -414,7 +436,8 @@ impl YoloSegDetector {
             let bx1 = x1.clamp(0, (sw - 1).max(0)).clamp(0, (img_w - 1).max(0));
             let by1 = (y1.clamp(0, (sh - 1).max(0)) + y_offset).clamp(0, (img_h - 1).max(0));
             let bx2 = x2.clamp(bx1 + 1, sw.max(1)).clamp(bx1 + 1, img_w.max(1));
-            let by2 = (y2.clamp((by1 - y_offset) + 1, sh.max(1)) + y_offset).clamp(by1 + 1, img_h.max(1));
+            let by2 =
+                (y2.clamp((by1 - y_offset) + 1, sh.max(1)) + y_offset).clamp(by1 + 1, img_h.max(1));
             if (bx2 - bx1) < 16 || (by2 - by1) < 16 {
                 continue;
             }
@@ -445,11 +468,18 @@ impl YoloSegDetector {
         let scale_to_proto = (mw as f32) / 640.0;
 
         for r in raw_dets {
-            if out.iter().any(|k: &BalloonPolygon| box_iou(k.bbox, r.bbox) >= 0.5) {
+            if out
+                .iter()
+                .any(|k: &BalloonPolygon| box_iou(k.bbox, r.bbox) >= 0.5)
+            {
                 continue;
             }
-            let px1 = (r.lb_box[0] * scale_to_proto).floor().clamp(0.0, (mw - 1) as f32) as usize;
-            let py1 = (r.lb_box[1] * scale_to_proto).floor().clamp(0.0, (mh - 1) as f32) as usize;
+            let px1 = (r.lb_box[0] * scale_to_proto)
+                .floor()
+                .clamp(0.0, (mw - 1) as f32) as usize;
+            let py1 = (r.lb_box[1] * scale_to_proto)
+                .floor()
+                .clamp(0.0, (mh - 1) as f32) as usize;
             let px2 = (r.lb_box[2] * scale_to_proto)
                 .ceil()
                 .clamp((px1 + 1) as f32, mw as f32) as usize;
@@ -475,8 +505,8 @@ impl YoloSegDetector {
                     }
                 }
                 if let (Some(lx), Some(rx)) = (row_left, row_right) {
-                    let ox_l = (((lx as f32) / scale_to_proto - meta.pad_x) / meta.scale)
-                        .round() as i32;
+                    let ox_l =
+                        (((lx as f32) / scale_to_proto - meta.pad_x) / meta.scale).round() as i32;
                     let ox_r = ((((rx + 1) as f32) / scale_to_proto - meta.pad_x) / meta.scale)
                         .round() as i32;
                     let oy = (((py as f32 + 0.5) / scale_to_proto - meta.pad_y) / meta.scale)
@@ -528,8 +558,7 @@ impl YoloSegDetector {
                 let end_y = (y + slice_h).min(h);
                 let real_y = end_y.saturating_sub(slice_h);
                 let sub = crop_imm(img, 0, real_y, w, end_y - real_y).to_image();
-                let slice_dets =
-                    self.run_seg_slice(&sub, real_y as i32, iw, ih, conf_thresh)?;
+                let slice_dets = self.run_seg_slice(&sub, real_y as i32, iw, ih, conf_thresh)?;
                 all.extend(slice_dets);
                 if end_y >= h {
                     break;
@@ -559,12 +588,7 @@ impl YoloSegDetector {
 
 fn compute_neighbor_aware_clip_rect(idx: usize, bubbles: &[BubbleDetection]) -> [i32; 4] {
     let b = &bubbles[idx];
-    let mut rect = [
-        b.bbox[0] - 6,
-        b.bbox[1] - 6,
-        b.bbox[2] + 6,
-        b.bbox[3] + 6,
-    ];
+    let mut rect = [b.bbox[0] - 6, b.bbox[1] - 6, b.bbox[2] + 6, b.bbox[3] + 6];
     if let Some(tb) = b.text_bbox {
         rect[0] = rect[0].min(tb[0] - 4);
         rect[1] = rect[1].min(tb[1] - 4);
@@ -678,7 +702,9 @@ pub fn suppress_parent_containers(bubbles: &mut Vec<BubbleDetection>) {
                 drop_flags[i] = true;
             } else if sum_child_area < area_p * 0.62 {
                 for &ck in &children {
-                    if areas[ck] < area_p * 0.58 && box_iomin(bubbles[i].bbox, bubbles[ck].bbox) >= 0.80 {
+                    if areas[ck] < area_p * 0.58
+                        && box_iomin(bubbles[i].bbox, bubbles[ck].bbox) >= 0.80
+                    {
                         drop_flags[ck] = true;
                     }
                 }
@@ -778,7 +804,8 @@ pub fn fuse_detections(
             continue;
         }
         if let Some(existing) = bubbles.iter_mut().find(|b| {
-            !b.is_free_text && (box_iou(b.bbox, y.bbox) >= 0.35 || box_iomin(b.bbox, y.bbox) >= 0.55)
+            !b.is_free_text
+                && (box_iou(b.bbox, y.bbox) >= 0.35 || box_iomin(b.bbox, y.bbox) >= 0.55)
         }) {
             existing.confirmed_by_two_detectors = true;
             existing.confidence = existing.confidence.max(y.confidence);
@@ -833,8 +860,8 @@ pub fn fuse_detections(
             if clipped.len() < 3 {
                 continue;
             }
-            let b_area = ((b.bbox[2] - b.bbox[0]).max(1) as f64)
-                * ((b.bbox[3] - b.bbox[1]).max(1) as f64);
+            let b_area =
+                ((b.bbox[2] - b.bbox[0]).max(1) as f64) * ((b.bbox[3] - b.bbox[1]).max(1) as f64);
             let c_area = polygon_area_abs(&clipped);
             if c_area < b_area * 0.15 {
                 continue;

@@ -103,8 +103,12 @@ pub fn pad_grid(height: u32, width: u32, budget: usize) -> (f64, usize, usize, u
     }
     let gh = ((h_f * lo) / patch_f).ceil().max(1.0) as usize;
     let gw = ((w_f * lo) / patch_f).ceil().max(1.0) as usize;
-    let rw = ((w_f * lo).round() as u32).max(1).min((gw * NAR_PATCH) as u32);
-    let rh = ((h_f * lo).round() as u32).max(1).min((gh * NAR_PATCH) as u32);
+    let rw = ((w_f * lo).round() as u32)
+        .max(1)
+        .min((gw * NAR_PATCH) as u32);
+    let rh = ((h_f * lo).round() as u32)
+        .max(1)
+        .min((gh * NAR_PATCH) as u32);
     (lo, gh, gw, rw, rh)
 }
 

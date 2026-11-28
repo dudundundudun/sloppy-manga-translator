@@ -188,8 +188,7 @@ pub fn init_ort_runtime(
     #[cfg(windows)]
     prepend_windows_dll_search_dirs(&dll_path);
 
-    let builder =
-        ort::init_from(&dll_path).map_err(|e| OrtError::DynamicLoad(e.to_string()))?;
+    let builder = ort::init_from(&dll_path).map_err(|e| OrtError::DynamicLoad(e.to_string()))?;
     let env = builder
         .with_name("miko-studio-rs")
         .with_telemetry(false)
@@ -329,12 +328,20 @@ fn build_dummy_input<'a>(
             Ok(t.into())
         }
         TensorElementType::Int32 => {
-            let val = if name == "H" || name == "W" { 1i32 } else { 0i32 };
+            let val = if name == "H" || name == "W" {
+                1i32
+            } else {
+                0i32
+            };
             let t = Tensor::from_array((shape.to_vec(), vec![val; numel]))?;
             Ok(t.into())
         }
         TensorElementType::Int64 => {
-            let val = if name == "H" || name == "W" { 1i64 } else { 0i64 };
+            let val = if name == "H" || name == "W" {
+                1i64
+            } else {
+                0i64
+            };
             let t = Tensor::from_array((shape.to_vec(), vec![val; numel]))?;
             Ok(t.into())
         }

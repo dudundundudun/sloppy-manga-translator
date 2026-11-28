@@ -1,4 +1,8 @@
-use miko_core::GlossaryEntry;
+use crate::canon::{
+    build_canon_prompt_block, builtin_canon_en, canon_hits_fingerprint, match_canon,
+    merge_overrides,
+};
+use miko_core::{CanonOverride, GlossaryEntry};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -17,6 +21,10 @@ Style & Localization Guidelines:\n\
 - Use canonical official character and proper names when the series/parody is recognizable from SERIES / CHAPTER CONTEXT NOTES or RECENT CONTEXT (never invent lookalike names or translate character names literally).\n\
 - Keep character pronouns, speech quirks, and speaker tone consistent with RECENT CONTEXT.";
 
+fn default_true_bool() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PromptConfig {
     pub anti_censorship: bool,
@@ -26,6 +34,16 @@ pub struct PromptConfig {
     pub custom_system_prompt: String,
     #[serde(default)]
     pub custom_context_prompt: String,
+    #[serde(default = "default_true_bool")]
+    pub adult_canon_en: bool,
+    #[serde(default)]
+    pub chapter_brief: String,
+    #[serde(default)]
+    pub lookahead_lines: Vec<String>,
+    #[serde(default)]
+    pub qa_hints: Vec<String>,
+    #[serde(default)]
+    pub canon_overrides: Vec<CanonOverride>,
 }
 
 impl Default for PromptConfig {
@@ -35,6 +53,11 @@ impl Default for PromptConfig {
             anti_censorship_custom_prompt: String::new(),
             custom_system_prompt: String::new(),
             custom_context_prompt: String::new(),
+            adult_canon_en: true,
+            chapter_brief: String::new(),
+            lookahead_lines: Vec::new(),
+            qa_hints: Vec::new(),
+            canon_overrides: Vec::new(),
         }
     }
 }
@@ -115,7 +138,7 @@ pub fn compute_translation_cache_key(
     )
 }
 
-/// Детерминированный SHA-256 ключ кэша переводов с учётом глоссария и пользовательских промптов/пресетов.
+/// Детерминированный SHA-256 ключ кэша переводов с учётом глоссария, 18+ канона и пользовательских промптов/пресетов.
 pub fn compute_translation_cache_key_with_prompts(
     source_text: &str,
     target_lang: &str,
@@ -133,8 +156,37 @@ pub fn compute_translation_cache_key_with_prompts(
         ac_prompt: &'a str,
         sys_prompt: &'a str,
         ctx_prompt: &'a str,
+        canon: String,
+        brief_sig: String,
         ver: &'static str,
     }
+    let src_trimmed = source_text.trim();
+    let lang_trimmed = target_lang.trim();
+    let is_en = lang_trimmed.eq_ignore_ascii_case("en");
+
+    let canon_fp = if is_en && prompt_cfg.adult_canon_en && !src_trimmed.is_empty() {
+        let single = [src_trimmed.to_string()];
+        if prompt_cfg.canon_overrides.is_empty() {
+            let base = builtin_canon_en();
+            let hits = match_canon(base, &single);
+            canon_hits_fingerprint(&base.version, &hits)
+        } else {
+            let merged = merge_overrides(builtin_canon_en(), &prompt_cfg.canon_overrides);
+            let hits = match_canon(&merged, &single);
+            canon_hits_fingerprint(&merged.version, &hits)
+        }
+    } else {
+        String::new()
+    };
+
+    let brief_trimmed = prompt_cfg.chapter_brief.trim();
+    let brief_sig = if brief_trimmed.is_empty() {
+        String::new()
+    } else {
+        let d = Sha256::digest(brief_trimmed.as_bytes());
+        hex::encode(d)[..16].to_string()
+    };
+
     let matched = filter_matching_glossary(glossary, &[source_text.to_string()]);
     let ac_norm = if prompt_cfg.anti_censorship {
         prompt_cfg.anti_censorship_custom_prompt.trim()
@@ -142,15 +194,17 @@ pub fn compute_translation_cache_key_with_prompts(
         ""
     };
     let payload = CacheKeyPayload {
-        src: source_text.trim(),
-        lang: target_lang.trim(),
+        src: src_trimmed,
+        lang: lang_trimmed,
         model: model_id.trim(),
         glossary: &matched,
         anti_censorship: prompt_cfg.anti_censorship,
         ac_prompt: ac_norm,
         sys_prompt: prompt_cfg.custom_system_prompt.trim(),
         ctx_prompt: prompt_cfg.custom_context_prompt.trim(),
-        ver: "v7.1-rust-tr",
+        canon: canon_fp,
+        brief_sig,
+        ver: "v7.2-canon",
     };
     let bytes = serde_json::to_vec(&payload).unwrap_or_default();
     let digest = Sha256::digest(&bytes);
@@ -455,8 +509,8 @@ pub fn build_translation_prompts(
     )
 }
 
-/// Формирует system + user промпты с пользовательским System Prompt, 18+ преамбулой, заметками к главе
-/// и защищённым плоским JSON-контрактом (`MANDATORY OUTPUT CONTRACT` + `MANDATORY GLOSSARY` + `RECENT CONTEXT`).
+/// Формирует system + user промпты с пользовательским System Prompt, 18+ преамбулой, заметками к главе,
+/// каноничным 18+ словарём (`ADULT MANGA CANON`), `CHAPTER BRIEF`, `UPCOMING LINES` и защищённым плоским JSON-контрактом.
 pub fn build_translation_prompts_with_config(
     target_lang: &str,
     items: &[(String, String, Option<usize>)],
@@ -465,18 +519,36 @@ pub fn build_translation_prompts_with_config(
     prompt_cfg: &PromptConfig,
 ) -> (String, String) {
     let lang_label = target_lang_prompt_label(target_lang);
+    let is_en = target_lang.trim().eq_ignore_ascii_case("en");
 
     let mut body = String::new();
     let custom_sys = prompt_cfg.custom_system_prompt.trim();
     if custom_sys.is_empty() {
         body.push_str(&DEFAULT_SYSTEM_STYLE_PROMPT.replace("{{LANG}}", lang_label));
         body.push('\n');
+        if is_en && prompt_cfg.adult_canon_en {
+            body.push_str(
+                "- Use classic adult-manga English (natural, explicit when the source is explicit); avoid modern meme/Twitter slang (junk, nut, let it rip, yeet, bruh).\n",
+            );
+        }
     } else if custom_sys.contains("{{LANG}}") {
         body.push_str(&custom_sys.replace("{{LANG}}", lang_label));
         body.push('\n');
     } else {
         body.push_str(custom_sys);
         body.push_str(&format!("\nTarget translation language: {lang_label}.\n"));
+    }
+
+    let brief_trimmed = prompt_cfg.chapter_brief.trim();
+    if !brief_trimmed.is_empty() {
+        body.push('\n');
+        if brief_trimmed.starts_with("CHAPTER BRIEF") {
+            body.push_str(brief_trimmed);
+        } else {
+            body.push_str("CHAPTER BRIEF:\n");
+            body.push_str(brief_trimmed);
+        }
+        body.push('\n');
     }
 
     let custom_ctx = prompt_cfg.custom_context_prompt.trim();
@@ -505,10 +577,58 @@ pub fn build_translation_prompts_with_config(
         }
     }
 
+    if is_en && prompt_cfg.adult_canon_en && !batch_texts.is_empty() {
+        let canon_block = if prompt_cfg.canon_overrides.is_empty() {
+            let hits = match_canon(builtin_canon_en(), &batch_texts);
+            build_canon_prompt_block(&hits, 12)
+        } else {
+            let merged = merge_overrides(builtin_canon_en(), &prompt_cfg.canon_overrides);
+            let hits = match_canon(&merged, &batch_texts);
+            build_canon_prompt_block(&hits, 12)
+        };
+        if !canon_block.is_empty() {
+            body.push('\n');
+            body.push_str(&canon_block);
+        }
+    }
+
+    if !prompt_cfg.qa_hints.is_empty() {
+        body.push_str("\nQA CORRECTIONS (must follow):\n");
+        for h in prompt_cfg.qa_hints.iter().take(8) {
+            let trimmed = h.trim();
+            if !trimmed.is_empty() {
+                body.push_str(&format!("- {trimmed}\n"));
+            }
+        }
+    }
+
     if !context_lines.is_empty() {
         body.push_str("\nRECENT CONTEXT (do not repeat in output):\n");
         let start = context_lines.len().saturating_sub(6);
         for line in &context_lines[start..] {
+            body.push_str(&format!("- {line}\n"));
+        }
+    }
+
+    let lookahead_clean: Vec<String> = prompt_cfg
+        .lookahead_lines
+        .iter()
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
+        .take(4)
+        .map(|s| {
+            if s.chars().count() <= 80 {
+                s.to_string()
+            } else {
+                let mut cut: String = s.chars().take(79).collect();
+                cut.push('…');
+                cut
+            }
+        })
+        .collect();
+    if !lookahead_clean.is_empty() {
+        body.push_str("\nUPCOMING LINES (context only, never translate or output these):\n");
+        for line in &lookahead_clean {
             body.push_str(&format!("- {line}\n"));
         }
     }
@@ -556,7 +676,9 @@ fn think_regex() -> &'static Regex {
 
 fn shape_leak_regex() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
-    RE.get_or_init(|| Regex::new(r"(?i)\s*\[(?:shape|speaker|max_chars):[^\]]*\]").expect("leak regex"))
+    RE.get_or_init(|| {
+        Regex::new(r"(?i)\s*\[(?:shape|speaker|max_chars):[^\]]*\]").expect("leak regex")
+    })
 }
 
 fn sanitize_translated_value(val: &Value) -> Option<String> {
@@ -571,7 +693,10 @@ fn sanitize_translated_value(val: &Value) -> Option<String> {
             .to_string(),
         _ => String::new(),
     };
-    let cleaned = shape_leak_regex().replace_all(raw.trim(), "").trim().to_string();
+    let cleaned = shape_leak_regex()
+        .replace_all(raw.trim(), "")
+        .trim()
+        .to_string();
     if cleaned.is_empty() || is_refusal_response(&cleaned) {
         None
     } else {
@@ -750,7 +875,11 @@ pub fn compose_context_with_series_hint(
     let Some(hint) = extract_series_hint_from_path(dir) else {
         return user_ctx.to_string();
     };
-    if !user_ctx.is_empty() && user_ctx.to_ascii_lowercase().contains(&hint.to_ascii_lowercase()) {
+    if !user_ctx.is_empty()
+        && user_ctx
+            .to_ascii_lowercase()
+            .contains(&hint.to_ascii_lowercase())
+    {
         return user_ctx.to_string();
     }
     let auto_line = format!(
@@ -793,7 +922,8 @@ fn count_ellipsis_runs(s: &str) -> usize {
             while i < chars.len() && chars[i] == '.' {
                 i += 1;
             }
-        } else if ch == '・' && i + 2 < chars.len() && chars[i + 1] == '・' && chars[i + 2] == '・' {
+        } else if ch == '・' && i + 2 < chars.len() && chars[i + 1] == '・' && chars[i + 2] == '・'
+        {
             count += 1;
             while i < chars.len() && chars[i] == '・' {
                 i += 1;

@@ -35,14 +35,20 @@ mod tests {
         let thr = otsu_threshold(&gray);
         assert!(thr > 40 && thr < 230, "unexpected otsu threshold: {thr}");
 
-        let bin: Vec<u8> = gray.iter().map(|&p| if p < thr { 255 } else { 0 }).collect();
+        let bin: Vec<u8> = gray
+            .iter()
+            .map(|&p| if p < thr { 255 } else { 0 })
+            .collect();
         let cc = connected_components(&bin, 8, 8);
         assert_eq!(cc.stats.len(), 1);
         assert_eq!(cc.stats[0].area, 16);
 
         let dt = distance_transform_l2(&bin, 8, 8);
         let center_dt = dt[4 * 8 + 4];
-        assert!(center_dt >= 1.9 && center_dt <= 2.5, "center_dt={center_dt}");
+        assert!(
+            center_dt >= 1.9 && center_dt <= 2.5,
+            "center_dt={center_dt}"
+        );
 
         let pts = hermite_wall_bridge([0.0, 0.0], [1.0, 0.0], [10.0, 0.0], [1.0, 0.0], 11);
         assert_eq!(pts.len(), 11);
@@ -171,7 +177,10 @@ mod tests {
         let m_large = engine.build_text_mask(&img, &[b_large], None, &opts);
         let c_small: usize = m_small.iter().filter(|&&v| v > 0).count();
         let c_large: usize = m_large.iter().filter(|&&v| v > 0).count();
-        assert!(c_small > 40 && c_large > c_small, "small={c_small} large={c_large}");
+        assert!(
+            c_small > 40 && c_large > c_small,
+            "small={c_small} large={c_large}"
+        );
 
         let cleaned = engine.clean_image_with_neural_mask(&img, &[base_block], None, &opts);
         // Красный текст внутри стёрт в белый, рамка баббла [21, 50] сохранена тёмной!
@@ -215,7 +224,11 @@ mod tests {
         let opts = CleanOptions::default();
         let mask = engine.build_text_mask(&img, &[blk], Some(&neural), &opts);
 
-        assert_eq!(mask[52 * 140 + 48], 0, "chibi blob center must be protected!");
+        assert_eq!(
+            mask[52 * 140 + 48],
+            0,
+            "chibi blob center must be protected!"
+        );
         assert_eq!(mask[92 * 140 + 60], 255, "text stroke must be masked!");
     }
 
@@ -266,36 +279,51 @@ mod tests {
         assert!(res.cleaned.get_pixel(78, 60)[0] > 230);
         // 2. Снаружи у x=102 фон тёмный (белый не вытек из баббла!)
         let ext = res.cleaned.get_pixel(102, 60);
-        assert!(ext[0] < 70 && ext[2] < 80, "white bleed detected outside: {:?}", ext);
+        assert!(
+            ext[0] < 70 && ext[2] < 80,
+            "white bleed detected outside: {:?}",
+            ext
+        );
         // 3. Разорванная правая стенка x=89..90 замкнута тёмным контуром!
         let wall_mid = res.cleaned.get_pixel(90, 60);
-        assert!(wall_mid[0] < 90, "hermite wall bridge did not close wall: {:?}", wall_mid);
+        assert!(
+            wall_mid[0] < 90,
+            "hermite wall bridge did not close wall: {:?}",
+            wall_mid
+        );
     }
 
     #[test]
     fn test_clean_disk_cache_lossless_webp_roundtrip() {
-        let dir = std::env::temp_dir().join(format!(
-            "miko_webp_cache_test_{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("miko_webp_cache_test_{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
 
         let mut cache = CleanDiskCache::new(dir.clone(), 4, 2);
         let mut img = image::RgbImage::new(32, 24);
         for y in 0..24 {
             for x in 0..32 {
-                img.put_pixel(x, y, image::Rgb([(x * 7) as u8, (y * 9) as u8, ((x + y) * 3) as u8]));
+                img.put_pixel(
+                    x,
+                    y,
+                    image::Rgb([(x * 7) as u8, (y * 9) as u8, ((x + y) * 3) as u8]),
+                );
             }
         }
         cache.put("key_one", &img).expect("put webp 1");
         cache.clear_ram();
         let loaded = cache.get("key_one").expect("get webp 1 from disk");
-        assert_eq!(loaded.as_raw(), img.as_raw(), "WebP must be bit-exact lossless!");
+        assert_eq!(
+            loaded.as_raw(),
+            img.as_raw(),
+            "WebP must be bit-exact lossless!"
+        );
 
         std::thread::sleep(std::time::Duration::from_millis(20));
         cache.put("key_two", &img).expect("put webp 2");
         std::thread::sleep(std::time::Duration::from_millis(20));
-        cache.put("key_three", &img).expect("put webp 3 triggers prune max_disk=2");
+        cache
+            .put("key_three", &img)
+            .expect("put webp 3 triggers prune max_disk=2");
 
         let count_webp = std::fs::read_dir(&dir)
             .unwrap()
@@ -558,7 +586,10 @@ mod tests {
             ..Default::default()
         };
         let res_cv = engine.clean_image_with_neural_mask(&img, &[blk.clone()], None, &opts);
-        assert!(res_cv.cleaned.get_pixel(75, 80)[0] >= 245, "CV path must clean solid stroke");
+        assert!(
+            res_cv.cleaned.get_pixel(75, 80)[0] >= 245,
+            "CV path must clean solid stroke"
+        );
         assert!(res_cv.cleaned.get_pixel(31, 80)[0] < 35);
         assert_eq!(res_cv.cleaned.get_pixel(26, 26), &image::Rgb([45, 45, 50]));
 
@@ -664,8 +695,16 @@ mod tests {
         let mask = engine.build_text_mask(&img, &[blk], None, &opts);
         // Покрыт и чёрный штрих, и белая обводка рядом, а серый скринтон сбоку не задет!
         assert_eq!(mask[70 * 140 + 70], 255, "dark stroke core must be masked");
-        assert_eq!(mask[70 * 140 + 64], 255, "white halo around stroke must be masked");
-        assert_eq!(mask[70 * 140 + 30], 0, "surrounding screentone must stay clean");
+        assert_eq!(
+            mask[70 * 140 + 64],
+            255,
+            "white halo around stroke must be masked"
+        );
+        assert_eq!(
+            mask[70 * 140 + 30],
+            0,
+            "surrounding screentone must stay clean"
+        );
     }
 
     #[test]
@@ -687,7 +726,8 @@ mod tests {
             ..Default::default()
         };
 
-        let mut engine = RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_skip_untr"));
+        let mut engine =
+            RustCleanerEngine::new_cv_only(std::env::temp_dir().join("miko_t_skip_untr"));
         let res_skip = engine.clean_image_with_neural_mask(
             &img,
             std::slice::from_ref(&blk),

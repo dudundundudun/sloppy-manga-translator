@@ -672,8 +672,8 @@ fn build_tract_a_crop_mask(
             if shrunk_poly[i] == 0 {
                 continue;
             }
-            let in_cv_roi = cv_roi_local
-                .is_none_or(|b| rx >= b[0] && rx < b[2] && ry >= b[1] && ry < b[3]);
+            let in_cv_roi =
+                cv_roi_local.is_none_or(|b| rx >= b[0] && rx < b[2] && ry >= b[1] && ry < b[3]);
             let nn_hit = neural_crop.is_some_and(|nm| nm[i] >= 100);
             if !in_cv_roi && !nn_hit {
                 continue;
@@ -883,7 +883,11 @@ fn build_tract_a_crop_mask(
     let eff_dil = blk.mask_dilate.unwrap_or(default_dilate).clamp(1, 28) as usize;
     let dil_r = (eff_dil / 2).max(1);
     let dil_in = dilate_ellipse(&cand_ink, cw, ch, dil_r);
-    let clamp_region = if eff_dil > 10 { &poly_mask } else { &shrunk_poly };
+    let clamp_region = if eff_dil > 10 {
+        &poly_mask
+    } else {
+        &shrunk_poly
+    };
 
     let mut out_mask = vec![0u8; n];
     for i in 0..n {
@@ -1090,7 +1094,8 @@ fn build_tract_b_crop_mask(
                     }
                 }
             }
-            let dil_r = (blk.mask_dilate.unwrap_or(default_dilate).clamp(1, 28) as usize / 2).max(1);
+            let dil_r =
+                (blk.mask_dilate.unwrap_or(default_dilate).clamp(1, 28) as usize / 2).max(1);
             let dil = dilate_ellipse(&cand, cw, ch, dil_r);
             let mut out = vec![0u8; n];
             for i in 0..n {
@@ -1177,7 +1182,8 @@ fn build_tract_b_crop_mask(
                 || st.top <= by1 + 1
                 || (st.top + st.height) + 1 >= by2;
             let too_tiny_dot = st.area < 6;
-            let too_thick_blob = max_dt[idx] > max_dt_limit || st.area * 100 > box_area * max_area_pct;
+            let too_thick_blob =
+                max_dt[idx] > max_dt_limit || st.area * 100 > box_area * max_area_pct;
             let spans_frame = touches_edge
                 && max_dt[idx] <= 3.5
                 && ((st.width <= 4 && st.height * 100 > bh * 90)
@@ -1774,8 +1780,15 @@ impl RustCleanerEngine {
                     .map(|&[px, py]| [px - rect[0], py - rect[1]])
                     .collect();
                 let raw_poly_mask = fill_polygon(&local_poly, cw, ch);
-                let mut poly_mask =
-                    build_effective_poly_mask(&crop_rgb, cw, ch, rect[0], rect[1], blk, &local_poly);
+                let mut poly_mask = build_effective_poly_mask(
+                    &crop_rgb,
+                    cw,
+                    ch,
+                    rect[0],
+                    rect[1],
+                    blk,
+                    &local_poly,
+                );
 
                 let mut inside_mask = vec![0u8; n];
                 let mut outside_mask = vec![0u8; n];
@@ -1898,14 +1911,16 @@ impl RustCleanerEngine {
                             let lum = rgb_lum(r, g, b);
                             let dark_stain_on_light_bg =
                                 bg_lum >= 175 && lum < bg_lum.saturating_sub(34);
-                            if poly_mask[i] == 0 || (inside_mask[i] == 0 && dark_stain_on_light_bg) {
+                            if poly_mask[i] == 0 || (inside_mask[i] == 0 && dark_stain_on_light_bg)
+                            {
                                 work_in[i * 3] = bg_rgb[0];
                                 work_in[i * 3 + 1] = bg_rgb[1];
                                 work_in[i * 3 + 2] = bg_rgb[2];
                             }
                         }
                         let used_lama = if let Some(ref mut lama) = self.lama {
-                            lama.inpaint_crop_rgb(&mut work_in, &inside_mask, cw, ch).is_ok()
+                            lama.inpaint_crop_rgb(&mut work_in, &inside_mask, cw, ch)
+                                .is_ok()
                         } else {
                             false
                         };
@@ -1958,7 +1973,8 @@ impl RustCleanerEngine {
                     // Забиваем внутренность баббла внешним цветом, чтобы белый цвет не вытекал наружу!
                     fill_masked_with_rgb(&mut work_out, &shield_bubble, ext_bg);
                     let used_lama = if let Some(ref mut lama) = self.lama {
-                        lama.inpaint_crop_rgb(&mut work_out, &outside_mask, cw, ch).is_ok()
+                        lama.inpaint_crop_rgb(&mut work_out, &outside_mask, cw, ch)
+                            .is_ok()
                     } else {
                         false
                     };

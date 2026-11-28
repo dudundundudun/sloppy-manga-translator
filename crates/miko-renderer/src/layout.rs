@@ -40,7 +40,9 @@ pub fn compute_scanline_chords(mask: &[u8], w: usize, h: usize) -> Vec<Option<(u
             let dist_mid = if start as isize <= mid_x && mid_x <= end as isize {
                 0
             } else {
-                (start as isize - mid_x).abs().min((end as isize - mid_x).abs())
+                (start as isize - mid_x)
+                    .abs()
+                    .min((end as isize - mid_x).abs())
             };
             let score = run_w * 4 - dist_mid;
             if score > best_score {
@@ -179,13 +181,7 @@ fn band_strict_interval(
     }
 }
 
-fn line_ink_band_y(
-    y_start: usize,
-    k: usize,
-    line_h: f32,
-    fs_f: f32,
-    h: usize,
-) -> (usize, usize) {
+fn line_ink_band_y(y_start: usize, k: usize, line_h: f32, fs_f: f32, h: usize) -> (usize, usize) {
     let top_trim = (fs_f * 0.08).max(0.0);
     let bot_trim = (fs_f * 0.08).max(0.0);
     let y0_raw = y_start as f32 + (k as f32) * line_h + top_trim;
@@ -597,182 +593,181 @@ pub fn solve_bubble_layout_anchored<F: Fn(&str, f32, f32) -> f32>(
     let cav_h = (cav_bot - cav_top).max(16);
     let allow_condense = cav_h * 100 >= ref_w * 145 || ref_w < 140;
 
-    let try_fs_with_params =
-        |fs: i32,
-         scale_x: f32,
-         lh_mult: f32,
-         require_breathing_room: bool,
-         allow_soft_hyphen: bool|
-         -> (bool, BubbleLayout) {
-            let fs_f = fs as f32;
-            let line_h = (fs_f * lh_mult).max(9.5);
-            let eff_side_pad = if require_breathing_room {
-                (ref_w as f32 * 0.075).clamp(3.5, 14.0)
-            } else if ref_w >= 88 {
-                (ref_w as f32 * 0.045).clamp(3.0, 6.5)
-            } else {
-                (ref_w as f32 * 0.025).clamp(1.5, 2.8)
-            };
-            let wrap_ratio = if require_breathing_room { 0.80 } else { 0.90 };
-            let target_wrap_w = (ref_w as f32 * wrap_ratio).max(20.0);
-            let mut lines = auto_diamond_wrap_lines_opts(text, target_wrap_w, allow_soft_hyphen, |s| {
-                measure_scaled(s, fs_f, scale_x)
-            });
-            let mut total_h = (lines.len() as f32 * line_h).ceil() as usize;
-
-            let eff_cav_h_cap = if require_breathing_room {
-                ((cav_h * 78) / 100).max(12)
-            } else {
-                cav_h
-            };
-
-            let mut fits_chords = false;
-            let mut chosen_y_start = (cav_top + cav_h / 2).saturating_sub(total_h / 2);
-            let mut line_centers_x: Vec<f32> = Vec::new();
-
-            if total_h <= eff_cav_h_cap && !lines.is_empty() {
-                let free_v = cav_h - total_h;
-                let min_margin = (free_v * 28) / 100;
-                let ideal_start = cav_top + free_v / 2;
-                let shift_cap = ((cav_h * 18) / 100).max(8);
-                let min_start = ideal_start
-                    .saturating_sub(shift_cap)
-                    .max(cav_top + min_margin);
-                let max_start = (ideal_start + shift_cap)
-                    .min(cav_bot.saturating_sub(total_h + min_margin))
-                    .max(min_start);
-
-                if let Some(cxs) = validate_lines_in_chords(
-                    &lines,
-                    &chords,
-                    h,
-                    ideal_start,
-                    line_h,
-                    fs_f,
-                    scale_x,
-                    eff_side_pad,
-                    ref_w,
-                    &measure_scaled,
-                ) {
-                    fits_chords = true;
-                    chosen_y_start = ideal_start;
-                    line_centers_x = cxs;
-                } else {
-                    let max_shift = ideal_start
-                        .saturating_sub(min_start)
-                        .max(max_start.saturating_sub(ideal_start));
-                    let mut delta = 4usize;
-                    while delta <= max_shift {
-                        if ideal_start >= min_start + delta {
-                            if let Some(cxs) = validate_lines_in_chords(
-                                &lines,
-                                &chords,
-                                h,
-                                ideal_start - delta,
-                                line_h,
-                                fs_f,
-                                scale_x,
-                                eff_side_pad,
-                                ref_w,
-                                &measure_scaled,
-                            ) {
-                                fits_chords = true;
-                                chosen_y_start = ideal_start - delta;
-                                line_centers_x = cxs;
-                                break;
-                            }
-                        }
-                        if ideal_start + delta <= max_start {
-                            if let Some(cxs) = validate_lines_in_chords(
-                                &lines,
-                                &chords,
-                                h,
-                                ideal_start + delta,
-                                line_h,
-                                fs_f,
-                                scale_x,
-                                eff_side_pad,
-                                ref_w,
-                                &measure_scaled,
-                            ) {
-                                fits_chords = true;
-                                chosen_y_start = ideal_start + delta;
-                                line_centers_x = cxs;
-                                break;
-                            }
-                        }
-                        delta += 4;
-                    }
-                }
-            }
-
-            // Если ровный ромб не поместился по узким верхним/нижним хордам овала,
-            // пересчитываем перенос строк строго под геометрию каждой скан-линии вокруг центра!
-            if !fits_chords {
-                if let Some((dp_lines, dp_cxs, dp_y_start)) = wrap_lines_to_chords(
-                    text,
-                    &chords,
-                    h,
-                    cav_top,
-                    cav_bot,
-                    line_h,
-                    fs_f,
-                    scale_x,
-                    eff_side_pad,
-                    ref_w,
-                    allow_soft_hyphen,
-                    &measure_scaled,
-                ) {
-                    let dp_total_h = (dp_lines.len() as f32 * line_h).ceil() as usize;
-                    if dp_total_h <= eff_cav_h_cap {
-                        lines = dp_lines;
-                        total_h = dp_total_h;
-                        chosen_y_start = dp_y_start;
-                        line_centers_x = dp_cxs;
-                        fits_chords = true;
-                    }
-                }
-            }
-
-            let max_line_w = lines
-                .iter()
-                .map(|l| measure_scaled(l, fs_f, scale_x))
-                .fold(0.0f32, f32::max);
-
-            // Проверка правила «белого воздуха»: выше базового кегля текстовый прямоугольник
-            // не имеет права забивать более 54% площади внутренней полости баббла!
-            if fits_chords && require_breathing_room {
-                let ink_box_area = max_line_w * (total_h as f32);
-                if ink_box_area > (cavity_area as f32) * 0.54 {
-                    fits_chords = false;
-                }
-            }
-
-            let box_w = (max_line_w.ceil() as usize).max(4).min(w.max(1));
-            let box_h = total_h.max(4).min(h.max(1));
-            let mut center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
-            if fits_chords && !line_centers_x.is_empty() {
-                let cy_chord = (chosen_y_start + total_h / 2) as i32;
-                let avg_cx = (line_centers_x.iter().sum::<f32>() / (line_centers_x.len() as f32))
-                    .round() as i32;
-                center_xy = [avg_cx, cy_chord];
-            } else if line_centers_x.len() != lines.len() {
-                line_centers_x = vec![center_xy[0] as f32; lines.len()];
-            }
-
-            (
-                fits_chords,
-                BubbleLayout {
-                    font_size: fs,
-                    scale_x,
-                    lines,
-                    line_centers_x,
-                    center_xy,
-                    line_height: line_h,
-                    max_line_w,
-                },
-            )
+    let try_fs_with_params = |fs: i32,
+                              scale_x: f32,
+                              lh_mult: f32,
+                              require_breathing_room: bool,
+                              allow_soft_hyphen: bool|
+     -> (bool, BubbleLayout) {
+        let fs_f = fs as f32;
+        let line_h = (fs_f * lh_mult).max(9.5);
+        let eff_side_pad = if require_breathing_room {
+            (ref_w as f32 * 0.075).clamp(3.5, 14.0)
+        } else if ref_w >= 88 {
+            (ref_w as f32 * 0.045).clamp(3.0, 6.5)
+        } else {
+            (ref_w as f32 * 0.025).clamp(1.5, 2.8)
         };
+        let wrap_ratio = if require_breathing_room { 0.80 } else { 0.90 };
+        let target_wrap_w = (ref_w as f32 * wrap_ratio).max(20.0);
+        let mut lines = auto_diamond_wrap_lines_opts(text, target_wrap_w, allow_soft_hyphen, |s| {
+            measure_scaled(s, fs_f, scale_x)
+        });
+        let mut total_h = (lines.len() as f32 * line_h).ceil() as usize;
+
+        let eff_cav_h_cap = if require_breathing_room {
+            ((cav_h * 78) / 100).max(12)
+        } else {
+            cav_h
+        };
+
+        let mut fits_chords = false;
+        let mut chosen_y_start = (cav_top + cav_h / 2).saturating_sub(total_h / 2);
+        let mut line_centers_x: Vec<f32> = Vec::new();
+
+        if total_h <= eff_cav_h_cap && !lines.is_empty() {
+            let free_v = cav_h - total_h;
+            let min_margin = (free_v * 28) / 100;
+            let ideal_start = cav_top + free_v / 2;
+            let shift_cap = ((cav_h * 18) / 100).max(8);
+            let min_start = ideal_start
+                .saturating_sub(shift_cap)
+                .max(cav_top + min_margin);
+            let max_start = (ideal_start + shift_cap)
+                .min(cav_bot.saturating_sub(total_h + min_margin))
+                .max(min_start);
+
+            if let Some(cxs) = validate_lines_in_chords(
+                &lines,
+                &chords,
+                h,
+                ideal_start,
+                line_h,
+                fs_f,
+                scale_x,
+                eff_side_pad,
+                ref_w,
+                &measure_scaled,
+            ) {
+                fits_chords = true;
+                chosen_y_start = ideal_start;
+                line_centers_x = cxs;
+            } else {
+                let max_shift = ideal_start
+                    .saturating_sub(min_start)
+                    .max(max_start.saturating_sub(ideal_start));
+                let mut delta = 4usize;
+                while delta <= max_shift {
+                    if ideal_start >= min_start + delta {
+                        if let Some(cxs) = validate_lines_in_chords(
+                            &lines,
+                            &chords,
+                            h,
+                            ideal_start - delta,
+                            line_h,
+                            fs_f,
+                            scale_x,
+                            eff_side_pad,
+                            ref_w,
+                            &measure_scaled,
+                        ) {
+                            fits_chords = true;
+                            chosen_y_start = ideal_start - delta;
+                            line_centers_x = cxs;
+                            break;
+                        }
+                    }
+                    if ideal_start + delta <= max_start {
+                        if let Some(cxs) = validate_lines_in_chords(
+                            &lines,
+                            &chords,
+                            h,
+                            ideal_start + delta,
+                            line_h,
+                            fs_f,
+                            scale_x,
+                            eff_side_pad,
+                            ref_w,
+                            &measure_scaled,
+                        ) {
+                            fits_chords = true;
+                            chosen_y_start = ideal_start + delta;
+                            line_centers_x = cxs;
+                            break;
+                        }
+                    }
+                    delta += 4;
+                }
+            }
+        }
+
+        // Если ровный ромб не поместился по узким верхним/нижним хордам овала,
+        // пересчитываем перенос строк строго под геометрию каждой скан-линии вокруг центра!
+        if !fits_chords {
+            if let Some((dp_lines, dp_cxs, dp_y_start)) = wrap_lines_to_chords(
+                text,
+                &chords,
+                h,
+                cav_top,
+                cav_bot,
+                line_h,
+                fs_f,
+                scale_x,
+                eff_side_pad,
+                ref_w,
+                allow_soft_hyphen,
+                &measure_scaled,
+            ) {
+                let dp_total_h = (dp_lines.len() as f32 * line_h).ceil() as usize;
+                if dp_total_h <= eff_cav_h_cap {
+                    lines = dp_lines;
+                    total_h = dp_total_h;
+                    chosen_y_start = dp_y_start;
+                    line_centers_x = dp_cxs;
+                    fits_chords = true;
+                }
+            }
+        }
+
+        let max_line_w = lines
+            .iter()
+            .map(|l| measure_scaled(l, fs_f, scale_x))
+            .fold(0.0f32, f32::max);
+
+        // Проверка правила «белого воздуха»: выше базового кегля текстовый прямоугольник
+        // не имеет права забивать более 54% площади внутренней полости баббла!
+        if fits_chords && require_breathing_room {
+            let ink_box_area = max_line_w * (total_h as f32);
+            if ink_box_area > (cavity_area as f32) * 0.54 {
+                fits_chords = false;
+            }
+        }
+
+        let box_w = (max_line_w.ceil() as usize).max(4).min(w.max(1));
+        let box_h = total_h.max(4).min(h.max(1));
+        let mut center_xy = find_optimal_box_center(cavity_mask, w, h, box_w, box_h);
+        if fits_chords && !line_centers_x.is_empty() {
+            let cy_chord = (chosen_y_start + total_h / 2) as i32;
+            let avg_cx =
+                (line_centers_x.iter().sum::<f32>() / (line_centers_x.len() as f32)).round() as i32;
+            center_xy = [avg_cx, cy_chord];
+        } else if line_centers_x.len() != lines.len() {
+            line_centers_x = vec![center_xy[0] as f32; lines.len()];
+        }
+
+        (
+            fits_chords,
+            BubbleLayout {
+                font_size: fs,
+                scale_x,
+                lines,
+                line_centers_x,
+                center_xy,
+                line_height: line_h,
+                max_line_w,
+            },
+        )
+    };
 
     let try_fs_mode = |fs: i32, allow_soft_hyphen: bool| -> (bool, BubbleLayout) {
         let need_air = comfort_anchor_fs.is_some_and(|anc| fs > anc);
@@ -953,12 +948,7 @@ pub fn classify_bubble_role(
 
 /// Вычисляет целевой «комфортный крупный» базовый кегль диалога под разрешение страницы:
 /// ~20–21 px для стандартного скана высотой 1650 px, с корректной обработкой двойных разворотов, вебтунов и тестовых кропов.
-pub fn compute_page_target_base_fs(
-    img_w: u32,
-    img_h: u32,
-    min_fs: i32,
-    max_fs: i32,
-) -> i32 {
+pub fn compute_page_target_base_fs(img_w: u32, img_h: u32, min_fs: i32, max_fs: i32) -> i32 {
     let max_dim = img_w.max(img_h);
     // Для небольших тестовых кропов (< 680 px) ориентируемся на стандартную страницу ~1650 px
     let eff_h = if max_dim < 680 {

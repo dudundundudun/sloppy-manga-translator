@@ -74,7 +74,17 @@ fn split_glued_sentence_dots(input: &str) -> String {
 
                 let is_domain_ext = matches!(
                     right_word.as_str(),
-                    "com" | "net" | "org" | "jp" | "ru" | "io" | "co" | "png" | "jpg" | "webp" | "exe"
+                    "com"
+                        | "net"
+                        | "org"
+                        | "jp"
+                        | "ru"
+                        | "io"
+                        | "co"
+                        | "png"
+                        | "jpg"
+                        | "webp"
+                        | "exe"
                 );
                 if (left_alpha >= 2 || right_alpha >= 2) && !is_domain_ext {
                     out.push('…');
@@ -222,7 +232,8 @@ pub fn compact_scream_for_narrow_bubble(text: &str, cav_w: usize, cav_h: usize) 
 fn is_vowel(ch: char) -> bool {
     matches!(
         ch.to_ascii_lowercase(),
-        'a' | 'e' | 'i'
+        'a' | 'e'
+            | 'i'
             | 'o'
             | 'u'
             | 'y'
@@ -423,7 +434,8 @@ pub fn hyphenate_word(word: &str) -> Vec<String> {
 
     // 1. Составные слова с собственным дефисом ("matter-of-factly", "twenty-nine", "great-granddaughter"):
     // бьём по их дефисам, а сверхдлинные половинки (>= 10 букв, вроде "granddaughter") дополнительно делим по слогам!
-    if word.contains('-') && !word.starts_with('-') && !word.ends_with('-') && !word.contains("--") {
+    if word.contains('-') && !word.starts_with('-') && !word.ends_with('-') && !word.contains("--")
+    {
         let hy_parts: Vec<&str> = word.split('-').filter(|p| !p.is_empty()).collect();
         if hy_parts.len() >= 2 && hy_parts.iter().all(|p| p.chars().count() >= 2) {
             let mut out = Vec::new();
@@ -703,7 +715,11 @@ pub fn auto_diamond_wrap_lines_opts<F: Fn(&str) -> f32>(
                 if j > i + 1 && w > max_w {
                     break;
                 }
-                let overflow_pen = if w > max_w { (w - max_w) * 60.0 + 4000.0 } else { 0.0 };
+                let overflow_pen = if w > max_w {
+                    (w - max_w) * 60.0 + 4000.0
+                } else {
+                    0.0
+                };
                 let slack = (target_w - w).abs();
                 let hy_pen = if j < n && tokens[j - 1].soft_hyphen_after {
                     120.0
@@ -716,7 +732,8 @@ pub fn auto_diamond_wrap_lines_opts<F: Fn(&str) -> f32>(
                     } else {
                         0.0
                     };
-                let cost = slack * slack * 0.015 + 18.0 + overflow_pen + hy_pen + orphan_pen + dp[j];
+                let cost =
+                    slack * slack * 0.015 + 18.0 + overflow_pen + hy_pen + orphan_pen + dp[j];
                 if cost < dp[i] {
                     dp[i] = cost;
                     next_idx[i] = j;

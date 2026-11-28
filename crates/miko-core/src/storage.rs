@@ -1,4 +1,4 @@
-use crate::models::{GlossaryEntry, TextBlock};
+use crate::models::{CanonOverride, GlossaryEntry, TextBlock};
 use rusqlite::{params, Connection};
 use std::path::Path;
 use std::sync::Mutex;
@@ -19,6 +19,7 @@ pub struct StorageMetrics {
     pub translation_cache_rows: usize,
     pub glossary_rows: usize,
     pub page_state_rows: usize,
+    pub canon_override_rows: usize,
 }
 
 /// Потокобезопасное локальное хранилище состояния, глоссария и кэша переводов на SQLite WAL.
@@ -65,6 +66,14 @@ impl StudioDb {
                  clean_state_hash TEXT NOT NULL DEFAULT '',
                  blocks_json TEXT NOT NULL,
                  updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS canon_overrides (
+                 lang TEXT NOT NULL DEFAULT 'en',
+                 id TEXT NOT NULL,
+                 json TEXT NOT NULL,
+                 enabled INTEGER NOT NULL DEFAULT 1,
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY (lang, id)
              );",
         )?;
         Ok(Self {
@@ -81,9 +90,8 @@ impl StudioDb {
 
     pub fn get_cached_translation(&self, cache_key: &str) -> Result<Option<String>, StorageError> {
         let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = guard.prepare(
-            "SELECT translated_text FROM translation_cache WHERE cache_key = ?1",
-        )?;
+        let mut stmt =
+            guard.prepare("SELECT translated_text FROM translation_cache WHERE cache_key = ?1")?;
         let mut rows = stmt.query(params![cache_key])?;
         if let Some(row) = rows.next()? {
             Ok(Some(row.get(0)?))
@@ -120,10 +128,17 @@ impl StudioDb {
         Ok(())
     }
 
-    pub fn replace_glossary(&self, scope: &str, entries: &[GlossaryEntry]) -> Result<(), StorageError> {
+    pub fn replace_glossary(
+        &self,
+        scope: &str,
+        entries: &[GlossaryEntry],
+    ) -> Result<(), StorageError> {
         let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let tx = guard.transaction()?;
-        tx.execute("DELETE FROM glossary_entries WHERE scope = ?1", params![scope])?;
+        tx.execute(
+            "DELETE FROM glossary_entries WHERE scope = ?1",
+            params![scope],
+        )?;
         {
             let mut stmt = tx.prepare(
                 "INSERT INTO glossary_entries (scope, src, dst, note) VALUES (?1, ?2, ?3, ?4)",
@@ -178,11 +193,13 @@ impl StudioDb {
         Ok(())
     }
 
-    pub fn load_page_state(&self, page_key: &str) -> Result<Option<(String, Vec<TextBlock>)>, StorageError> {
+    pub fn load_page_state(
+        &self,
+        page_key: &str,
+    ) -> Result<Option<(String, Vec<TextBlock>)>, StorageError> {
         let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
-        let mut stmt = guard.prepare(
-            "SELECT clean_state_hash, blocks_json FROM page_states WHERE page_key = ?1",
-        )?;
+        let mut stmt = guard
+            .prepare("SELECT clean_state_hash, blocks_json FROM page_states WHERE page_key = ?1")?;
         let mut rows = stmt.query(params![page_key])?;
         if let Some(row) = rows.next()? {
             let hash: String = row.get(0)?;
@@ -194,7 +211,10 @@ impl StudioDb {
         }
     }
 
-    pub fn purge_refusal_cache<F: Fn(&str) -> bool>(&self, is_bad: F) -> Result<usize, StorageError> {
+    pub fn purge_refusal_cache<F: Fn(&str) -> bool>(
+        &self,
+        is_bad: F,
+    ) -> Result<usize, StorageError> {
         let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
         let mut bad_keys: Vec<String> = Vec::new();
         {
@@ -210,9 +230,64 @@ impl StudioDb {
             }
         }
         for k in &bad_keys {
-            guard.execute("DELETE FROM translation_cache WHERE cache_key = ?1", params![k])?;
+            guard.execute(
+                "DELETE FROM translation_cache WHERE cache_key = ?1",
+                params![k],
+            )?;
         }
         Ok(bad_keys.len())
+    }
+
+    pub fn load_canon_overrides(&self, lang: &str) -> Result<Vec<CanonOverride>, StorageError> {
+        let lang_norm = lang.trim().to_ascii_lowercase();
+        let guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let mut stmt = guard.prepare(
+            "SELECT id, json, enabled FROM canon_overrides WHERE lang = ?1 ORDER BY rowid ASC",
+        )?;
+        let mut rows = stmt.query(params![lang_norm])?;
+        let mut out = Vec::new();
+        while let Some(row) = rows.next()? {
+            let id: String = row.get(0)?;
+            let raw_json: String = row.get(1)?;
+            let enabled_i: i64 = row.get(2)?;
+            if let Ok(mut parsed) = serde_json::from_str::<CanonOverride>(&raw_json) {
+                parsed.id = id;
+                parsed.enabled = enabled_i != 0;
+                out.push(parsed);
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn replace_canon_overrides(
+        &self,
+        lang: &str,
+        overrides: &[CanonOverride],
+    ) -> Result<(), StorageError> {
+        let lang_norm = lang.trim().to_ascii_lowercase();
+        let mut guard = self.conn.lock().unwrap_or_else(|e| e.into_inner());
+        let tx = guard.transaction()?;
+        tx.execute(
+            "DELETE FROM canon_overrides WHERE lang = ?1",
+            params![lang_norm],
+        )?;
+        {
+            let mut stmt = tx.prepare(
+                "INSERT INTO canon_overrides (lang, id, json, enabled, updated_at) VALUES (?1, ?2, ?3, ?4, ?5)",
+            )?;
+            let ts = Self::unix_ts();
+            for ov in overrides {
+                let id = ov.id.trim();
+                if id.is_empty() {
+                    continue;
+                }
+                let raw_json = serde_json::to_string(ov)?;
+                let en_flag = if ov.enabled { 1i64 } else { 0i64 };
+                stmt.execute(params![lang_norm, id, raw_json, en_flag, ts])?;
+            }
+        }
+        tx.commit()?;
+        Ok(())
     }
 
     pub fn metrics(&self) -> Result<StorageMetrics, StorageError> {
@@ -221,12 +296,14 @@ impl StudioDb {
             guard.query_row("SELECT COUNT(*) FROM translation_cache", [], |r| r.get(0))?;
         let g_rows: i64 =
             guard.query_row("SELECT COUNT(*) FROM glossary_entries", [], |r| r.get(0))?;
-        let p_rows: i64 =
-            guard.query_row("SELECT COUNT(*) FROM page_states", [], |r| r.get(0))?;
+        let p_rows: i64 = guard.query_row("SELECT COUNT(*) FROM page_states", [], |r| r.get(0))?;
+        let c_rows: i64 =
+            guard.query_row("SELECT COUNT(*) FROM canon_overrides", [], |r| r.get(0))?;
         Ok(StorageMetrics {
             translation_cache_rows: t_rows.max(0) as usize,
             glossary_rows: g_rows.max(0) as usize,
             page_state_rows: p_rows.max(0) as usize,
+            canon_override_rows: c_rows.max(0) as usize,
         })
     }
 }

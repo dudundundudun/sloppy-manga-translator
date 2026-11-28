@@ -61,6 +61,8 @@ pub const PRIVILEGED_ENDPOINTS: &[&str] = &[
     "/setup",
     "/prompt_preview",
     "/test_prompt",
+    "/canon",
+    "/chapter_analysis",
 ];
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -133,7 +135,10 @@ pub fn is_trusted_host_header(host: Option<&str>) -> bool {
         };
         let after = &h[end_idx + 1..];
         if !after.is_empty() {
-            if !after.starts_with(':') || after.len() == 1 || !after[1..].chars().all(|c| c.is_ascii_digit()) {
+            if !after.starts_with(':')
+                || after.len() == 1
+                || !after[1..].chars().all(|c| c.is_ascii_digit())
+            {
                 return false;
             }
         }
@@ -217,11 +222,7 @@ fn is_blocked_ipv6(v6: Ipv6Addr) -> bool {
     let segs = v6.segments();
     let is_ula = (segs[0] & 0xfe00) == 0xfc00;
     let is_link_local = (segs[0] & 0xffc0) == 0xfe80;
-    v6.is_loopback()
-        || v6.is_unspecified()
-        || v6.is_multicast()
-        || is_ula
-        || is_link_local
+    v6.is_loopback() || v6.is_unspecified() || v6.is_multicast() || is_ula || is_link_local
 }
 
 pub fn is_filesystem_root(path: &Path) -> bool {

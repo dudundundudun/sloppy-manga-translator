@@ -10,7 +10,9 @@ use miko_core::models::normalize_clean_bbox;
 use miko_core::security::reject_unc_path;
 use miko_core::TextBlock;
 use miko_ocr::{OcrOptions, RustOcrEngine};
-use miko_renderer::{auto_diamond_wrap_lines, measure_text_width, resolve_font_for_text, FontCache, RenderOptions};
+use miko_renderer::{
+    auto_diamond_wrap_lines, measure_text_width, resolve_font_for_text, FontCache, RenderOptions,
+};
 use miko_translator::{merge_glossaries, TranslateBatchRequest};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -20,9 +22,12 @@ use std::sync::Arc;
 use std::time::{Instant, UNIX_EPOCH};
 
 fn is_supported_ext(p: &Path) -> bool {
-    p.extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp"))
+    p.extension().and_then(|s| s.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "webp" | "bmp"
+        )
+    })
 }
 
 fn content_type_for_ext(p: &Path) -> &'static str {
@@ -50,7 +55,10 @@ pub fn encode_rgb_to_data_url(img: &RgbImage, fmt: &str) -> Result<String, Strin
     };
     img.write_to(&mut buf, img_fmt)
         .map_err(|e| format!("Ошибка кодирования изображения: {e}"))?;
-    Ok(format!("data:{mime};base64,{}", B64.encode(buf.into_inner())))
+    Ok(format!(
+        "data:{mime};base64,{}",
+        B64.encode(buf.into_inner())
+    ))
 }
 
 pub fn decode_base64_rgb(raw: &str) -> Result<RgbImage, String> {
@@ -89,7 +97,11 @@ pub async fn local_image(
     Query(q): Query<LocalImageQuery>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&q.path), "path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let img_p = Path::new(q.path.trim());
     if !is_supported_ext(img_p) {
@@ -172,11 +184,18 @@ pub async fn retranslate_single_block(
 ) -> Response {
     if let Some(ref fp) = payload.folder_path {
         if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
                 .into_response();
         }
     }
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let mut prompt_cfg = crate::prompt_config_from_app(&cfg);
     prompt_cfg.custom_context_prompt = miko_translator::compose_context_with_series_hint(
         &cfg.custom_context_prompt,
@@ -200,6 +219,26 @@ pub async fn retranslate_single_block(
 
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
     let model = payload.model.unwrap_or_else(|| cfg.selected_model.clone());
+    prompt_cfg.canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
+
+    let auto_lock_g: Vec<miko_core::GlossaryEntry> = if cfg.name_lock {
+        payload
+            .folder_path
+            .as_deref()
+            .filter(|s| !s.trim().is_empty())
+            .and_then(|fp| {
+                let src_dir = crate::folder_job::unwrap_source_folder(Path::new(fp.trim()));
+                let out_dir = crate::folder_job::output_dir_for_folder(&src_dir, &t_lang);
+                let man = crate::folder_job::load_manifest(&out_dir);
+                man.get("name_lock")
+                    .cloned()
+                    .and_then(|v| serde_json::from_value(v).ok())
+            })
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
+    let merged = merge_glossaries(&auto_lock_g, &merged);
 
     match state
         .translator
@@ -268,7 +307,11 @@ async fn run_full_rgb_pipeline(
     return_image: bool,
 ) -> Result<Value, String> {
     let t_total = Instant::now();
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let default_font_path = cfg.resolve_default_font_path(&state.base_dir);
     let scale_pct = cfg.font_scale_pct;
     let overflow_mode = cfg.overflow_mode.clone();
@@ -278,6 +321,8 @@ async fn run_full_rgb_pipeline(
     let st_ocr = state.clone();
     let rgb_ocr = rgb.clone();
     let min_tlen = (cfg.min_text_length as usize).max(1);
+    let skip_sfx = cfg.skip_sfx;
+    let skip_sighs = cfg.skip_sighs;
     let ocr_res = tokio::task::spawn_blocking(move || {
         let mut guard = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
@@ -293,6 +338,8 @@ async fn run_full_rgb_pipeline(
                     detect_free_text,
                     text_filter_mode,
                     min_text_length: min_tlen,
+                    skip_sfx,
+                    skip_sighs,
                     ..Default::default()
                 },
             )
@@ -303,6 +350,8 @@ async fn run_full_rgb_pipeline(
 
     // 2. Перевод батча (async HTTP + SQLite кэш)
     let glossary = state.db.load_glossary("global").unwrap_or(cfg.glossary);
+    let canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
+    let qa_linter_mode = miko_translator::QaMode::from_str_lossy(&cfg.qa_linter_mode);
     let tr_res = state
         .translator
         .translate_blocks(
@@ -324,6 +373,12 @@ async fn run_full_rgb_pipeline(
                     src_file_hint.as_deref().and_then(|p| p.parent()),
                 ),
                 use_cache,
+                adult_canon_en: cfg.adult_canon_en,
+                chapter_brief: String::new(),
+                lookahead_lines: Vec::new(),
+                qa_linter_mode,
+                canon_overrides,
+                force_local_nsfw_bypass: false,
             },
             Some(&state.db),
         )
@@ -338,45 +393,50 @@ async fn run_full_rgb_pipeline(
         .map(|p| p.to_string_lossy().to_string());
     let src_mtime = src_file_hint.as_deref().map(file_mtime_secs).unwrap_or(0);
 
-    let (rendered_img, clean_ep, blocks_out) = tokio::task::spawn_blocking(move || -> Result<(RgbImage, String, Vec<TextBlock>), String> {
-        let mut cguard = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
-        if cguard.is_none() {
-            *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
-        }
-        let cleaner = cguard.as_mut().expect("cleaner init");
-        let clean_res = cleaner
-            .clean_image(
-                &rgb,
-                &blocks_final,
-                &CleanOptions {
-                    use_cache: use_cache && src_str.is_some(),
-                    skip_untranslated: true,
-                    ..Default::default()
-                },
-                src_str.as_deref(),
-                src_mtime,
-            )
-            .map_err(|e| e.to_string())?;
-        let ep = clean_res.timings.ep.clone();
+    let (rendered_img, clean_ep, blocks_out) = tokio::task::spawn_blocking(
+        move || -> Result<(RgbImage, String, Vec<TextBlock>), String> {
+            let mut cguard = st_cr
+                .cleaner_engine
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            if cguard.is_none() {
+                *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
+            }
+            let cleaner = cguard.as_mut().expect("cleaner init");
+            let clean_res = cleaner
+                .clean_image(
+                    &rgb,
+                    &blocks_final,
+                    &CleanOptions {
+                        use_cache: use_cache && src_str.is_some(),
+                        skip_untranslated: true,
+                        ..Default::default()
+                    },
+                    src_str.as_deref(),
+                    src_mtime,
+                )
+                .map_err(|e| e.to_string())?;
+            let ep = clean_res.timings.ep.clone();
 
-        let render_res = st_cr
-            .renderer
-            .render_page(
-                &clean_res.cleaned,
-                &mut blocks_final,
-                &RenderOptions {
-                    min_font_size: min_fs,
-                    max_font_size: max_fs,
-                    font_scale_pct: scale_pct,
-                    uppercase,
-                    overflow_mode,
-                    default_font_path,
-                },
-            )
-            .map_err(|e| e.to_string())?;
+            let render_res = st_cr
+                .renderer
+                .render_page(
+                    &clean_res.cleaned,
+                    &mut blocks_final,
+                    &RenderOptions {
+                        min_font_size: min_fs,
+                        max_font_size: max_fs,
+                        font_scale_pct: scale_pct,
+                        uppercase,
+                        overflow_mode,
+                        default_font_path,
+                    },
+                )
+                .map_err(|e| e.to_string())?;
 
-        Ok((render_res.rendered, ep, blocks_final))
-    })
+            Ok((render_res.rendered, ep, blocks_final))
+        },
+    )
     .await
     .map_err(|e| e.to_string())??;
 
@@ -435,7 +495,11 @@ pub async fn translate_page(
         Ok(im) => im,
         Err(e) => return (StatusCode::BAD_REQUEST, Json(json!({"detail": e}))).into_response(),
     };
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let t_lang = payload
         .target_lang
         .unwrap_or_else(|| "ru".to_string())
@@ -489,11 +553,18 @@ pub async fn translate_page_file(
     Json(payload): Json<TranslatePageFilePayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.source_path), "source_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     if let Some(ref dp) = payload.dest_path {
         if let Err(err) = reject_unc_path(Some(dp), "dest_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
                 .into_response();
         }
     }
@@ -514,7 +585,10 @@ pub async fn translate_page_file(
     }
     if let Some(ref dp) = payload.dest_path {
         let dest_p = Path::new(dp.trim());
-        let parent_chk = dest_p.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(dest_p);
+        let parent_chk = dest_p
+            .parent()
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(dest_p);
         if !state.allowed_roots.is_within_allowed_roots(parent_chk) {
             return (
                 StatusCode::FORBIDDEN,
@@ -534,7 +608,11 @@ pub async fn translate_page_file(
                 .into_response()
         }
     };
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let t_lang = payload
         .target_lang
         .unwrap_or_else(|| "ru".to_string())
@@ -597,11 +675,18 @@ pub async fn save_edited_page(
     Json(payload): Json<SaveEditedPagePayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.source_path), "source_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     if let Some(ref dp) = payload.dest_path {
         if let Err(err) = reject_unc_path(Some(dp), "dest_path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
                 .into_response();
         }
     }
@@ -625,7 +710,10 @@ pub async fn save_edited_page(
         .as_ref()
         .map(|s| PathBuf::from(s.trim()))
         .unwrap_or_else(|| src_p.with_extension("edited.png"));
-    let dest_parent = dest_p.parent().filter(|p| !p.as_os_str().is_empty()).unwrap_or(&dest_p);
+    let dest_parent = dest_p
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(&dest_p);
     if !state.allowed_roots.is_within_allowed_roots(dest_parent) {
         return (
             StatusCode::FORBIDDEN,
@@ -639,7 +727,11 @@ pub async fn save_edited_page(
         normalize_clean_bbox(b);
     }
 
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let st_clone = state.clone();
     let src_clone = src_p.clone();
     let dest_clone = dest_p.clone();
@@ -658,7 +750,10 @@ pub async fn save_edited_page(
         let src_str = src_clone.to_string_lossy().to_string();
         let mtime = file_mtime_secs(&src_clone);
 
-        let mut cguard = st_clone.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+        let mut cguard = st_clone
+            .cleaner_engine
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
         if cguard.is_none() {
             *cguard = Some(RustCleanerEngine::load(&st_clone.base_dir, true));
         }
@@ -715,7 +810,10 @@ pub async fn save_edited_page(
         ) {
             if crate::folder_job::manifest_path(out_dir).is_file() {
                 let mut manifest = crate::folder_job::load_manifest(out_dir);
-                let free_cnt = blocks.iter().filter(|b| b.is_free_text && !b.is_deleted).count();
+                let free_cnt = blocks
+                    .iter()
+                    .filter(|b| b.is_free_text && !b.is_deleted)
+                    .count();
                 if manifest["pages"][fname].is_object() {
                     manifest["pages"][fname]["blocks"] = json!(blocks);
                     manifest["pages"][fname]["blocks_count"] = json!(blocks.len());

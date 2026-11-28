@@ -172,10 +172,14 @@ pub fn compute_tight_ink_bbox(
             .filter(|&b| b)
             .count();
 
-        if touches >= 2 && (comp.width as f32 > rw as f32 * 0.65 || comp.height as f32 > rh as f32 * 0.65) {
+        if touches >= 2
+            && (comp.width as f32 > rw as f32 * 0.65 || comp.height as f32 > rh as f32 * 0.65)
+        {
             continue;
         }
-        if touches >= 1 && (comp.width as f32 > rw as f32 * 0.78 || comp.height as f32 > rh as f32 * 0.78) {
+        if touches >= 1
+            && (comp.width as f32 > rw as f32 * 0.78 || comp.height as f32 > rh as f32 * 0.78)
+        {
             continue;
         }
         if touches >= 1

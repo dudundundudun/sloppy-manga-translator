@@ -3,7 +3,9 @@ pub mod layout;
 pub mod painter;
 pub mod typography;
 
-pub use engine::{RenderOptions, RenderPageResult, RenderTimings, RendererError, RustRendererEngine};
+pub use engine::{
+    RenderOptions, RenderPageResult, RenderTimings, RendererError, RustRendererEngine,
+};
 pub use layout::{
     classify_bubble_role, compute_page_target_base_fs, compute_scanline_chords,
     find_optimal_box_center, harmonize_page_font_sizes, harmonize_page_roles, solve_bubble_layout,
@@ -37,7 +39,11 @@ pub struct FontInfo {
 
 fn font_sort_rank(filename: &str) -> u8 {
     let low = filename.to_ascii_lowercase();
-    if low.contains("wild") || low.contains("anime") || low.contains("manga") || low.contains("chinacat") {
+    if low.contains("wild")
+        || low.contains("anime")
+        || low.contains("manga")
+        || low.contains("chinacat")
+    {
         0 // Классические манга-шрифты всегда на первом месте
     } else if matches!(
         low.as_str(),
@@ -98,7 +104,11 @@ pub fn list_available_fonts(fonts_dir: &Path) -> Vec<FontInfo> {
     out.sort_by(|a, b| {
         font_sort_rank(&a.filename)
             .cmp(&font_sort_rank(&b.filename))
-            .then_with(|| a.filename.to_ascii_lowercase().cmp(&b.filename.to_ascii_lowercase()))
+            .then_with(|| {
+                a.filename
+                    .to_ascii_lowercase()
+                    .cmp(&b.filename.to_ascii_lowercase())
+            })
     });
     out
 }
@@ -111,8 +121,14 @@ mod tests {
 
     #[test]
     fn test_typography_and_hyphenation() {
-        assert_eq!(format_comic_typography("hey...  i know -- right", false), "hey… I know — right");
-        assert_eq!(format_comic_typography("What if we have a daughter.?", false), "What if we have a daughter…?");
+        assert_eq!(
+            format_comic_typography("hey...  i know -- right", false),
+            "hey… I know — right"
+        );
+        assert_eq!(
+            format_comic_typography("What if we have a daughter.?", false),
+            "What if we have a daughter…?"
+        );
         assert_eq!(format_comic_typography(".Probably.", false), "…Probably.");
         assert_eq!(format_comic_typography("привет", true), "ПРИВЕТ");
         assert_eq!(
@@ -135,7 +151,10 @@ mod tests {
         );
         assert!(lines.len() >= 3);
         for l in &lines {
-            assert!((l.chars().count() as f32) * 10.0 <= 145.0, "line too wide: {l}");
+            assert!(
+                (l.chars().count() as f32) * 10.0 <= 145.0,
+                "line too wide: {l}"
+            );
         }
     }
 
@@ -150,14 +169,21 @@ mod tests {
             }
         }
         let c = find_optimal_box_center(&mask, w, h, 20, 20);
-        assert!(c[0] >= 35, "center should stay inside valid right region: {:?}", c);
+        assert!(
+            c[0] >= 35,
+            "center should stay inside valid right region: {:?}",
+            c
+        );
 
         let harmonized = harmonize_page_font_sizes(&[
             (0, 18, 25, false),
             (1, 19, 30, false),
             (2, 42, 3, false), // короткая реплика-выброс 42px должна приглушиться!
         ]);
-        assert!(harmonized[2] < 42 && harmonized[2] <= 24, "harmonized={harmonized:?}");
+        assert!(
+            harmonized[2] < 42 && harmonized[2] <= 24,
+            "harmonized={harmonized:?}"
+        );
     }
 
     #[test]
@@ -219,7 +245,10 @@ mod tests {
                 }
             }
         }
-        assert!(dark_in_white > 40, "expected dark text in white bubble, got {dark_in_white}");
+        assert!(
+            dark_in_white > 40,
+            "expected dark text in white bubble, got {dark_in_white}"
+        );
 
         // В тёмном баббле появились светлые чернила кириллицы
         let mut light_in_dark = 0usize;
@@ -230,7 +259,10 @@ mod tests {
                 }
             }
         }
-        assert!(light_in_dark > 40, "expected bright text in dark bubble, got {light_in_dark}");
+        assert!(
+            light_in_dark > 40,
+            "expected bright text in dark bubble, got {light_in_dark}"
+        );
     }
 
     #[test]
@@ -516,8 +548,14 @@ mod tests {
         let cache = FontCache::new();
         let font = cache.load_font(&font_path).expect("load cc-wild-words");
         let sanitized = sanitize_text_for_font(&font, "Wait—what… ’tis “fine”");
-        assert!(!sanitized.contains('—'), "em-dash should fallback: {sanitized}");
-        assert!(sanitized.contains("--"), "expected '--' fallback: {sanitized}");
+        assert!(
+            !sanitized.contains('—'),
+            "em-dash should fallback: {sanitized}"
+        );
+        assert!(
+            sanitized.contains("--"),
+            "expected '--' fallback: {sanitized}"
+        );
     }
 
     #[test]
@@ -555,7 +593,13 @@ mod tests {
     #[test]
     fn test_no_midline_hyphens_and_english_digraphs() {
         // Регрессия артефактов BRE-AKFAST, TOGE-THER, THO-USAND, APPE-ARED, BLA-CKOUT, ATTA-CHED, STAN-CES
-        for w in ["breakfast", "thousand", "cooperate", "appeared", "attached?"] {
+        for w in [
+            "breakfast",
+            "thousand",
+            "cooperate",
+            "appeared",
+            "attached?",
+        ] {
             let parts = hyphenate_word(w);
             let joined_hy = parts.join("-");
             assert!(
@@ -618,7 +662,8 @@ mod tests {
         // Правый баббл [123..302, 24..363], левый баббл [24..154, 95..468], общий белый перешеек без чёрной стены между ними
         for y in 24..363u32 {
             for x in 123..302u32 {
-                let wall = x >= 299 || y <= 26 || y >= 360 || (x <= 125 && !(100..=355).contains(&y));
+                let wall =
+                    x >= 299 || y <= 26 || y >= 360 || (x <= 125 && !(100..=355).contains(&y));
                 img.put_pixel(
                     x,
                     y,
@@ -632,7 +677,8 @@ mod tests {
         }
         for y in 95..468u32 {
             for x in 24..154u32 {
-                let wall = x <= 26 || y <= 97 || y >= 465 || (x >= 151 && !(100..=355).contains(&y));
+                let wall =
+                    x <= 26 || y <= 97 || y >= 465 || (x >= 151 && !(100..=355).contains(&y));
                 if img.get_pixel(x, y)[0] != 255 {
                     img.put_pixel(
                         x,
@@ -669,7 +715,14 @@ mod tests {
         ];
 
         let res = engine
-            .render_page(&img, &mut blocks, &RenderOptions { uppercase: true, ..Default::default() })
+            .render_page(
+                &img,
+                &mut blocks,
+                &RenderOptions {
+                    uppercase: true,
+                    ..Default::default()
+                },
+            )
             .expect("render 015 regression");
 
         // Правый баббл (y=24..363, середина ~193) должен иметь чернила НИЖЕ бывшего ложного среза y=230!
@@ -727,7 +780,8 @@ mod tests {
                 bbox: [300, 100, 480, 390],
                 bubble_polygon: Some(vec![[305, 105], [475, 105], [475, 385], [305, 385]]),
                 original_text: "長いセリフ".into(),
-                translated_text: "More precisely, this, the device on my wrist, and my genes.".into(),
+                translated_text: "More precisely, this, the device on my wrist, and my genes."
+                    .into(),
                 ..Default::default()
             },
             TextBlock {
@@ -753,7 +807,9 @@ mod tests {
             max_font_size: 32,
             ..Default::default()
         };
-        let _ = engine.render_page(&img, &mut blocks, &opts).expect("render page consistency");
+        let _ = engine
+            .render_page(&img, &mut blocks, &opts)
+            .expect("render page consistency");
 
         let fs_short = blocks[0].rendered_font_size.unwrap();
         let fs_long = blocks[1].rendered_font_size.unwrap();
@@ -851,7 +907,10 @@ mod tests {
             hyphenate_word("Something's").len() >= 2,
             "expected Something's to hyphenate cleanly"
         );
-        assert_eq!(compact_scream_for_narrow_bubble("Sluuurp", 66, 202), "Sluurp");
+        assert_eq!(
+            compact_scream_for_narrow_bubble("Sluuurp", 66, 202),
+            "Sluurp"
+        );
 
         let fonts_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .parent()
@@ -923,17 +982,28 @@ mod tests {
             uppercase: true,
             ..Default::default()
         };
-        let _ = engine.render_page(&img, &mut blocks, &opts).expect("render screenshot regressions");
+        let _ = engine
+            .render_page(&img, &mut blocks, &opts)
+            .expect("render screenshot regressions");
 
         let fs1 = blocks[0].rendered_font_size.unwrap_or(0);
         let fs2 = blocks[1].rendered_font_size.unwrap_or(0);
         let fs3 = blocks[2].rendered_font_size.unwrap_or(0);
         let fs4 = blocks[3].rendered_font_size.unwrap_or(0);
 
-        assert!(fs1 >= 18, "Mmm.such a.strange.feeling. stayed too small: {fs1}px");
+        assert!(
+            fs1 >= 18,
+            "Mmm.such a.strange.feeling. stayed too small: {fs1}px"
+        );
         assert!(fs2 >= 18, "Something's.c-coming. stayed too small: {fs2}px");
-        assert!(fs3 >= 14, "Sluuurp in narrow 66x202 bubble stayed too small: {fs3}px");
-        assert!(fs4 >= 25, "THOOM!! in 225x485 burst bubble stayed too small: {fs4}px");
+        assert!(
+            fs3 >= 14,
+            "Sluuurp in narrow 66x202 bubble stayed too small: {fs3}px"
+        );
+        assert!(
+            fs4 >= 25,
+            "THOOM!! in 225x485 burst bubble stayed too small: {fs4}px"
+        );
     }
 
     #[test]
@@ -982,7 +1052,10 @@ mod tests {
                 }
             }
         }
-        assert!(dark_heart_px >= 15, "procedural heart drew too few pixels: {dark_heart_px}");
+        assert!(
+            dark_heart_px >= 15,
+            "procedural heart drew too few pixels: {dark_heart_px}"
+        );
 
         let mut blocks_tilde = vec![TextBlock {
             id: 1,
@@ -1010,7 +1083,10 @@ mod tests {
                 }
             }
         }
-        assert!(right_tail_ink >= 15, "tilde/heart right tail ink missing: {right_tail_ink}");
+        assert!(
+            right_tail_ink >= 15,
+            "tilde/heart right tail ink missing: {right_tail_ink}"
+        );
     }
 
     #[test]
@@ -1031,7 +1107,12 @@ mod tests {
         for (text, w, h, min_expected_fs) in [
             ("You lecherous monk.", 121usize, 199usize, 16i32),
             ("YOU LECHEROUS MONK.", 121usize, 199usize, 16i32),
-            ("BUT I AM INTERESTED IN THE ACT OF SEX ITSELF.", 143usize, 270usize, 17i32),
+            (
+                "BUT I AM INTERESTED IN THE ACT OF SEX ITSELF.",
+                143usize,
+                270usize,
+                17i32,
+            ),
         ] {
             let mut mask = vec![0u8; w * h];
             let cx = w as f32 * 0.5;

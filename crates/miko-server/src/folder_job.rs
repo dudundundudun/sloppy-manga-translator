@@ -9,11 +9,16 @@ use miko_core::security::reject_unc_path;
 use miko_core::{FolderJobState, TextBlock};
 use miko_ocr::{OcrOptions, RustOcrEngine};
 use miko_renderer::RenderOptions;
-use miko_translator::{kana_to_romaji, merge_glossaries, TranslateBatchRequest};
+use miko_translator::{
+    builtin_canon_en, builtin_fandom_db, extract_series_hint_from_path, kana_to_romaji,
+    merge_glossaries, merge_overrides, ChapterAnalysis, QaMode, TranslateBatchRequest,
+};
 use regex::RegexBuilder;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use std::cmp::Ordering;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrd};
 use std::sync::Arc;
@@ -31,9 +36,12 @@ impl Drop for TickerStopGuard {
 
 #[inline]
 fn is_supported_img(p: &Path) -> bool {
-    p.extension()
-        .and_then(|s| s.to_str())
-        .is_some_and(|e| matches!(e.to_ascii_lowercase().as_str(), "png" | "jpg" | "jpeg" | "webp" | "bmp"))
+    p.extension().and_then(|s| s.to_str()).is_some_and(|e| {
+        matches!(
+            e.to_ascii_lowercase().as_str(),
+            "png" | "jpg" | "jpeg" | "webp" | "bmp"
+        )
+    })
 }
 
 fn file_mtime_secs(p: &Path) -> i64 {
@@ -70,8 +78,12 @@ pub fn natural_cmp(a: &str, b: &str) -> Ordering {
             while ib < bb.len() && bb[ib].is_ascii_digit() {
                 ib += 1;
             }
-            let sa = std::str::from_utf8(&ba[za..ia]).unwrap_or("").trim_start_matches('0');
-            let sb = std::str::from_utf8(&bb[zb..ib]).unwrap_or("").trim_start_matches('0');
+            let sa = std::str::from_utf8(&ba[za..ia])
+                .unwrap_or("")
+                .trim_start_matches('0');
+            let sb = std::str::from_utf8(&bb[zb..ib])
+                .unwrap_or("")
+                .trim_start_matches('0');
             let cmp = sa.len().cmp(&sb.len()).then_with(|| sa.cmp(sb));
             if cmp != Ordering::Equal {
                 return cmp;
@@ -134,10 +146,7 @@ pub fn unwrap_source_folder(dir: &Path) -> PathBuf {
 
 pub fn output_dir_for_folder(source_dir: &Path, target_lang: &str) -> PathBuf {
     let base = unwrap_source_folder(source_dir);
-    let name = base
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or("manga");
+    let name = base.file_name().and_then(|s| s.to_str()).unwrap_or("manga");
     let lang_up = match target_lang.trim().to_ascii_lowercase().as_str() {
         "en" => "EN",
         "romaji" => "ROMAJI",
@@ -155,17 +164,34 @@ pub fn manifest_path(output_dir: &Path) -> PathBuf {
 pub fn load_manifest(output_dir: &Path) -> Value {
     let p = manifest_path(output_dir);
     let Ok(raw) = std::fs::read_to_string(&p) else {
-        return json!({ "pages": {}, "phrase_cache": {} });
+        return json!({ "pages": {}, "phrase_cache": {}, "ocr_prepass": {} });
     };
     let mut val = serde_json::from_str::<Value>(&raw)
-        .unwrap_or_else(|_| json!({ "pages": {}, "phrase_cache": {} }));
+        .unwrap_or_else(|_| json!({ "pages": {}, "phrase_cache": {}, "ocr_prepass": {} }));
     if !val.get("pages").is_some_and(|v| v.is_object()) {
         val["pages"] = json!({});
     }
     if !val.get("phrase_cache").is_some_and(|v| v.is_object()) {
         val["phrase_cache"] = json!({});
     }
+    if !val.get("ocr_prepass").is_some_and(|v| v.is_object()) {
+        val["ocr_prepass"] = json!({});
+    }
     val
+}
+
+fn compute_ocr_opts_sig(opts: &OcrOptions) -> String {
+    let raw = format!(
+        "free={}|mode={}|min={}|sfx={}|sighs={}|rtl={}",
+        opts.detect_free_text,
+        opts.text_filter_mode.trim().to_ascii_lowercase(),
+        opts.min_text_length,
+        opts.skip_sfx,
+        opts.skip_sighs,
+        opts.rtl
+    );
+    let digest = Sha256::digest(raw.as_bytes());
+    hex::encode(digest)[..16].to_string()
 }
 
 pub fn save_manifest(output_dir: &Path, manifest: &Value) -> std::io::Result<()> {
@@ -296,7 +322,9 @@ pub async fn process_chapter_folder_sync(
 
     state.folder_stop_flag.store(false, AtomicOrd::SeqCst);
     state.folder_pause_flag.store(false, AtomicOrd::SeqCst);
-    state.folder_pause_after_page.store(false, AtomicOrd::SeqCst);
+    state
+        .folder_pause_after_page
+        .store(false, AtomicOrd::SeqCst);
     state.translator.reset_censorship_bypass();
     if let Ok(mut dyn_m) = state.folder_dynamic_model.write() {
         *dyn_m = opts
@@ -308,22 +336,22 @@ pub async fn process_chapter_folder_sync(
     }
 
     let total = opts.images.len();
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let existing_run_id = state
-        .folder_job
+    let cfg = state
+        .config
         .read()
-        .ok()
-        .and_then(|j| {
-            if matches!(j.status.as_str(), "starting" | "running") {
-                j.live
-                    .get("run_id")
-                    .and_then(|v| v.as_str())
-                    .filter(|s| !s.is_empty())
-                    .map(str::to_string)
-            } else {
-                None
-            }
-        });
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let existing_run_id = state.folder_job.read().ok().and_then(|j| {
+        if matches!(j.status.as_str(), "starting" | "running") {
+            j.live
+                .get("run_id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+        } else {
+            None
+        }
+    });
     let run_id = existing_run_id.unwrap_or_else(|| format!("rs_{}", unix_ts_now() % 100_000));
     let mut manifest = load_manifest(&opts.output_dir);
     manifest["source_dir"] = json!(opts.source_dir.to_string_lossy());
@@ -382,10 +410,9 @@ pub async fn process_chapter_folder_sync(
                 if !alive_tick.load(AtomicOrd::SeqCst) {
                     break;
                 }
-                let is_run = st_tick
-                    .folder_job
-                    .read()
-                    .is_ok_and(|j| matches!(j.status.as_str(), "starting" | "running" | "stopping"));
+                let is_run = st_tick.folder_job.read().is_ok_and(|j| {
+                    matches!(j.status.as_str(), "starting" | "running" | "stopping")
+                });
                 if !is_run {
                     continue;
                 }
@@ -405,52 +432,307 @@ pub async fn process_chapter_folder_sync(
 
     let scope = format!(
         "folder:{}",
-        opts.source_dir.to_string_lossy().trim().to_ascii_lowercase()
+        opts.source_dir
+            .to_string_lossy()
+            .trim()
+            .to_ascii_lowercase()
     );
-    let global_g = state.db.load_glossary("global").unwrap_or(cfg.glossary.clone());
+    let global_g = state
+        .db
+        .load_glossary("global")
+        .unwrap_or(cfg.glossary.clone());
     let folder_g = state.db.load_glossary(&scope).unwrap_or_default();
-    let merged_glossary = merge_glossaries(&global_g, &folder_g);
+    let user_merged_glossary = merge_glossaries(&global_g, &folder_g);
+    let mut effective_glossary = user_merged_glossary.clone();
+    let canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
 
     let mut processed = 0usize;
     let mut skipped = 0usize;
     let mut failed_pages = 0usize;
     let mut stopped_early = false;
     let mut rolling_context: Vec<String> = Vec::new();
+    let mut chapter_phrase_memo: HashMap<String, String> = HashMap::new();
+    let mut chapter_brief_str = String::new();
+    let mut preflight_force_local = false;
+    let mut logged_fallback_warn = false;
 
     let batch_sz = (cfg.batch_pages.clamp(1, 50) as usize).max(1);
-    let batches_total = total.div_ceil(batch_sz).max(1);
+    let use_two_phase = cfg.chapter_prepass;
 
-    struct PreparedBatchPage {
+    #[derive(Clone)]
+    struct PrePage {
         global_idx: usize,
         fname: String,
         img_path: PathBuf,
         dest_path: PathBuf,
-        rgb: image::RgbImage,
         blocks: Vec<TextBlock>,
         t_page: Instant,
         from_saved_manifest: bool,
     }
 
-    'batch_loop: for (batch_idx, batch_slice) in opts.images.chunks(batch_sz).enumerate() {
-        let base_idx = batch_idx * batch_sz;
-        let b_num = batch_idx + 1;
-        let mut prepared_pages: Vec<PreparedBatchPage> = Vec::with_capacity(batch_slice.len());
+    // Вспомогательный шаг OCR одной страницы БЕЗ удержания RgbImage в памяти между фазами
+    let ocr_single_page = |idx: usize,
+                           img_path: &PathBuf,
+                           stage_code: &'static str,
+                           b_num_opt: Option<(usize, usize)>,
+                           manifest_ref: &mut Value| {
+        let state = state.clone();
+        let opts = opts.clone();
+        let run_id = run_id.clone();
+        let step_started_ms = step_started_ms.clone();
+        let img_path = img_path.clone();
+        let m_pages_blocks = if !opts.force_retranslate {
+            manifest_ref["pages"]
+                .get(
+                    img_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("page.png"),
+                )
+                .and_then(|p| p.get("blocks"))
+                .and_then(|v| v.as_array())
+                .cloned()
+        } else {
+            None
+        };
+        let m_prepass_entry = if !opts.force_retranslate {
+            manifest_ref["ocr_prepass"]
+                .get(
+                    img_path
+                        .file_name()
+                        .and_then(|s| s.to_str())
+                        .unwrap_or("page.png"),
+                )
+                .cloned()
+        } else {
+            None
+        };
 
-        // --- ЭТАП 1 ПАЧКИ: Проверка пропуска / Быстрый кэш блоков / GPU OCR ---
-        for (local_i, img_path) in batch_slice.iter().enumerate() {
-            let idx = base_idx + local_i;
+        async move {
+            let fname = img_path
+                .file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or("page.png")
+                .to_string();
+            let dest_path = opts.output_dir.join(&fname);
+            let cur_cfg = state
+                .config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            let cloud_only = cur_cfg.cloud_only_no_local_fallback;
+            let t_page = Instant::now();
+
+            if !img_path.is_file() {
+                return Err(format!(
+                    "[ОШИБКА ЧТЕНИЯ] {fname}: файл не найден — страница пропущена"
+                ));
+            }
+
+            let ocr_opts = OcrOptions {
+                detect_free_text: opts.detect_free_text,
+                text_filter_mode: opts.text_filter_mode.clone(),
+                min_text_length: (cur_cfg.min_text_length as usize).max(1),
+                skip_sfx: cur_cfg.skip_sfx,
+                skip_sighs: cur_cfg.skip_sighs,
+                ..Default::default()
+            };
+            let ocr_sig = compute_ocr_opts_sig(&ocr_opts);
+            let mtime = file_mtime_secs(&img_path);
+
+            if let Some(raw_arr) = m_pages_blocks {
+                if let Ok(mut saved_blocks) =
+                    serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr))
+                {
+                    for b in &mut saved_blocks {
+                        normalize_clean_bbox(b);
+                    }
+                    return Ok((
+                        PrePage {
+                            global_idx: idx,
+                            fname,
+                            img_path,
+                            dest_path,
+                            blocks: saved_blocks,
+                            t_page,
+                            from_saved_manifest: true,
+                        },
+                        None,
+                    ));
+                }
+            }
+
+            if let Some(pre_val) = m_prepass_entry {
+                let same_mtime = pre_val.get("mtime").and_then(|v| v.as_i64()) == Some(mtime);
+                let same_sig =
+                    pre_val.get("ocr_opts_sig").and_then(|v| v.as_str()) == Some(ocr_sig.as_str());
+                if same_mtime && same_sig {
+                    if let Some(raw_arr) = pre_val.get("blocks").and_then(|v| v.as_array()) {
+                        if let Ok(mut pre_blocks) =
+                            serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
+                        {
+                            for b in &mut pre_blocks {
+                                normalize_clean_bbox(b);
+                            }
+                            return Ok((
+                                PrePage {
+                                    global_idx: idx,
+                                    fname,
+                                    img_path,
+                                    dest_path,
+                                    blocks: pre_blocks,
+                                    t_page,
+                                    from_saved_manifest: false,
+                                },
+                                None,
+                            ));
+                        }
+                    }
+                }
+            }
+
+            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
+            let el_ocr = t_batch.elapsed().as_secs();
+            let (msg_lbl, live_lbl) = if stage_code == "prepass" {
+                (
+                    format!("🔍 OCR всей главы {}/{total}: {fname}", idx + 1),
+                    format!("🔍 OCR всей главы {}/{total}: {fname}", idx + 1),
+                )
+            } else if let Some((b_num, b_tot)) = b_num_opt {
+                (
+                    format!(
+                        "Пачка {b_num}/{b_tot} · 🔍 OCR ({}/{total}): {fname}",
+                        idx + 1
+                    ),
+                    format!("🔍 OCR стр. {}/{total}: {fname}", idx + 1),
+                )
+            } else {
+                (
+                    format!("🔍 OCR ({}/{total}): {fname}", idx + 1),
+                    format!("🔍 OCR стр. {}/{total}: {fname}", idx + 1),
+                )
+            };
+
+            push_folder_state(&state, |j| {
+                j.elapsed_sec = el_ocr;
+                j.current_file = fname.clone();
+                j.phase = "ocr".to_string();
+                j.message = msg_lbl.clone();
+                push_live_event_obj(
+                    &mut j.live,
+                    &run_id,
+                    stage_code,
+                    &live_lbl,
+                    &j.active_model.clone(),
+                    0,
+                    0,
+                    0,
+                    cloud_only,
+                    None,
+                );
+                if let Some((b_num, b_tot)) = b_num_opt {
+                    if let Some(obj) = j.live.as_object_mut() {
+                        obj.insert("batch_index".into(), json!(b_num));
+                        obj.insert("batches_total".into(), json!(b_tot));
+                    }
+                }
+            });
+
+            let st_ocr = state.clone();
+            let img_for_ocr = img_path.clone();
+            let is_mock = opts.mock_text.is_some();
+            let ocr_opts_clone = ocr_opts.clone();
+            let ocr_task_res =
+                tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
+                    let rgb = image::open(&img_for_ocr)
+                        .map_err(|e| format!("ошибка чтения изображения: {e}"))?
+                        .to_rgb8();
+                    let rtdetr_file = st_ocr
+                        .base_dir
+                        .join("models")
+                        .join("onnx")
+                        .join("rtdetr_v2_comic.onnx");
+                    if is_mock && !rtdetr_file.is_file() {
+                        let (w, h) = rgb.dimensions();
+                        let x2 = (w as i32 - 16).max(24);
+                        let y2 = (h as i32 - 16).max(24);
+                        let mut blk = TextBlock {
+                            id: 1,
+                            bbox: [16, 16, x2, y2],
+                            clean_bbox: Some([16, 16, x2, y2]),
+                            bubble_polygon: Some(vec![[16, 16], [x2, 16], [x2, y2], [16, y2]]),
+                            original_text: "勇者ヒンメルとフリーレン".to_string(),
+                            ..Default::default()
+                        };
+                        normalize_clean_bbox(&mut blk);
+                        return Ok(vec![blk]);
+                    }
+                    let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
+                    if g.is_none() {
+                        let eng = RustOcrEngine::load(&st_ocr.base_dir, true)
+                            .map_err(|e| e.to_string())?;
+                        *g = Some(eng);
+                    }
+                    let res = g
+                        .as_mut()
+                        .expect("ocr init")
+                        .process_rgb_image(&rgb, &ocr_opts_clone)
+                        .map_err(|e| e.to_string())?;
+                    Ok(res.blocks)
+                })
+                .await;
+
+            let blocks = match ocr_task_res {
+                Ok(Ok(b)) => b,
+                Ok(Err(err)) => {
+                    return Err(format!("[ОШИБКА OCR] {fname}: {err} — страница пропущена"));
+                }
+                Err(join_err) => {
+                    return Err(format!(
+                        "[ПАНИКА OCR] {fname}: {join_err} — страница пропущена"
+                    ));
+                }
+            };
+
+            let prepass_val = json!({
+                "blocks": blocks,
+                "mtime": mtime,
+                "ocr_opts_sig": ocr_sig,
+            });
+            Ok((
+                PrePage {
+                    global_idx: idx,
+                    fname,
+                    img_path,
+                    dest_path,
+                    blocks,
+                    t_page,
+                    from_saved_manifest: false,
+                },
+                Some(prepass_val),
+            ))
+        }
+    };
+
+    // Если включён двухфазный конвейер (`chapter_prepass = true`):
+    // Фаза 1: OCR всех страниц главы -> `manifest["ocr_prepass"]` (без удержания RgbImage в ОЗУ!)
+    // Фаза 2: `ChapterAnalysis` -> `NameLock` + плотность 18+ + повторы
+    let mut prepass_pages_all: Vec<PrePage> = Vec::new();
+    if use_two_phase {
+        let mut dirty_prepass = 0usize;
+        'prepass_loop: for (idx, img_path) in opts.images.iter().enumerate() {
             while state.folder_pause_flag.load(AtomicOrd::SeqCst)
                 && !state.folder_stop_flag.load(AtomicOrd::SeqCst)
             {
                 push_folder_state(&state, |j| {
                     j.phase = "paused".to_string();
-                    j.message = format!("Пауза на странице {}/{total}", idx + 1);
+                    j.message = format!("Пауза на прескане страницы {}/{total}", idx + 1);
                 });
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await;
             }
             if state.folder_stop_flag.load(AtomicOrd::SeqCst) {
                 stopped_early = true;
-                break 'batch_loop;
+                break 'prepass_loop;
             }
 
             let fname = img_path
@@ -459,7 +741,11 @@ pub async fn process_chapter_folder_sync(
                 .unwrap_or("page.png")
                 .to_string();
             let dest_path = opts.output_dir.join(&fname);
-            let cur_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let cur_cfg = state
+                .config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let cloud_only = cur_cfg.cloud_only_no_local_fallback;
 
             if opts.skip_existing && !opts.force_retranslate && dest_path.is_file() {
@@ -474,7 +760,7 @@ pub async fn process_chapter_folder_sync(
                     push_live_event_obj(
                         &mut j.live,
                         &run_id,
-                        "render",
+                        "prepass",
                         &format!("Пропущена {}/{total}: {fname}", idx + 1),
                         &j.active_model.clone(),
                         0,
@@ -483,24 +769,27 @@ pub async fn process_chapter_folder_sync(
                         cloud_only,
                         None,
                     );
-                    if let Some(obj) = j.live.as_object_mut() {
-                        obj.insert("batch_index".into(), json!(b_num));
-                        obj.insert("batches_total".into(), json!(batches_total));
-                    }
                 });
                 if state.folder_pause_after_page.load(AtomicOrd::SeqCst) {
                     stopped_early = true;
-                    break 'batch_loop;
+                    break 'prepass_loop;
                 }
                 continue;
             }
 
-            let t_page = Instant::now();
-            let rgb = match image::open(img_path) {
-                Ok(im) => im.to_rgb8(),
-                Err(e) => {
+            match ocr_single_page(idx, img_path, "prepass", None, &mut manifest).await {
+                Ok((pre_page, maybe_prepass_json)) => {
+                    if let Some(p_json) = maybe_prepass_json {
+                        manifest["ocr_prepass"][&pre_page.fname] = p_json;
+                        dirty_prepass += 1;
+                        if dirty_prepass % 8 == 0 {
+                            let _ = save_manifest(&opts.output_dir, &manifest);
+                        }
+                    }
+                    prepass_pages_all.push(pre_page);
+                }
+                Err(err_msg) => {
                     failed_pages += 1;
-                    let err_msg = format!("[ОШИБКА ЧТЕНИЯ] {fname}: {e} — страница пропущена");
                     tracing::error!("{}", err_msg);
                     let el_err = t_batch.elapsed().as_secs();
                     push_folder_state(&state, |j| {
@@ -512,7 +801,7 @@ pub async fn process_chapter_folder_sync(
                         push_live_event_obj(
                             &mut j.live,
                             &run_id,
-                            "ocr",
+                            "prepass",
                             &err_msg,
                             &j.active_model.clone(),
                             0,
@@ -522,159 +811,288 @@ pub async fn process_chapter_folder_sync(
                             Some(&err_msg),
                         );
                     });
-                    continue;
-                }
-            };
-
-            // Сверхбыстрый путь для перерисовки шрифта/размера по всей главе (`!force_retranslate`):
-            // если в `.translation_state.json` уже сохранены полигоны и тексты страницы — не гоняем повторный OCR!
-            if !opts.force_retranslate {
-                if let Some(raw_arr) = manifest["pages"][&fname]["blocks"].as_array() {
-                    if let Ok(mut saved_blocks) =
-                        serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
-                    {
-                        for b in &mut saved_blocks {
-                            normalize_clean_bbox(b);
-                        }
-                        prepared_pages.push(PreparedBatchPage {
-                            global_idx: idx,
-                            fname,
-                            img_path: img_path.clone(),
-                            dest_path,
-                            rgb,
-                            blocks: saved_blocks,
-                            t_page,
-                            from_saved_manifest: true,
-                        });
-                        continue;
-                    }
                 }
             }
+        }
 
-            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
-            let el_ocr = t_batch.elapsed().as_secs();
+        if dirty_prepass > 0 {
+            let _ = save_manifest(&opts.output_dir, &manifest);
+        }
+
+        if !stopped_early && !prepass_pages_all.is_empty() {
+            let all_blocks: Vec<TextBlock> = prepass_pages_all
+                .iter()
+                .flat_map(|p| p.blocks.iter().cloned())
+                .collect();
+            let series_hint = extract_series_hint_from_path(&opts.source_dir);
+            let merged_canon = merge_overrides(builtin_canon_en(), &canon_overrides);
+            let analysis = ChapterAnalysis::build(
+                &all_blocks,
+                series_hint.as_deref(),
+                &merged_canon,
+                builtin_fandom_db(),
+            );
+
+            let cur_cfg = state
+                .config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
+            if cur_cfg.name_lock {
+                // Приоритет: folder glossary > global glossary > auto name-lock (+ fandom terms)
+                let with_global = merge_glossaries(&analysis.name_lock, &global_g);
+                effective_glossary = merge_glossaries(&with_global, &folder_g);
+                manifest["name_lock"] = json!(analysis.name_lock);
+            } else {
+                manifest["name_lock"] = json!([]);
+            }
+            manifest["chapter_analysis"] = json!(analysis);
+            let _ = save_manifest(&opts.output_dir, &manifest);
+
+            chapter_brief_str = analysis.chapter_brief(600);
+            preflight_force_local = (analysis.nsfw_line_ratio >= 0.12
+                || analysis.nsfw_explicit_lines >= 8)
+                && !cur_cfg.cloud_only_no_local_fallback
+                && cur_cfg.preflight_nsfw_split;
+
+            let char_names_list: Vec<&str> = analysis
+                .name_lock
+                .iter()
+                .filter(|g| !g.note.starts_with("auto-lock:fandom-term:"))
+                .map(|g| g.dst.as_str())
+                .collect();
+            let names_preview = if char_names_list.is_empty() {
+                "нет".to_string()
+            } else if char_names_list.len() <= 4 {
+                char_names_list.join(", ")
+            } else {
+                format!("{}…", char_names_list[..4].join(", "))
+            };
+            let analysis_log = format!(
+                "[Анализ] имён: {} ({names_preview}), 18+ терминов: {}, повторов: {}, NSFW-плотность: {:.2}",
+                char_names_list.len(),
+                analysis.canon_hit_ids.len(),
+                analysis.repeated_lines.len(),
+                analysis.nsfw_line_ratio
+            );
+            let bypass_log_opt = if preflight_force_local {
+                Some(format!(
+                    "[Анализ] Высокая 18+ плотность ({:.0}%) — прямое включение локальной 18+ модели без холостых отказов облака",
+                    analysis.nsfw_line_ratio * 100.0
+                ))
+            } else {
+                None
+            };
+            let el_an = t_batch.elapsed().as_secs();
+            let cloud_only_now = cur_cfg.cloud_only_no_local_fallback;
+            let names_cnt = char_names_list.len();
+            let canon_cnt = analysis.canon_hit_ids.len();
             push_folder_state(&state, |j| {
-                j.elapsed_sec = el_ocr;
-                j.current_file = fname.clone();
-                j.phase = "ocr".to_string();
+                j.elapsed_sec = el_an;
+                j.phase = "analysis".to_string();
                 j.message = format!(
-                    "Пачка {b_num}/{batches_total} · 🔍 OCR ({}/{total}): {fname}",
-                    idx + 1
+                    "🧠 Анализ главы: {} имён, {} 18+ терминов",
+                    names_cnt, canon_cnt
                 );
+                j.logs.push(analysis_log.clone());
+                if let Some(ref b_log) = bypass_log_opt {
+                    j.logs.push(b_log.clone());
+                }
                 push_live_event_obj(
                     &mut j.live,
                     &run_id,
-                    "ocr",
-                    &format!("🔍 OCR стр. {}/{total}: {fname}", idx + 1),
+                    "prepass",
+                    &format!("🧠 Анализ главы: {names_cnt} имён, {canon_cnt} 18+ терминов"),
                     &j.active_model.clone(),
                     0,
                     0,
                     0,
-                    cloud_only,
-                    None,
+                    cloud_only_now,
+                    Some(&analysis_log),
                 );
                 if let Some(obj) = j.live.as_object_mut() {
-                    obj.insert("batch_index".into(), json!(b_num));
-                    obj.insert("batches_total".into(), json!(batches_total));
+                    obj.insert(
+                        "analysis_summary".into(),
+                        json!({
+                            "names_count": names_cnt,
+                            "canon_count": canon_cnt,
+                            "nsfw_ratio": analysis.nsfw_line_ratio,
+                        }),
+                    );
+                    if preflight_force_local {
+                        obj.insert("nsfw_mode".into(), json!(true));
+                    }
                 }
-            });
-
-            let st_ocr = state.clone();
-            let rgb_ocr = rgb.clone();
-            let det_free = opts.detect_free_text;
-            let tf_mode = opts.text_filter_mode.clone();
-            let min_tlen = (cur_cfg.min_text_length as usize).max(1);
-            let ocr_task_res = tokio::task::spawn_blocking(move || {
-                let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
-                if g.is_none() {
-                    let eng =
-                        RustOcrEngine::load(&st_ocr.base_dir, true).map_err(|e| e.to_string())?;
-                    *g = Some(eng);
-                }
-                g.as_mut()
-                    .expect("ocr init")
-                    .process_rgb_image(
-                        &rgb_ocr,
-                        &OcrOptions {
-                            detect_free_text: det_free,
-                            text_filter_mode: tf_mode,
-                            min_text_length: min_tlen,
-                            ..Default::default()
-                        },
-                    )
-                    .map_err(|e| e.to_string())
-            })
-            .await;
-
-            let ocr_res = match ocr_task_res {
-                Ok(Ok(r)) => r,
-                Ok(Err(err)) => {
-                    failed_pages += 1;
-                    let err_msg = format!("[ОШИБКА OCR] {fname}: {err} — страница пропущена");
-                    tracing::error!("{}", err_msg);
-                    let el_err = t_batch.elapsed().as_secs();
-                    push_folder_state(&state, |j| {
-                        j.elapsed_sec = el_err;
-                        j.current_file = fname.clone();
-                        j.phase = "page_error".to_string();
-                        j.message = err_msg.clone();
-                        j.logs.push(err_msg.clone());
-                        push_live_event_obj(
-                            &mut j.live,
-                            &run_id,
-                            "ocr",
-                            &err_msg,
-                            &j.active_model.clone(),
-                            0,
-                            0,
-                            0,
-                            cloud_only,
-                            Some(&err_msg),
-                        );
-                    });
-                    continue;
-                }
-                Err(join_err) => {
-                    failed_pages += 1;
-                    let err_msg =
-                        format!("[ПАНИКА OCR] {fname}: {join_err} — страница пропущена");
-                    tracing::error!("{}", err_msg);
-                    let el_err = t_batch.elapsed().as_secs();
-                    push_folder_state(&state, |j| {
-                        j.elapsed_sec = el_err;
-                        j.current_file = fname.clone();
-                        j.phase = "page_error".to_string();
-                        j.message = err_msg.clone();
-                        j.logs.push(err_msg.clone());
-                        push_live_event_obj(
-                            &mut j.live,
-                            &run_id,
-                            "ocr",
-                            &err_msg,
-                            &j.active_model.clone(),
-                            0,
-                            0,
-                            0,
-                            cloud_only,
-                            Some(&err_msg),
-                        );
-                    });
-                    continue;
-                }
-            };
-
-            prepared_pages.push(PreparedBatchPage {
-                global_idx: idx,
-                fname,
-                img_path: img_path.clone(),
-                dest_path,
-                rgb,
-                blocks: ocr_res.blocks,
-                t_page,
-                from_saved_manifest: false,
             });
         }
+    }
 
+    let batches_total = if use_two_phase {
+        prepass_pages_all.len().div_ceil(batch_sz).max(1)
+    } else {
+        total.div_ceil(batch_sz).max(1)
+    };
+
+    let num_batches_iter = if stopped_early {
+        0
+    } else if use_two_phase {
+        prepass_pages_all.chunks(batch_sz).len()
+    } else {
+        opts.images.chunks(batch_sz).len()
+    };
+
+    'batch_loop: for batch_idx in 0..num_batches_iter {
+        let b_num = batch_idx + 1;
+        let mut prepared_pages: Vec<PrePage> = Vec::new();
+        let mut batch_lookahead: Vec<String> = Vec::new();
+
+        if use_two_phase {
+            let start_p = batch_idx * batch_sz;
+            let end_p = (start_p + batch_sz).min(prepass_pages_all.len());
+            prepared_pages.extend_from_slice(&prepass_pages_all[start_p..end_p]);
+
+            let look_cap = state
+                .config
+                .read()
+                .map(|c| c.lookahead_lines.clamp(0, 8) as usize)
+                .unwrap_or(4);
+            if look_cap > 0 && end_p < prepass_pages_all.len() {
+                'look_outer: for next_p in &prepass_pages_all[end_p..] {
+                    for b in &next_p.blocks {
+                        let txt = b.original_text.trim();
+                        if !b.is_deleted && !txt.is_empty() {
+                            batch_lookahead.push(txt.to_string());
+                            if batch_lookahead.len() >= look_cap {
+                                break 'look_outer;
+                            }
+                        }
+                    }
+                }
+            }
+        } else {
+            let base_idx = batch_idx * batch_sz;
+            let end_img = (base_idx + batch_sz).min(opts.images.len());
+            let batch_slice = &opts.images[base_idx..end_img];
+            let mut dirty_legacy_prepass = false;
+
+            for (local_i, img_path) in batch_slice.iter().enumerate() {
+                let idx = base_idx + local_i;
+                while state.folder_pause_flag.load(AtomicOrd::SeqCst)
+                    && !state.folder_stop_flag.load(AtomicOrd::SeqCst)
+                {
+                    push_folder_state(&state, |j| {
+                        j.phase = "paused".to_string();
+                        j.message = format!("Пауза на странице {}/{total}", idx + 1);
+                    });
+                    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                }
+                if state.folder_stop_flag.load(AtomicOrd::SeqCst) {
+                    stopped_early = true;
+                    break 'batch_loop;
+                }
+
+                let fname = img_path
+                    .file_name()
+                    .and_then(|s| s.to_str())
+                    .unwrap_or("page.png")
+                    .to_string();
+                let dest_path = opts.output_dir.join(&fname);
+                let cur_cfg = state
+                    .config
+                    .read()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .clone();
+                let cloud_only = cur_cfg.cloud_only_no_local_fallback;
+
+                if opts.skip_existing && !opts.force_retranslate && dest_path.is_file() {
+                    skipped += 1;
+                    let el = t_batch.elapsed().as_secs();
+                    push_folder_state(&state, |j| {
+                        j.done = idx + 1;
+                        j.elapsed_sec = el;
+                        j.current_file = fname.clone();
+                        j.phase = "skipped".to_string();
+                        j.message = format!("Пропущена (уже готова): {fname}");
+                        push_live_event_obj(
+                            &mut j.live,
+                            &run_id,
+                            "render",
+                            &format!("Пропущена {}/{total}: {fname}", idx + 1),
+                            &j.active_model.clone(),
+                            0,
+                            0,
+                            0,
+                            cloud_only,
+                            None,
+                        );
+                        if let Some(obj) = j.live.as_object_mut() {
+                            obj.insert("batch_index".into(), json!(b_num));
+                            obj.insert("batches_total".into(), json!(batches_total));
+                        }
+                    });
+                    if state.folder_pause_after_page.load(AtomicOrd::SeqCst) {
+                        stopped_early = true;
+                        break 'batch_loop;
+                    }
+                    continue;
+                }
+
+                match ocr_single_page(
+                    idx,
+                    img_path,
+                    "ocr",
+                    Some((b_num, batches_total)),
+                    &mut manifest,
+                )
+                .await
+                {
+                    Ok((pre_page, maybe_prepass_json)) => {
+                        if let Some(p_json) = maybe_prepass_json {
+                            manifest["ocr_prepass"][&pre_page.fname] = p_json;
+                            dirty_legacy_prepass = true;
+                        }
+                        prepared_pages.push(pre_page);
+                    }
+                    Err(err_msg) => {
+                        failed_pages += 1;
+                        tracing::error!("{}", err_msg);
+                        let el_err = t_batch.elapsed().as_secs();
+                        push_folder_state(&state, |j| {
+                            j.elapsed_sec = el_err;
+                            j.current_file = fname.clone();
+                            j.phase = "page_error".to_string();
+                            j.message = err_msg.clone();
+                            j.logs.push(err_msg.clone());
+                            push_live_event_obj(
+                                &mut j.live,
+                                &run_id,
+                                "ocr",
+                                &err_msg,
+                                &j.active_model.clone(),
+                                0,
+                                0,
+                                0,
+                                cloud_only,
+                                Some(&err_msg),
+                            );
+                        });
+                    }
+                }
+            }
+            if dirty_legacy_prepass {
+                let _ = save_manifest(&opts.output_dir, &manifest);
+            }
+        }
+
+        while state.folder_pause_flag.load(AtomicOrd::SeqCst)
+            && !state.folder_stop_flag.load(AtomicOrd::SeqCst)
+        {
+            push_folder_state(&state, |j| {
+                j.phase = "paused".to_string();
+                j.message = format!("Пауза перед переводом пачки {b_num}/{batches_total}");
+            });
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        }
         if prepared_pages.is_empty() {
             continue;
         }
@@ -683,8 +1101,12 @@ pub async fn process_chapter_folder_sync(
             break 'batch_loop;
         }
 
-        // --- ЭТАП 2 ПАЧКИ: Единый пакетный перевод всех реплик пачки (`batch_pages` страниц сразу!) ---
-        let cur_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+        // --- ЭТАП 3: Пакетный перевод реплик пачки с `chapter_phrase_memo`, `NameLock`, `Canon` и `lookahead` ---
+        let cur_cfg = state
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         let cloud_only = cur_cfg.cloud_only_no_local_fallback;
         let mut active_model = state
             .folder_dynamic_model
@@ -705,21 +1127,58 @@ pub async fn process_chapter_folder_sync(
             page_slices.push((start, len));
         }
 
-        let needs_llm_pass = opts.mock_text.is_some()
-            || opts.force_retranslate
-            || combined_blocks.iter().any(|b| {
+        if opts.force_retranslate && opts.mock_text.is_none() {
+            for b in &mut combined_blocks {
+                if !b.is_deleted {
+                    b.translated_text.clear();
+                }
+            }
+        }
+
+        // Сквозной мемо-словарь повторов главы (`chapter_phrase_memo`): идентичные фразы из разных пачек
+        // остаются 100% одинаковыми даже при `force_retranslate = true`!
+        let mut memo_hits_in_batch = 0usize;
+        if opts.mock_text.is_none() {
+            for b in &mut combined_blocks {
+                if b.is_deleted || !b.translated_text.trim().is_empty() {
+                    continue;
+                }
+                let src_key = b.original_text.trim();
+                if !src_key.is_empty() {
+                    if let Some(memo_tr) = chapter_phrase_memo.get(src_key) {
+                        b.translated_text = memo_tr.clone();
+                        if b.romaji_text.trim().is_empty() {
+                            b.romaji_text = kana_to_romaji(src_key);
+                        }
+                        memo_hits_in_batch += 1;
+                    }
+                }
+            }
+        }
+
+        let to_translate_indices: Vec<usize> = combined_blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
                 !b.is_deleted
                     && !b.original_text.trim().is_empty()
-                    && b.translated_text.trim().is_empty()
-            });
+                    && (opts.mock_text.is_some() || b.translated_text.trim().is_empty())
+            })
+            .map(|(i, _)| i)
+            .collect();
 
-        if !combined_blocks.is_empty() && needs_llm_pass {
-            let b_cnt = combined_blocks
-                .iter()
-                .filter(|b| !b.is_deleted && !b.original_text.trim().is_empty())
-                .count();
-            let first_pg = prepared_pages.first().map(|p| p.global_idx + 1).unwrap_or(1);
-            let last_pg = prepared_pages.last().map(|p| p.global_idx + 1).unwrap_or(first_pg);
+        if !combined_blocks.is_empty()
+            && (!to_translate_indices.is_empty() || memo_hits_in_batch > 0)
+        {
+            let b_cnt = to_translate_indices.len();
+            let first_pg = prepared_pages
+                .first()
+                .map(|p| p.global_idx + 1)
+                .unwrap_or(1);
+            let last_pg = prepared_pages
+                .last()
+                .map(|p| p.global_idx + 1)
+                .unwrap_or(first_pg);
             let range_lbl = if first_pg == last_pg {
                 format!("стр. {first_pg}/{total}")
             } else {
@@ -727,63 +1186,63 @@ pub async fn process_chapter_folder_sync(
             };
             let first_fname = prepared_pages[0].fname.clone();
 
-            step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
-            let el_tr = t_batch.elapsed().as_secs();
-            push_folder_state(&state, |j| {
-                j.elapsed_sec = el_tr;
-                j.current_file = first_fname.clone();
-                j.phase = "llm".to_string();
-                j.active_model = active_model.clone();
-                j.message = format!(
-                    "Пачка {b_num}/{batches_total} · 🤖 ИИ перевод ({b_cnt} фраз, {range_lbl})"
-                );
-                push_live_event_obj(
-                    &mut j.live,
-                    &run_id,
-                    "llm",
-                    &format!("🤖 ИИ ({b_cnt} фраз, {range_lbl})"),
-                    &active_model,
-                    0,
-                    b_cnt,
-                    0,
-                    cloud_only,
-                    Some(&format!(
-                        "Пачка {b_num}/{batches_total}: отправка {b_cnt} фраз ({range_lbl})"
-                    )),
-                );
-                if let Some(obj) = j.live.as_object_mut() {
-                    obj.insert("batch_index".into(), json!(b_num));
-                    obj.insert("batches_total".into(), json!(batches_total));
-                }
-            });
-
             if let Some(ref mock) = opts.mock_text {
                 for b in &mut combined_blocks {
-                    b.translated_text = mock.clone();
-                    if b.romaji_text.trim().is_empty() {
-                        b.romaji_text = kana_to_romaji(&b.original_text);
-                    }
-                }
-                active_model = "mock-rust".to_string();
-            } else {
-                if opts.force_retranslate {
-                    for b in &mut combined_blocks {
-                        if !b.is_deleted {
-                            b.translated_text.clear();
+                    if !b.is_deleted && !b.original_text.trim().is_empty() {
+                        b.translated_text = mock.clone();
+                        if b.romaji_text.trim().is_empty() {
+                            b.romaji_text = kana_to_romaji(&b.original_text);
                         }
                     }
                 }
+                active_model = "mock-rust".to_string();
+            } else if !to_translate_indices.is_empty() {
+                step_started_ms.store(t_batch.elapsed().as_millis() as u64, AtomicOrd::SeqCst);
+                let el_tr = t_batch.elapsed().as_secs();
+                push_folder_state(&state, |j| {
+                    j.elapsed_sec = el_tr;
+                    j.current_file = first_fname.clone();
+                    j.phase = "llm".to_string();
+                    j.active_model = active_model.clone();
+                    j.message = format!(
+                        "Пачка {b_num}/{batches_total} · 🤖 ИИ перевод ({b_cnt} фраз, {range_lbl})"
+                    );
+                    push_live_event_obj(
+                        &mut j.live,
+                        &run_id,
+                        "llm",
+                        &format!("🤖 ИИ ({b_cnt} фраз, {range_lbl})"),
+                        &active_model,
+                        0,
+                        b_cnt,
+                        0,
+                        cloud_only,
+                        Some(&format!(
+                            "Пачка {b_num}/{batches_total}: отправка {b_cnt} фраз ({range_lbl})"
+                        )),
+                    );
+                    if let Some(obj) = j.live.as_object_mut() {
+                        obj.insert("batch_index".into(), json!(b_num));
+                        obj.insert("batches_total".into(), json!(batches_total));
+                    }
+                });
+
+                let req_blocks: Vec<TextBlock> = to_translate_indices
+                    .iter()
+                    .map(|&i| combined_blocks[i].clone())
+                    .collect();
+                let qa_mode = QaMode::from_str_lossy(&cur_cfg.qa_linter_mode);
                 let abort_fut = state.folder_abort_step.notified();
                 let tr_fut = state.translator.translate_blocks(
                     TranslateBatchRequest {
-                        blocks: combined_blocks.clone(),
+                        blocks: req_blocks,
                         target_lang: opts.target_lang.clone(),
                         model: active_model.clone(),
                         fallback_model: cur_cfg.local_fallback_model_multilang.clone(),
                         cloud_only_no_local_fallback: cloud_only,
                         cloud_url: cur_cfg.unsloth_url.clone(),
                         cloud_api_key: cur_cfg.unsloth_api_key.clone(),
-                        glossary: merged_glossary.clone(),
+                        glossary: effective_glossary.clone(),
                         context_lines: rolling_context.clone(),
                         anti_censorship: cur_cfg.anti_censorship_prompt,
                         anti_censorship_custom_prompt: cur_cfg
@@ -795,6 +1254,12 @@ pub async fn process_chapter_folder_sync(
                             Some(&opts.source_dir),
                         ),
                         use_cache: !opts.force_retranslate,
+                        adult_canon_en: cur_cfg.adult_canon_en,
+                        chapter_brief: chapter_brief_str.clone(),
+                        lookahead_lines: batch_lookahead,
+                        qa_linter_mode: qa_mode,
+                        canon_overrides: canon_overrides.clone(),
+                        force_local_nsfw_bypass: preflight_force_local,
                     },
                     Some(&state.db),
                 );
@@ -806,7 +1271,11 @@ pub async fn process_chapter_folder_sync(
                     Some(Ok(tr_res)) => {
                         batch_llm_ms = tr_res.elapsed_ms;
                         nsfw_local_used = tr_res.censored_fallback;
-                        combined_blocks = tr_res.blocks;
+                        for (&orig_i, tr_blk) in
+                            to_translate_indices.iter().zip(tr_res.blocks.into_iter())
+                        {
+                            combined_blocks[orig_i] = tr_blk;
+                        }
                         active_model = tr_res.active_model;
                         detected_lang = tr_res.detected_lang;
                         let nsfw_tag = if nsfw_local_used {
@@ -819,26 +1288,37 @@ pub async fn process_chapter_folder_sync(
                         } else {
                             String::new()
                         };
+                        let qa_tag = if opts.target_lang.eq_ignore_ascii_case("en")
+                            && cur_cfg.adult_canon_en
+                            && qa_mode != QaMode::Off
+                        {
+                            format!(
+                                " · QA: исправлено {}, переперевод {}",
+                                tr_res.qa_fixed, tr_res.qa_retried
+                            )
+                        } else {
+                            String::new()
+                        };
                         let llm_log = format!(
-                            "[ИИ] Пачка {b_num}/{batches_total}: модель={active_model}, фраз={b_cnt}, кэш={}, запросов={}, время={:.1}с{nsfw_tag}{miss_tag}",
-                            tr_res.cache_hits,
+                            "[ИИ] Пачка {b_num}/{batches_total}: модель={active_model}, фраз={b_cnt}, кэш={}, запросов={}, время={:.1}с{nsfw_tag}{qa_tag}{miss_tag}",
+                            tr_res.cache_hits + memo_hits_in_batch,
                             tr_res.api_calls,
                             batch_llm_ms as f32 / 1000.0,
                         );
+                        let fb_warn_to_log = if !logged_fallback_warn {
+                            if tr_res.fallback_warning.is_some() {
+                                logged_fallback_warn = true;
+                            }
+                            tr_res.fallback_warning.clone()
+                        } else {
+                            None
+                        };
                         push_folder_state(&state, |j| {
+                            if let Some(ref w) = fb_warn_to_log {
+                                j.logs.push(format!("[Модели] {w}"));
+                            }
                             j.logs.push(llm_log.clone());
                         });
-                        for b in &combined_blocks {
-                            let o = b.original_text.trim();
-                            let t = b.translated_text.trim();
-                            if !b.is_deleted && !o.is_empty() && !t.is_empty() {
-                                rolling_context.push(format!("{o} => {t}"));
-                            }
-                        }
-                        if rolling_context.len() > 16 {
-                            let drain_n = rolling_context.len() - 16;
-                            rolling_context.drain(0..drain_n);
-                        }
                     }
                     Some(Err(err)) => {
                         failed_pages += prepared_pages.len();
@@ -894,6 +1374,21 @@ pub async fn process_chapter_folder_sync(
                         continue 'batch_loop;
                     }
                 }
+            }
+
+            for b in &combined_blocks {
+                let o = b.original_text.trim();
+                let t = b.translated_text.trim();
+                if !b.is_deleted && !o.is_empty() && !t.is_empty() {
+                    chapter_phrase_memo
+                        .entry(o.to_string())
+                        .or_insert_with(|| t.to_string());
+                    rolling_context.push(format!("{o} => {t}"));
+                }
+            }
+            if rolling_context.len() > 16 {
+                let drain_n = rolling_context.len() - 16;
+                rolling_context.drain(0..drain_n);
             }
 
             for (p, &(start, len)) in prepared_pages.iter_mut().zip(page_slices.iter()) {
@@ -972,11 +1467,14 @@ pub async fn process_chapter_folder_sync(
                 }
             });
 
-            let render_cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+            let render_cfg = state
+                .config
+                .read()
+                .unwrap_or_else(|e| e.into_inner())
+                .clone();
             let st_cr = state.clone();
             let src_p_clone = p.img_path.clone();
             let dest_p_clone = p.dest_path.clone();
-            let rgb = p.rgb;
             let up = opts.uppercase;
             let min_fs = opts.min_font_size;
             let max_fs = opts.max_font_size;
@@ -985,16 +1483,21 @@ pub async fn process_chapter_folder_sync(
             let def_font_path = render_cfg.resolve_default_font_path(&state.base_dir);
             let mtime = file_mtime_secs(&p.img_path);
 
-            let clean_render_task = tokio::task::spawn_blocking(
-                move || -> Result<(Vec<TextBlock>, u128), String> {
+            let clean_render_task =
+                tokio::task::spawn_blocking(move || -> Result<(Vec<TextBlock>, u128), String> {
                     let t_p = Instant::now();
                     if blocks.is_empty() {
                         std::fs::copy(&src_p_clone, &dest_p_clone)
                             .map_err(|e| format!("Ошибка копирования пустой страницы: {e}"))?;
                         return Ok((blocks, t_p.elapsed().as_millis()));
                     }
-                    let mut cguard =
-                        st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+                    let rgb = image::open(&src_p_clone)
+                        .map_err(|e| format!("Ошибка чтения {src_p_clone:?}: {e}"))?
+                        .to_rgb8();
+                    let mut cguard = st_cr
+                        .cleaner_engine
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
                     if cguard.is_none() {
                         *cguard = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
                     }
@@ -1046,9 +1549,8 @@ pub async fn process_chapter_folder_sync(
                     );
                     let _ = st_cr.db.save_page_state(&src_str, &hash, &blocks);
                     Ok((blocks, t_p.elapsed().as_millis()))
-                },
-            )
-            .await;
+                })
+                .await;
 
             let (blocks_after, page_ms) = match clean_render_task {
                 Ok(Ok(pair)) => pair,
@@ -1108,7 +1610,10 @@ pub async fn process_chapter_folder_sync(
                 }
             };
 
-            if let Some(pc) = manifest.get_mut("phrase_cache").and_then(|v| v.as_object_mut()) {
+            if let Some(pc) = manifest
+                .get_mut("phrase_cache")
+                .and_then(|v| v.as_object_mut())
+            {
                 let lang_low = opts.target_lang.to_ascii_lowercase();
                 for b in &blocks_after {
                     let orig = b.original_text.trim();
@@ -1214,7 +1719,12 @@ pub async fn process_chapter_folder_sync(
 
     ticker_alive.store(false, AtomicOrd::SeqCst);
 
-    let final_status = if stopped_early { "stopped" } else { "completed" }.to_string();
+    let final_status = if stopped_early {
+        "stopped"
+    } else {
+        "completed"
+    }
+    .to_string();
     let total_ms = t_batch.elapsed().as_millis();
     let total_el = t_batch.elapsed().as_secs();
     let mut final_logs_snapshot: Vec<String> = Vec::new();
@@ -1230,7 +1740,11 @@ pub async fn process_chapter_folder_sync(
         } else {
             format!(
                 "{}: обработано {processed}, пропущено {skipped} за {total_ms} ms",
-                if stopped_early { "Остановлено" } else { "Глава завершена" }
+                if stopped_early {
+                    "Остановлено"
+                } else {
+                    "Глава завершена"
+                }
             )
         };
         let msg_clone = j.message.clone();
@@ -1310,7 +1824,11 @@ pub async fn translate_folder(
     Json(payload): Json<TranslateFolderPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let already_running = state
         .folder_job
@@ -1398,7 +1916,11 @@ pub async fn translate_folder(
         }
         state.persist_config_if_enabled(&wcfg);
     }
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let total_images = images.len();
     let req_model = payload.ollama_model.or(payload.model);
     let init_model = req_model
@@ -1424,7 +1946,8 @@ pub async fn translate_folder(
         j.target_lang = t_lang.clone();
         j.message = format!("🚀 Запуск перевода главы ({total_images} стр.)");
         j.logs.clear();
-        j.logs.push(format!("Старт главы: {total_images} изображений"));
+        j.logs
+            .push(format!("Старт главы: {total_images} изображений"));
         j.live = json!({});
         push_live_event_obj(
             &mut j.live,
@@ -1532,7 +2055,8 @@ pub async fn folder_control(
                 j.phase = "running".to_string();
                 j.message = "Возобновление пакетного перевода".to_string();
             });
-            Json(json!({"status": "ok", "action": act, "message": "Перевод возобновлён"})).into_response()
+            Json(json!({"status": "ok", "action": act, "message": "Перевод возобновлён"}))
+                .into_response()
         }
         "pause_after_batch" => {
             let prev = state.folder_pause_after_page.load(AtomicOrd::SeqCst);
@@ -1562,7 +2086,8 @@ pub async fn folder_control(
         "abort_request" => {
             state.folder_abort_step.notify_waiters();
             push_folder_state(&state, |j| {
-                j.logs.push("⏭ Прерывание текущего запроса ИИ...".to_string());
+                j.logs
+                    .push("⏭ Прерывание текущего запроса ИИ...".to_string());
             });
             Json(json!({
                 "status": "ok",
@@ -1609,7 +2134,12 @@ pub async fn folder_control(
             .into_response()
         }
         "switch_model" => {
-            let Some(m) = payload.model.as_deref().map(str::trim).filter(|s| !s.is_empty()) else {
+            let Some(m) = payload
+                .model
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            else {
                 return (
                     StatusCode::BAD_REQUEST,
                     Json(json!({"detail": "Не указана модель для переключения"})),
@@ -1655,6 +2185,9 @@ pub struct PageBlocksPayload {
     pub force_rescan: Option<bool>,
     pub detect_free_text: Option<bool>,
     pub text_filter_mode: Option<String>,
+    pub skip_sighs: Option<bool>,
+    pub skip_sfx: Option<bool>,
+    pub min_text_length: Option<u32>,
 }
 
 pub async fn page_blocks(
@@ -1662,11 +2195,18 @@ pub async fn page_blocks(
     Json(payload): Json<PageBlocksPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.source_path), "source_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     if let Some(ref sd) = payload.source_dir {
         if let Err(err) = reject_unc_path(Some(sd), "source_dir") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
                 .into_response();
         }
     }
@@ -1708,7 +2248,9 @@ pub async fn page_blocks(
 
     if !force_rescan {
         if let Some(raw_blocks) = manifest["pages"][&fname]["blocks"].as_array() {
-            if let Ok(mut blocks) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_blocks.clone())) {
+            if let Ok(mut blocks) =
+                serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_blocks.clone()))
+            {
                 for b in &mut blocks {
                     normalize_clean_bbox(b);
                     if b.romaji_text.trim().is_empty() && !b.original_text.trim().is_empty() {
@@ -1749,10 +2291,16 @@ pub async fn page_blocks(
     // OCR скан исходника
     let st_ocr = state.clone();
     let src_clone = src_p.clone();
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let det_free = payload.detect_free_text.unwrap_or(cfg.detect_free_text);
     let tf_mode = payload.text_filter_mode.unwrap_or(cfg.text_filter_mode);
-    let min_tlen = (cfg.min_text_length as usize).max(1);
+    let skip_sfx = payload.skip_sfx.unwrap_or(cfg.skip_sfx);
+    let skip_sighs = payload.skip_sighs.unwrap_or(cfg.skip_sighs);
+    let min_tlen = (payload.min_text_length.unwrap_or(cfg.min_text_length) as usize).max(1);
 
     let ocr_res = tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
         let rgb = image::open(&src_clone)
@@ -1772,6 +2320,8 @@ pub async fn page_blocks(
                     detect_free_text: det_free,
                     text_filter_mode: tf_mode,
                     min_text_length: min_tlen,
+                    skip_sfx,
+                    skip_sighs,
                     ..Default::default()
                 },
             )
@@ -1851,7 +2401,11 @@ pub async fn translate_manual_region(
     Json(payload): Json<TranslateManualRegionPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.source_path), "source_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let src_p = PathBuf::from(payload.source_path.trim());
     if !src_p.is_file() {
@@ -1929,8 +2483,13 @@ pub async fn translate_manual_region(
         }
     };
 
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let prompt_cfg = crate::prompt_config_from_app(&cfg);
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let mut prompt_cfg = crate::prompt_config_from_app(&cfg);
+    prompt_cfg.canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
     let model = payload.model.unwrap_or_else(|| cfg.selected_model.clone());
     let glossary = state
@@ -1996,7 +2555,11 @@ pub async fn folder_find_replace(
     Json(payload): Json<FolderFindReplacePayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let find_q = payload.find_text.trim();
     if find_q.is_empty() {
@@ -2101,15 +2664,19 @@ pub async fn folder_find_replace(
             )
                 .into_response();
         }
-        let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+        let cfg = state
+            .config
+            .read()
+            .unwrap_or_else(|e| e.into_inner())
+            .clone();
         for rel_key in &affected_pages {
             let src_p = source_dir.join(rel_key);
             if !src_p.is_file() {
                 continue;
             }
-            let Ok(mut blocks) =
-                serde_json::from_value::<Vec<TextBlock>>(manifest["pages"][rel_key]["blocks"].clone())
-            else {
+            let Ok(mut blocks) = serde_json::from_value::<Vec<TextBlock>>(
+                manifest["pages"][rel_key]["blocks"].clone(),
+            ) else {
                 continue;
             };
             let dest_p = output_dir.join(rel_key);
@@ -2127,7 +2694,10 @@ pub async fn folder_find_replace(
                 let rgb = image::open(&src_c).map_err(|e| e.to_string())?.to_rgb8();
                 let src_str = src_c.to_string_lossy().to_string();
                 let mtime = file_mtime_secs(&src_c);
-                let mut cg = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cg = st_cr
+                    .cleaner_engine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if cg.is_none() {
                     *cg = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
                 }
@@ -2163,7 +2733,10 @@ pub async fn folder_find_replace(
                 if let Some(par) = dest_c.parent() {
                     let _ = std::fs::create_dir_all(par);
                 }
-                render_res.rendered.save(&dest_c).map_err(|e| e.to_string())?;
+                render_res
+                    .rendered
+                    .save(&dest_c)
+                    .map_err(|e| e.to_string())?;
                 let hash = compute_clean_state_hash_opts(
                     &blocks,
                     &src_str,
@@ -2207,7 +2780,11 @@ pub async fn folder_report(
     Query(q): Query<FolderQuery>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&q.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let source_dir = unwrap_source_folder(Path::new(q.folder_path.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&source_dir) {
@@ -2259,7 +2836,11 @@ pub async fn chapter_book(
     Query(q): Query<FolderQuery>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&q.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let source_dir = unwrap_source_folder(Path::new(q.folder_path.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&source_dir) {
@@ -2338,14 +2919,21 @@ pub fn inspect_folder_pages_json(state: &AppState, raw_dir: &Path, target_lang: 
         let dest_size = std::fs::metadata(&dest_path).map(|m| m.len()).unwrap_or(0);
         let dest_exists = dest_path.is_file() && dest_size > 128;
 
-        let meta_opt = pages_meta.and_then(|m| m.get(&filename)).and_then(|v| v.as_object());
+        let meta_opt = pages_meta
+            .and_then(|m| m.get(&filename))
+            .and_then(|v| v.as_object());
         let has_saved_blocks = meta_opt
             .and_then(|m| m.get("blocks"))
             .is_some_and(|v| v.is_array());
 
         let mut enriched_blocks: Vec<TextBlock> = Vec::new();
-        if let Some(raw_arr) = meta_opt.and_then(|m| m.get("blocks")).and_then(|v| v.as_array()) {
-            if let Ok(mut parsed) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone())) {
+        if let Some(raw_arr) = meta_opt
+            .and_then(|m| m.get("blocks"))
+            .and_then(|v| v.as_array())
+        {
+            if let Ok(mut parsed) =
+                serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
+            {
                 for b in &mut parsed {
                     normalize_clean_bbox(b);
                     let tr_s = b.translated_text.trim().to_string();
@@ -2502,7 +3090,11 @@ pub async fn folder_inspect(
     Json(payload): Json<FolderInspectPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let raw_dir = PathBuf::from(payload.folder_path.trim());
     let src_dir = unwrap_source_folder(&raw_dir);
@@ -2544,7 +3136,11 @@ pub async fn open_folder_path(
             .into_response();
     }
     if let Err(err) = reject_unc_path(Some(cleaned), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let mut raw_dir = PathBuf::from(cleaned);
     if raw_dir.is_file() {
@@ -2561,7 +3157,11 @@ pub async fn open_folder_path(
             .into_response();
     }
     if let Err(err) = state.allowed_roots.register_root(&src_dir) {
-        return (StatusCode::FORBIDDEN, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::FORBIDDEN,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     if raw_dir != src_dir && raw_dir.is_dir() {
         let _ = state.allowed_roots.register_root(&raw_dir);
@@ -2652,7 +3252,11 @@ pub async fn pick_folder(
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .and_then(|s| reject_unc_path(Some(s), "initial_dir").ok().map(|_| PathBuf::from(s)))
+        .and_then(|s| {
+            reject_unc_path(Some(s), "initial_dir")
+                .ok()
+                .map(|_| PathBuf::from(s))
+        })
         .filter(|p| p.is_dir())
         .or_else(|| default_picker_initial_dir(&state));
 
@@ -2806,7 +3410,10 @@ pub async fn pick_web_save_folder(State(state): State<Arc<AppState>>) -> Respons
     let init_opt = if init_save.is_dir() {
         Some(init_save)
     } else {
-        init_save.parent().filter(|p| p.is_dir()).map(Path::to_path_buf)
+        init_save
+            .parent()
+            .filter(|p| p.is_dir())
+            .map(Path::to_path_buf)
     };
     let guard = PickerBusyGuard(state.picker_busy.clone());
     let state_bg = state.clone();
@@ -2878,7 +3485,11 @@ pub async fn open_folder(
             .into_response();
     }
     if let Err(err) = reject_unc_path(Some(raw), "path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let p = Path::new(raw);
     if !state.allowed_roots.is_within_allowed_roots(p) {
@@ -2924,13 +3535,14 @@ pub async fn open_web_save_folder(
 
     let target = if let Some(raw) = q.path.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         if let Err(err) = reject_unc_path(Some(raw), "path") {
-            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()})))
+            return (
+                StatusCode::BAD_REQUEST,
+                Json(json!({"detail": err.to_string()})),
+            )
                 .into_response();
         }
         let p = PathBuf::from(raw);
-        if !state.allowed_roots.is_within_allowed_roots(&p)
-            && !p.starts_with(&default_dir)
-        {
+        if !state.allowed_roots.is_within_allowed_roots(&p) && !p.starts_with(&default_dir) {
             return (
                 StatusCode::FORBIDDEN,
                 Json(json!({"detail": "Доступ к директории вне разрешённых корней запрещён."})),
@@ -2945,8 +3557,9 @@ pub async fn open_web_save_folder(
     let _ = std::fs::create_dir_all(&target);
     let _ = state.allowed_roots.register_root(&target);
     match open_in_explorer(&target) {
-        Ok(()) => Json(json!({"status": "ok", "web_save_dir": target.to_string_lossy()}))
-            .into_response(),
+        Ok(()) => {
+            Json(json!({"status": "ok", "web_save_dir": target.to_string_lossy()})).into_response()
+        }
         Err(e) => (
             StatusCode::INTERNAL_SERVER_ERROR,
             Json(json!({"detail": e})),
@@ -2963,7 +3576,10 @@ mod tests {
     fn test_natural_sort_and_output_dir_unwrap() {
         let mut names = vec!["10.png", "2.png", "1.png", "ch1_p12.png", "ch1_p2.png"];
         names.sort_by(|a, b| natural_cmp(a, b));
-        assert_eq!(names, vec!["1.png", "2.png", "10.png", "ch1_p2.png", "ch1_p12.png"]);
+        assert_eq!(
+            names,
+            vec!["1.png", "2.png", "10.png", "ch1_p2.png", "ch1_p12.png"]
+        );
 
         let out = output_dir_for_folder(Path::new("/manga/ch1_RU"), "en");
         assert_eq!(out, PathBuf::from("/manga/ch1_EN"));

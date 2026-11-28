@@ -107,7 +107,9 @@ pub fn spawn_picker_subprocess(
     #[cfg(not(windows))]
     {
         let _ = (mode, initial_dir, pid_slot, timeout);
-        NativePickOutcome::Error("Нативный диалог выбора поддерживается только в Windows".to_string())
+        NativePickOutcome::Error(
+            "Нативный диалог выбора поддерживается только в Windows".to_string(),
+        )
     }
     #[cfg(windows)]
     {
@@ -289,7 +291,9 @@ fn run_inproc_dialog(
     #[cfg(not(windows))]
     {
         let _ = (mode, fg_hwnd, initial_dir);
-        NativePickOutcome::Error("Нативный диалог выбора поддерживается только в Windows".to_string())
+        NativePickOutcome::Error(
+            "Нативный диалог выбора поддерживается только в Windows".to_string(),
+        )
     }
 }
 
@@ -412,8 +416,7 @@ mod win32 {
             *const Guid,
             *mut *mut c_void,
         ) -> Hresult,
-        pub get_parent:
-            unsafe extern "system" fn(*mut IShellItem, *mut *mut IShellItem) -> Hresult,
+        pub get_parent: unsafe extern "system" fn(*mut IShellItem, *mut *mut IShellItem) -> Hresult,
         pub get_display_name:
             unsafe extern "system" fn(*mut IShellItem, Dword, *mut *mut u16) -> Hresult,
         pub get_attributes:
@@ -437,16 +440,11 @@ mod win32 {
         // IModalWindow (3)
         pub show: unsafe extern "system" fn(*mut IFileDialog, Hwnd) -> Hresult,
         // IFileDialog (4..=26)
-        pub set_file_types: unsafe extern "system" fn(
-            *mut IFileDialog,
-            Uint,
-            *const ComdlgFilterspec,
-        ) -> Hresult,
+        pub set_file_types:
+            unsafe extern "system" fn(*mut IFileDialog, Uint, *const ComdlgFilterspec) -> Hresult,
         pub set_file_type_index: unsafe extern "system" fn(*mut IFileDialog, Uint) -> Hresult,
-        pub get_file_type_index:
-            unsafe extern "system" fn(*mut IFileDialog, *mut Uint) -> Hresult,
-        pub advise:
-            unsafe extern "system" fn(*mut IFileDialog, *mut c_void, *mut Dword) -> Hresult,
+        pub get_file_type_index: unsafe extern "system" fn(*mut IFileDialog, *mut Uint) -> Hresult,
+        pub advise: unsafe extern "system" fn(*mut IFileDialog, *mut c_void, *mut Dword) -> Hresult,
         pub unadvise: unsafe extern "system" fn(*mut IFileDialog, Dword) -> Hresult,
         pub set_options: unsafe extern "system" fn(*mut IFileDialog, Dword) -> Hresult,
         pub get_options: unsafe extern "system" fn(*mut IFileDialog, *mut Dword) -> Hresult,
@@ -460,10 +458,8 @@ mod win32 {
         pub set_file_name: unsafe extern "system" fn(*mut IFileDialog, *const u16) -> Hresult,
         pub get_file_name: unsafe extern "system" fn(*mut IFileDialog, *mut *mut u16) -> Hresult,
         pub set_title: unsafe extern "system" fn(*mut IFileDialog, *const u16) -> Hresult,
-        pub set_ok_button_label:
-            unsafe extern "system" fn(*mut IFileDialog, *const u16) -> Hresult,
-        pub set_file_name_label:
-            unsafe extern "system" fn(*mut IFileDialog, *const u16) -> Hresult,
+        pub set_ok_button_label: unsafe extern "system" fn(*mut IFileDialog, *const u16) -> Hresult,
+        pub set_file_name_label: unsafe extern "system" fn(*mut IFileDialog, *const u16) -> Hresult,
         pub get_result:
             unsafe extern "system" fn(*mut IFileDialog, *mut *mut IShellItem) -> Hresult,
         pub add_place:
@@ -532,7 +528,11 @@ mod win32 {
     extern "system" {
         fn GetCurrentThreadId() -> Dword;
         fn GetModuleHandleW(lp_module_name: *const u16) -> Hinstance;
-        fn OpenProcess(dw_desired_access: Dword, b_inherit_handle: Bool, dw_process_id: Dword) -> isize;
+        fn OpenProcess(
+            dw_desired_access: Dword,
+            b_inherit_handle: Bool,
+            dw_process_id: Dword,
+        ) -> isize;
         fn GetExitCodeProcess(h_process: isize, lp_exit_code: *mut Dword) -> Bool;
         fn CloseHandle(h_object: isize) -> Bool;
     }
@@ -869,8 +869,11 @@ mod win32 {
                 let hr_res = (vtbl.get_result)(dlg, &mut res_item);
                 if hr_res >= 0 && !res_item.is_null() {
                     let mut psz_path: *mut u16 = null_mut();
-                    let hr_name =
-                        ((*(*res_item).lp_vtbl).get_display_name)(res_item, SIGDN_FILESYSPATH, &mut psz_path);
+                    let hr_name = ((*(*res_item).lp_vtbl).get_display_name)(
+                        res_item,
+                        SIGDN_FILESYSPATH,
+                        &mut psz_path,
+                    );
                     let picked_str = if hr_name >= 0 && !psz_path.is_null() {
                         let s = wide_ptr_to_string(psz_path);
                         CoTaskMemFree(psz_path as *mut c_void);

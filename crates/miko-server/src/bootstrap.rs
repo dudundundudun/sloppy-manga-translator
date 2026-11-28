@@ -472,9 +472,10 @@ fn read_u64_le(buf: &[u8], off: usize) -> u64 {
 
 /// Извлекает все `.dll` файлы из ZIP / `.whl` архива напрямую в `dest_dir` (чистый Rust + `flate2`, с поддержкой ZIP64).
 pub fn extract_dlls_from_zip(zip_path: &Path, dest_dir: &Path) -> Result<Vec<String>, String> {
-    fs::create_dir_all(dest_dir).map_err(|e| format!("Ошибка создания папки {:?}: {e}", dest_dir))?;
-    let mut file =
-        File::open(zip_path).map_err(|e| format!("Не удалось открыть архив {:?}: {e}", zip_path))?;
+    fs::create_dir_all(dest_dir)
+        .map_err(|e| format!("Ошибка создания папки {:?}: {e}", dest_dir))?;
+    let mut file = File::open(zip_path)
+        .map_err(|e| format!("Не удалось открыть архив {:?}: {e}", zip_path))?;
     let file_len = file
         .metadata()
         .map_err(|e| format!("Ошибка чтения размера архива: {e}"))?
@@ -748,11 +749,9 @@ async fn download_with_resume_and_sha256(
     let t_start = Instant::now();
     let mut last_ui_tick = Instant::now();
 
-    while let Some(chunk) = resp
-        .chunk()
-        .await
-        .map_err(|e| format!("Обрыв загрузки {label}: {e} (нажмите «Скачать» ещё раз для докачки)"))?
-    {
+    while let Some(chunk) = resp.chunk().await.map_err(|e| {
+        format!("Обрыв загрузки {label}: {e} (нажмите «Скачать» ещё раз для докачки)")
+    })? {
         if cancel_flag.load(Ordering::Relaxed) {
             let _ = out_file.flush();
             return Err("CANCELLED".to_string());
@@ -858,7 +857,11 @@ pub fn build_setup_status_json(state: &AppState) -> Value {
         .read()
         .unwrap_or_else(|e| e.into_inner())
         .clone();
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
 
     json!({
         "status": "ok",
@@ -896,7 +899,10 @@ pub async fn post_setup_install(
     Json(payload): Json<SetupInstallPayload>,
 ) -> Response {
     {
-        let st = state.bootstrap_state.read().unwrap_or_else(|e| e.into_inner());
+        let st = state
+            .bootstrap_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         if st.status == "running" {
             return (
                 StatusCode::CONFLICT,
@@ -927,7 +933,10 @@ pub async fn post_setup_install(
 
     state.bootstrap_cancel_flag.store(false, Ordering::SeqCst);
     {
-        let mut st = state.bootstrap_state.write().unwrap_or_else(|e| e.into_inner());
+        let mut st = state
+            .bootstrap_state
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         *st = BootstrapProgress {
             status: "running".to_string(),
             profile: profile.clone(),
@@ -967,7 +976,10 @@ pub async fn post_setup_install(
                 }
             }
             Err(err) if err == "CANCELLED" => {
-                push_setup_log(&bg_state, "⏸ Загрузка приостановлена пользователем (можно продолжить с того же места).");
+                push_setup_log(
+                    &bg_state,
+                    "⏸ Загрузка приостановлена пользователем (можно продолжить с того же места).",
+                );
                 if let Ok(mut st) = bg_state.bootstrap_state.write() {
                     st.status = "cancelled".to_string();
                     st.phase = "Пауза".to_string();
@@ -1145,7 +1157,10 @@ async fn run_bootstrap_pipeline(state: &Arc<AppState>, profile: &str) -> Result<
         if mspec.source_kind == "huggingface_official" {
             push_setup_log(
                 state,
-                format!("Скачивание {} с официального HuggingFace автора...", mspec.filename),
+                format!(
+                    "Скачивание {} с официального HuggingFace автора...",
+                    mspec.filename
+                ),
             );
             let primary_res = download_with_resume_and_sha256(
                 &client,
@@ -1245,7 +1260,12 @@ pub async fn post_install_ollama(State(state): State<Arc<AppState>>) -> Response
             .is_some();
             if !winget_ok {
                 let _ = Command::new("cmd")
-                    .args(["/C", "start", "", "https://ollama.com/download/OllamaSetup.exe"])
+                    .args([
+                        "/C",
+                        "start",
+                        "",
+                        "https://ollama.com/download/OllamaSetup.exe",
+                    ])
                     .spawn();
             } else {
                 let _ = Command::new("cmd")
@@ -1272,7 +1292,10 @@ pub async fn post_pull_model(
     Json(payload): Json<PullModelPayload>,
 ) -> Response {
     let raw_model = payload.model.trim();
-    let clean_tag = raw_model.strip_prefix("ollama::").unwrap_or(raw_model).trim();
+    let clean_tag = raw_model
+        .strip_prefix("ollama::")
+        .unwrap_or(raw_model)
+        .trim();
     if clean_tag.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -1282,7 +1305,10 @@ pub async fn post_pull_model(
     }
 
     {
-        let st = state.ollama_pull_state.read().unwrap_or_else(|e| e.into_inner());
+        let st = state
+            .ollama_pull_state
+            .read()
+            .unwrap_or_else(|e| e.into_inner());
         if st.status == "downloading" {
             return (
                 StatusCode::CONFLICT,
@@ -1295,7 +1321,10 @@ pub async fn post_pull_model(
     let model_owned = clean_tag.to_string();
     let set_def = payload.set_as_default.unwrap_or(true);
     {
-        let mut st = state.ollama_pull_state.write().unwrap_or_else(|e| e.into_inner());
+        let mut st = state
+            .ollama_pull_state
+            .write()
+            .unwrap_or_else(|e| e.into_inner());
         *st = OllamaPullProgress {
             status: "downloading".to_string(),
             model: model_owned.clone(),

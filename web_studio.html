@@ -4053,6 +4053,7 @@
           <div class="lm-stall-banner" id="lm-rate-limit-banner" style="display:none; background:rgba(251,191,36,0.12); border-color:rgba(251,191,36,0.38); color:#fde68a;"></div>
           <div class="lm-drawer-body" id="lm-drawer-body">
             <div class="lm-stages" id="lm-stages">
+              <span class="lm-pill" data-stage="prepass">Прескан</span>
               <span class="lm-pill" data-stage="ocr">OCR</span>
               <span class="lm-pill" data-stage="pass0">Pass 0</span>
               <span class="lm-pill" data-stage="llm">ИИ</span>
@@ -4060,6 +4061,7 @@
               <span class="lm-pill" data-stage="proofread">Вычитка</span>
               <span class="lm-pill" data-stage="render">Вёрстка</span>
             </div>
+            <div id="lm-analysis-badge" style="display:none; font-size:11.2px; font-weight:700; color:#fbcfe8; background:rgba(244,114,182,0.13); border:1px solid rgba(244,114,182,0.34); border-radius:8px; padding:4px 8px;"></div>
             <div class="lm-pulse-row">
               <div id="lm-model-lbl">Модель: —</div>
               <div id="lm-keys-lbl">Поток: —</div>
@@ -4248,7 +4250,7 @@
               </div>
             </details>
 
-            <button type="button" class="pill-btn" id="btn-chapter-qa" onclick="openChapterQaInspector(false)" title="Ревизор шрифтов и вёрстки: мгновенно найти все мелкие или перегруженные бабблы в главе и исправить в 1 клик">🔍 Проверить шрифты</button>
+            <button type="button" class="pill-btn" id="btn-chapter-qa" onclick="openChapterQaInspector(false)" title="QA-инспектор главы: проверка мелких шрифтов, 18+ канона (EN), имён персонажей и грамматических якорей в 1 клик">🔍 QA</button>
 
             <!-- Compact "⋯ Еще" Menu for Secondary / Rarely Used Tools -->
             <details class="toolbar-more-menu" id="toolbar-more-details">
@@ -4561,7 +4563,7 @@
     <div class="settings-modal" style="max-width:740px; width:94vw; max-height:84vh; display:flex; flex-direction:column;" role="dialog" aria-modal="true">
       <div class="modal-header">
         <div class="modal-header-title">
-          <span>🔍 Ревизор шрифтов и вёрстки главы</span>
+          <span>🔍 QA-инспектор главы (шрифты, 18+ канон и имена)</span>
         </div>
         <div style="display:flex; align-items:center; gap:6px;">
           <label style="font-size:11.5px; color:var(--text-muted); display:inline-flex; align-items:center; gap:4px;">
@@ -4586,7 +4588,37 @@
       </div>
 
       <div id="qa-issues-container" style="padding:12px 16px; overflow-y:auto; display:flex; flex-direction:column; gap:7px; flex:1;">
-        <div style="color:var(--text-muted); text-align:center; padding:24px;">Нажмите «Проверить шрифты», чтобы просканировать переведённые страницы.</div>
+        <div style="color:var(--text-muted); text-align:center; padding:24px;">Нажмите «QA», чтобы просканировать переведённые страницы.</div>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="canon-editor-modal" onclick="if(event.target===this) closeCanonEditorModal()">
+    <div class="settings-modal" style="max-width:860px; width:95vw; max-height:86vh; display:flex; flex-direction:column;" role="dialog" aria-modal="true">
+      <div class="modal-header">
+        <div class="modal-header-title">
+          <span>🔞 Словарь 18+ Canon (EN) — Классический сканлейт</span>
+          <span id="canon-modal-ver-badge" style="font-size:11px; color:var(--mint); font-weight:700;"></span>
+        </div>
+        <div style="display:flex; align-items:center; gap:6px;">
+          <button type="button" class="btn-save-edit" style="padding:6px 13px; font-size:12px;" onclick="saveCanonOverridesToServer()">💾 Сохранить правки</button>
+          <button type="button" class="pill-btn" onclick="closeCanonEditorModal()">✕ Закрыть</button>
+        </div>
+      </div>
+      <div style="padding:10px 16px; border-bottom:1px solid rgba(255,255,255,0.08); display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">
+        <input id="inp-canon-filter" type="search" placeholder="🔍 Поиск по JP / EN / ID (например: 絶頂, ちんちん, climax)..." oninput="renderCanonModalLists()" style="flex:1; min-width:220px; background:#0b0914; color:#fff; border:1px solid rgba(255,255,255,0.16); border-radius:9px; padding:6px 10px; font-size:12px;" />
+        <button type="button" class="pill-btn" onclick="addCanonOverrideRow()">➕ Добавить своё правило</button>
+      </div>
+      <div id="canon-modal-error-bar" style="display:none; margin:8px 16px 0; padding:7px 11px; border-radius:8px; background:rgba(251,113,133,0.14); border:1px solid rgba(251,113,133,0.45); color:#fda4af; font-size:11.8px;"></div>
+      <div style="padding:12px 16px; overflow-y:auto; display:flex; flex-direction:column; gap:12px; flex:1;">
+        <div>
+          <div style="font-size:12px; font-weight:700; color:var(--sakura); margin-bottom:6px;">✏️ Пользовательские переопределения и новые правила (SQLite):</div>
+          <div id="canon-overrides-list" style="display:flex; flex-direction:column; gap:6px;"></div>
+        </div>
+        <div>
+          <div style="font-size:12px; font-weight:700; color:var(--mint); margin-bottom:6px;">📚 Встроенная база Canon 18+ (read-only, можно переопределить по ID):</div>
+          <div id="canon-builtin-list" style="display:flex; flex-direction:column; gap:5px;"></div>
+        </div>
       </div>
     </div>
   </div>
@@ -4780,6 +4812,56 @@
                   </div>
                   <input id="chk-anti-censorship-prompt" type="checkbox" onchange="onAntiCensorshipPromptToggle(this.checked)" />
                 </label>
+
+                <div class="section-box" style="margin-top:6px; background:rgba(244,114,182,0.045); border-color:rgba(244,114,182,0.24);" data-search-tab="tab-ai" data-search-keywords="18+ canon канон английский сленг имена name lock prepass прескан qa линтер">
+                  <div class="section-title">
+                    <span>🔞 18+ Canon Engine (EN) и полный анализ главы</span>
+                    <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap;">
+                      <span id="canon-db-count-badge" style="font-size:11px; color:var(--mint); font-weight:700;">База: EN Adult Canon</span>
+                      <button type="button" class="romaji-copy-btn" onclick="openCanonEditorModal()">📚 Словарь Canon 18+</button>
+                    </div>
+                  </div>
+                  <div class="section-desc">Фиксация каноничных имён на всю главу, двухфазный прескан до перевода, словарь классического 18+ английского сканлейта и проверка после перевода.</div>
+
+                  <label class="toggle-row">
+                    <div class="toggle-row-text">
+                      <span class="toggle-row-title">🔞 Классический 18+ английский (база терминов, без сленга)</span>
+                      <span class="toggle-row-sub">Подставляет точные соответствия только для встретившихся 18+ слов и блокирует американский мем-сленг (junk, nut, peak, let it rip)</span>
+                    </div>
+                    <input id="chk-adult-canon-en" type="checkbox" checked onchange="setSettingsDirty(true); scheduleServerPromptPreview();" />
+                  </label>
+
+                  <label class="toggle-row">
+                    <div class="toggle-row-text">
+                      <span class="toggle-row-title">👤 Фиксировать имена персонажей на всю главу (Name Lock)</span>
+                      <span class="toggle-row-sub">Извлекает имена катаканой и фандом-канон (Frieren, Blue Archive, Genshin и др.) до перевода первой пачки</span>
+                    </div>
+                    <input id="chk-name-lock" type="checkbox" checked onchange="setSettingsDirty(true)" />
+                  </label>
+
+                  <label class="toggle-row">
+                    <div class="toggle-row-text">
+                      <span class="toggle-row-title">🔍 Сначала OCR всей главы (полный контекст до перевода)</span>
+                      <span class="toggle-row-sub">Двухфазный конвейер: распознаёт все страницы главы, строит сводку имён/терминов/повторов и включает прямой 18+ режим без холостых таймаутов облака</span>
+                    </div>
+                    <input id="chk-chapter-prepass" type="checkbox" checked onchange="setSettingsDirty(true)" />
+                  </label>
+
+                  <div class="form-grid" style="margin-top:4px;">
+                    <div class="field-box">
+                      <label for="sel-qa-linter-mode">🛡 Post-QA проверка после перевода (EN):</label>
+                      <select id="sel-qa-linter-mode" onchange="setSettingsDirty(true)">
+                        <option value="off">Выкл</option>
+                        <option value="fix">Только исправлять (детерминированно)</option>
+                        <option value="fix_and_retry" selected>Исправлять + переперевод сложных ошибок</option>
+                      </select>
+                    </div>
+                    <div class="field-box">
+                      <label for="inp-lookahead-lines">🔭 Строк забегания вперёд (Lookahead 0–8):</label>
+                      <input id="inp-lookahead-lines" type="number" min="0" max="8" value="4" onchange="setSettingsDirty(true)" />
+                    </div>
+                  </div>
+                </div>
 
                 <div style="display:flex; align-items:center; justify-content:space-between; gap:10px; flex-wrap:wrap; padding:10px 13px; border-radius:11px; background:rgba(244,114,182,0.07); border:1px solid rgba(244,114,182,0.24);">
                   <div style="font-size:12px; color:var(--text-primary);">
@@ -5125,18 +5207,18 @@
                   </select>
                 </div>
 
-                <label class="toggle-row">
+                <label class="toggle-row" title="Касается только вздохов вне бабблов (is_free_text); стоны и вздохи внутри бабблов не удаляются и переводятся по канону (Phew…, Ahn…, Mmh…)">
                   <div class="toggle-row-text">
                     <span class="toggle-row-title">🚫 Пропускать короткие вздохи и одиночные междометия вне рамок</span>
-                    <span class="toggle-row-sub">Защищает мелкие эмоциональные пометки поверх скринтонов от лишней замазки</span>
+                    <span class="toggle-row-sub">Только вне бабблов; стоны внутри бабблов сохраняются и переводятся по канону (Phew…, Ahn…, Mmh…)</span>
                   </div>
                   <input id="chk-skip-sighs" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
                 </label>
 
-                <label class="toggle-row">
+                <label class="toggle-row" title="Отбрасывает рисованную ономатопею из лексикона SFX (ちゅるる, じゅぽ и др.) даже внутри декоративных контуров">
                   <div class="toggle-row-text">
                     <span class="toggle-row-title">🚫 Пропускать звуковые спецэффекты (SFX / ономатопею)</span>
-                    <span class="toggle-row-sub">Не трогает декоративные звуки ударов, шорохов и спецэффекты поверх рисунка</span>
+                    <span class="toggle-row-sub">Отбрасывает рисованные звуки (ちゅるる, じゅぽ, ドクン и др.) даже в декоративных контурах — арт остаётся нетронутым</span>
                   </div>
                   <input id="chk-skip-sfx" type="checkbox" checked onchange="onCustomFilterCheckboxChange()" />
                 </label>
@@ -6383,6 +6465,7 @@ Style & Localization Guidelines:
             anti_censorship_custom_prompt: getEffectiveAntiCensorshipCustomPromptValue(),
             custom_system_prompt: getEffectiveCustomSystemPromptValue(),
             custom_context_prompt: (document.getElementById("inp-custom-context-prompt")?.value || "").trim(),
+            adult_canon_en: Boolean(document.getElementById("chk-adult-canon-en")?.checked ?? true),
             folder_path: currentFolder || null,
             sample_lines: sampleLine ? [sampleLine] : []
           })
@@ -8450,6 +8533,34 @@ Style & Localization Guidelines:
             if (chkAc) chkAc.checked = data.anti_censorship_prompt;
             if (chkAcPrompts) chkAcPrompts.checked = data.anti_censorship_prompt;
           }
+          if (typeof data.adult_canon_en === "boolean") {
+            const chkCanon = document.getElementById("chk-adult-canon-en");
+            if (chkCanon) chkCanon.checked = data.adult_canon_en;
+          }
+          if (typeof data.name_lock === "boolean") {
+            const chkNl = document.getElementById("chk-name-lock");
+            if (chkNl) chkNl.checked = data.name_lock;
+          }
+          if (typeof data.chapter_prepass === "boolean") {
+            const chkPre = document.getElementById("chk-chapter-prepass");
+            if (chkPre) chkPre.checked = data.chapter_prepass;
+          }
+          if (typeof data.qa_linter_mode === "string") {
+            const selQa = document.getElementById("sel-qa-linter-mode");
+            if (selQa && ["off", "fix", "fix_and_retry"].includes(data.qa_linter_mode)) {
+              selQa.value = data.qa_linter_mode;
+            }
+          }
+          if (typeof data.lookahead_lines === "number") {
+            const inpLa = document.getElementById("inp-lookahead-lines");
+            if (inpLa) inpLa.value = Math.max(0, Math.min(8, data.lookahead_lines));
+          }
+          if (typeof data.canon_entries_count === "number") {
+            const badgeCanon = document.getElementById("canon-db-count-badge");
+            if (badgeCanon) {
+              badgeCanon.textContent = `База v${data.canon_version || "1"} (${data.canon_entries_count} правил)`;
+            }
+          }
           const taSys = document.getElementById("inp-custom-system-prompt");
           if (taSys && document.activeElement !== taSys) {
             taSys.value = (data.custom_system_prompt && data.custom_system_prompt.trim())
@@ -8871,10 +8982,16 @@ Style & Localization Guidelines:
 
         const olBox = document.getElementById("storage-ollama-list");
         if (olBox) {
+          const missPref = (data.configured_fallback_model && data.fallback_installed === false)
+            ? `<div style="font-size:11.8px; color:#fde68a; background:rgba(251,191,36,0.12); border:1px solid rgba(251,191,36,0.38); border-radius:10px; padding:8px 11px; display:flex; align-items:center; justify-content:space-between; gap:8px; flex-wrap:wrap;">` +
+                `<span>⚠️ Модель из пресета <b>${escapeHtml(data.configured_fallback_model)}</b> не установлена в Ollama — при цензуре облака используется авто-резерв.</span>` +
+                `<button type="button" class="pill-btn" onclick="pullSpecificOllamaModel('${escapeJsAttr(data.configured_fallback_model)}')">📥 Скачать</button>` +
+              `</div>`
+            : "";
           if (olList.length === 0) {
-            olBox.innerHTML = `<div style="font-size:12px; color:var(--text-secondary); padding:10px; border:1px dashed rgba(255,255,255,0.12); border-radius:10px;">В локальном Ollama сейчас нет скачанных моделей. Выберите модель в блоке ниже и нажмите «Скачать»!</div>`;
+            olBox.innerHTML = missPref + `<div style="font-size:12px; color:var(--text-secondary); padding:10px; border:1px dashed rgba(255,255,255,0.12); border-radius:10px;">В локальном Ollama сейчас нет скачанных моделей. Выберите модель в блоке ниже и нажмите «Скачать»!</div>`;
           } else {
-            olBox.innerHTML = olList.map(m => {
+            olBox.innerHTML = missPref + olList.map(m => {
               const rawName = String(m.name || m.id || "").trim();
               const fullId = rawName.startsWith("ollama::") ? rawName : `ollama::${rawName}`;
               const isMain = curMainMod && curMainMod === rawName;
@@ -9182,6 +9299,11 @@ Style & Localization Guidelines:
           custom_system_prompt: getEffectiveCustomSystemPromptValue(),
           custom_context_prompt: (document.getElementById("inp-custom-context-prompt")?.value || "").trim(),
           prompt_preset_id: activePromptPresetId || "standard",
+          adult_canon_en: Boolean(document.getElementById("chk-adult-canon-en")?.checked ?? true),
+          name_lock: Boolean(document.getElementById("chk-name-lock")?.checked ?? true),
+          chapter_prepass: Boolean(document.getElementById("chk-chapter-prepass")?.checked ?? true),
+          qa_linter_mode: document.getElementById("sel-qa-linter-mode")?.value || "fix_and_retry",
+          lookahead_lines: Math.max(0, Math.min(8, parseInt(document.getElementById("inp-lookahead-lines")?.value ?? "4", 10) || 0)),
           cloud_only_no_local_fallback: Boolean(document.getElementById("chk-cloud-only-no-local-fallback")?.checked),
           ui_settings: uiSettings
         };
@@ -14779,8 +14901,9 @@ Style & Localization Guidelines:
     let jobStartedClientTs = 0;
     let activeJobRelPath = "";
     let activeJobStageBadge = "";
-    const LM_STAGE_ORDER = ["ocr", "pass0", "llm", "micro_retry", "proofread", "render"];
+    const LM_STAGE_ORDER = ["prepass", "ocr", "pass0", "llm", "micro_retry", "proofread", "render"];
     const LM_STAGE_SHORT_NAMES = {
+      prepass: "Прескан",
       ocr: "OCR",
       pass0: "Pass 0",
       llm: "ИИ",
@@ -14935,6 +15058,32 @@ Style & Localization Guidelines:
         }
       }
 
+      const anBadge = document.getElementById("lm-analysis-badge");
+      if (anBadge) {
+        let anText = "";
+        if (live.analysis_summary && typeof live.analysis_summary === "object") {
+          const nCnt = Number(live.analysis_summary.names_count || 0);
+          const cCnt = Number(live.analysis_summary.canon_count || 0);
+          anText = `🧠 Анализ главы: ${nCnt} имён, ${cCnt} 18+ терминов`;
+        } else {
+          const allLogs = Array.isArray(st.logs) ? st.logs : [];
+          for (let i = allLogs.length - 1; i >= 0; i--) {
+            const m = String(allLogs[i] || "").match(/\[Анализ\]\s*имён:\s*(\d+).*?18\+\s*терминов:\s*(\d+)/);
+            if (m) {
+              anText = `🧠 Анализ главы: ${m[1]} имён, ${m[2]} 18+ терминов`;
+              break;
+            }
+          }
+        }
+        if (anText) {
+          anBadge.style.display = "block";
+          anBadge.textContent = anText;
+        } else {
+          anBadge.style.display = "none";
+          anBadge.textContent = "";
+        }
+      }
+
       const modelEl = document.getElementById("lm-model-lbl");
       if (modelEl) {
         const limTxt = Number(live.batch_limit || 0) > 0 ? ` · лимит ${live.batch_limit}` : "";
@@ -15034,7 +15183,8 @@ Style & Localization Guidelines:
         const stg = String(live.stage || st.phase || "ocr");
         const stepSec = Math.max(0, Math.round(Number(live.step_elapsed_sec || 0)));
         const secSuffix = stepSec > 0 ? ` · ${formatLiveDuration(stepSec)}` : "";
-        if (stg === "ocr") activeJobStageBadge = `🔍 OCR${secSuffix}`;
+        if (stg === "prepass") activeJobStageBadge = `🔍 Прескан${secSuffix}`;
+        else if (stg === "ocr") activeJobStageBadge = `🔍 OCR${secSuffix}`;
         else if (stg === "llm" || stg === "micro_retry" || stg === "proofread") activeJobStageBadge = `🤖 ИИ${secSuffix}`;
         else if (stg === "render" || stg === "clean") activeJobStageBadge = `🎨 Вёрстка${secSuffix}`;
         else if (st.phase === "paused") activeJobStageBadge = "⏸ Пауза";
@@ -15501,10 +15651,10 @@ Style & Localization Guidelines:
         if (qaBtn) {
           if (lastQaIssues.length > 0) {
             qaBtn.classList.add("qa-has-issues");
-            qaBtn.textContent = `🔍 Шрифты (${lastQaIssues.length})`;
+            qaBtn.textContent = `🔍 QA (${lastQaIssues.length})`;
           } else {
             qaBtn.classList.remove("qa-has-issues");
-            qaBtn.textContent = "🔍 Шрифты ✓";
+            qaBtn.textContent = "🔍 QA ✓";
           }
         }
         if (silentBadgeOnly) return;
@@ -15514,7 +15664,7 @@ Style & Localization Guidelines:
         }
         if (!listEl) return;
         if (lastQaIssues.length === 0) {
-          listEl.innerHTML = `<div style="text-align:center; padding:28px; color:var(--mint); font-weight:700;">✅ Отлично! Во всей главе нет ни одного слишком мелкого шрифта (все облачка крупнее ${thr} px).</div>`;
+          listEl.innerHTML = `<div style="text-align:center; padding:28px; color:var(--mint); font-weight:700;">✅ Отлично! Во всей главе нет ошибок 18+ канона, имён или слишком мелкого шрифта (&gt; ${thr} px).</div>`;
           return;
         }
 
@@ -15523,22 +15673,53 @@ Style & Localization Guidelines:
           const card = document.createElement("div");
           card.className = "qa-issue-card";
           card.onclick = () => jumpToQaIssue(idx);
-          card.innerHTML = `
-            <div style="min-width:0; flex:1;">
-              <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:3px;">
-                <b style="color:var(--sakura);">Стр. #${iss.page_index} · Рамка #${iss.block_id}</b>
-                <span style="background:rgba(251,191,36,0.18); color:#fde68a; border:1px solid rgba(251,191,36,0.4); border-radius:999px; padding:1px 7px; font-size:10.5px; font-weight:700;">${iss.rendered_font_size} px ➔ ~${iss.recommended_font_size} px</span>
-                <span style="color:var(--text-muted); font-size:10.5px;">баббл ${escapeHtml(iss.bbox_size || "")}</span>
+          const isTextQa = ["canon_slang", "name_drift", "grammar_anchor", "style_ban"].includes(iss.kind);
+          if (isTextQa) {
+            const kindMeta = {
+              canon_slang: { label: "🔞 18+ Канон", bg: "rgba(244,114,182,0.18)", fg: "#fbcfe8", bd: "rgba(244,114,182,0.45)" },
+              name_drift: { label: "👤 Имя", bg: "rgba(56,189,248,0.18)", fg: "#bae6fd", bd: "rgba(56,189,248,0.45)" },
+              grammar_anchor: { label: "⚠️ Грамматика", bg: "rgba(251,146,60,0.2)", fg: "#fed7aa", bd: "rgba(251,146,60,0.48)" },
+              style_ban: { label: "💬 Стиль", bg: "rgba(192,132,252,0.18)", fg: "#e9d5ff", bd: "rgba(192,132,252,0.45)" }
+            }[iss.kind] || { label: "✨ QA", bg: "rgba(251,191,36,0.18)", fg: "#fde68a", bd: "rgba(251,191,36,0.4)" };
+            const suggHtml = iss.suggested_text
+              ? ` <span style="color:var(--mint); font-weight:700;">➔ «${escapeHtml(iss.suggested_text)}»</span>`
+              : "";
+            const fixTitle = iss.suggested_text
+              ? `Заменить на «${iss.suggested_text}» и перерисовать страницу`
+              : "Переперевести этот баббл через ИИ с учётом канона и глоссария";
+            card.innerHTML = `
+              <div style="min-width:0; flex:1;">
+                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:3px;">
+                  <b style="color:var(--sakura);">Стр. #${iss.page_index} · Рамка #${iss.block_id}</b>
+                  <span style="background:${kindMeta.bg}; color:${kindMeta.fg}; border:1px solid ${kindMeta.bd}; border-radius:999px; padding:1px 8px; font-size:10.5px; font-weight:700;">${kindMeta.label}</span>
+                  <span style="color:var(--text-muted); font-size:10.5px;">${escapeHtml(iss.original_text || "")}</span>
+                </div>
+                <div style="font-size:12px; color:var(--text-primary); overflow:hidden; text-overflow:ellipsis;">«${escapeHtml(iss.text || "")}»${suggHtml}</div>
+                <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">${escapeHtml(iss.reason || "")}</div>
               </div>
-              <div style="font-size:12px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">«${escapeHtml(iss.text || "")}»</div>
-              <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">${escapeHtml(iss.reason || "")}</div>
-            </div>
-            <div style="display:flex; align-items:center; gap:5px; flex-shrink:0;" onclick="event.stopPropagation()">
-              <button type="button" class="pill-btn" onclick="fixSingleQaIssue(${idx})" title="Установить рекомендуемый размер ${iss.recommended_font_size} px и перерисовать страницу">🔼 ${iss.recommended_font_size} px</button>
-              <button type="button" class="pill-btn" onclick="shortenSingleQaIssue(${idx})" title="Коротко сжать текст этой реплики через ИИ и поднять шрифт до ${iss.recommended_font_size} px">✂️ ИИ</button>
-              <button type="button" class="romaji-copy-btn" onclick="jumpToQaIssue(${idx})" title="Перейти к этому бабблу на холсте">👁 Открыть</button>
-            </div>
-          `;
+              <div style="display:flex; align-items:center; gap:5px; flex-shrink:0;" onclick="event.stopPropagation()">
+                <button type="button" class="pill-btn" onclick="fixSingleTextQaIssue(${idx})" title="${escapeHtml(fixTitle)}">✨ Исправить текст</button>
+                <button type="button" class="romaji-copy-btn" onclick="jumpToQaIssue(${idx})" title="Перейти к этому бабблу на холсте">👁 Открыть</button>
+              </div>
+            `;
+          } else {
+            card.innerHTML = `
+              <div style="min-width:0; flex:1;">
+                <div style="display:flex; align-items:center; gap:6px; flex-wrap:wrap; margin-bottom:3px;">
+                  <b style="color:var(--sakura);">Стр. #${iss.page_index} · Рамка #${iss.block_id}</b>
+                  <span style="background:rgba(251,191,36,0.18); color:#fde68a; border:1px solid rgba(251,191,36,0.4); border-radius:999px; padding:1px 7px; font-size:10.5px; font-weight:700;">${iss.rendered_font_size} px ➔ ~${iss.recommended_font_size} px</span>
+                  <span style="color:var(--text-muted); font-size:10.5px;">баббл ${escapeHtml(iss.bbox_size || "")}</span>
+                </div>
+                <div style="font-size:12px; color:var(--text-primary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">«${escapeHtml(iss.text || "")}»</div>
+                <div style="font-size:10.5px; color:var(--text-muted); margin-top:2px;">${escapeHtml(iss.reason || "")}</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:5px; flex-shrink:0;" onclick="event.stopPropagation()">
+                <button type="button" class="pill-btn" onclick="fixSingleQaIssue(${idx})" title="Установить рекомендуемый размер ${iss.recommended_font_size} px и перерисовать страницу">🔼 ${iss.recommended_font_size} px</button>
+                <button type="button" class="pill-btn" onclick="shortenSingleQaIssue(${idx})" title="Коротко сжать текст этой реплики через ИИ и поднять шрифт до ${iss.recommended_font_size} px">✂️ ИИ</button>
+                <button type="button" class="romaji-copy-btn" onclick="jumpToQaIssue(${idx})" title="Перейти к этому бабблу на холсте">👁 Открыть</button>
+              </div>
+            `;
+          }
           listEl.appendChild(card);
         });
       } catch (err) {
@@ -15577,6 +15758,41 @@ Style & Localization Guidelines:
       }, 240);
     }
 
+    async function fixSingleTextQaIssue(idx) {
+      const iss = lastQaIssues[idx];
+      if (!iss) return;
+      await jumpToQaIssue(idx);
+      setTimeout(async () => {
+        const blk = (currentBlocks || []).find(b => b.id === iss.block_id);
+        if (!blk) return;
+        pushPageHistorySnapshot();
+        if (iss.suggested_text) {
+          blk.translated_text = iss.suggested_text;
+        } else if (blk.original_text) {
+          sayMiko(`✨ Переперевожу рамку #${blk.id} по 18+ канону и глоссарию...`);
+          try {
+            const res = await fetch("/retranslate_single_block", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({
+                text: blk.original_text,
+                target_lang: targetLang,
+                folder_path: currentFolder || null
+              })
+            });
+            const data = await res.json().catch(() => ({}));
+            if (res.ok && data.translated_text) {
+              blk.translated_text = data.translated_text;
+            }
+          } catch (e) {
+            console.warn("fixSingleTextQaIssue retranslate error:", e);
+          }
+        }
+        await saveEditedPageTranslation();
+        openChapterQaInspector(false);
+      }, 240);
+    }
+
     async function shortenSingleQaIssue(idx) {
       const iss = lastQaIssues[idx];
       if (!iss) return;
@@ -15607,6 +15823,138 @@ Style & Localization Guidelines:
           console.warn("shortenSingleQaIssue error:", e);
         }
       }, 240);
+    }
+
+    let canonBuiltinCache = [];
+    let canonOverridesDraft = [];
+
+    async function pullSpecificOllamaModel(modelTag) {
+      const pullSel = document.getElementById("sel-recommended-pull");
+      if (pullSel) {
+        if (!Array.from(pullSel.options).some(o => o.value === modelTag)) {
+          const opt = document.createElement("option");
+          opt.value = modelTag;
+          opt.textContent = `🦙 ${modelTag}`;
+          pullSel.appendChild(opt);
+        }
+        pullSel.value = modelTag;
+      }
+      if (typeof pullRecommendedModel === "function") {
+        await pullRecommendedModel();
+      }
+    }
+
+    async function openCanonEditorModal() {
+      const modal = document.getElementById("canon-editor-modal");
+      const errBar = document.getElementById("canon-modal-error-bar");
+      if (errBar) errBar.style.display = "none";
+      if (modal) modal.classList.add("open");
+      try {
+        const res = await fetch("/canon/en");
+        if (!res.ok) return;
+        const data = await res.json();
+        canonBuiltinCache = Array.isArray(data.builtin) ? data.builtin : [];
+        canonOverridesDraft = Array.isArray(data.overrides) ? data.overrides.map(o => ({ ...o })) : [];
+        const verEl = document.getElementById("canon-modal-ver-badge");
+        if (verEl) verEl.textContent = `v${data.version || ""} · ${data.merged_count || 0} активных`;
+        renderCanonModalLists();
+      } catch (e) {
+        console.warn("openCanonEditorModal failed:", e);
+      }
+    }
+
+    function closeCanonEditorModal() {
+      document.getElementById("canon-editor-modal")?.classList.remove("open");
+    }
+
+    function addCanonOverrideRow(prefill = null) {
+      canonOverridesDraft.unshift(prefill || {
+        id: `user_rule_${canonOverridesDraft.length + 1}`,
+        category: "act",
+        jp: [""],
+        expand_kana: false,
+        jp_regex: null,
+        en: "",
+        en_alts: [],
+        forbid_en: [],
+        required_en_any: [],
+        auto_fix: [],
+        note: "",
+        priority: 85,
+        enabled: true
+      });
+      renderCanonModalLists();
+    }
+
+    function renderCanonModalLists() {
+      const q = (document.getElementById("inp-canon-filter")?.value || "").trim().toLowerCase();
+      const ovBox = document.getElementById("canon-overrides-list");
+      const biBox = document.getElementById("canon-builtin-list");
+      if (ovBox) {
+        if (canonOverridesDraft.length === 0) {
+          ovBox.innerHTML = `<div style="font-size:11.5px; color:var(--text-muted); padding:8px; border:1px dashed rgba(255,255,255,0.12); border-radius:8px;">Нет пользовательских переопределений. Нажмите «➕ Добавить своё правило» или «Переопределить» у любой записи ниже.</div>`;
+        } else {
+          ovBox.innerHTML = canonOverridesDraft.map((ov, idx) => `
+            <div style="display:grid; grid-template-columns:130px 1fr 1fr 1fr auto; gap:6px; align-items:center; background:rgba(255,255,255,0.03); border:1px solid rgba(255,255,255,0.1); border-radius:8px; padding:6px 8px;">
+              <input type="text" value="${escapeHtml(ov.id || "")}" placeholder="id" onchange="canonOverridesDraft[${idx}].id=this.value.trim()" style="font-size:11px; padding:4px 6px;" />
+              <input type="text" value="${escapeHtml((ov.jp || []).join(", "))}" placeholder="JP через запятую" onchange="canonOverridesDraft[${idx}].jp=this.value.split(',').map(s=>s.trim()).filter(Boolean)" style="font-size:11.5px; padding:4px 6px;" />
+              <input type="text" value="${escapeHtml(ov.en || "")}" placeholder="EN канон" onchange="canonOverridesDraft[${idx}].en=this.value.trim()" style="font-size:11.5px; padding:4px 6px;" />
+              <input type="text" value="${escapeHtml((ov.forbid_en || []).join(", "))}" placeholder="forbid regex (,)" onchange="canonOverridesDraft[${idx}].forbid_en=this.value.split(',').map(s=>s.trim()).filter(Boolean)" style="font-size:11px; padding:4px 6px;" />
+              <div style="display:flex; align-items:center; gap:5px;">
+                <input type="checkbox" ${ov.enabled !== false ? "checked" : ""} title="Включено" onchange="canonOverridesDraft[${idx}].enabled=this.checked" />
+                <button type="button" class="btn-danger-mini" onclick="canonOverridesDraft.splice(${idx},1); renderCanonModalLists();">✕</button>
+              </div>
+            </div>
+          `).join("");
+        }
+      }
+      if (biBox) {
+        const filtered = canonBuiltinCache.filter(e => {
+          if (!q) return true;
+          const hay = `${e.id} ${e.category} ${(e.jp || []).join(" ")} ${e.jp_regex || ""} ${e.en} ${e.note || ""}`.toLowerCase();
+          return hay.includes(q);
+        });
+        biBox.innerHTML = filtered.map((e, i) => `
+          <div style="display:flex; align-items:center; justify-content:space-between; gap:8px; padding:6px 9px; border-radius:8px; background:rgba(255,255,255,0.02); border:1px solid rgba(255,255,255,0.07); font-size:11.5px;">
+            <div style="min-width:0; flex:1;">
+              <b style="color:var(--sakura);">${escapeHtml((e.jp && e.jp.length) ? e.jp.join(" / ") : (e.jp_regex || e.id))}</b>
+              <span style="color:var(--mint); font-weight:700;"> ➔ ${escapeHtml(e.en || "—")}</span>
+              <span style="color:var(--text-muted); font-size:10.5px;"> [${escapeHtml(e.category)} · #${escapeHtml(e.id)}]</span>
+            </div>
+            <button type="button" class="romaji-copy-btn" onclick='addCanonOverrideRow(${JSON.stringify(e).replace(/'/g, "&#39;")})'>✏️ Переопределить</button>
+          </div>
+        `).join("");
+      }
+    }
+
+    async function saveCanonOverridesToServer() {
+      const errBar = document.getElementById("canon-modal-error-bar");
+      if (errBar) errBar.style.display = "none";
+      try {
+        const res = await fetch("/canon/en", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ overrides: canonOverridesDraft })
+        });
+        const data = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          if (errBar) {
+            errBar.style.display = "block";
+            errBar.textContent = `❌ ${data.detail || ("HTTP " + res.status)}`;
+          }
+          return;
+        }
+        canonOverridesDraft = Array.isArray(data.overrides) ? data.overrides : [];
+        const verEl = document.getElementById("canon-modal-ver-badge");
+        if (verEl) verEl.textContent = `v${data.version || ""} · ${data.merged_count || 0} активных`;
+        renderCanonModalLists();
+        sayMiko("💾 Словарь 18+ Canon (EN) сохранён в SQLite! Ключ кэша обновлён ✨");
+      } catch (e) {
+        if (errBar) {
+          errBar.style.display = "block";
+          errBar.textContent = `❌ Сбой сохранения: ${e.message || e}`;
+        }
+      }
     }
 
     async function autofixChapterQa(useAiShorten = false) {

@@ -1,0 +1,1027 @@
+{
+  "version": "2026.11.28-1",
+  "entries": [
+    {
+      "id": "grammar_igai",
+      "category": "grammar",
+      "jp": [],
+      "expand_kana": false,
+      "jp_regex": "以外(は|の|に|を|で|も)?",
+      "en": "except / everyone except / other than",
+      "en_alts": ["besides", "apart from", "excluding"],
+      "forbid_en": [],
+      "required_en_any": [
+        "(?i)\\bexcept\\b",
+        "(?i)\\bbesides\\b",
+        "(?i)other\\s+than",
+        "(?i)apart\\s+from",
+        "(?i)\\bexcluding\\b",
+        "(?i)save\\s+for",
+        "(?i)\\b(?:everyone|all|anyone|nobody|nothing|none)\\s+but\\b"
+      ],
+      "auto_fix": [],
+      "note": "以外 means 'everyone EXCEPT X / other than X' — never drop or invert the exclusion.",
+      "priority": 98
+    },
+    {
+      "id": "climax_zecchou",
+      "category": "act",
+      "jp": ["絶頂"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "climax / came",
+      "en_alts": ["orgasm", "climaxed", "come"],
+      "forbid_en": [
+        "(?i)\\bpeak\\b",
+        "(?i)\\bsummit\\b",
+        "(?i)\\bpinnacle\\b",
+        "(?i)\\bzenith\\b",
+        "(?i)reached\\s+the\\s+top"
+      ],
+      "auto_fix": [
+        { "from": "(?i)reached\\s+the\\s+peak", "to": "came" },
+        { "from": "(?i)what\\s+peak\\s+are\\s+we\\s+on\\s+today\\??", "to": "I wonder how many times you've climaxed today?" }
+      ],
+      "note": "In adult scenes 絶頂 is always orgasm/climax, never a mountain peak.",
+      "priority": 96
+    },
+    {
+      "id": "climax_iku",
+      "category": "act",
+      "jp": [],
+      "expand_kana": false,
+      "jp_regex": "(イクッ?|イっちゃ|イキそう|イキま|イってしま)",
+      "en": "cum / I'm cumming / gonna cum / came",
+      "en_alts": ["cumming", "come"],
+      "forbid_en": [
+        "(?i)^\\W*wet\\W*$",
+        "(?i)\\bsqueez(?:e|ed|ing)\\b",
+        "(?i)^\\W*go+\\W*$"
+      ],
+      "auto_fix": [
+        { "from": "(?i)^\\s*wet([!?.…♥♡~\\s]*)$", "to": "I'm cumming$1" },
+        { "from": "(?i)^\\s*squeezed\\s+again([!?.…♥♡~\\s]*)$", "to": "I'm cumming again$1" }
+      ],
+      "note": "イク/イっちゃう in adult context means cumming, never 'wet', 'going', or 'squeezed'.",
+      "priority": 95
+    },
+    {
+      "id": "anatomy_chinchin",
+      "category": "anatomy",
+      "jp": ["おちんちん", "ちんちん", "おちんこ", "ちんこ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "dick",
+      "en_alts": ["cock"],
+      "forbid_en": [
+        "(?i)\\bjunk\\b",
+        "(?i)\\bnuts?\\b",
+        "(?i)\\bwiener\\b",
+        "(?i)\\bpee-?pee\\b",
+        "(?i)\\bwee-?wee\\b",
+        "(?i)\\bwilly\\b",
+        "(?i)\\bschlong\\b",
+        "(?i)\\bpecker\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bjunk\\b", "to": "dick" },
+        { "from": "(?i)\\ba\\s+nut\\b", "to": "a dick" },
+        { "from": "(?i)\\bnuts?\\b", "to": "dick" }
+      ],
+      "note": "Translate ちんちん/おちんちん as 'dick' (or 'cock'), never 'junk', 'nut', or childish slang.",
+      "priority": 94
+    },
+    {
+      "id": "act_fera",
+      "category": "act",
+      "jp": ["フェラチオ", "フェラ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "blowjob",
+      "en_alts": ["blowjobs", "fellatio"],
+      "forbid_en": [
+        "(?i)\\bcunnilingus\\b",
+        "(?i)eating\\s+(?:her|you|him)\\s+out"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bcunnilingus\\b", "to": "blowjobs" }
+      ],
+      "note": "フェラ is oral sex on a penis (blowjob), never cunnilingus.",
+      "priority": 93
+    },
+    {
+      "id": "act_naka_shimetsuke",
+      "category": "act",
+      "jp": ["中が締め付け"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "tight inside / your insides are squeezing me",
+      "en_alts": ["squeezing me inside"],
+      "forbid_en": [
+        "(?i)\\bmy\\s+insides\\s+are\\s+(?:being\\s+)?squeezed"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bmy\\s+insides\\s+are\\s+(?:being\\s+)?squeezed", "to": "your insides are squeezing me" }
+      ],
+      "note": "中が締め付けてきて is spoken by the penetrating partner ('your insides are squeezing me'), never 'my insides'.",
+      "priority": 92
+    },
+    {
+      "id": "act_ana_itadaku",
+      "category": "act",
+      "jp": ["穴をいただ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "help myself to this hole",
+      "en_alts": ["take this hole"],
+      "forbid_en": [
+        "(?i)\\bhole\\s+of\\s+mine\\b",
+        "(?i)\\bmy\\s+(?:defenseless\\s+|tight\\s+|little\\s+)?hole\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)(\\bhole)\\s+of\\s+mine\\b", "to": "$1" }
+      ],
+      "note": "穴をいただく means 'I will help myself to this (your) hole', never 'hole of mine'.",
+      "priority": 92
+    },
+    {
+      "id": "desc_ero_person",
+      "category": "descriptor",
+      "jp": [],
+      "expand_kana": false,
+      "jp_regex": "エロ(坊主|親父|ジジイ|爺|ババア|女|猫|ガキ|猿|教師|医者)",
+      "en": "pervy … / perverted …",
+      "en_alts": ["lecherous"],
+      "forbid_en": [
+        "(?i)\\bsexy\\s+(?:monk|priest|old\\s+man|geezer|woman|girl|cat|brat|teacher|doctor)\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bsexy\\s+monk\\b", "to": "pervy priest" },
+        { "from": "(?i)\\bsexy\\s+priest\\b", "to": "pervy priest" },
+        { "from": "(?i)\\bsexy\\s+old\\s+man\\b", "to": "pervy old man" }
+      ],
+      "note": "エロ + person noun = pervy/perverted, never 'sexy'.",
+      "priority": 91
+    },
+    {
+      "id": "anatomy_chinpo",
+      "category": "anatomy",
+      "jp": ["おちんぽ", "ちんぽ", "肉棒"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "cock",
+      "en_alts": ["dick"],
+      "forbid_en": [
+        "(?i)\\bjunk\\b",
+        "(?i)\\bnuts?\\b",
+        "(?i)\\bwiener\\b",
+        "(?i)\\bpee-?pee\\b",
+        "(?i)\\bwee-?wee\\b",
+        "(?i)\\bwilly\\b",
+        "(?i)\\bschlong\\b",
+        "(?i)\\bpecker\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bjunk\\b", "to": "cock" }
+      ],
+      "note": "",
+      "priority": 90
+    },
+    {
+      "id": "anatomy_huge_cock",
+      "category": "anatomy",
+      "jp": ["巨根", "デカチン", "デカブツ", "デカマラ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "huge cock / massive dick",
+      "en_alts": ["big cock", "huge dick"],
+      "forbid_en": [
+        "(?i)\\bbig\\s+bulk\\b",
+        "(?i)\\bbulk\\b",
+        "(?i)\\bbig\\s+guy\\b",
+        "(?i)\\bbig\\s+thing\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bbig\\s+bulk\\b", "to": "huge cock" },
+        { "from": "(?i)\\bbulk\\b", "to": "huge cock" }
+      ],
+      "note": "デカブツ/デカチン/巨根 in adult scenes means huge cock, never 'bulk' or 'big guy'.",
+      "priority": 90
+    },
+    {
+      "id": "anatomy_manko",
+      "category": "anatomy",
+      "jp": ["おまんこ", "まんこ", "おまんまん"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "pussy",
+      "en_alts": ["cunt"],
+      "forbid_en": [
+        "(?i)\\bkitty\\b",
+        "(?i)\\bcooch(?:ie)?\\b",
+        "(?i)\\bvajayjay\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bkitty\\b", "to": "pussy" },
+        { "from": "(?i)\\bcooch(?:ie)?\\b", "to": "pussy" },
+        { "from": "(?i)\\bvajayjay\\b", "to": "pussy" }
+      ],
+      "note": "",
+      "priority": 90
+    },
+    {
+      "id": "act_dashichae",
+      "category": "act",
+      "jp": ["出しちゃえ", "中に出して", "いっぱい出して"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "cum / let it out / cum inside",
+      "en_alts": ["cum for me"],
+      "forbid_en": [
+        "(?i)let\\s+it\\s+rip",
+        "(?i)^\\s*come\\s+out[!?.…♥♡~\\s]*$"
+      ],
+      "auto_fix": [
+        { "from": "(?i)let\\s+it\\s+rip", "to": "Cum for me" }
+      ],
+      "note": "出しちゃえ/出して in sex scenes means 'cum / let it out', never 'let it rip'.",
+      "priority": 89
+    },
+    {
+      "id": "act_shiborare",
+      "category": "act",
+      "jp": ["絞られ", "搾り取", "搾られ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "milked dry",
+      "en_alts": ["drained dry", "wrung dry"],
+      "forbid_en": [
+        "(?i)^\\s*squeezed\\s+again[!?.…\\s]*$"
+      ],
+      "auto_fix": [
+        { "from": "(?i)^\\s*squeezed\\s+again([!?.…\\s]*)$", "to": "She milked me dry again." }
+      ],
+      "note": "絞られる/搾り取る in adult context means being milked dry of semen.",
+      "priority": 88
+    },
+    {
+      "id": "act_kunni",
+      "category": "act",
+      "jp": ["クンニ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "cunnilingus / eat out",
+      "en_alts": ["licking her out"],
+      "forbid_en": [
+        "(?i)\\bblowjobs?\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bblowjobs?\\b", "to": "cunnilingus" }
+      ],
+      "note": "",
+      "priority": 86
+    },
+    {
+      "id": "act_nakadashi",
+      "category": "act",
+      "jp": ["中出し"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "creampie / cum inside",
+      "en_alts": ["coming inside"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 85
+    },
+    {
+      "id": "act_yaru",
+      "category": "act",
+      "jp": ["ヤリまくり", "ヤらせ", "ヤる"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "fuck / fucked all night / fucked like crazy",
+      "en_alts": ["screw"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 84
+    },
+    {
+      "id": "moan_hohou",
+      "category": "moan",
+      "jp": ["ほほう", "ほう"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Oh my~",
+      "en_alts": ["Well, well~"],
+      "forbid_en": [
+        "(?i)\\b(?:ho+){2,}\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\b(?:ho+){2,}~?\\s*", "to": "Oh my~ " }
+      ],
+      "note": "ほほう〜 is an amused 'Oh my~' / 'Well, well~', not Santa 'Hohoho'.",
+      "priority": 83
+    },
+    {
+      "id": "act_paizuri",
+      "category": "act",
+      "jp": ["パイズリ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "titjob / titfuck",
+      "en_alts": ["paizuri"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 82
+    },
+    {
+      "id": "anatomy_seieki",
+      "category": "anatomy",
+      "jp": ["精液", "ザーメン", "精子"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "cum / semen",
+      "en_alts": ["sperm"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 80
+    },
+    {
+      "id": "act_tekoki",
+      "category": "act",
+      "jp": ["手コキ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "handjob",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 80
+    },
+    {
+      "id": "act_ashikoki",
+      "category": "act",
+      "jp": ["足コキ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "footjob",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 79
+    },
+    {
+      "id": "moan_fuu",
+      "category": "moan",
+      "jp": ["ふう", "ふぅ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Phew…",
+      "en_alts": ["Haah…"],
+      "forbid_en": [
+        "(?i)\\bpff+t\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bpff+t", "to": "Phew" }
+      ],
+      "note": "ふう… is a breath/sigh of relief ('Phew…'), never spitting laughter ('Pffft…').",
+      "priority": 78
+    },
+    {
+      "id": "anatomy_oppai",
+      "category": "anatomy",
+      "jp": ["おっぱい"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "boobs / breasts",
+      "en_alts": ["tits"],
+      "forbid_en": [
+        "(?i)\\bjugs\\b",
+        "(?i)\\bmelons\\b",
+        "(?i)\\bknockers\\b"
+      ],
+      "auto_fix": [
+        { "from": "(?i)\\bjugs\\b", "to": "boobs" },
+        { "from": "(?i)\\bmelons\\b", "to": "boobs" },
+        { "from": "(?i)\\bknockers\\b", "to": "boobs" }
+      ],
+      "note": "",
+      "priority": 77
+    },
+    {
+      "id": "anatomy_anal",
+      "category": "anatomy",
+      "jp": ["アナル", "尻穴", "お尻の穴"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "ass / asshole",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 76
+    },
+    {
+      "id": "act_kijoui",
+      "category": "act",
+      "jp": ["騎乗位"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "cowgirl",
+      "en_alts": ["riding on top"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 75
+    },
+    {
+      "id": "act_seijoui",
+      "category": "act",
+      "jp": ["正常位"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "missionary",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 75
+    },
+    {
+      "id": "act_kouhaii",
+      "category": "act",
+      "jp": ["後背位", "バック"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "doggy style / from behind",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 74
+    },
+    {
+      "id": "act_sounyuu",
+      "category": "act",
+      "jp": ["挿れ", "挿入"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "put it in / insert",
+      "en_alts": ["slide it in"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 74
+    },
+    {
+      "id": "act_onanii",
+      "category": "act",
+      "jp": ["自慰", "オナニー", "シコ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "masturbate / jerk off",
+      "en_alts": ["touch myself"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 74
+    },
+    {
+      "id": "act_hatsujou",
+      "category": "act",
+      "jp": ["発情"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "in heat / horny",
+      "en_alts": ["aroused"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 73
+    },
+    {
+      "id": "act_inran",
+      "category": "act",
+      "jp": ["淫乱"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "slut / wanton",
+      "en_alts": ["lewd"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 73
+    },
+    {
+      "id": "act_suidasare",
+      "category": "act",
+      "jp": ["吸い出され"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "sucking it out of me",
+      "en_alts": ["sucked dry"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 72
+    },
+    {
+      "id": "act_shimetsuke",
+      "category": "act",
+      "jp": ["締め付け", "キツキツ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "tight / squeezing",
+      "en_alts": ["clenching"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 72
+    },
+    {
+      "id": "act_ecchi",
+      "category": "act",
+      "jp": ["エッチする", "エッチしたい", "えっちしまくる"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "have sex",
+      "en_alts": ["fuck"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 71
+    },
+    {
+      "id": "anatomy_chikubi",
+      "category": "anatomy",
+      "jp": ["乳首"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "nipples",
+      "en_alts": ["nipple"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 70
+    },
+    {
+      "id": "anatomy_shikyuu",
+      "category": "anatomy",
+      "jp": ["子宮"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "womb",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 70
+    },
+    {
+      "id": "anatomy_aieki",
+      "category": "anatomy",
+      "jp": ["愛液"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "juices",
+      "en_alts": ["love juices"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 70
+    },
+    {
+      "id": "act_shojo",
+      "category": "act",
+      "jp": ["処女"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "virgin",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 69
+    },
+    {
+      "id": "act_doutei",
+      "category": "act",
+      "jp": ["童貞"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "virgin",
+      "en_alts": ["male virgin"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 69
+    },
+    {
+      "id": "desc_eroi",
+      "category": "descriptor",
+      "jp": ["エロい", "エロすぎ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "lewd / erotic / hot",
+      "en_alts": ["dirty"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 68
+    },
+    {
+      "id": "desc_hentai",
+      "category": "descriptor",
+      "jp": ["変態"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "pervert",
+      "en_alts": ["perv"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 68
+    },
+    {
+      "id": "desc_sukebe",
+      "category": "descriptor",
+      "jp": ["スケベ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "pervert / horny",
+      "en_alts": ["lewd"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 68
+    },
+    {
+      "id": "anatomy_asoko",
+      "category": "anatomy",
+      "jp": ["アソコ", "秘部"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "down there / privates",
+      "en_alts": ["pussy"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 65
+    },
+    {
+      "id": "anatomy_oshiri",
+      "category": "anatomy",
+      "jp": ["お尻", "尻"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "ass / butt",
+      "en_alts": ["behind"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 62
+    },
+    {
+      "id": "moan_an",
+      "category": "moan",
+      "jp": ["あん", "あんっ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Ahn…",
+      "en_alts": ["Ahn!"],
+      "forbid_en": ["(?i)\\bangh\\b"],
+      "auto_fix": [{ "from": "(?i)\\bangh\\b", "to": "Ahn" }],
+      "note": "",
+      "priority": 65
+    },
+    {
+      "id": "moan_a",
+      "category": "moan",
+      "jp": ["あっ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Ah!",
+      "en_alts": ["Ah…"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 55
+    },
+    {
+      "id": "moan_nn",
+      "category": "moan",
+      "jp": ["んっ", "んん", "んんっ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Mmh…",
+      "en_alts": ["Nngh…"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 55
+    },
+    {
+      "id": "moan_haa",
+      "category": "moan",
+      "jp": ["はぁ", "はあ", "はぁはぁ", "はあはあ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Haah…",
+      "en_alts": ["Haah… haah…"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 55
+    },
+    {
+      "id": "moan_hyan",
+      "category": "moan",
+      "jp": ["ひゃん", "ひゃっ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Hyaah!",
+      "en_alts": ["Eep!"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 55
+    },
+    {
+      "id": "moan_u",
+      "category": "moan",
+      "jp": ["うっ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Ngh…",
+      "en_alts": ["Ugh…"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 54
+    },
+    {
+      "id": "moan_ooo",
+      "category": "moan",
+      "jp": ["おおお", "うおお"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Ohhh…",
+      "en_alts": ["Whoa!"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 54
+    },
+    {
+      "id": "moan_ehehe",
+      "category": "moan",
+      "jp": ["えへへ"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Ehehe…",
+      "en_alts": ["Hehehe…"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 54
+    },
+    {
+      "id": "sfx_chu",
+      "category": "sfx",
+      "jp": ["ちゅっ", "ちゅ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Smooch",
+      "en_alts": ["Mwah"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_chuu",
+      "category": "sfx",
+      "jp": ["ちゅう", "ちゅー"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Smooooch",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_churu",
+      "category": "sfx",
+      "jp": ["ちゅる", "じゅる", "ぢゅる", "ちゅちる"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Slurrrp",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 46
+    },
+    {
+      "id": "sfx_chupa",
+      "category": "sfx",
+      "jp": ["ちゅぱ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Suck",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_jupo",
+      "category": "sfx",
+      "jp": ["じゅぽ", "じゅぷ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Shlop",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_guchu",
+      "category": "sfx",
+      "jp": ["ぐちゅ", "くちゅ", "ぬちゅ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Squelch",
+      "en_alts": ["Schlick"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_nupu",
+      "category": "sfx",
+      "jp": ["ぬぷ", "ずぷ", "ずぶ", "にゅる"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Shlick",
+      "en_alts": ["Slide"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_panpan",
+      "category": "sfx",
+      "jp": ["ぱんぱん", "パンパン"],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "Slap slap",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_biku",
+      "category": "sfx",
+      "jp": ["びくっ", "びくびく", "ビクン"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Twitch",
+      "en_alts": ["Twitch twitch"],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_dopyu",
+      "category": "sfx",
+      "jp": ["どぴゅ", "びゅる", "びゅっ", "どぷ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Spurt",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_pusha",
+      "category": "sfx",
+      "jp": ["ぷしゃ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Squirt",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_goku",
+      "category": "sfx",
+      "jp": ["ごくっ", "ごくん"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Gulp",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_pero",
+      "category": "sfx",
+      "jp": ["ぺろ"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Lick",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "sfx_dokun",
+      "category": "sfx",
+      "jp": ["ドクン"],
+      "expand_kana": true,
+      "jp_regex": null,
+      "en": "Thump",
+      "en_alts": [],
+      "forbid_en": [],
+      "auto_fix": [],
+      "note": "",
+      "priority": 45
+    },
+    {
+      "id": "grammar_dake_shika",
+      "category": "grammar",
+      "jp": [],
+      "expand_kana": false,
+      "jp_regex": "(だけ|しか)",
+      "en": "only / just",
+      "en_alts": [],
+      "forbid_en": [],
+      "required_en_any": [],
+      "auto_fix": [],
+      "note": "Keep restriction particle ('only' / 'just').",
+      "priority": 30
+    },
+    {
+      "id": "style_modern_slang",
+      "category": "style_ban",
+      "jp": [],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "",
+      "en_alts": [],
+      "forbid_en": [
+        "(?i)\\bbruh\\b",
+        "(?i)\\byeet\\b",
+        "(?i)\\bsus\\b",
+        "(?i)\\bbussin\\b",
+        "(?i)let\\s+it\\s+rip"
+      ],
+      "required_en_any": [],
+      "auto_fix": [],
+      "note": "Modern meme/Twitter slang banned in classic adult-manga English.",
+      "priority": 20
+    },
+    {
+      "id": "style_lol",
+      "category": "style_ban",
+      "jp": [],
+      "expand_kana": false,
+      "jp_regex": null,
+      "en": "",
+      "en_alts": [],
+      "forbid_en": [
+        "(?i)\\blol\\b"
+      ],
+      "required_en_any": [],
+      "auto_fix": [],
+      "note": "Avoid 'lol' unless source contains (笑)/w.",
+      "priority": 20
+    }
+  ]
+}

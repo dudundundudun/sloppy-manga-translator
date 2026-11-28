@@ -11,7 +11,8 @@ pub use detectors::{
     trace_concave_scanline_polygon, BalloonPolygon, BubbleDetection,
 };
 pub use filter::{
-    classify_filter_reason, is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only,
+    classify_filter_reason, is_dialogue_whitelist, is_drawn_sfx_text, is_drawn_sfx_with_shape,
+    is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only, is_pure_sigh_text,
     is_screentone_dialogue_text, sanitize_nar_stutter, FilterReason, OcrBackendInfo,
 };
 pub use nar::{NarError, NarRecognizer, NarVocabulary};
@@ -70,7 +71,10 @@ mod tests {
             }
         }
         let tb = compute_tight_ink_bbox(&page, [20, 20, 160, 160], None, false);
-        assert!((55..=72).contains(&tb[0]) && (104..=120).contains(&tb[2]), "tb={tb:?}");
+        assert!(
+            (55..=72).contains(&tb[0]) && (104..=120).contains(&tb[2]),
+            "tb={tb:?}"
+        );
 
         let mut dets = vec![
             BubbleDetection {
@@ -93,7 +97,10 @@ mod tests {
             },
         ];
         sort_detections_reading_order(&mut dets, true);
-        assert_eq!(dets[0].bbox[0], 150, "RTL должен ставить правый баббл первым");
+        assert_eq!(
+            dets[0].bbox[0], 150,
+            "RTL должен ставить правый баббл первым"
+        );
     }
 
     #[test]
@@ -197,7 +204,10 @@ mod tests {
         let max_y1 = p1.iter().map(|p| p[1]).max().unwrap();
         let min_y2 = p2.iter().map(|p| p[1]).min().unwrap();
         assert!(max_y0 <= 795, "top bubble leaked down to {max_y0}");
-        assert!(min_y1 >= 743 && max_y1 <= 882, "mid bubble y={min_y1}..{max_y1}");
+        assert!(
+            min_y1 >= 743 && max_y1 <= 882,
+            "mid bubble y={min_y1}..{max_y1}"
+        );
         assert!(min_y2 >= 870, "bottom bubble leaked up to {min_y2}");
     }
 
@@ -234,7 +244,11 @@ mod tests {
             },
         ];
         suppress_parent_containers(&mut cands);
-        assert_eq!(cands.len(), 2, "parent matryoshka container must be dropped");
+        assert_eq!(
+            cands.len(),
+            2,
+            "parent matryoshka container must be dropped"
+        );
 
         // 1b. Регрессия 021.webp (#5, #6, #7): широкий единый баббл #6 и два боковых осколка колонок (#5 и #7, сумма < 55%) ->
         // сохраняем именно целый баббл #6, а боковые осколки подавляем!
@@ -268,7 +282,11 @@ mod tests {
             },
         ];
         suppress_parent_containers(&mut single_with_frags);
-        assert_eq!(single_with_frags.len(), 1, "sub-column fragments inside a single bubble must be dropped");
+        assert_eq!(
+            single_with_frags.len(),
+            1,
+            "sub-column fragments inside a single bubble must be dropped"
+        );
         assert_eq!(single_with_frags[0].bbox, [148, 61, 408, 348]);
 
         // 2. Регрессия 013.webp #14 ("Eeeek!"): SFX на скринтоне без рамки vs реальная закрытая плашка
@@ -342,22 +360,27 @@ mod tests {
     fn test_screentone_dialogue_vs_sfx_filtering() {
         // Диалоги на сером скринтоне без баббла принимаются в dialogue_only, а звуки отсеиваются
         assert!(is_screentone_dialogue_text("どうせ未来に帰るんだし…"));
-        assert!(is_screentone_dialogue_text("適当な事してもバレないんじゃね？"));
-        assert!(
-            classify_filter_reason("どうせ未来に帰るんだし…", true, "dialogue_only", 2, 0.72, false)
-                .is_none()
-        );
-        assert!(
-            classify_filter_reason(
-                "適当な事してもバレないんじゃね？",
-                true,
-                "dialogue_only",
-                2,
-                0.76,
-                false
-            )
-            .is_none()
-        );
+        assert!(is_screentone_dialogue_text(
+            "適当な事してもバレないんじゃね？"
+        ));
+        assert!(classify_filter_reason(
+            "どうせ未来に帰るんだし…",
+            true,
+            "dialogue_only",
+            2,
+            0.72,
+            false
+        )
+        .is_none());
+        assert!(classify_filter_reason(
+            "適当な事してもバレないんじゃね？",
+            true,
+            "dialogue_only",
+            2,
+            0.76,
+            false
+        )
+        .is_none());
 
         for sfx in ["ドクン", "ざわっ", "ぎゅっ", "ごろん", "どきどき", "ドる"] {
             assert!(
@@ -370,7 +393,8 @@ mod tests {
     #[test]
     fn test_nar_stutter_cleanup_and_adjacent_box_overlap_dedup() {
         // 1. Заикание NAR на длинных горизонтальных строках послесловия (стр. 034)
-        let stuttered = "などがまます。フリーレンがこれれら着着てえっちしまくるのを考えてみくください…";
+        let stuttered =
+            "などがまます。フリーレンがこれれら着着てえっちしまくるのを考えてみくください…";
         let cleaned = sanitize_nar_stutter(stuttered);
         assert!(
             cleaned.contains("これら着て"),
@@ -424,6 +448,60 @@ mod tests {
         assert_eq!(blocks[0].original_text, "誰がお兄さんだ?");
         assert_eq!(blocks[1].original_text, "私からすればお前らまだ子供じゃん");
         assert_eq!(blocks[2].original_text, "とても似合っていますよ!");
-        assert_eq!(blocks[3].original_text, "お店から制服を借りてきてよかったです!");
+        assert_eq!(
+            blocks[3].original_text,
+            "お店から制服を借りてきてよかったです!"
+        );
+    }
+
+    #[test]
+    fn test_drawn_sfx_and_pure_sigh_detection() {
+        for sfx in [
+            "ちゅるるるる～っ♡♡",
+            "ちゅちる",
+            "じゅぽじゅぽ",
+            "ぐちゅっ",
+            "びくびくっ",
+            "どぴゅっ♥",
+            "ドクン",
+            "ちゅっ♡",
+        ] {
+            assert!(
+                is_drawn_sfx_text(sfx),
+                "expected '{sfx}' to be detected as drawn SFX"
+            );
+        }
+
+        for dlg in [
+            "イクッ!!",
+            "またイっちゃう!!",
+            "すき",
+            "好き",
+            "だめっ",
+            "ダメ!",
+            "やめて",
+            "いや",
+            "もっと♥",
+            "は?",
+            "へ?",
+            "ええ?",
+            "ふう…",
+            "はぁ…",
+        ] {
+            assert!(
+                !is_drawn_sfx_text(dlg),
+                "dialogue or bubble sigh '{dlg}' must NOT be misclassified as drawn SFX"
+            );
+        }
+
+        for sigh in ["はぁ…", "ふう…", "んんっ", "あっ", "あん…", "ひゃっ"] {
+            assert!(
+                is_pure_sigh_text(sigh),
+                "expected '{sigh}' to be detected as pure sigh/moan"
+            );
+        }
+        assert!(!is_pure_sigh_text("は?"));
+        assert!(!is_pure_sigh_text("イクッ!!"));
+        assert!(!is_pure_sigh_text("ほほう〜絶頂しましたね"));
     }
 }

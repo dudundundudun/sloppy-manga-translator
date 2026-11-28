@@ -128,7 +128,11 @@ pub async fn open_folder_report(
     Query(q): Query<OpenReportQuery>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&q.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let src_dir = folder_job::unwrap_source_folder(Path::new(q.folder_path.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
@@ -172,7 +176,11 @@ pub async fn get_model_storage(State(state): State<Arc<AppState>>) -> Json<Value
     let local_weights: Vec<Value> = bootstrap::REQUIRED_ONNX_MODELS
         .iter()
         .map(|spec| {
-            let p = state.base_dir.join("models").join("onnx").join(spec.filename);
+            let p = state
+                .base_dir
+                .join("models")
+                .join("onnx")
+                .join(spec.filename);
             let installed = p.is_file() && p.metadata().map(|m| m.len()).unwrap_or(0) > 1_000_000;
             json!({
                 "id": spec.id,
@@ -217,6 +225,33 @@ pub async fn get_model_storage(State(state): State<Arc<AppState>>) -> Json<Value
     let total_ollama_gb =
         ((total_ollama_bytes as f64) / (1024.0 * 1024.0 * 1024.0) * 100.0).round() / 100.0;
 
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let (_, fb_bare) = miko_translator::strip_model_prefix(&cfg.local_fallback_model_multilang);
+    let fb_configured = if fb_bare.is_empty() || fb_bare.eq_ignore_ascii_case("auto") {
+        None
+    } else {
+        Some(fb_bare.to_string())
+    };
+    let fb_installed = match fb_configured {
+        Some(ref pref) => {
+            let short = pref
+                .split('/')
+                .next_back()
+                .unwrap_or(pref)
+                .to_ascii_lowercase();
+            ollama_models.iter().any(|m| {
+                let n = m.get("name").and_then(|v| v.as_str()).unwrap_or("");
+                n.eq_ignore_ascii_case(pref)
+                    || (!short.is_empty() && n.to_ascii_lowercase().contains(&short))
+            })
+        }
+        None => true,
+    };
+
     Json(json!({
         "status": "ok",
         "runtime": "rust",
@@ -224,6 +259,8 @@ pub async fn get_model_storage(State(state): State<Arc<AppState>>) -> Json<Value
         "local_weights": local_weights,
         "total_ollama_gb": total_ollama_gb,
         "total_local_mb": (total_local_mb * 10.0).round() / 10.0,
+        "configured_fallback_model": fb_configured,
+        "fallback_installed": fb_installed,
     }))
 }
 
@@ -280,7 +317,11 @@ pub async fn folder_clean_noise(
     Json(payload): Json<CleanNoisePayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.source_dir), "source_dir") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let src_dir = folder_job::unwrap_source_folder(Path::new(payload.source_dir.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
@@ -303,11 +344,17 @@ pub async fn folder_clean_noise(
             let mut page_changed = false;
             if let Some(arr) = pmeta.get_mut("blocks").and_then(|v| v.as_array_mut()) {
                 for b in arr.iter_mut() {
-                    let already_del = b.get("is_deleted").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let already_del = b
+                        .get("is_deleted")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     if already_del {
                         continue;
                     }
-                    let is_free = b.get("is_free_text").and_then(|v| v.as_bool()).unwrap_or(false);
+                    let is_free = b
+                        .get("is_free_text")
+                        .and_then(|v| v.as_bool())
+                        .unwrap_or(false);
                     let tr = b
                         .get("translated_text")
                         .and_then(|v| v.as_str())
@@ -372,7 +419,11 @@ pub async fn shorten_block_text(
             .into_response();
     }
 
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
     let prompt_text = format!(
         "Сократи эту реплику персонажа на 30% короче по длине символов, сохранив смысл и живую речь (верни ТОЛЬКО сокращённую фразу на языке {t_lang}): {current_tr}"
@@ -382,6 +433,8 @@ pub async fn shorten_block_text(
         anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
         custom_system_prompt: String::new(),
         custom_context_prompt: cfg.custom_context_prompt.clone(),
+        adult_canon_en: cfg.adult_canon_en,
+        ..Default::default()
     };
     let shortened = match state
         .translator
@@ -422,60 +475,63 @@ pub async fn shorten_block_text(
             let scale_pct = cfg.font_scale_pct;
             let def_font = cfg.resolve_default_font_path(&state.base_dir);
             let ovf = payload.overflow_mode.unwrap_or(cfg.overflow_mode);
-            if let Some(updated) = tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
-                let rgb = image::open(&src_p).map_err(|e| e.to_string())?.to_rgb8();
-                let mut cguard = st_clone.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
-                if cguard.is_none() {
-                    *cguard = Some(RustCleanerEngine::load(&st_clone.base_dir, true));
-                }
-                let src_s = src_p.to_string_lossy().to_string();
-                let cl = cguard
-                    .as_mut()
-                    .expect("cleaner")
-                    .clean_image(
-                        &rgb,
-                        &blks_clone,
-                        &CleanOptions {
-                            skip_untranslated: true,
-                            ..Default::default()
-                        },
-                        Some(&src_s),
-                        0,
-                    )
-                    .map_err(|e| e.to_string())?;
-                let rr = st_clone
-                    .renderer
-                    .render_page(
-                        &cl.cleaned,
-                        &mut blks_clone,
-                        &RenderOptions {
-                            min_font_size: min_fs,
-                            max_font_size: max_fs,
-                            font_scale_pct: scale_pct,
-                            uppercase: up,
-                            overflow_mode: ovf,
-                            default_font_path: def_font,
-                        },
-                    )
-                    .map_err(|e| e.to_string())?;
-                rr.rendered.save(&dst_p).map_err(|e| e.to_string())?;
-                if let (Some(out_dir), Some(fname)) = (
-                    dst_p.parent(),
-                    src_p.file_name().and_then(|s| s.to_str()),
-                ) {
-                    if folder_job::manifest_path(out_dir).is_file() {
-                        let mut man = folder_job::load_manifest(out_dir);
-                        if man["pages"][fname].is_object() {
-                            man["pages"][fname]["blocks"] = json!(blks_clone);
-                            let _ = folder_job::save_manifest(out_dir, &man);
+            if let Some(updated) =
+                tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
+                    let rgb = image::open(&src_p).map_err(|e| e.to_string())?.to_rgb8();
+                    let mut cguard = st_clone
+                        .cleaner_engine
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner());
+                    if cguard.is_none() {
+                        *cguard = Some(RustCleanerEngine::load(&st_clone.base_dir, true));
+                    }
+                    let src_s = src_p.to_string_lossy().to_string();
+                    let cl = cguard
+                        .as_mut()
+                        .expect("cleaner")
+                        .clean_image(
+                            &rgb,
+                            &blks_clone,
+                            &CleanOptions {
+                                skip_untranslated: true,
+                                ..Default::default()
+                            },
+                            Some(&src_s),
+                            0,
+                        )
+                        .map_err(|e| e.to_string())?;
+                    let rr = st_clone
+                        .renderer
+                        .render_page(
+                            &cl.cleaned,
+                            &mut blks_clone,
+                            &RenderOptions {
+                                min_font_size: min_fs,
+                                max_font_size: max_fs,
+                                font_scale_pct: scale_pct,
+                                uppercase: up,
+                                overflow_mode: ovf,
+                                default_font_path: def_font,
+                            },
+                        )
+                        .map_err(|e| e.to_string())?;
+                    rr.rendered.save(&dst_p).map_err(|e| e.to_string())?;
+                    if let (Some(out_dir), Some(fname)) =
+                        (dst_p.parent(), src_p.file_name().and_then(|s| s.to_str()))
+                    {
+                        if folder_job::manifest_path(out_dir).is_file() {
+                            let mut man = folder_job::load_manifest(out_dir);
+                            if man["pages"][fname].is_object() {
+                                man["pages"][fname]["blocks"] = json!(blks_clone);
+                                let _ = folder_job::save_manifest(out_dir, &man);
+                            }
                         }
                     }
-                }
-                Ok::<Vec<TextBlock>, String>(blks_clone)
-            })
-            .await
-            .ok()
-            .and_then(|r| r.ok())
+                    Ok::<Vec<TextBlock>, String>(blks_clone)
+                })
+                .await
+                .ok()
+                .and_then(|r| r.ok())
             {
                 payload.blocks = updated;
             }
@@ -503,7 +559,11 @@ pub async fn chapter_book_import(
     Json(payload): Json<ChapterBookImportPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let src_dir = folder_job::unwrap_source_folder(Path::new(payload.folder_path.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
@@ -536,10 +596,7 @@ pub async fn chapter_book_import(
             continue;
         };
         let rest = line[close_br + 1..].trim();
-        let new_tr = rest
-            .split_once("||")
-            .map(|(_, r)| r.trim())
-            .unwrap_or(rest);
+        let new_tr = rest.split_once("||").map(|(_, r)| r.trim()).unwrap_or(rest);
         if new_tr.is_empty() {
             continue;
         }
@@ -598,7 +655,11 @@ pub async fn chapter_qa_check(
     Json(payload): Json<ChapterQaPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let src_dir = folder_job::unwrap_source_folder(Path::new(payload.folder_path.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
@@ -614,6 +675,44 @@ pub async fn chapter_qa_check(
     let manifest = folder_job::load_manifest(&out_dir);
     let threshold = payload.tiny_threshold_px.unwrap_or(14).clamp(9, 26);
 
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
+    let is_en_canon = t_lang.trim().eq_ignore_ascii_case("en") && cfg.adult_canon_en;
+    let qa_glossary = if is_en_canon {
+        let global_g = state
+            .db
+            .load_glossary("global")
+            .unwrap_or_else(|_| cfg.glossary.clone());
+        let folder_g = state
+            .db
+            .load_glossary(&format!(
+                "folder:{}",
+                src_dir.to_string_lossy().trim().to_ascii_lowercase()
+            ))
+            .unwrap_or_default();
+        let user_g = miko_translator::merge_glossaries(&global_g, &folder_g);
+        let auto_lock: Vec<miko_core::GlossaryEntry> = manifest
+            .get("name_lock")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        miko_translator::merge_glossaries(&auto_lock, &user_g)
+    } else {
+        Vec::new()
+    };
+    let canon_db_opt = if is_en_canon {
+        let ov = state.db.load_canon_overrides("en").unwrap_or_default();
+        Some(miko_translator::merge_overrides(
+            miko_translator::builtin_canon_en(),
+            &ov,
+        ))
+    } else {
+        None
+    };
+
     let mut all_fs: Vec<i32> = Vec::new();
     let mut issues: Vec<Value> = Vec::new();
     let mut translated_pages = 0usize;
@@ -627,7 +726,8 @@ pub async fn chapter_qa_check(
         let Some(raw_arr) = manifest["pages"][&fname]["blocks"].as_array() else {
             continue;
         };
-        let Ok(blocks) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone())) else {
+        let Ok(blocks) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
+        else {
             continue;
         };
         translated_pages += 1;
@@ -699,6 +799,41 @@ pub async fn chapter_qa_check(
                     "reason": reason,
                 }));
             }
+
+            if let Some(ref canon_db) = canon_db_opt {
+                let qa = miko_translator::lint_pair(&b.original_text, tr, &qa_glossary, canon_db);
+                if !qa.issues.is_empty() {
+                    let primary_kind = qa.issues[0].kind.inspector_kind();
+                    let suggested = if qa.text != tr {
+                        Some(qa.text.clone())
+                    } else {
+                        None
+                    };
+                    let reason = qa
+                        .issues
+                        .iter()
+                        .map(|i| i.message.as_str())
+                        .collect::<Vec<_>>()
+                        .join("; ");
+                    issues.push(json!({
+                        "page": fname,
+                        "page_index": idx + 1,
+                        "source_path": img_path.to_string_lossy(),
+                        "dest_path": out_dir.join(&fname).to_string_lossy(),
+                        "block_id": b.id,
+                        "kind": primary_kind,
+                        "suggested_text": suggested,
+                        "needs_retry": qa.needs_retry,
+                        "rendered_font_size": fs,
+                        "recommended_font_size": fs,
+                        "bbox_size": format!("{bw}×{bh}"),
+                        "is_crowded": false,
+                        "text": tr,
+                        "original_text": b.original_text,
+                        "reason": reason,
+                    }));
+                }
+            }
         }
     }
 
@@ -738,7 +873,11 @@ pub async fn chapter_qa_autofix(
     Json(payload): Json<ChapterQaAutofixPayload>,
 ) -> Response {
     if let Err(err) = reject_unc_path(Some(&payload.folder_path), "folder_path") {
-        return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": err.to_string()})),
+        )
+            .into_response();
     }
     let src_dir = folder_job::unwrap_source_folder(Path::new(payload.folder_path.trim()));
     if !state.allowed_roots.is_within_allowed_roots(&src_dir) {
@@ -752,7 +891,11 @@ pub async fn chapter_qa_autofix(
     let out_dir = folder_job::output_dir_for_folder(&src_dir, &t_lang);
     let images = folder_job::collect_folder_images(&src_dir);
     let mut manifest = folder_job::load_manifest(&out_dir);
-    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let cfg = state
+        .config
+        .read()
+        .unwrap_or_else(|e| e.into_inner())
+        .clone();
     let threshold = payload.tiny_threshold_px.unwrap_or(14).clamp(9, 26);
     let min_target = payload
         .min_target_fs
@@ -763,6 +906,39 @@ pub async fn chapter_qa_autofix(
     let mut fixed_pages = 0usize;
     let mut fixed_blocks = 0usize;
 
+    let is_en_canon = t_lang.trim().eq_ignore_ascii_case("en") && cfg.adult_canon_en;
+    let qa_glossary = if is_en_canon {
+        let global_g = state
+            .db
+            .load_glossary("global")
+            .unwrap_or_else(|_| cfg.glossary.clone());
+        let folder_g = state
+            .db
+            .load_glossary(&format!(
+                "folder:{}",
+                src_dir.to_string_lossy().trim().to_ascii_lowercase()
+            ))
+            .unwrap_or_default();
+        let user_g = miko_translator::merge_glossaries(&global_g, &folder_g);
+        let auto_lock: Vec<miko_core::GlossaryEntry> = manifest
+            .get("name_lock")
+            .cloned()
+            .and_then(|v| serde_json::from_value(v).ok())
+            .unwrap_or_default();
+        miko_translator::merge_glossaries(&auto_lock, &user_g)
+    } else {
+        Vec::new()
+    };
+    let canon_overrides = state.db.load_canon_overrides("en").unwrap_or_default();
+    let canon_db_opt = if is_en_canon {
+        Some(miko_translator::merge_overrides(
+            miko_translator::builtin_canon_en(),
+            &canon_overrides,
+        ))
+    } else {
+        None
+    };
+
     for img_path in &images {
         let fname = img_path
             .file_name()
@@ -772,7 +948,8 @@ pub async fn chapter_qa_autofix(
         let Some(raw_arr) = manifest["pages"][&fname]["blocks"].as_array() else {
             continue;
         };
-        let Ok(mut blocks) = serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
+        let Ok(mut blocks) =
+            serde_json::from_value::<Vec<TextBlock>>(Value::Array(raw_arr.clone()))
         else {
             continue;
         };
@@ -782,6 +959,63 @@ pub async fn chapter_qa_autofix(
             if b.is_deleted || b.translated_text.trim().is_empty() {
                 continue;
             }
+            if let Some(ref canon_db) = canon_db_opt {
+                let qa = miko_translator::lint_pair(
+                    &b.original_text,
+                    &b.translated_text,
+                    &qa_glossary,
+                    canon_db,
+                );
+                if qa.text != b.translated_text.trim() {
+                    b.translated_text = qa.text.clone();
+                    page_needs_fix = true;
+                    fixed_blocks += 1;
+                }
+                if qa.needs_retry && use_ai_shorten && !b.original_text.trim().is_empty() {
+                    let hints: Vec<String> = qa
+                        .issues
+                        .iter()
+                        .filter_map(|i| i.hint_for_retry.clone())
+                        .collect();
+                    let retry_cfg = miko_translator::PromptConfig {
+                        anti_censorship: cfg.anti_censorship_prompt,
+                        anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
+                        custom_system_prompt: cfg.custom_system_prompt.clone(),
+                        custom_context_prompt: miko_translator::compose_context_with_series_hint(
+                            &cfg.custom_context_prompt,
+                            Some(&src_dir),
+                        ),
+                        adult_canon_en: cfg.adult_canon_en,
+                        qa_hints: hints,
+                        canon_overrides: canon_overrides.clone(),
+                        ..Default::default()
+                    };
+                    if let Ok((retr, _)) = state
+                        .translator
+                        .translate_single_text_with_prompts(
+                            &b.original_text,
+                            &t_lang,
+                            &cfg.selected_model,
+                            &cfg.local_fallback_model_multilang,
+                            cfg.cloud_only_no_local_fallback,
+                            &cfg.unsloth_url,
+                            &cfg.unsloth_api_key,
+                            &qa_glossary,
+                            &retry_cfg,
+                            false,
+                            Some(&state.db),
+                        )
+                        .await
+                    {
+                        if !retr.trim().is_empty() {
+                            b.translated_text = retr.trim().to_string();
+                            page_needs_fix = true;
+                            fixed_blocks += 1;
+                        }
+                    }
+                }
+            }
+
             let bw = (b.bbox[2] - b.bbox[0]).max(1);
             let bh = (b.bbox[3] - b.bbox[1]).max(1);
             let fs = b.font_size.or(b.rendered_font_size).unwrap_or(20);
@@ -807,6 +1041,8 @@ pub async fn chapter_qa_autofix(
                         anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
                         custom_system_prompt: String::new(),
                         custom_context_prompt: cfg.custom_context_prompt.clone(),
+                        adult_canon_en: cfg.adult_canon_en,
+                        ..Default::default()
                     };
                     if let Ok((short_s, _)) = state
                         .translator
@@ -847,7 +1083,10 @@ pub async fn chapter_qa_autofix(
         if let Ok(Ok(updated_blocks)) =
             tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
                 let rgb = image::open(&src_p).map_err(|e| e.to_string())?.to_rgb8();
-                let mut cg = st_cr.cleaner_engine.lock().unwrap_or_else(|e| e.into_inner());
+                let mut cg = st_cr
+                    .cleaner_engine
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner());
                 if cg.is_none() {
                     *cg = Some(RustCleanerEngine::load(&st_cr.base_dir, true));
                 }

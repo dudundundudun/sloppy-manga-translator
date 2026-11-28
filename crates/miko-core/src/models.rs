@@ -239,45 +239,45 @@ pub fn clip_polygon_to_rect(poly: &[[i32; 2]], rect: [i32; 4]) -> Vec<[i32; 2]> 
     let mut pts: Vec<[f64; 2]> = poly.iter().map(|&[x, y]| [x as f64, y as f64]).collect();
 
     // 1. x >= rx1
-    pts = clip_plane(
-        pts,
-        &|p| p[0] >= rx1,
-        &|a, b| {
-            let dx = b[0] - a[0];
-            let t = if dx.abs() > 1e-9 { (rx1 - a[0]) / dx } else { 0.0 };
-            [rx1, a[1] + t * (b[1] - a[1])]
-        },
-    );
+    pts = clip_plane(pts, &|p| p[0] >= rx1, &|a, b| {
+        let dx = b[0] - a[0];
+        let t = if dx.abs() > 1e-9 {
+            (rx1 - a[0]) / dx
+        } else {
+            0.0
+        };
+        [rx1, a[1] + t * (b[1] - a[1])]
+    });
     // 2. x <= rx2
-    pts = clip_plane(
-        pts,
-        &|p| p[0] <= rx2,
-        &|a, b| {
-            let dx = b[0] - a[0];
-            let t = if dx.abs() > 1e-9 { (rx2 - a[0]) / dx } else { 0.0 };
-            [rx2, a[1] + t * (b[1] - a[1])]
-        },
-    );
+    pts = clip_plane(pts, &|p| p[0] <= rx2, &|a, b| {
+        let dx = b[0] - a[0];
+        let t = if dx.abs() > 1e-9 {
+            (rx2 - a[0]) / dx
+        } else {
+            0.0
+        };
+        [rx2, a[1] + t * (b[1] - a[1])]
+    });
     // 3. y >= ry1
-    pts = clip_plane(
-        pts,
-        &|p| p[1] >= ry1,
-        &|a, b| {
-            let dy = b[1] - a[1];
-            let t = if dy.abs() > 1e-9 { (ry1 - a[1]) / dy } else { 0.0 };
-            [a[0] + t * (b[0] - a[0]), ry1]
-        },
-    );
+    pts = clip_plane(pts, &|p| p[1] >= ry1, &|a, b| {
+        let dy = b[1] - a[1];
+        let t = if dy.abs() > 1e-9 {
+            (ry1 - a[1]) / dy
+        } else {
+            0.0
+        };
+        [a[0] + t * (b[0] - a[0]), ry1]
+    });
     // 4. y <= ry2
-    pts = clip_plane(
-        pts,
-        &|p| p[1] <= ry2,
-        &|a, b| {
-            let dy = b[1] - a[1];
-            let t = if dy.abs() > 1e-9 { (ry2 - a[1]) / dy } else { 0.0 };
-            [a[0] + t * (b[0] - a[0]), ry2]
-        },
-    );
+    pts = clip_plane(pts, &|p| p[1] <= ry2, &|a, b| {
+        let dy = b[1] - a[1];
+        let t = if dy.abs() > 1e-9 {
+            (ry2 - a[1]) / dy
+        } else {
+            0.0
+        };
+        [a[0] + t * (b[0] - a[0]), ry2]
+    });
 
     let mut res: Vec<[i32; 2]> = Vec::with_capacity(pts.len());
     for p in pts {
@@ -304,6 +304,61 @@ pub struct GlossaryEntry {
     pub dst: String,
     #[serde(default)]
     pub note: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AutoFixRaw {
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CanonOverride {
+    pub id: String,
+    #[serde(default = "default_canon_category")]
+    pub category: String,
+    #[serde(default)]
+    pub jp: Vec<String>,
+    #[serde(default)]
+    pub expand_kana: bool,
+    #[serde(default)]
+    pub jp_regex: Option<String>,
+    #[serde(default)]
+    pub en: String,
+    #[serde(default)]
+    pub en_alts: Vec<String>,
+    #[serde(default)]
+    pub forbid_en: Vec<String>,
+    #[serde(default)]
+    pub required_en_any: Vec<String>,
+    #[serde(default)]
+    pub auto_fix: Vec<AutoFixRaw>,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default = "default_canon_priority")]
+    pub priority: i32,
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+}
+
+fn default_canon_category() -> String {
+    "act".to_string()
+}
+
+fn default_canon_priority() -> i32 {
+    80
+}
+
+fn default_true() -> bool {
+    true
+}
+
+fn default_qa_linter_mode() -> String {
+    "fix_and_retry".to_string()
+}
+
+fn default_lookahead_lines() -> u32 {
+    4
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -339,6 +394,16 @@ pub struct AppConfig {
     pub custom_context_prompt: String,
     #[serde(default = "default_prompt_preset_id")]
     pub prompt_preset_id: String,
+    #[serde(default = "default_true")]
+    pub adult_canon_en: bool,
+    #[serde(default = "default_true")]
+    pub chapter_prepass: bool,
+    #[serde(default = "default_true")]
+    pub name_lock: bool,
+    #[serde(default = "default_qa_linter_mode")]
+    pub qa_linter_mode: String,
+    #[serde(default = "default_lookahead_lines")]
+    pub lookahead_lines: u32,
     pub preflight_nsfw_split: bool,
     pub cloud_only_no_local_fallback: bool,
     pub cloud_fallback_model: String,
@@ -397,6 +462,11 @@ impl AppConfig {
             custom_system_prompt: String::new(),
             custom_context_prompt: String::new(),
             prompt_preset_id: default_prompt_preset_id(),
+            adult_canon_en: true,
+            chapter_prepass: true,
+            name_lock: true,
+            qa_linter_mode: default_qa_linter_mode(),
+            lookahead_lines: default_lookahead_lines(),
             preflight_nsfw_split: true,
             cloud_only_no_local_fallback: false,
             cloud_fallback_model: "auto".to_string(),
@@ -416,27 +486,69 @@ impl AppConfig {
             .unwrap_or_else(|| serde_json::json!({}));
 
         if let Some(obj) = root.as_object_mut() {
-            obj.insert("selected_model".into(), serde_json::json!(self.selected_model));
+            obj.insert(
+                "selected_model".into(),
+                serde_json::json!(self.selected_model),
+            );
             obj.insert("unsloth_url".into(), serde_json::json!(self.unsloth_url));
-            obj.insert("unsloth_api_key".into(), serde_json::json!(self.unsloth_api_key));
-            obj.insert("auto_save_web_pages".into(), serde_json::json!(self.auto_save_web_pages));
-            obj.insert("auto_export_chapter_book".into(), serde_json::json!(self.auto_export_chapter_book));
+            obj.insert(
+                "unsloth_api_key".into(),
+                serde_json::json!(self.unsloth_api_key),
+            );
+            obj.insert(
+                "auto_save_web_pages".into(),
+                serde_json::json!(self.auto_save_web_pages),
+            );
+            obj.insert(
+                "auto_export_chapter_book".into(),
+                serde_json::json!(self.auto_export_chapter_book),
+            );
             obj.insert("web_save_dir".into(), serde_json::json!(self.web_save_dir));
-            obj.insert("text_filter_mode".into(), serde_json::json!(self.text_filter_mode));
+            obj.insert(
+                "text_filter_mode".into(),
+                serde_json::json!(self.text_filter_mode),
+            );
             obj.insert("skip_sighs".into(), serde_json::json!(self.skip_sighs));
             obj.insert("skip_sfx".into(), serde_json::json!(self.skip_sfx));
-            obj.insert("detect_free_text".into(), serde_json::json!(self.detect_free_text));
-            obj.insert("min_text_length".into(), serde_json::json!(self.min_text_length));
-            obj.insert("min_font_size".into(), serde_json::json!(self.min_font_size));
-            obj.insert("max_font_size".into(), serde_json::json!(self.max_font_size));
-            obj.insert("font_scale_pct".into(), serde_json::json!(self.font_scale_pct));
+            obj.insert(
+                "detect_free_text".into(),
+                serde_json::json!(self.detect_free_text),
+            );
+            obj.insert(
+                "min_text_length".into(),
+                serde_json::json!(self.min_text_length),
+            );
+            obj.insert(
+                "min_font_size".into(),
+                serde_json::json!(self.min_font_size),
+            );
+            obj.insert(
+                "max_font_size".into(),
+                serde_json::json!(self.max_font_size),
+            );
+            obj.insert(
+                "font_scale_pct".into(),
+                serde_json::json!(self.font_scale_pct),
+            );
             obj.insert("default_font".into(), serde_json::json!(self.default_font));
             obj.insert("uppercase".into(), serde_json::json!(self.uppercase));
-            obj.insert("overflow_mode".into(), serde_json::json!(self.overflow_mode));
+            obj.insert(
+                "overflow_mode".into(),
+                serde_json::json!(self.overflow_mode),
+            );
             obj.insert("batch_pages".into(), serde_json::json!(self.batch_pages));
-            obj.insert("translation_profile".into(), serde_json::json!(self.translation_profile));
-            obj.insert("pipeline_mode".into(), serde_json::json!(self.pipeline_mode));
-            obj.insert("use_image_context".into(), serde_json::json!(self.use_image_context));
+            obj.insert(
+                "translation_profile".into(),
+                serde_json::json!(self.translation_profile),
+            );
+            obj.insert(
+                "pipeline_mode".into(),
+                serde_json::json!(self.pipeline_mode),
+            );
+            obj.insert(
+                "use_image_context".into(),
+                serde_json::json!(self.use_image_context),
+            );
             obj.insert(
                 "local_fallback_model_multilang".into(),
                 serde_json::json!(self.local_fallback_model_multilang),
@@ -461,13 +573,39 @@ impl AppConfig {
                 "prompt_preset_id".into(),
                 serde_json::json!(self.prompt_preset_id),
             );
-            obj.insert("preflight_nsfw_split".into(), serde_json::json!(self.preflight_nsfw_split));
+            obj.insert(
+                "adult_canon_en".into(),
+                serde_json::json!(self.adult_canon_en),
+            );
+            obj.insert(
+                "chapter_prepass".into(),
+                serde_json::json!(self.chapter_prepass),
+            );
+            obj.insert("name_lock".into(), serde_json::json!(self.name_lock));
+            obj.insert(
+                "qa_linter_mode".into(),
+                serde_json::json!(self.qa_linter_mode),
+            );
+            obj.insert(
+                "lookahead_lines".into(),
+                serde_json::json!(self.lookahead_lines),
+            );
+            obj.insert(
+                "preflight_nsfw_split".into(),
+                serde_json::json!(self.preflight_nsfw_split),
+            );
             obj.insert(
                 "cloud_only_no_local_fallback".into(),
                 serde_json::json!(self.cloud_only_no_local_fallback),
             );
-            obj.insert("cloud_fallback_model".into(), serde_json::json!(self.cloud_fallback_model));
-            obj.insert("ultra_proofread_mode".into(), serde_json::json!(self.ultra_proofread_mode));
+            obj.insert(
+                "cloud_fallback_model".into(),
+                serde_json::json!(self.cloud_fallback_model),
+            );
+            obj.insert(
+                "ultra_proofread_mode".into(),
+                serde_json::json!(self.ultra_proofread_mode),
+            );
             if self.ui_settings.is_object() {
                 obj.insert("ui_settings".into(), self.ui_settings.clone());
             }
@@ -478,7 +616,10 @@ impl AppConfig {
                 .entry("default_model_stack".to_string())
                 .or_insert_with(|| serde_json::json!({}));
             if let Some(st_obj) = stack_entry.as_object_mut() {
-                st_obj.insert("translation_model".into(), serde_json::json!(self.selected_model));
+                st_obj.insert(
+                    "translation_model".into(),
+                    serde_json::json!(self.selected_model),
+                );
                 if !self.local_fallback_model_multilang.trim().is_empty()
                     && self.local_fallback_model_multilang != "auto"
                 {
@@ -487,7 +628,10 @@ impl AppConfig {
                         serde_json::json!(self.local_fallback_model_multilang),
                     );
                 }
-                st_obj.insert("pipeline_mode".into(), serde_json::json!(self.pipeline_mode));
+                st_obj.insert(
+                    "pipeline_mode".into(),
+                    serde_json::json!(self.pipeline_mode),
+                );
                 st_obj.insert(
                     "translation_profile".into(),
                     serde_json::json!(self.translation_profile),
@@ -612,6 +756,24 @@ impl AppConfig {
             if !v.trim().is_empty() {
                 cfg.prompt_preset_id = v.trim().to_string();
             }
+        }
+        if let Some(v) = pick_bool("adult_canon_en") {
+            cfg.adult_canon_en = v;
+        }
+        if let Some(v) = pick_bool("chapter_prepass") {
+            cfg.chapter_prepass = v;
+        }
+        if let Some(v) = pick_bool("name_lock") {
+            cfg.name_lock = v;
+        }
+        if let Some(v) = pick_str("qa_linter_mode") {
+            let m = v.trim().to_ascii_lowercase();
+            if matches!(m.as_str(), "off" | "fix" | "fix_and_retry") {
+                cfg.qa_linter_mode = m;
+            }
+        }
+        if let Some(v) = pick_u32("lookahead_lines") {
+            cfg.lookahead_lines = v.clamp(0, 8);
         }
         if (cfg.local_fallback_model_multilang.trim().is_empty()
             || cfg.local_fallback_model_multilang == "auto")
