@@ -6,9 +6,13 @@ pub use client::{
     TranslatorError,
 };
 pub use prompts::{
-    build_translation_prompts, compute_translation_cache_key, detect_source_language,
-    filter_matching_glossary, has_foreign_script_leak, is_refusal_response, kana_to_romaji,
-    parse_flat_json_translations, parse_flat_json_translations_for_lang, restore_source_ellipses,
+    build_translation_prompts, build_translation_prompts_with_config,
+    compose_context_with_series_hint, compute_translation_cache_key,
+    compute_translation_cache_key_with_prompts, detect_source_language,
+    extract_series_hint_from_path, filter_matching_glossary, has_foreign_script_leak,
+    is_refusal_response, kana_to_romaji, parse_flat_json_translations,
+    parse_flat_json_translations_for_lang, restore_source_ellipses, target_lang_prompt_label,
+    PromptConfig, DEFAULT_ANTI_CENSORSHIP_PREAMBLE, DEFAULT_SYSTEM_STYLE_PROMPT,
 };
 
 use miko_core::GlossaryEntry;
@@ -496,6 +500,199 @@ mod tests {
         assert_eq!(res.api_calls, 2);
         assert_eq!(res.blocks[0].translated_text, "That feels great");
         assert_eq!(res.blocks[1].translated_text, "Sluuurp");
+    }
+
+    #[test]
+    fn test_custom_prompts_contract_and_cache_key_invalidation() {
+        let g = vec![GlossaryEntry {
+            src: "七香".into(),
+            dst: "Нанака".into(),
+            note: "героиня".into(),
+        }];
+        let items = vec![("0".to_string(), "七香、行こう…".to_string(), Some(40))];
+
+        let default_cfg = PromptConfig::default();
+        let custom_sys_cfg = PromptConfig {
+            anti_censorship: true,
+            anti_censorship_custom_prompt: "[CUSTOM 18+ HEADER]".into(),
+            custom_system_prompt: "Переводи дерзким разговорным сленгом на {{LANG}}.".into(),
+            custom_context_prompt: "Действие происходит в Киото.".into(),
+        };
+
+        let (sys_def, _user_def) =
+            build_translation_prompts_with_config("ru", &items, &g, &[], &default_cfg);
+        assert!(sys_def.contains("[EXTENDED FICTION LOCALIZATION CONTEXT]"));
+        assert!(sys_def.contains("MANDATORY OUTPUT CONTRACT:"));
+        assert!(sys_def.contains("七香 => Нанака"));
+
+        let (sys_cust, user_cust) =
+            build_translation_prompts_with_config("ru", &items, &g, &[], &custom_sys_cfg);
+        assert!(sys_cust.contains("[CUSTOM 18+ HEADER]"));
+        assert!(!sys_cust.contains("[EXTENDED FICTION LOCALIZATION CONTEXT]"));
+        assert!(sys_cust.contains("Переводи дерзким разговорным сленгом на Russian"));
+        assert!(sys_cust.contains("SERIES / CHAPTER CONTEXT NOTES:\nДействие происходит в Киото."));
+        // Защищённый JSON-контракт и глоссарий обязаны сохраняться при любом кастомном промпте!
+        assert!(sys_cust.contains("MANDATORY OUTPUT CONTRACT:"));
+        assert!(sys_cust.contains("Return ONLY a flat valid JSON object"));
+        assert!(sys_cust.contains("七香 => Нанака (героиня)"));
+        assert!(user_cust.contains("\"0\": \"七香、行こう…\""));
+
+        // Ключ кэша ОБЯЗАН меняться при изменении любого поля промпта или флага антицензуры
+        let k_def = compute_translation_cache_key_with_prompts("七香、行こう…", "ru", "m1", &g, &default_cfg);
+        let k_no_ac = compute_translation_cache_key_with_prompts(
+            "七香、行こう…",
+            "ru",
+            "m1",
+            &g,
+            &PromptConfig::new_default(false),
+        );
+        let k_cust = compute_translation_cache_key_with_prompts("七香、行こう…", "ru", "m1", &g, &custom_sys_cfg);
+        assert_ne!(k_def, k_no_ac, "toggling anti_censorship must invalidate cache key");
+        assert_ne!(k_def, k_cust, "editing custom prompt must invalidate cache key");
+    }
+
+    #[test]
+    fn test_series_hint_extraction_and_internal_ellipsis_restoration() {
+        use std::path::Path;
+
+        let p = Path::new(
+            r"C:\Users\Alexey\Documents\MANGA TEST TRANSLATIONS\[ProudBanana] Kuon no Ai - Mirrored Lotus (Sousou no Frieren) [Decensored] [Digital]",
+        );
+        let hint = extract_series_hint_from_path(p).expect("series hint");
+        assert_eq!(
+            hint,
+            "[ProudBanana] Kuon no Ai - Mirrored Lotus (Sousou no Frieren)"
+        );
+
+        let composed = compose_context_with_series_hint("", Some(p));
+        assert!(composed.contains("Sousou no Frieren"));
+        assert!(composed.contains("canonical character"));
+
+        // Подпапка `ch01` должна подниматься к родительской папке тайтла, а Temp-папка — игнорироваться
+        let sub_ch = Path::new(r"D:\Manga\Sousou no Frieren [RAW]\Chapter 05");
+        assert_eq!(
+            extract_series_hint_from_path(sub_ch).as_deref(),
+            Some("Sousou no Frieren")
+        );
+        let temp_p = Path::new(r"C:\Users\Alexey\AppData\Local\Temp\.tmpAbCdEf\ch1");
+        assert!(extract_series_hint_from_path(temp_p).is_none());
+
+        // Восстановление внутренних пауз-многоточий из реального лога (стр. 015, 016, 019, 027)
+        assert_eq!(
+            restore_source_ellipses(
+                "聞きにくいだけど…昨日はその…平気なのかい?",
+                "This is hard to ask, but. about yesterday. are you okay?"
+            ),
+            "This is hard to ask, but… about yesterday… are you okay?"
+        );
+        assert_eq!(
+            restore_source_ellipses("そ…そこは…", "Th. there…"),
+            "Th… there…"
+        );
+        assert_eq!(
+            restore_source_ellipses("んんっ…変な…感じ…", "Mmm. This feels. strange…"),
+            "Mmm… This feels… strange…"
+        );
+        assert_eq!(
+            restore_source_ellipses("やめるんだ…フリーレン", "Stop. Frieren"),
+            "Stop… Frieren"
+        );
+        // Обычные два предложения без исходного `…` не должны трогаться!
+        assert_eq!(
+            restore_source_ellipses(
+                "後ろの初めてはもらいましたよここまでキツキツとは",
+                "I got your first time from behind. I didn't expect you to be this tight."
+            ),
+            "I got your first time from behind. I didn't expect you to be this tight."
+        );
+    }
+
+    #[tokio::test]
+    async fn test_intra_chunk_context_passed_to_local_fallback_for_character_names() {
+        use std::sync::{Arc, Mutex};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        // Облако переводит "0" с каноничным именем Frieren, но цензурит "1"
+        let cloud_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind cloud");
+        let cloud_addr = cloud_listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = cloud_listener.accept().await {
+                let mut buf = vec![0u8; 8192];
+                let _ = sock.read(&mut buf).await;
+                let body = "{\"choices\":[{\"message\":{\"content\":\"{\\\"0\\\":\\\"Hey, Frieren.\\\",\\\"1\\\":\\\"I cannot translate explicit sexual content.\\\"}\"}}]}";
+                let resp = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        // Локальная Ollama должна получить в системном промпте свежий контекст "なぁフリーレン => Hey, Frieren." из этого же чанка!
+        let ollama_listener = TcpListener::bind("127.0.0.1:0").await.expect("bind ollama");
+        let ollama_addr = ollama_listener.local_addr().unwrap();
+        let captured_ollama_req = Arc::new(Mutex::new(String::new()));
+        let cap_clone = captured_ollama_req.clone();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                if let Ok((mut sock, _)) = ollama_listener.accept().await {
+                    let mut buf = vec![0u8; 16384];
+                    let n = sock.read(&mut buf).await.unwrap_or(0);
+                    let req_str = String::from_utf8_lossy(&buf[..n]).to_string();
+                    let body = if req_str.starts_with("GET /api/tags") {
+                        r#"{"models":[{"name":"huihui-qwen3.5:9b"}]}"#
+                    } else {
+                        *cap_clone.lock().unwrap() = req_str;
+                        r#"{"message":{"content":"{\"1\":\"Frieren is getting used to it.\"}"}}"#
+                    };
+                    let resp = format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                        body.len(),
+                        body
+                    );
+                    let _ = sock.write_all(resp.as_bytes()).await;
+                }
+            }
+        });
+
+        let db = miko_core::StudioDb::open_in_memory().expect("db");
+        let tr = RustTranslator::new(Some(format!("http://{ollama_addr}")));
+        let req = TranslateBatchRequest {
+            blocks: vec![
+                miko_core::TextBlock {
+                    id: 1,
+                    bbox: [10, 10, 150, 120],
+                    original_text: "なぁフリーレン".into(),
+                    ..Default::default()
+                },
+                miko_core::TextBlock {
+                    id: 2,
+                    bbox: [10, 140, 150, 260],
+                    original_text: "フリーレンも馴染んできましたね".into(),
+                    ..Default::default()
+                },
+            ],
+            target_lang: "en".into(),
+            model: "unsloth::deepseek-v4-flash".into(),
+            fallback_model: "ollama::huihui-qwen3.5:9b".into(),
+            cloud_url: format!("http://{cloud_addr}/v1"),
+            cloud_api_key: "sk-test".into(),
+            ..Default::default()
+        };
+
+        let res = tr.translate_blocks(req, Some(&db)).await.expect("ok");
+        assert_eq!(res.blocks[0].translated_text, "Hey, Frieren.");
+        assert_eq!(
+            res.blocks[1].translated_text,
+            "Frieren is getting used to it."
+        );
+        let ollama_payload = captured_ollama_req.lock().unwrap().clone();
+        assert!(
+            ollama_payload.contains("Hey, Frieren."),
+            "Local fallback must receive same-chunk cloud translations in RECENT CONTEXT: {ollama_payload}"
+        );
     }
 }
 

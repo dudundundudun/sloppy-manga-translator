@@ -1162,3 +1162,193 @@ async fn test_open_folder_path_quotes_file_unwrap_and_security() {
     let _ = std::fs::remove_dir_all(&tmp_base);
     let _ = std::fs::remove_dir_all(&ext_manga);
 }
+
+#[tokio::test]
+async fn test_prompt_editor_preview_live_test_and_reset_persistence() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    let tmp_base = std::env::temp_dir().join(format!(
+        "miko_prompts_srv_test_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    let _ = std::fs::remove_dir_all(&tmp_base);
+    std::fs::create_dir_all(tmp_base.join("fonts")).unwrap();
+
+    // Mock OpenAI-compatible cloud endpoint to verify /test_prompt sends custom prompts
+    let listener = TcpListener::bind("127.0.0.1:0").await.expect("bind mock");
+    let addr = listener.local_addr().unwrap();
+    let captured_body = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
+    let cap_clone = captured_body.clone();
+    tokio::spawn(async move {
+        if let Ok((mut sock, _)) = listener.accept().await {
+            let mut buf = vec![0u8; 16384];
+            let n = sock.read(&mut buf).await.unwrap_or(0);
+            *cap_clone.lock().unwrap() = String::from_utf8_lossy(&buf[..n]).to_string();
+            let body = r#"{"choices":[{"message":{"content":"{\"0\":\"Йоу, Сэмпай, ты серьёзно?!\"}"}}]}"#;
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = sock.write_all(resp.as_bytes()).await;
+        }
+    });
+
+    let st1 = AppState::init(tmp_base.clone()).expect("init st1");
+    let app1 = build_router(st1);
+
+    // 1. Save custom prompts + cloud URL via POST /settings
+    let save_res = app1
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/settings")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "unsloth_url": format!("http://{addr}/v1"),
+                        "unsloth_api_key": "sk-test-prompt",
+                        "selected_model": "unsloth::deepseek-v4-flash",
+                        "cloud_only_no_local_fallback": true,
+                        "anti_censorship_prompt": true,
+                        "anti_censorship_custom_prompt": "[18+ CUSTOM PREAMBLE]",
+                        "custom_system_prompt": "Переводи дерзким сленгом на {{LANG}}!",
+                        "custom_context_prompt": "Герои — байкеры из Иокогамы.",
+                        "prompt_preset_id": "custom"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(save_res.status(), StatusCode::OK);
+
+    // 2. GET /health must expose all saved prompt fields & factory defaults
+    let h_res = app1
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/health")
+                .header("host", "127.0.0.1:8000")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let h_val: Value =
+        serde_json::from_slice(&to_bytes(h_res.into_body(), 512 * 1024).await.unwrap()).unwrap();
+    assert_eq!(h_val["anti_censorship_custom_prompt"], "[18+ CUSTOM PREAMBLE]");
+    assert_eq!(
+        h_val["custom_system_prompt"],
+        "Переводи дерзким сленгом на {{LANG}}!"
+    );
+    assert_eq!(h_val["custom_context_prompt"], "Герои — байкеры из Иокогамы.");
+    assert_eq!(h_val["prompt_preset_id"], "custom");
+    assert!(!h_val["default_system_prompt"].as_str().unwrap_or("").is_empty());
+
+    // 3. POST /prompt_preview returns assembled system + user prompts and blocks evil origin
+    let evil_prev = app1
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/prompt_preview")
+                .header("host", "127.0.0.1:8000")
+                .header("origin", "https://evil.example.com")
+                .header("content-type", "application/json")
+                .body(Body::from("{}"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evil_prev.status(), StatusCode::FORBIDDEN);
+
+    let prev_res = app1
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/prompt_preview")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(json!({"target_lang": "ru"}).to_string()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(prev_res.status(), StatusCode::OK);
+    let prev_val: Value =
+        serde_json::from_slice(&to_bytes(prev_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    let sys_str = prev_val["system_prompt"].as_str().unwrap();
+    assert!(sys_str.contains("[18+ CUSTOM PREAMBLE]"));
+    assert!(sys_str.contains("Герои — байкеры из Иокогамы."));
+    assert!(sys_str.contains("MANDATORY OUTPUT CONTRACT:"));
+
+    // 4. POST /test_prompt executes live call against mock cloud with custom prompts
+    let test_res = app1
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/test_prompt")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "text": "先輩、マジで言ってるの！？",
+                        "target_lang": "ru"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(test_res.status(), StatusCode::OK);
+    let test_val: Value =
+        serde_json::from_slice(&to_bytes(test_res.into_body(), 256 * 1024).await.unwrap()).unwrap();
+    assert_eq!(test_val["translated_text"], "Йоу, Сэмпай, ты серьёзно?!");
+    assert!(captured_body.lock().unwrap().contains("[18+ CUSTOM PREAMBLE]"));
+
+    // 5. Resetting custom prompts back to "" persists cleanly across restart
+    let reset_res = app1
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/settings")
+                .header("host", "127.0.0.1:8000")
+                .header("content-type", "application/json")
+                .body(Body::from(
+                    json!({
+                        "anti_censorship_custom_prompt": "",
+                        "custom_system_prompt": "",
+                        "custom_context_prompt": "",
+                        "prompt_preset_id": "standard"
+                    })
+                    .to_string(),
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(reset_res.status(), StatusCode::OK);
+
+    let st2 = AppState::init(tmp_base.clone()).expect("init st2");
+    {
+        let cfg2 = st2.config.read().unwrap();
+        assert!(cfg2.anti_censorship_custom_prompt.is_empty());
+        assert!(cfg2.custom_system_prompt.is_empty());
+        assert!(cfg2.custom_context_prompt.is_empty());
+        assert_eq!(cfg2.prompt_preset_id, "standard");
+    }
+
+    let _ = std::fs::remove_dir_all(&tmp_base);
+}

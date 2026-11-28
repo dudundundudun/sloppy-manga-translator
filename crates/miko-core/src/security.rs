@@ -59,6 +59,8 @@ pub const PRIVILEGED_ENDPOINTS: &[&str] = &[
     "/clean_rust",
     "/fonts",
     "/setup",
+    "/prompt_preview",
+    "/test_prompt",
 ];
 
 #[derive(Debug, Error, PartialEq, Eq)]

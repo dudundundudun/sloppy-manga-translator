@@ -583,6 +583,7 @@ pub async fn process_chapter_folder_sync(
             let rgb_ocr = rgb.clone();
             let det_free = opts.detect_free_text;
             let tf_mode = opts.text_filter_mode.clone();
+            let min_tlen = (cur_cfg.min_text_length as usize).max(1);
             let ocr_task_res = tokio::task::spawn_blocking(move || {
                 let mut g = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
                 if g.is_none() {
@@ -597,6 +598,7 @@ pub async fn process_chapter_folder_sync(
                         &OcrOptions {
                             detect_free_text: det_free,
                             text_filter_mode: tf_mode,
+                            min_text_length: min_tlen,
                             ..Default::default()
                         },
                     )
@@ -784,6 +786,14 @@ pub async fn process_chapter_folder_sync(
                         glossary: merged_glossary.clone(),
                         context_lines: rolling_context.clone(),
                         anti_censorship: cur_cfg.anti_censorship_prompt,
+                        anti_censorship_custom_prompt: cur_cfg
+                            .anti_censorship_custom_prompt
+                            .clone(),
+                        custom_system_prompt: cur_cfg.custom_system_prompt.clone(),
+                        custom_context_prompt: miko_translator::compose_context_with_series_hint(
+                            &cur_cfg.custom_context_prompt,
+                            Some(&opts.source_dir),
+                        ),
                         use_cache: !opts.force_retranslate,
                     },
                     Some(&state.db),
@@ -1742,6 +1752,7 @@ pub async fn page_blocks(
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let det_free = payload.detect_free_text.unwrap_or(cfg.detect_free_text);
     let tf_mode = payload.text_filter_mode.unwrap_or(cfg.text_filter_mode);
+    let min_tlen = (cfg.min_text_length as usize).max(1);
 
     let ocr_res = tokio::task::spawn_blocking(move || -> Result<Vec<TextBlock>, String> {
         let rgb = image::open(&src_clone)
@@ -1760,6 +1771,7 @@ pub async fn page_blocks(
                 &OcrOptions {
                     detect_free_text: det_free,
                     text_filter_mode: tf_mode,
+                    min_text_length: min_tlen,
                     ..Default::default()
                 },
             )
@@ -1918,26 +1930,34 @@ pub async fn translate_manual_region(
     };
 
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let prompt_cfg = crate::prompt_config_from_app(&cfg);
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
-    let model = payload.model.unwrap_or(cfg.selected_model);
-    let glossary = state.db.load_glossary("global").unwrap_or(cfg.glossary);
+    let model = payload.model.unwrap_or_else(|| cfg.selected_model.clone());
+    let glossary = state
+        .db
+        .load_glossary("global")
+        .unwrap_or_else(|_| cfg.glossary.clone());
 
     let translated_text = if orig_text.trim().is_empty() {
         String::new()
     } else {
         state
             .translator
-            .translate_single_text(
+            .translate_single_text_with_prompts(
                 &orig_text,
                 &t_lang,
                 &model,
+                &cfg.local_fallback_model_multilang,
+                cfg.cloud_only_no_local_fallback,
                 &cfg.unsloth_url,
                 &cfg.unsloth_api_key,
                 &glossary,
-                cfg.anti_censorship_prompt,
+                &prompt_cfg,
+                true,
                 Some(&state.db),
             )
             .await
+            .map(|(s, _)| s)
             .unwrap_or_else(|_| orig_text.clone())
     };
 

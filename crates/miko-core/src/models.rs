@@ -333,12 +333,22 @@ pub struct AppConfig {
     pub local_fallback_model_multilang: String,
     pub anti_censorship_prompt: bool,
     pub anti_censorship_custom_prompt: String,
+    #[serde(default)]
+    pub custom_system_prompt: String,
+    #[serde(default)]
+    pub custom_context_prompt: String,
+    #[serde(default = "default_prompt_preset_id")]
+    pub prompt_preset_id: String,
     pub preflight_nsfw_split: bool,
     pub cloud_only_no_local_fallback: bool,
     pub cloud_fallback_model: String,
     pub ultra_proofread_mode: String,
     pub ui_settings: serde_json::Value,
     pub glossary: Vec<GlossaryEntry>,
+}
+
+fn default_prompt_preset_id() -> String {
+    "standard".to_string()
 }
 
 impl AppConfig {
@@ -384,6 +394,9 @@ impl AppConfig {
             local_fallback_model_multilang: "auto".to_string(),
             anti_censorship_prompt: true,
             anti_censorship_custom_prompt: String::new(),
+            custom_system_prompt: String::new(),
+            custom_context_prompt: String::new(),
+            prompt_preset_id: default_prompt_preset_id(),
             preflight_nsfw_split: true,
             cloud_only_no_local_fallback: false,
             cloud_fallback_model: "auto".to_string(),
@@ -432,12 +445,22 @@ impl AppConfig {
                 "anti_censorship_prompt".into(),
                 serde_json::json!(self.anti_censorship_prompt),
             );
-            if !self.anti_censorship_custom_prompt.trim().is_empty() {
-                obj.insert(
-                    "anti_censorship_custom_prompt".into(),
-                    serde_json::json!(self.anti_censorship_custom_prompt),
-                );
-            }
+            obj.insert(
+                "anti_censorship_custom_prompt".into(),
+                serde_json::json!(self.anti_censorship_custom_prompt),
+            );
+            obj.insert(
+                "custom_system_prompt".into(),
+                serde_json::json!(self.custom_system_prompt),
+            );
+            obj.insert(
+                "custom_context_prompt".into(),
+                serde_json::json!(self.custom_context_prompt),
+            );
+            obj.insert(
+                "prompt_preset_id".into(),
+                serde_json::json!(self.prompt_preset_id),
+            );
             obj.insert("preflight_nsfw_split".into(), serde_json::json!(self.preflight_nsfw_split));
             obj.insert(
                 "cloud_only_no_local_fallback".into(),
@@ -578,6 +601,17 @@ impl AppConfig {
         }
         if let Some(v) = pick_str("anti_censorship_custom_prompt") {
             cfg.anti_censorship_custom_prompt = v;
+        }
+        if let Some(v) = pick_str("custom_system_prompt") {
+            cfg.custom_system_prompt = v;
+        }
+        if let Some(v) = pick_str("custom_context_prompt") {
+            cfg.custom_context_prompt = v;
+        }
+        if let Some(v) = pick_str("prompt_preset_id") {
+            if !v.trim().is_empty() {
+                cfg.prompt_preset_id = v.trim().to_string();
+            }
         }
         if (cfg.local_fallback_model_multilang.trim().is_empty()
             || cfg.local_fallback_model_multilang == "auto")

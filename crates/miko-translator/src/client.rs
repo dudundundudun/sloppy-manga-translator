@@ -1,7 +1,7 @@
 use crate::prompts::{
-    build_translation_prompts, compute_translation_cache_key, detect_source_language,
-    is_refusal_response, kana_to_romaji, parse_flat_json_translations_for_lang,
-    restore_source_ellipses,
+    build_translation_prompts_with_config, compute_translation_cache_key_with_prompts,
+    detect_source_language, is_refusal_response, kana_to_romaji,
+    parse_flat_json_translations_for_lang, restore_source_ellipses, PromptConfig,
 };
 use crate::EndpointCircuitBreaker;
 use miko_core::{GlossaryEntry, StudioDb, TextBlock};
@@ -48,6 +48,9 @@ pub struct TranslateBatchRequest {
     pub glossary: Vec<GlossaryEntry>,
     pub context_lines: Vec<String>,
     pub anti_censorship: bool,
+    pub anti_censorship_custom_prompt: String,
+    pub custom_system_prompt: String,
+    pub custom_context_prompt: String,
     pub use_cache: bool,
 }
 
@@ -64,7 +67,21 @@ impl Default for TranslateBatchRequest {
             glossary: Vec::new(),
             context_lines: Vec::new(),
             anti_censorship: true,
+            anti_censorship_custom_prompt: String::new(),
+            custom_system_prompt: String::new(),
+            custom_context_prompt: String::new(),
             use_cache: true,
+        }
+    }
+}
+
+impl TranslateBatchRequest {
+    pub fn prompt_config(&self) -> PromptConfig {
+        PromptConfig {
+            anti_censorship: self.anti_censorship,
+            anti_censorship_custom_prompt: self.anti_censorship_custom_prompt.clone(),
+            custom_system_prompt: self.custom_system_prompt.clone(),
+            custom_context_prompt: self.custom_context_prompt.clone(),
         }
     }
 }
@@ -110,8 +127,8 @@ impl RustTranslator {
             .to_string();
 
         let http_cloud = reqwest::Client::builder()
-            .timeout(Duration::from_secs(45))
-            .connect_timeout(Duration::from_secs(12))
+            .timeout(Duration::from_secs(24))
+            .connect_timeout(Duration::from_secs(8))
             .pool_idle_timeout(Duration::from_secs(20))
             .tcp_keepalive(Duration::from_secs(15))
             .build()
@@ -127,7 +144,7 @@ impl RustTranslator {
             http_cloud,
             http_local,
             ollama_base_url: base,
-            cloud_breaker: EndpointCircuitBreaker::new(3, Duration::from_secs(45)),
+            cloud_breaker: EndpointCircuitBreaker::new(2, Duration::from_secs(90)),
             ollama_breaker: EndpointCircuitBreaker::new(3, Duration::from_secs(30)),
             censorship_breaker: EndpointCircuitBreaker::new(2, Duration::from_secs(180)),
         }
@@ -175,6 +192,7 @@ impl RustTranslator {
         model: &str,
         sys_prompt: &str,
         user_prompt: &str,
+        retry_on_timeout: bool,
     ) -> Result<String, TranslatorError> {
         let endpoint = format!("{}/chat/completions", cloud_url.trim_end_matches('/'));
         let body = json!({
@@ -198,6 +216,10 @@ impl RustTranslator {
             let resp = match req.send().await {
                 Ok(r) => r,
                 Err(e) => {
+                    let is_timeout_or_conn = e.is_timeout() || e.is_connect();
+                    if is_timeout_or_conn && !retry_on_timeout {
+                        return Err(TranslatorError::Http(e));
+                    }
                     last_err = Some(TranslatorError::Http(e));
                     continue;
                 }
@@ -381,6 +403,9 @@ impl RustTranslator {
         db: Option<&StudioDb>,
     ) -> Result<TranslateBatchResult, TranslatorError> {
         let t0 = Instant::now();
+        let prompt_cfg = req.prompt_config();
+        let mut fb_prompt_cfg = prompt_cfg.clone();
+        fb_prompt_cfg.anti_censorship = true;
         let mut blocks = req.blocks;
         let t_lang = req.target_lang.trim().to_ascii_lowercase();
         let all_texts: Vec<String> = blocks
@@ -431,8 +456,13 @@ impl RustTranslator {
 
             if req.use_cache {
                 if let Some(store) = db {
-                    let ckey =
-                        compute_translation_cache_key(&src, &t_lang, &active_model, &req.glossary);
+                    let ckey = compute_translation_cache_key_with_prompts(
+                        &src,
+                        &t_lang,
+                        &active_model,
+                        &req.glossary,
+                        &prompt_cfg,
+                    );
                     if let Ok(Some(cached)) = store.get_cached_translation(&ckey) {
                         if !cached.trim().is_empty() {
                             blk.translated_text = cached;
@@ -497,12 +527,12 @@ impl RustTranslator {
                     items.push((k, u_item.src.clone(), u_item.budget));
                 }
 
-                let (sys_p, user_p) = build_translation_prompts(
+                let (sys_p, user_p) = build_translation_prompts_with_config(
                     &t_lang,
                     &items,
                     &req.glossary,
                     &rolling_ctx,
-                    req.anti_censorship,
+                    &prompt_cfg,
                 );
 
                 let allow_local = is_explicit_ollama || !req.cloud_only_no_local_fallback;
@@ -523,6 +553,7 @@ impl RustTranslator {
                             &cloud_model,
                             &sys_p,
                             &user_p,
+                            !allow_local,
                         )
                         .await
                     {
@@ -621,12 +652,25 @@ impl RustTranslator {
                             }
                         }
                         if !fb_items.is_empty() {
-                            let (fb_sys, fb_user) = build_translation_prompts(
+                            let mut fb_ctx = rolling_ctx.clone();
+                            for (pos, u_item) in chunk.iter().enumerate() {
+                                if let Some((tr, _)) = parsed_map.get(&pos.to_string()) {
+                                    let fixed = restore_source_ellipses(&u_item.src, tr);
+                                    if !fixed.trim().is_empty() {
+                                        fb_ctx.push(format!("{} => {}", u_item.src, fixed));
+                                    }
+                                }
+                            }
+                            if fb_ctx.len() > 12 {
+                                let d = fb_ctx.len() - 12;
+                                fb_ctx.drain(0..d);
+                            }
+                            let (fb_sys, fb_user) = build_translation_prompts_with_config(
                                 &t_lang,
                                 &fb_items,
                                 &req.glossary,
-                                &rolling_ctx,
-                                true,
+                                &fb_ctx,
+                                &fb_prompt_cfg,
                             );
                             api_calls += 1;
                             match self
@@ -670,18 +714,31 @@ impl RustTranslator {
 
                     for sub in missing_items.chunks(6) {
                         let sub_keys: Vec<String> = sub.iter().map(|(k, _, _)| k.clone()).collect();
+                        let mut mr_ctx = rolling_ctx.clone();
+                        for (pos, u_item) in chunk.iter().enumerate() {
+                            if let Some((tr, _)) = parsed_map.get(&pos.to_string()) {
+                                let fixed = restore_source_ellipses(&u_item.src, tr);
+                                if !fixed.trim().is_empty() {
+                                    mr_ctx.push(format!("{} => {}", u_item.src, fixed));
+                                }
+                            }
+                        }
+                        if mr_ctx.len() > 12 {
+                            let d = mr_ctx.len() - 12;
+                            mr_ctx.drain(0..d);
+                        }
                         if has_cloud
                             && !self.cloud_breaker.is_open()
                             && !bypass_censored_cloud
                             && !cloud_censored_chunk
                             && cloud_got_some
                         {
-                            let (mr_sys, mr_user) = build_translation_prompts(
+                            let (mr_sys, mr_user) = build_translation_prompts_with_config(
                                 &t_lang,
                                 sub,
                                 &req.glossary,
-                                &rolling_ctx,
-                                req.anti_censorship,
+                                &mr_ctx,
+                                &prompt_cfg,
                             );
                             api_calls += 1;
                             match self
@@ -691,6 +748,7 @@ impl RustTranslator {
                                     &cloud_model,
                                     &mr_sys,
                                     &mr_user,
+                                    !allow_local,
                                 )
                                 .await
                             {
@@ -747,12 +805,12 @@ impl RustTranslator {
                             if let Some(ollama_model) = ollama_model_opt {
                                 let still_keys: Vec<String> =
                                     still_missing.iter().map(|(k, _, _)| k.clone()).collect();
-                                let (fb_sys, fb_user) = build_translation_prompts(
+                                let (fb_sys, fb_user) = build_translation_prompts_with_config(
                                     &t_lang,
                                     &still_missing,
                                     &req.glossary,
-                                    &rolling_ctx,
-                                    true,
+                                    &mr_ctx,
+                                    &fb_prompt_cfg,
                                 );
                                 api_calls += 1;
                                 match self
@@ -847,11 +905,12 @@ impl RustTranslator {
                                 if cache_m.trim().is_empty() {
                                     continue;
                                 }
-                                let ckey = compute_translation_cache_key(
+                                let ckey = compute_translation_cache_key_with_prompts(
                                     &u_item.src,
                                     &t_lang,
                                     cache_m,
                                     &req.glossary,
+                                    &prompt_cfg,
                                 );
                                 let _ = store.put_cached_translation(
                                     &ckey,
@@ -906,9 +965,41 @@ impl RustTranslator {
         anti_censorship: bool,
         db: Option<&StudioDb>,
     ) -> Result<String, TranslatorError> {
+        self.translate_single_text_with_prompts(
+            text,
+            target_lang,
+            model,
+            "auto",
+            false,
+            cloud_url,
+            cloud_api_key,
+            glossary,
+            &PromptConfig::new_default(anti_censorship),
+            true,
+            db,
+        )
+        .await
+        .map(|(tr, _)| tr)
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn translate_single_text_with_prompts(
+        &self,
+        text: &str,
+        target_lang: &str,
+        model: &str,
+        fallback_model: &str,
+        cloud_only_no_local_fallback: bool,
+        cloud_url: &str,
+        cloud_api_key: &str,
+        glossary: &[GlossaryEntry],
+        prompt_cfg: &PromptConfig,
+        use_cache: bool,
+        db: Option<&StudioDb>,
+    ) -> Result<(String, TranslateBatchResult), TranslatorError> {
         let blk = TextBlock {
             id: 1,
-            bbox: [0, 0, 200, 120],
+            bbox: [0, 0, 220, 140],
             original_text: text.to_string(),
             ..Default::default()
         };
@@ -918,26 +1009,29 @@ impl RustTranslator {
                     blocks: vec![blk],
                     target_lang: target_lang.to_string(),
                     model: model.to_string(),
+                    fallback_model: fallback_model.to_string(),
+                    cloud_only_no_local_fallback,
                     cloud_url: cloud_url.to_string(),
                     cloud_api_key: cloud_api_key.to_string(),
                     glossary: glossary.to_vec(),
                     context_lines: Vec::new(),
-                    anti_censorship,
-                    use_cache: true,
-                    ..Default::default()
+                    anti_censorship: prompt_cfg.anti_censorship,
+                    anti_censorship_custom_prompt: prompt_cfg.anti_censorship_custom_prompt.clone(),
+                    custom_system_prompt: prompt_cfg.custom_system_prompt.clone(),
+                    custom_context_prompt: prompt_cfg.custom_context_prompt.clone(),
+                    use_cache,
                 },
                 db,
             )
             .await?;
         let translated = res
             .blocks
-            .into_iter()
-            .next()
-            .map(|b| b.translated_text)
+            .first()
+            .map(|b| b.translated_text.clone())
             .unwrap_or_default();
         if translated.trim().is_empty() && !text.trim().is_empty() {
             return Err(TranslatorError::UnavailableOrRefused);
         }
-        Ok(translated)
+        Ok((translated, res))
     }
 }

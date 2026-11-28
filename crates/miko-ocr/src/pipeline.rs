@@ -3,6 +3,7 @@ use crate::detectors::{
 };
 use crate::filter::{
     classify_filter_reason, is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only,
+    sanitize_nar_stutter,
 };
 use crate::nar::{NarError, NarRecognizer};
 use crate::preprocess::crop_with_padding;
@@ -204,11 +205,11 @@ impl RustOcrEngine {
             }
 
             let padded_crop = crop_with_padding(img, ocr_box, 8);
-            let mut recognized = self.nar.recognize_crop(&padded_crop)?.trim().to_string();
+            let mut recognized = recognize_nar_adaptive(&mut self.nar, &padded_crop)?;
             if is_hallucinated_ocr_text(&recognized, ink_px, det.is_free_text) {
                 if !det.is_free_text && ocr_box != det.bbox {
                     let fallback_crop = crop_with_padding(img, det.bbox, 10);
-                    let fb_txt = self.nar.recognize_crop(&fallback_crop)?.trim().to_string();
+                    let fb_txt = recognize_nar_adaptive(&mut self.nar, &fallback_crop)?;
                     if !is_hallucinated_ocr_text(&fb_txt, ink_px, false) {
                         recognized = fb_txt;
                     } else {
@@ -263,6 +264,7 @@ impl RustOcrEngine {
             normalize_clean_bbox(&mut blk);
             blocks.push(blk);
         }
+        dedup_adjacent_text_overlaps(&mut blocks);
         let ocr_ms = t_ocr.elapsed().as_millis();
 
         Ok(OcrPageResult {
@@ -393,6 +395,153 @@ fn merge_split_column_strips(
                 dets.remove(j);
                 merged_any = true;
                 break 'outer;
+            }
+        }
+    }
+}
+
+fn find_clean_vertical_split_x(crop: &RgbImage) -> Option<u32> {
+    let (cw, ch) = crop.dimensions();
+    if cw < 240 || ch == 0 || cw < ch * 4 || ch > 76 {
+        return None;
+    }
+    let x_start = (cw * 32) / 100;
+    let x_end = (cw * 68) / 100;
+    if x_end <= x_start + 6 {
+        return None;
+    }
+    let mid = cw / 2;
+    let y0 = (ch * 10) / 100;
+    let y1 = ch.saturating_sub(y0).max(y0 + 1);
+    let col_h = (y1 - y0).max(1);
+
+    let is_blank_col = |x: u32| -> bool {
+        let mut light = 0u32;
+        for y in y0..y1 {
+            let px = crop.get_pixel(x, y);
+            let lum = ((77u32 * px[0] as u32) + (150u32 * px[1] as u32) + (29u32 * px[2] as u32)) >> 8;
+            if lum >= 215 {
+                light += 1;
+            }
+        }
+        light * 100 >= col_h * 95
+    };
+
+    let mut best_x: Option<u32> = None;
+    let mut best_dist = u32::MAX;
+    for x in (x_start + 1)..(x_end - 1) {
+        if is_blank_col(x - 1) && is_blank_col(x) && is_blank_col(x + 1) {
+            let dist = x.abs_diff(mid);
+            if dist < best_dist {
+                best_dist = dist;
+                best_x = Some(x);
+            }
+        }
+    }
+    best_x
+}
+
+fn recognize_nar_adaptive(nar: &mut NarRecognizer, crop: &RgbImage) -> Result<String, NarError> {
+    if let Some(split_x) = find_clean_vertical_split_x(crop) {
+        let (cw, ch) = crop.dimensions();
+        if split_x >= 48 && cw.saturating_sub(split_x) >= 48 {
+            let left = image::imageops::crop_imm(crop, 0, 0, split_x, ch).to_image();
+            let right =
+                image::imageops::crop_imm(crop, split_x, 0, cw - split_x, ch).to_image();
+            let l_txt = sanitize_nar_stutter(nar.recognize_crop(&left)?.trim());
+            let r_txt = sanitize_nar_stutter(nar.recognize_crop(&right)?.trim());
+            let joined = format!("{l_txt}{r_txt}");
+            if !joined.trim().is_empty() {
+                return Ok(sanitize_nar_stutter(&joined));
+            }
+        }
+    }
+    let raw = nar.recognize_crop(crop)?;
+    Ok(sanitize_nar_stutter(raw.trim()))
+}
+
+fn is_sentence_stop_punct(c: char) -> bool {
+    matches!(c, '?' | '!' | '？' | '！' | '。' | '」' | '』')
+}
+
+/// Убирает дублирующиеся огрызки текста на стыке соседних/перекрывающихся рамок
+/// (например, `'誰がお兄さんだ?'` + `'さんだ?私からすればお前らまだ子供じゃん'` -> `'私からすればお前らまだ子供じゃん'`,
+/// `'とても似合っていますよ!う上かう'` + `'すよ!お店から制服を...'` -> `'とても似合っていますよ!'` + `'お店から制服を...'`).
+pub fn dedup_adjacent_text_overlaps(blocks: &mut [TextBlock]) {
+    let n = blocks.len();
+    if n < 2 {
+        return;
+    }
+    for j in 0..n {
+        if blocks[j].is_deleted {
+            continue;
+        }
+        let bj = blocks[j].bbox;
+        let tj_chars: Vec<char> = blocks[j].original_text.trim().chars().collect();
+        if tj_chars.len() < 7 {
+            continue;
+        }
+
+        // Ищем разделительный знак конца чужой фразы (`?`, `!`, `。`) в первых 2..=10 символах блока `j`
+        let max_pref = tj_chars.len().saturating_sub(4).min(10);
+        let mut split_pos: Option<usize> = None;
+        for idx in 1..max_pref {
+            if is_sentence_stop_punct(tj_chars[idx]) {
+                let mut end_idx = idx + 1;
+                while end_idx < max_pref && is_sentence_stop_punct(tj_chars[end_idx]) {
+                    end_idx += 1;
+                }
+                split_pos = Some(end_idx);
+                break;
+            }
+        }
+        let Some(pref_end) = split_pos else {
+            continue;
+        };
+        if tj_chars.len().saturating_sub(pref_end) < 4 {
+            continue;
+        }
+        let prefix: String = tj_chars[..pref_end].iter().collect();
+        let pref_char_len = pref_end;
+
+        let mut matched_neighbor: Option<(usize, usize)> = None;
+        for i in 0..n {
+            if i == j || blocks[i].is_deleted {
+                continue;
+            }
+            let bi = blocks[i].bbox;
+            let gap_x = (bi[0] - bj[2]).max(bj[0] - bi[2]);
+            let gap_y = (bi[1] - bj[3]).max(bj[1] - bi[3]);
+            if gap_x > 36 || gap_y > 36 {
+                continue;
+            }
+            let ti = blocks[i].original_text.trim();
+            let ti_chars: Vec<char> = ti.chars().collect();
+            if ti_chars.len() <= pref_char_len {
+                continue;
+            }
+            // Проверяем, стоит ли `prefix` в самом конце `ti` (допуская до 4 символов шумового хвоста после `!`/`?`)
+            let tail_start_min = ti_chars.len().saturating_sub(pref_char_len + 4);
+            let tail_slice: String = ti_chars[tail_start_min..].iter().collect();
+            if let Some(byte_off) = tail_slice.rfind(&prefix) {
+                let after_pref = &tail_slice[byte_off + prefix.len()..];
+                let after_len = after_pref.chars().count();
+                if after_len <= 4 && !after_pref.chars().any(is_sentence_stop_punct) {
+                    let cut_chars = ti_chars.len() - after_len;
+                    matched_neighbor = Some((i, cut_chars));
+                    break;
+                }
+            }
+        }
+
+        if let Some((nbr_idx, nbr_keep_chars)) = matched_neighbor {
+            let new_j: String = tj_chars[pref_end..].iter().collect();
+            blocks[j].original_text = new_j.trim().to_string();
+
+            let nbr_chars: Vec<char> = blocks[nbr_idx].original_text.trim().chars().collect();
+            if nbr_keep_chars < nbr_chars.len() && nbr_keep_chars >= 3 {
+                blocks[nbr_idx].original_text =
+                    nbr_chars[..nbr_keep_chars].iter().collect::<String>();
             }
         }
     }

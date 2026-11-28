@@ -12,10 +12,13 @@ pub use detectors::{
 };
 pub use filter::{
     classify_filter_reason, is_hallucinated_ocr_text, is_likely_sfx_text, is_punct_only,
-    is_screentone_dialogue_text, FilterReason, OcrBackendInfo,
+    is_screentone_dialogue_text, sanitize_nar_stutter, FilterReason, OcrBackendInfo,
 };
 pub use nar::{NarError, NarRecognizer, NarVocabulary};
-pub use pipeline::{OcrOptions, OcrPageResult, OcrTimings, PipelineError, RustOcrEngine};
+pub use pipeline::{
+    dedup_adjacent_text_overlaps, OcrOptions, OcrPageResult, OcrTimings, PipelineError,
+    RustOcrEngine,
+};
 pub use preprocess::{
     crop_with_padding, letterbox_yolo_chw, pad_grid, preprocess_nar_crop, resize_rtdetr_chw,
     LetterboxMeta, NarPreprocessOutput,
@@ -362,5 +365,65 @@ mod tests {
                 "SFX or noise '{sfx}' must be filtered out on background"
             );
         }
+    }
+
+    #[test]
+    fn test_nar_stutter_cleanup_and_adjacent_box_overlap_dedup() {
+        // 1. Заикание NAR на длинных горизонтальных строках послесловия (стр. 034)
+        let stuttered = "などがまます。フリーレンがこれれら着着てえっちしまくるのを考えてみくください…";
+        let cleaned = sanitize_nar_stutter(stuttered);
+        assert!(
+            cleaned.contains("これら着て"),
+            "expected collapsed stutter in '{cleaned}'"
+        );
+        assert!(cleaned.contains("フリーレン"));
+
+        let colophon_garbage =
+            "タイトルスの愛愛作者た艦艦ぃ発日日24444422ahhhhh0000000lm08歳ののののののの友友ははは違くくくささささ";
+        let cleaned_col = sanitize_nar_stutter(colophon_garbage);
+        assert!(!cleaned_col.contains("44444"));
+        assert!(!cleaned_col.contains("hhhhh"));
+        assert!(!cleaned_col.contains("00000"));
+        assert!(!cleaned_col.contains("ののの"));
+
+        // Эмоциональные крики и нормальные реплики не должны портиться
+        assert_eq!(sanitize_nar_stutter("おおおおぉ!!"), "おおおおぉ!!");
+        assert_eq!(
+            sanitize_nar_stutter("フリーレン僕は君を永遠に愛そうと誓った"),
+            "フリーレン僕は君を永遠に愛そうと誓った"
+        );
+
+        // 2. Дубли на стыке соседних рамок (стр. 009 и стр. 020)
+        let mut blocks = vec![
+            miko_core::TextBlock {
+                id: 1,
+                bbox: [200, 100, 260, 280],
+                original_text: "誰がお兄さんだ?".into(),
+                ..Default::default()
+            },
+            miko_core::TextBlock {
+                id: 2,
+                bbox: [110, 95, 212, 310],
+                original_text: "さんだ?私からすればお前らまだ子供じゃん".into(),
+                ..Default::default()
+            },
+            miko_core::TextBlock {
+                id: 3,
+                bbox: [500, 80, 610, 320],
+                original_text: "とても似合っていますよ!う上かう".into(),
+                ..Default::default()
+            },
+            miko_core::TextBlock {
+                id: 4,
+                bbox: [390, 85, 508, 330],
+                original_text: "すよ!お店から制服を借りてきてよかったです!".into(),
+                ..Default::default()
+            },
+        ];
+        dedup_adjacent_text_overlaps(&mut blocks);
+        assert_eq!(blocks[0].original_text, "誰がお兄さんだ?");
+        assert_eq!(blocks[1].original_text, "私からすればお前らまだ子供じゃん");
+        assert_eq!(blocks[2].original_text, "とても似合っていますよ!");
+        assert_eq!(blocks[3].original_text, "お店から制服を借りてきてよかったです!");
     }
 }

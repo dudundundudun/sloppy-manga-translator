@@ -234,3 +234,155 @@ pub fn classify_filter_reason(
 
     None
 }
+
+fn is_natural_jp_double_char(c: char) -> bool {
+    matches!(
+        c,
+        'あ' | 'い'
+            | 'う'
+            | 'え'
+            | 'お'
+            | 'ぁ'
+            | 'ぃ'
+            | 'ぅ'
+            | 'ぇ'
+            | 'ぉ'
+            | 'ん'
+            | 'っ'
+            | 'ア'
+            | 'イ'
+            | 'ウ'
+            | 'エ'
+            | 'オ'
+            | 'ン'
+            | 'ッ'
+            | 'ー'
+            | '〜'
+            | '~'
+            | '…'
+            | '・'
+            | '.'
+            | '!'
+            | '?'
+            | '！'
+            | '？'
+            | 'こ'
+            | 'ま'
+            | '人'
+            | '時'
+            | '日'
+            | '我'
+    )
+}
+
+fn is_expressive_scream_char(c: char) -> bool {
+    matches!(
+        c,
+        'あ' | 'い'
+            | 'う'
+            | 'え'
+            | 'お'
+            | 'ぁ'
+            | 'ぃ'
+            | 'ぅ'
+            | 'ぇ'
+            | 'ぉ'
+            | 'ん'
+            | 'っ'
+            | 'ア'
+            | 'イ'
+            | 'ウ'
+            | 'エ'
+            | 'オ'
+            | 'ン'
+            | 'ッ'
+            | 'ー'
+            | '〜'
+            | '~'
+            | '…'
+            | '.'
+            | '!'
+            | '?'
+            | '！'
+            | '？'
+    )
+}
+
+/// Схлопывает аномальное парное заикание и вырожденные хвосты `manga-ocr-nar-small`
+/// на переполненных длинных горизонтальных строках (например, `'今今ははチチュームを5着描きまたたが'` -> `'今はチチュームを5着描きたが'`,
+/// `'これれら着着て'` -> `'これら着て'`, `'24444422ahhhhh0000000...ののののの'` -> без мусорных серий),
+/// сохраняя нетронутыми обычные реплики и эмоциональные возгласы (`'おおおおぉ!!'`, `'ああ…'`).
+pub fn sanitize_nar_stutter(text: &str) -> String {
+    let trimmed = text.trim();
+    let chars: Vec<char> = trimmed.chars().collect();
+    if chars.len() < 10 {
+        return trimmed.to_string();
+    }
+
+    // 1. Срезаем вырожденные серии по >= 4 одинаковых не-экспрессивных символов подряд (`44444`, `hhhhh`, `0000000`, `ののののの`, `そそそそそ`)
+    let mut stage1: Vec<char> = Vec::with_capacity(chars.len());
+    let mut idx = 0usize;
+    let mut had_run_garbage = false;
+    while idx < chars.len() {
+        let ch = chars[idx];
+        let mut run_end = idx + 1;
+        while run_end < chars.len() && chars[run_end] == ch {
+            run_end += 1;
+        }
+        let run_len = run_end - idx;
+        if run_len >= 4 && !is_expressive_scream_char(ch) {
+            had_run_garbage = true;
+            if ch.is_ascii_alphanumeric() {
+                // Вырожденный ASCII/числовой шум (`24444422ahhhhh0000000`) пропускаем до одного символа или убираем буквенный спам
+                if ch.is_ascii_digit() {
+                    stage1.push(ch);
+                }
+            } else {
+                stage1.push(ch);
+            }
+        } else {
+            stage1.extend_from_slice(&chars[idx..run_end]);
+        }
+        idx = run_end;
+    }
+
+    // 2. Проверяем плотность неестественных парных заиканий (`今今`, `はは`, `のの`, `でで`, `るる`, `着着`, `これれら`)
+    let mut suspicious_pairs = 0usize;
+    let mut i = 0usize;
+    while i + 1 < stage1.len() {
+        let ch = stage1[i];
+        if ch == stage1[i + 1] && !is_natural_jp_double_char(ch) && !ch.is_ascii_digit() {
+            suspicious_pairs += 1;
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+
+    let should_destutter = suspicious_pairs >= 3
+        || (suspicious_pairs >= 2 && (stage1.len() >= 18 || had_run_garbage));
+    if !should_destutter {
+        return stage1.into_iter().collect::<String>().trim().to_string();
+    }
+
+    let mut out = String::with_capacity(stage1.len());
+    let mut k = 0usize;
+    while k < stage1.len() {
+        let ch = stage1[k];
+        if k + 1 < stage1.len()
+            && ch == stage1[k + 1]
+            && !is_natural_jp_double_char(ch)
+            && !ch.is_ascii_digit()
+        {
+            out.push(ch);
+            k += 2;
+            while k < stage1.len() && stage1[k] == ch {
+                k += 1;
+            }
+        } else {
+            out.push(ch);
+            k += 1;
+        }
+    }
+    out.trim().to_string()
+}

@@ -337,7 +337,10 @@ pub async fn folder_clean_noise(
 
 #[derive(Debug, Deserialize)]
 pub struct ShortenBlockPayload {
-    pub block_id: i64,
+    pub block_id: Option<i64>,
+    pub text: Option<String>,
+    #[allow(dead_code)]
+    pub original_text: Option<String>,
     pub source_path: Option<String>,
     pub dest_path: Option<String>,
     pub target_lang: Option<String>,
@@ -345,6 +348,7 @@ pub struct ShortenBlockPayload {
     pub min_font_size: Option<i32>,
     pub max_font_size: Option<i32>,
     pub overflow_mode: Option<String>,
+    #[serde(default)]
     pub blocks: Vec<TextBlock>,
 }
 
@@ -352,14 +356,14 @@ pub async fn shorten_block_text(
     State(state): State<Arc<AppState>>,
     Json(mut payload): Json<ShortenBlockPayload>,
 ) -> Response {
-    let Some(target_idx) = payload.blocks.iter().position(|b| b.id == payload.block_id) else {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(json!({"detail": "Блок не найден"})),
-        )
-            .into_response();
+    let target_idx = payload
+        .block_id
+        .and_then(|bid| payload.blocks.iter().position(|b| b.id == bid));
+    let current_tr = if let Some(idx) = target_idx {
+        payload.blocks[idx].translated_text.trim().to_string()
+    } else {
+        payload.text.as_deref().unwrap_or("").trim().to_string()
     };
-    let current_tr = payload.blocks[target_idx].translated_text.trim().to_string();
     if current_tr.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
@@ -373,24 +377,35 @@ pub async fn shorten_block_text(
     let prompt_text = format!(
         "Сократи эту реплику персонажа на 30% короче по длине символов, сохранив смысл и живую речь (верни ТОЛЬКО сокращённую фразу на языке {t_lang}): {current_tr}"
     );
+    let shorten_prompt_cfg = miko_translator::PromptConfig {
+        anti_censorship: cfg.anti_censorship_prompt,
+        anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
+        custom_system_prompt: String::new(),
+        custom_context_prompt: cfg.custom_context_prompt.clone(),
+    };
     let shortened = match state
         .translator
-        .translate_single_text(
+        .translate_single_text_with_prompts(
             &prompt_text,
             &t_lang,
             &cfg.selected_model,
+            &cfg.local_fallback_model_multilang,
+            cfg.cloud_only_no_local_fallback,
             &cfg.unsloth_url,
             &cfg.unsloth_api_key,
             &[],
-            cfg.anti_censorship_prompt,
+            &shorten_prompt_cfg,
+            false,
             None,
         )
         .await
     {
-        Ok(s) if !s.trim().is_empty() => s.trim().to_string(),
+        Ok((s, _)) if !s.trim().is_empty() => s.trim().to_string(),
         _ => current_tr.clone(),
     };
-    payload.blocks[target_idx].translated_text = shortened.clone();
+    if let Some(idx) = target_idx {
+        payload.blocks[idx].translated_text = shortened.clone();
+    }
 
     if let (Some(ref sp), Some(ref dp)) = (&payload.source_path, &payload.dest_path) {
         let src_p = PathBuf::from(sp.trim());
@@ -787,16 +802,25 @@ pub async fn chapter_qa_autofix(
                         "Сократи эту реплику на 35% короче по символам для узкого облачка комикса, сохранив живой смысл (верни ТОЛЬКО короткую фразу на языке {t_lang}): {}",
                         b.translated_text.trim()
                     );
-                    if let Ok(short_s) = state
+                    let shorten_prompt_cfg = miko_translator::PromptConfig {
+                        anti_censorship: cfg.anti_censorship_prompt,
+                        anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
+                        custom_system_prompt: String::new(),
+                        custom_context_prompt: cfg.custom_context_prompt.clone(),
+                    };
+                    if let Ok((short_s, _)) = state
                         .translator
-                        .translate_single_text(
+                        .translate_single_text_with_prompts(
                             &prompt_text,
                             &t_lang,
                             &cfg.selected_model,
+                            &cfg.local_fallback_model_multilang,
+                            cfg.cloud_only_no_local_fallback,
                             &cfg.unsloth_url,
                             &cfg.unsloth_api_key,
                             &[],
-                            cfg.anti_censorship_prompt,
+                            &shorten_prompt_cfg,
+                            false,
                             None,
                         )
                         .await

@@ -29,8 +29,10 @@ use miko_ocr::{OcrOptions, RustOcrEngine};
 use miko_ort::{scan_onnx_inventory, OrtInventory};
 use miko_renderer::{list_available_fonts, FontInfo, RustRendererEngine};
 use miko_translator::{
+    build_translation_prompts_with_config, compute_translation_cache_key_with_prompts,
     export_glossary_to_sakura_text, export_glossary_to_tsv, is_refusal_response, merge_glossaries,
-    normalize_glossary_entries, RustTranslator,
+    normalize_glossary_entries, PromptConfig, RustTranslator, DEFAULT_ANTI_CENSORSHIP_PREAMBLE,
+    DEFAULT_SYSTEM_STYLE_PROMPT,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -214,6 +216,15 @@ impl AppState {
     }
 }
 
+pub fn prompt_config_from_app(cfg: &AppConfig) -> PromptConfig {
+    PromptConfig {
+        anti_censorship: cfg.anti_censorship_prompt,
+        anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt.clone(),
+        custom_system_prompt: cfg.custom_system_prompt.clone(),
+        custom_context_prompt: cfg.custom_context_prompt.clone(),
+    }
+}
+
 fn header_str<'a>(headers: &'a HeaderMap, name: &str) -> Option<&'a str> {
     headers.get(name).and_then(|v| v.to_str().ok())
 }
@@ -336,6 +347,12 @@ struct HealthResponse {
     use_image_context: bool,
     local_fallback_model_multilang: String,
     anti_censorship_prompt: bool,
+    anti_censorship_custom_prompt: String,
+    custom_system_prompt: String,
+    custom_context_prompt: String,
+    prompt_preset_id: String,
+    default_system_prompt: &'static str,
+    default_anti_censorship_prompt: &'static str,
     preflight_nsfw_split: bool,
     cloud_only_no_local_fallback: bool,
     cloud_fallback_model: String,
@@ -503,6 +520,12 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
         use_image_context: cfg.use_image_context,
         local_fallback_model_multilang: cfg.local_fallback_model_multilang,
         anti_censorship_prompt: cfg.anti_censorship_prompt,
+        anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt,
+        custom_system_prompt: cfg.custom_system_prompt,
+        custom_context_prompt: cfg.custom_context_prompt,
+        prompt_preset_id: cfg.prompt_preset_id,
+        default_system_prompt: DEFAULT_SYSTEM_STYLE_PROMPT,
+        default_anti_censorship_prompt: DEFAULT_ANTI_CENSORSHIP_PREAMBLE,
         preflight_nsfw_split: cfg.preflight_nsfw_split,
         cloud_only_no_local_fallback: cfg.cloud_only_no_local_fallback,
         cloud_fallback_model: cfg.cloud_fallback_model,
@@ -523,14 +546,88 @@ async fn health_check(State(state): State<Arc<AppState>>) -> Json<HealthResponse
     })
 }
 
-async fn get_models(State(state): State<Arc<AppState>>) -> Json<Value> {
+#[derive(Debug, Deserialize, Default)]
+struct ModelsQuery {
+    refresh: Option<bool>,
+}
+
+async fn get_models(
+    State(state): State<Arc<AppState>>,
+    Query(q): Query<ModelsQuery>,
+) -> Json<Value> {
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
     let ollama_tags = state.translator.list_ollama_models().await;
-    let models = build_ui_model_entries(&cfg, &ollama_tags);
+    let mut models = build_ui_model_entries(&cfg, &ollama_tags);
+
+    let cloud_url = cfg.unsloth_url.trim().trim_end_matches('/').to_string();
+    let mut unsloth_status = json!({
+        "is_cloud": !cloud_url.is_empty(),
+        "url": cloud_url,
+        "detected_models": [],
+        "error": Value::Null,
+    });
+
+    if q.refresh == Some(true) && !cloud_url.is_empty() {
+        let endpoint = format!("{cloud_url}/models");
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(7))
+            .connect_timeout(Duration::from_secs(5))
+            .build()
+            .unwrap_or_default();
+        let mut req = client.get(&endpoint);
+        if !cfg.unsloth_api_key.trim().is_empty() {
+            req = req.bearer_auth(cfg.unsloth_api_key.trim());
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => {
+                if let Ok(val) = resp.json::<Value>().await {
+                    let mut det: Vec<String> = Vec::new();
+                    if let Some(arr) = val.get("data").and_then(|v| v.as_array()) {
+                        for item in arr {
+                            if let Some(id) = item.get("id").and_then(|v| v.as_str()) {
+                                let clean = id.trim();
+                                if !clean.is_empty() {
+                                    det.push(clean.to_string());
+                                }
+                            }
+                        }
+                    }
+                    let mut existing: std::collections::HashSet<String> = models
+                        .iter()
+                        .filter_map(|m| m.get("id").and_then(|v| v.as_str()).map(str::to_string))
+                        .collect();
+                    for cid in &det {
+                        let full_id = format!("unsloth::{cid}");
+                        if existing.insert(full_id.clone()) {
+                            models.push(json!({
+                                "id": full_id,
+                                "name": format!("☁️ [Cloud API] {cid}"),
+                                "provider": "unsloth",
+                                "installed": true,
+                            }));
+                        }
+                    }
+                    unsloth_status["detected_models"] = json!(det);
+                }
+            }
+            Ok(resp) => {
+                let code = resp.status().as_u16();
+                let body = resp.text().await.unwrap_or_default();
+                let snippet: String = body.chars().take(120).collect();
+                unsloth_status["error"] = json!(format!("HTTP {code}: {}", snippet.trim()));
+            }
+            Err(e) => {
+                unsloth_status["error"] = json!(format!("Нет ответа шлюза: {e}"));
+            }
+        }
+    }
+
     Json(json!({
         "status": "ok",
         "runtime": "rust",
         "active_model": cfg.selected_model,
+        "unsloth_url": cfg.unsloth_url,
+        "unsloth_status": unsloth_status,
         "models": models,
     }))
 }
@@ -672,6 +769,9 @@ struct SettingsPayload {
     local_fallback_model_multilang: Option<String>,
     anti_censorship_prompt: Option<bool>,
     anti_censorship_custom_prompt: Option<String>,
+    custom_system_prompt: Option<String>,
+    custom_context_prompt: Option<String>,
+    prompt_preset_id: Option<String>,
     preflight_nsfw_split: Option<bool>,
     cloud_only_no_local_fallback: Option<bool>,
     cloud_fallback_model: Option<String>,
@@ -739,6 +839,17 @@ async fn update_settings(
     }
     if let Some(v) = payload.anti_censorship_custom_prompt {
         cfg.anti_censorship_custom_prompt = v;
+    }
+    if let Some(v) = payload.custom_system_prompt {
+        cfg.custom_system_prompt = v;
+    }
+    if let Some(v) = payload.custom_context_prompt {
+        cfg.custom_context_prompt = v;
+    }
+    if let Some(v) = payload.prompt_preset_id {
+        if !v.trim().is_empty() {
+            cfg.prompt_preset_id = v.trim().to_string();
+        }
     }
     if let Some(v) = payload.preflight_nsfw_split {
         cfg.preflight_nsfw_split = v;
@@ -815,15 +926,254 @@ async fn update_settings(
     Json(json!({
         "status": "ok",
         "selected_model": cfg.selected_model,
+        "unsloth_url": cfg.unsloth_url,
         "local_fallback_model_multilang": cfg.local_fallback_model_multilang,
         "pipeline_mode": cfg.pipeline_mode,
         "translation_profile": cfg.translation_profile,
+        "batch_pages": cfg.batch_pages,
+        "default_font": cfg.default_font,
+        "font_scale_pct": cfg.font_scale_pct,
         "uppercase": cfg.uppercase,
         "anti_censorship_prompt": cfg.anti_censorship_prompt,
+        "anti_censorship_custom_prompt": cfg.anti_censorship_custom_prompt,
+        "custom_system_prompt": cfg.custom_system_prompt,
+        "custom_context_prompt": cfg.custom_context_prompt,
+        "prompt_preset_id": cfg.prompt_preset_id,
         "has_unsloth_key": !cfg.unsloth_api_key.trim().is_empty(),
         "masked_api_key": mask_api_key(Some(&cfg.unsloth_api_key)),
     }))
     .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct PromptPreviewPayload {
+    target_lang: Option<String>,
+    anti_censorship_prompt: Option<bool>,
+    anti_censorship_custom_prompt: Option<String>,
+    custom_system_prompt: Option<String>,
+    custom_context_prompt: Option<String>,
+    folder_path: Option<String>,
+    sample_lines: Option<Vec<String>>,
+}
+
+async fn post_prompt_preview(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<PromptPreviewPayload>,
+) -> Response {
+    if let Some(ref fp) = payload.folder_path {
+        if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
+            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        }
+    }
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let global_g = state.db.load_glossary("global").unwrap_or_else(|_| cfg.glossary.clone());
+    let folder_g = payload
+        .folder_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|fp| {
+            let src_dir = folder_job::unwrap_source_folder(Path::new(fp.trim()));
+            state
+                .db
+                .load_glossary(&format!(
+                    "folder:{}",
+                    src_dir.to_string_lossy().trim().to_ascii_lowercase()
+                ))
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let mut merged = merge_glossaries(&global_g, &folder_g);
+
+    let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
+    let prompt_cfg = PromptConfig {
+        anti_censorship: payload
+            .anti_censorship_prompt
+            .unwrap_or(cfg.anti_censorship_prompt),
+        anti_censorship_custom_prompt: payload
+            .anti_censorship_custom_prompt
+            .unwrap_or(cfg.anti_censorship_custom_prompt),
+        custom_system_prompt: payload
+            .custom_system_prompt
+            .unwrap_or(cfg.custom_system_prompt),
+        custom_context_prompt: payload
+            .custom_context_prompt
+            .unwrap_or(cfg.custom_context_prompt),
+    };
+
+    let raw_samples = payload.sample_lines.unwrap_or_default();
+    let items: Vec<(String, String, Option<usize>)> = if raw_samples.is_empty() {
+        let demo_name = merged.first().map(|g| g.src.as_str()).unwrap_or("先輩");
+        vec![
+            (
+                "0".to_string(),
+                format!("{demo_name}… まさか本気で言ってるの！？"),
+                Some(46),
+            ),
+            (
+                "1".to_string(),
+                "ああ… もう誰にも邪魔はさせない。".to_string(),
+                Some(52),
+            ),
+        ]
+    } else {
+        raw_samples
+            .into_iter()
+            .take(6)
+            .enumerate()
+            .map(|(i, s)| (i.to_string(), s, Some(48)))
+            .collect()
+    };
+
+    if merged.is_empty() {
+        merged.push(GlossaryEntry {
+            src: "先輩".to_string(),
+            dst: if t_lang.eq_ignore_ascii_case("en") {
+                "Senpai".to_string()
+            } else {
+                "Сэмпай".to_string()
+            },
+            note: "пример из глоссария".to_string(),
+        });
+    }
+
+    let sample_ctx = vec![if t_lang.eq_ignore_ascii_case("en") {
+        "待ってくれ！ => Hold on!".to_string()
+    } else {
+        "待ってくれ！ => Постой!".to_string()
+    }];
+
+    let (sys_p, user_p) =
+        build_translation_prompts_with_config(&t_lang, &items, &merged, &sample_ctx, &prompt_cfg);
+    let sample_key = compute_translation_cache_key_with_prompts(
+        &items[0].1,
+        &t_lang,
+        &cfg.selected_model,
+        &merged,
+        &prompt_cfg,
+    );
+
+    Json(json!({
+        "status": "ok",
+        "system_prompt": sys_p,
+        "user_prompt": user_p,
+        "cache_key_sample": sample_key,
+    }))
+    .into_response()
+}
+
+#[derive(Debug, Deserialize)]
+struct TestPromptPayload {
+    text: String,
+    target_lang: Option<String>,
+    model: Option<String>,
+    anti_censorship_prompt: Option<bool>,
+    anti_censorship_custom_prompt: Option<String>,
+    custom_system_prompt: Option<String>,
+    custom_context_prompt: Option<String>,
+    folder_path: Option<String>,
+}
+
+async fn post_test_prompt(
+    State(state): State<Arc<AppState>>,
+    Json(payload): Json<TestPromptPayload>,
+) -> Response {
+    if let Some(ref fp) = payload.folder_path {
+        if let Err(err) = reject_unc_path(Some(fp), "folder_path") {
+            return (StatusCode::BAD_REQUEST, Json(json!({"detail": err.to_string()}))).into_response();
+        }
+    }
+    let src_text = payload.text.trim().to_string();
+    if src_text.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"detail": "Введите тестовую фразу для проверки промпта"})),
+        )
+            .into_response();
+    }
+
+    let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
+    let global_g = state.db.load_glossary("global").unwrap_or_else(|_| cfg.glossary.clone());
+    let folder_g = payload
+        .folder_path
+        .as_deref()
+        .filter(|s| !s.trim().is_empty())
+        .map(|fp| {
+            let src_dir = folder_job::unwrap_source_folder(Path::new(fp.trim()));
+            state
+                .db
+                .load_glossary(&format!(
+                    "folder:{}",
+                    src_dir.to_string_lossy().trim().to_ascii_lowercase()
+                ))
+                .unwrap_or_default()
+        })
+        .unwrap_or_default();
+    let merged = merge_glossaries(&global_g, &folder_g);
+
+    let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
+    let model = payload
+        .model
+        .filter(|s| !s.trim().is_empty() && !s.trim().eq_ignore_ascii_case("auto"))
+        .unwrap_or_else(|| cfg.selected_model.clone());
+    let prompt_cfg = PromptConfig {
+        anti_censorship: payload
+            .anti_censorship_prompt
+            .unwrap_or(cfg.anti_censorship_prompt),
+        anti_censorship_custom_prompt: payload
+            .anti_censorship_custom_prompt
+            .unwrap_or_else(|| cfg.anti_censorship_custom_prompt.clone()),
+        custom_system_prompt: payload
+            .custom_system_prompt
+            .unwrap_or_else(|| cfg.custom_system_prompt.clone()),
+        custom_context_prompt: payload
+            .custom_context_prompt
+            .unwrap_or_else(|| cfg.custom_context_prompt.clone()),
+    };
+
+    let preview_items = vec![("0".to_string(), src_text.clone(), Some(58))];
+    let (sys_p, user_p) =
+        build_translation_prompts_with_config(&t_lang, &preview_items, &merged, &[], &prompt_cfg);
+
+    match state
+        .translator
+        .translate_single_text_with_prompts(
+            &src_text,
+            &t_lang,
+            &model,
+            &cfg.local_fallback_model_multilang,
+            cfg.cloud_only_no_local_fallback,
+            &cfg.unsloth_url,
+            &cfg.unsloth_api_key,
+            &merged,
+            &prompt_cfg,
+            false,
+            None,
+        )
+        .await
+    {
+        Ok((translated, batch_res)) => Json(json!({
+            "status": "ok",
+            "original_text": src_text,
+            "translated_text": translated,
+            "target_lang": t_lang,
+            "active_model": batch_res.active_model,
+            "detected_lang": batch_res.detected_lang,
+            "elapsed_ms": batch_res.elapsed_ms,
+            "censored_fallback": batch_res.censored_fallback,
+            "system_prompt": sys_p,
+            "user_prompt": user_p,
+        }))
+        .into_response(),
+        Err(e) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({
+                "detail": e.to_string(),
+                "system_prompt": sys_p,
+                "user_prompt": user_p,
+            })),
+        )
+            .into_response(),
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -1146,6 +1496,8 @@ pub fn build_router(state: Arc<AppState>) -> Router {
         .route("/folder_stream", get(stream_folder_status))
         .route("/glossary", get(get_glossary).post(save_glossary))
         .route("/settings", post(update_settings))
+        .route("/prompt_preview", post(post_prompt_preview))
+        .route("/test_prompt", post(post_test_prompt))
         .route("/model_stack", get(get_model_stack).post(post_model_stack))
         .route("/ocr_rust", post(run_ocr_rust))
         .route("/clean_rust", post(run_clean_rust))

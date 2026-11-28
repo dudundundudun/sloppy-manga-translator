@@ -177,7 +177,15 @@ pub async fn retranslate_single_block(
         }
     }
     let cfg = state.config.read().unwrap_or_else(|e| e.into_inner()).clone();
-    let global_g = state.db.load_glossary("global").unwrap_or(cfg.glossary);
+    let mut prompt_cfg = crate::prompt_config_from_app(&cfg);
+    prompt_cfg.custom_context_prompt = miko_translator::compose_context_with_series_hint(
+        &cfg.custom_context_prompt,
+        payload.folder_path.as_deref().map(Path::new),
+    );
+    let global_g = state
+        .db
+        .load_glossary("global")
+        .unwrap_or_else(|_| cfg.glossary.clone());
     let folder_g = payload
         .folder_path
         .as_deref()
@@ -191,27 +199,31 @@ pub async fn retranslate_single_block(
     let merged = merge_glossaries(&global_g, &folder_g);
 
     let t_lang = payload.target_lang.unwrap_or_else(|| "ru".to_string());
-    let model = payload.model.unwrap_or(cfg.selected_model);
+    let model = payload.model.unwrap_or_else(|| cfg.selected_model.clone());
 
     match state
         .translator
-        .translate_single_text(
+        .translate_single_text_with_prompts(
             &payload.text,
             &t_lang,
             &model,
+            &cfg.local_fallback_model_multilang,
+            cfg.cloud_only_no_local_fallback,
             &cfg.unsloth_url,
             &cfg.unsloth_api_key,
             &merged,
-            cfg.anti_censorship_prompt,
+            &prompt_cfg,
+            false,
             Some(&state.db),
         )
         .await
     {
-        Ok(translated) => Json(json!({
+        Ok((translated, res)) => Json(json!({
             "status": "ok",
             "original_text": payload.text,
             "translated_text": translated,
             "target_lang": t_lang,
+            "active_model": res.active_model,
         }))
         .into_response(),
         Err(e) => (
@@ -265,6 +277,7 @@ async fn run_full_rgb_pipeline(
     // 1. OCR на GPU/CPU
     let st_ocr = state.clone();
     let rgb_ocr = rgb.clone();
+    let min_tlen = (cfg.min_text_length as usize).max(1);
     let ocr_res = tokio::task::spawn_blocking(move || {
         let mut guard = st_ocr.ocr_engine.lock().unwrap_or_else(|e| e.into_inner());
         if guard.is_none() {
@@ -279,6 +292,7 @@ async fn run_full_rgb_pipeline(
                 &OcrOptions {
                     detect_free_text,
                     text_filter_mode,
+                    min_text_length: min_tlen,
                     ..Default::default()
                 },
             )
@@ -303,6 +317,12 @@ async fn run_full_rgb_pipeline(
                 glossary,
                 context_lines: Vec::new(),
                 anti_censorship: cfg.anti_censorship_prompt,
+                anti_censorship_custom_prompt: cfg.anti_censorship_custom_prompt,
+                custom_system_prompt: cfg.custom_system_prompt,
+                custom_context_prompt: miko_translator::compose_context_with_series_hint(
+                    &cfg.custom_context_prompt,
+                    src_file_hint.as_deref().and_then(|p| p.parent()),
+                ),
                 use_cache,
             },
             Some(&state.db),
